@@ -1,0 +1,210 @@
+# Agentic RAG Configuration
+
+orchestrator:
+  model: "gemini-2.5-flash"  # Fast, efficient Gemini model
+  temperature: 0.1  # Low temperature for consistent routing
+  max_tokens: 500
+  
+  # Decision thresholds
+  memory_retrieval_threshold: 0.6
+  llm_call_threshold: 0.7
+  motion_generation_threshold: 0.8
+  
+  # Prompt configuration
+  system_prompt: |
+    You are an intelligent orchestrator agent for KineticChat.
+    Your role is to analyze user queries and decide the BEST action to take.
+    
+    Available Actions:
+    1. RETRIEVE_DOCUMENT - When user asks about uploaded files, documents, PDFs, etc.
+    2. RETRIEVE_MEMORY - When user references past conversations
+    3. CALL_LLM - For general questions and conversational responses
+    4. HYBRID - When multiple actions are needed
+    
+    Routing Rules:
+    - ANY question about uploaded documents → RETRIEVE_DOCUMENT
+    - Questions mentioning filenames → RETRIEVE_DOCUMENT
+    - References to "document", "file", "PDF", "uploaded" → RETRIEVE_DOCUMENT
+    - Past conversation references → RETRIEVE_MEMORY
+    - General questions → CALL_LLM
+    
+    IMPORTANT: Always route document questions to RETRIEVE_DOCUMENT, even if they seem outside scope.
+    You are ONLY a router - do NOT answer questions directly.
+    Return only valid JSON routing decisions.
+
+llm:
+  model: "gemini-2.5-flash"  # Fast, capable Gemini model for response generation
+  temperature: 0.7
+  max_tokens: 2000
+  
+  # Safety settings
+  enable_validation: false  # Disabled temporarily for debugging
+  max_retries: 1  # Reduced to minimize API calls
+  retry_delay: 1.0
+  
+  # System prompt
+  system_prompt: |
+    You are KineticChat, a helpful, adaptive AI assistant.
+    
+    PRIMARY PURPOSE - Document-Based Q&A:
+    When documents are uploaded, your PRIMARY role is to answer ANY question using those documents as your knowledge source. This includes:
+    - Academic projects and coursework
+    - Research papers and reports  
+    - Technical documentation
+    - Any other document content
+    
+    Use uploaded documents as your authoritative knowledge source.
+    Answer questions about document content comprehensively.
+    Reference specific sections, filenames, and page numbers when relevant.
+    Be explicit: "Based on the [filename], ..." or "According to the document, ..."
+    
+    SECONDARY PURPOSE - General Knowledge:
+    For questions without documents, you provide:
+    - Helpful responses on general topics
+    - Non-clinical guidance for physical well-being
+    - Practical, step-by-step advice
+    - Supportive conversation
+    
+    Limitations:
+    - NOT a medical professional or clinician
+    - Cannot provide medical diagnoses or treatment plans
+    - Cannot prescribe medications
+    
+    IMPORTANT: When documents exist, prioritize document content over general knowledge.
+    Tone: Clear, practical, supportive, and professional.
+
+embedding:
+  model: "sentence-transformers/all-MiniLM-L6-v2"
+  # Alternative models:
+  # - "models/text-embedding-004" (Gemini, requires API key)
+  # - "sentence-transformers/all-mpnet-base-v2" (higher quality, slower)
+  dimension: 384
+  batch_size: 32
+
+vector_database:
+  type: "chromadb"  # or "qdrant"
+  
+  chromadb:
+    persist_directory: "./data/vector_store"
+    collection_name: "kinetichat_memory"
+    
+  qdrant:
+    url: "http://localhost:6333"
+    collection_name: "kinetichat_memory"
+    vector_size: 384
+
+memory:
+  # Storage settings
+  max_items_per_user: 100
+  retention_days: 90
+  
+  # Retrieval settings
+  top_k: 5
+  similarity_threshold: 0.3
+  enable_reranking: false
+  
+  # Summarization
+  summarization_interval: 5  # Summarize every 5 interactions
+  summary_max_length: 500
+  
+  # Memory types to store
+  store_user_info: true
+  store_preferences: true
+  store_physical_context: true
+  store_conversation_summaries: true
+
+rag:
+  # Retrieval settings
+  top_k_documents: 8  # Increased from 5 to get more matches
+  similarity_threshold: 0.1  # Lowered to catch theme content with lower similarity
+  max_chunks_per_document: 3  # Maximum chunks to return per document
+  
+  # Query processing
+  enable_query_expansion: true
+  query_expansion_method: "llm"  # or "wordnet", "embeddings"
+  
+  # Context building
+  max_context_length: 2000  # tokens
+  include_metadata: true
+  
+  # Response generation
+  enable_citation: false
+  response_format: "conversational"
+  
+  # Web Search Fallback
+  enable_web_search: true
+  min_context_threshold: 2  # Trigger web search if fewer than N context items
+  max_web_results: 5
+  web_search_timeout: 10  # seconds
+
+# Document chunking settings
+chunking:
+  enable_chunking: true              # Enable document chunking for better retrieval
+  chunk_size: 1500                  # Characters per chunk
+  chunk_overlap: 300                 # Increased overlap to preserve complete theme descriptions
+  min_chunk_size: 300               # Minimum chunk size to store
+  chunk_search_multiplier: 3        # Search multiplier for chunk deduplication
+
+validation:
+  # Response validation rules
+  enable_safety_check: true
+  enable_factuality_check: false
+  enable_relevance_check: true
+  
+  # Safety keywords to flag
+  unsafe_keywords:
+    - "diagnosis"
+    - "treatment plan"
+    - "prescription"
+    - "surgery"
+    - "medication dosage"
+  
+  # Minimum response quality
+  min_response_length: 50
+  max_response_length: 1500
+
+retry_fallback:
+  # Retry configuration
+  max_retries: 3
+  retry_delay: 1.0
+  exponential_backoff: true
+  
+  # Fallback responses
+  enable_fallback: true
+  fallback_messages:
+    generic: "I'm having trouble processing your request right now. Could you rephrase that?"
+    memory_failure: "I couldn't retrieve relevant context. Could you provide more details?"
+    llm_failure: "I'm experiencing technical difficulties. Please try again in a moment."
+
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: "json"
+  output_file: "logs/agentic_rag.log"
+  
+  # Log specific events
+  log_orchestrator_decisions: true
+  log_memory_retrievals: true
+  log_llm_calls: true
+  log_validation_results: true
+
+performance:
+  # Caching
+  enable_caching: true
+  cache_ttl: 3600  # seconds
+  
+  # Batch processing
+  enable_batch_processing: false
+  batch_size: 10
+  
+  # Timeouts
+  orchestrator_timeout: 5
+  memory_retrieval_timeout: 3
+  llm_timeout: 30
+
+features:
+  # Feature flags
+  enable_memory_retrieval: true
+  enable_response_validation: true
+  enable_conversation_summarization: true
+  enable_query_expansion: true
+  enable_performance_monitoring: true
