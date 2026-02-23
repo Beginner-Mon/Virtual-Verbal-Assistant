@@ -1,4 +1,4 @@
-OperationalError: no such column: collections.topic# AgenticRAG - System Overview for Developers
+# AgenticRAG - System Overview for Developers
 
 ## What This System Does
 

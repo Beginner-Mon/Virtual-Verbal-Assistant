@@ -58,6 +58,7 @@ class MemoryConfig(BaseModel):
     enable_reranking: bool = Field(default=False)
     summarization_interval: int = Field(default=5)
     summary_max_length: int = Field(default=500)
+    max_chat_sessions: int = Field(default=5)  # Number of chat sessions to keep (1-10)
 
 
 class RAGConfig(BaseModel):
@@ -69,6 +70,11 @@ class RAGConfig(BaseModel):
     max_context_length: int = Field(default=2000)
     include_metadata: bool = Field(default=True)
     max_chunks_per_document: int = Field(default=3)
+    enable_query_reformulation: bool = Field(default=True)
+    max_reformulation_attempts: int = Field(default=2)
+    reformulation_quality_threshold: float = Field(default=0.3)
+    enable_iterative_reflection: bool = Field(default=True)
+    max_reflection_iterations: int = Field(default=1)
 
 
 class ChunkingConfig(BaseModel):

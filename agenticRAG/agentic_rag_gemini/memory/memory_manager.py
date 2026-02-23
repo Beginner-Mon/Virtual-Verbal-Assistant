@@ -333,6 +333,14 @@ class MemoryManager:
         logger.info(f"Cleared old memory for user {user_id} (older than {days} days)")
         return 0  # Placeholder
 
+    def clear_memory(self):
+        """Clear all in-memory state (conversation counts, etc).
+        
+        Call this after clearing the vector store to ensure no stale
+        in-memory references remain.
+        """
+        self.conversation_counts = {}
+        logger.info("Cleared all in-memory state from MemoryManager")
 
     def load_documents_from_file(
         self,
@@ -472,6 +480,47 @@ class MemoryManager:
             query=query,
             top_k=top_k
         )
+
+    def retrieve_session_context(
+        self,
+        user_id: str,
+        query: str,
+        top_k: int = 3
+    ) -> List[Dict[str, Any]]:
+        """Search chat_summaries collection for relevant past session context.
+
+        Uses fuzzy (semantic) matching to find session summaries that relate
+        to the current query, enabling the LLM to recall topics from earlier
+        conversations.
+
+        Args:
+            user_id: User identifier
+            query: Query text
+            top_k: Number of summaries to retrieve
+
+        Returns:
+            List of matching session summaries with similarity scores
+        """
+        try:
+            query_embedding = self.embedding_service.embed_texts(query)
+
+            results = self.vector_store.search_chat_summaries(
+                query_embedding=query_embedding,
+                top_k=top_k,
+                filter_metadata={"user_id": user_id}
+            )
+
+            # Filter by similarity threshold
+            results = [
+                r for r in results
+                if r.get("similarity", 0) >= self.config.similarity_threshold
+            ]
+
+            logger.info(f"Retrieved {len(results)} session summaries for user {user_id}")
+            return results
+        except Exception as exc:
+            logger.warning(f"Session context retrieval failed: {exc}")
+            return []
 
 
 if __name__ == "__main__":

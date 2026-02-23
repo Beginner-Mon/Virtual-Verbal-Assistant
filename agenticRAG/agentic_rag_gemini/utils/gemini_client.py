@@ -43,13 +43,18 @@ class GeminiClient:
         
         logger.info(f"Initialized GeminiClient with API key {self.key_manager.get_current_key_index() + 1}/{self.key_manager.get_total_keys()}")
     
+    # Finish reasons that warrant rotating to another API key and retrying.
+    # SAFETY=2, RECITATION=4, OTHER=5  (MAX_TOKENS=3 is not retryable — no key will fix it)
+    _RETRYABLE_FINISH_REASONS = {2, 4, 5, "SAFETY", "RECITATION", "OTHER"}
+
     def chat_completion(
         self,
         messages: List[Dict[str, str]],
         model: str = "gemini-2.5-flash",
         temperature: float = 0.7,
         max_tokens: int = 1000,
-        response_format: Optional[Dict[str, str]] = None
+        response_format: Optional[Dict[str, str]] = None,
+        _retry_count: int = 0
     ) -> str:
         """Generate chat completion using Gemini.
         
@@ -59,6 +64,7 @@ class GeminiClient:
             temperature: Sampling temperature (0.0 to 2.0)
             max_tokens: Maximum tokens to generate
             response_format: Optional format spec, e.g. {"type": "json_object"}
+            _retry_count: Internal counter to prevent infinite recursion
             
         Returns:
             Generated text response
@@ -101,8 +107,15 @@ class GeminiClient:
                 if hasattr(response.prompt_feedback, 'block_reason') and response.prompt_feedback.block_reason:
                     block_reason = response.prompt_feedback.block_reason
                     error_msg = f"Gemini API blocked response: {block_reason}"
-                    logger.error(error_msg)
-                    raise RuntimeError(error_msg)
+                    logger.warning(error_msg)
+                    # Prompt-level blocks may clear on a different key — try rotating
+                    return self._rotate_and_retry(
+                        error_msg=error_msg,
+                        messages=messages, model=model,
+                        temperature=temperature, max_tokens=max_tokens,
+                        response_format=response_format,
+                        retry_count=_retry_count
+                    )
             
             if not hasattr(response, 'candidates') or not response.candidates or len(response.candidates) == 0:
                 error_msg = "Gemini API returned no candidates"
@@ -116,8 +129,21 @@ class GeminiClient:
                 finish_reason = candidate.finish_reason
                 if finish_reason != 1 and finish_reason != "STOP":  # 1 or "STOP" = normal completion
                     error_msg = f"Gemini response incomplete. Finish reason: {finish_reason}"
-                    logger.error(error_msg)
-                    raise RuntimeError(error_msg)
+                    logger.warning(error_msg)
+                    
+                    if finish_reason in self._RETRYABLE_FINISH_REASONS:
+                        # Rotate to next key and retry
+                        return self._rotate_and_retry(
+                            error_msg=error_msg,
+                            messages=messages, model=model,
+                            temperature=temperature, max_tokens=max_tokens,
+                            response_format=response_format,
+                            retry_count=_retry_count
+                        )
+                    else:
+                        # Non-retryable (e.g. MAX_TOKENS=3) — raise immediately
+                        logger.error(error_msg)
+                        raise RuntimeError(error_msg)
             
             # Extract text
             if not hasattr(candidate, 'content') or not candidate.content:
@@ -141,6 +167,8 @@ class GeminiClient:
                 result = str(result)
             
             logger.debug(f"Gemini response generated: {len(result)} chars")
+            # Successful response — reset the consecutive-failure counter
+            self.key_manager.reset_success()
             return result
             
         except (AttributeError, KeyError) as e:
@@ -149,31 +177,64 @@ class GeminiClient:
             logger.error(f"Response object type: {type(response) if 'response' in locals() else 'N/A'}")
             raise RuntimeError(error_msg) from e
         except Exception as e:
-            # Check if this is a rate limit error
+            # Check if this is a rate limit / quota error
             error_str = str(e)
             if "429" in error_str or "quota" in error_str.lower() or "exceeded" in error_str.lower():
                 logger.warning(f"Gemini API quota exceeded for key {self.key_manager.get_current_key_index() + 1}")
-                
-                # Try to rotate to next key
-                if self._handle_quota_error(e):
-                    # Retry with new key
-                    logger.info("Retrying with rotated API key...")
-                    return self.chat_completion(
-                        messages=messages,
-                        model=model,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        response_format=response_format
-                    )
-                else:
-                    # All keys exhausted
-                    error_msg = f"All API keys exhausted. {self.key_manager.get_last_error()}"
-                    logger.error(error_msg)
-                    self.key_manager.set_last_error(error_msg)
-                    raise RuntimeError(error_msg) from e
+                return self._rotate_and_retry(
+                    error_msg=str(e),
+                    messages=messages, model=model,
+                    temperature=temperature, max_tokens=max_tokens,
+                    response_format=response_format,
+                    retry_count=_retry_count
+                )
             
             logger.error(f"Error in Gemini chat completion: {type(e).__name__}: {str(e)}", exc_info=True)
             raise
+
+    def _rotate_and_retry(
+        self,
+        error_msg: str,
+        messages: List[Dict[str, str]],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        response_format: Optional[Dict[str, str]],
+        retry_count: int
+    ) -> str:
+        """Rotate to the next API key and retry the request.
+
+        Args:
+            error_msg: Human-readable description of why we are rotating.
+            retry_count: Current recursion depth (gives up when all keys tried).
+
+        Returns:
+            Response text from the next available key.
+
+        Raises:
+            RuntimeError: When all keys have been exhausted.
+        """
+        max_retries = self.key_manager.get_total_keys() * self.key_manager._MAX_CYCLES
+        if retry_count >= max_retries:
+            exhausted_msg = f"All API keys exhausted after rotation attempts. Last error: {error_msg}"
+            logger.error(exhausted_msg)
+            self.key_manager.set_last_error(exhausted_msg)
+            raise RuntimeError(exhausted_msg)
+
+        if self._handle_quota_error(Exception(error_msg)):
+            logger.info(f"Retrying with rotated API key (attempt {retry_count + 1}/{max_retries})...")
+            return self.chat_completion(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                response_format=response_format,
+                _retry_count=retry_count + 1
+            )
+        else:
+            exhausted_msg = f"All API keys exhausted. {self.key_manager.get_last_error()}"
+            logger.error(exhausted_msg)
+            raise RuntimeError(exhausted_msg)
     
     def _handle_quota_error(self, error: Exception) -> bool:
         """Handle quota error by rotating to next key.

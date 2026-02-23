@@ -112,6 +112,9 @@ memory:
   store_preferences: true
   store_physical_context: true
   store_conversation_summaries: true
+  
+  # Chat session history
+  max_chat_sessions: 5  # Number of chat sessions to keep (1-10)
 
 rag:
   # Retrieval settings
@@ -131,8 +134,18 @@ rag:
   enable_citation: false
   response_format: "conversational"
   
+  # Query Reformulation
+  enable_query_reformulation: true
+  max_reformulation_attempts: 2        # Max query re-writes before falling back
+  reformulation_quality_threshold: 0.3  # Min avg similarity to consider context "good enough"
+
+  # Iterative Reflection (self-correction)
+  enable_iterative_reflection: true
+  max_reflection_iterations: 1          # LLM self-checks (keep low to save API calls)
+
   # Web Search Fallback
   enable_web_search: true
+  web_search_quality_threshold: 0.65  # Trigger web search when avg similarity below this (higher = more aggressive)
   min_context_threshold: 2  # Trigger web search if fewer than N context items
   max_web_results: 5
   web_search_timeout: 10  # seconds

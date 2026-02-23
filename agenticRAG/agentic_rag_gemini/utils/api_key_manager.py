@@ -38,10 +38,12 @@ def reset_api_key_manager():
 
 
 class APIKeyManager:
-    """Manages multiple Gemini API keys with automatic rotation on quota errors.
+    """Manages multiple Gemini API keys with circular rotation on quota errors.
     
     This class loads API keys from environment variables and provides
-    automatic rotation when a key hits its quota limit.
+    automatic round-robin rotation when a key hits its quota limit.
+    Keys are NEVER permanently blacklisted; instead the system gives up
+    only after 2 full rotation cycles of consecutive failures.
     
     Environment Variables:
         GEMINI_API_KEYS: Comma-separated list of API keys (preferred)
@@ -56,15 +58,19 @@ class APIKeyManager:
             # Try again with new key
             key = manager.get_current_key()
         else:
-            # All keys exhausted
+            # 2 full cycles exhausted
             handle_error()
     """
+
+    # How many consecutive failures across all keys before giving up.
+    # Default = 2 full cycles (2 * N keys).
+    _MAX_CYCLES = 2
     
     def __init__(self):
         """Initialize the API key manager."""
         self._keys: List[str] = []
         self._current_index: int = 0
-        self._failed_keys: Set[int] = set()
+        self._consecutive_failures: int = 0  # resets on any success
         self._last_error: str = ""
         self._lock = threading.Lock()
         
@@ -120,67 +126,73 @@ class APIKeyManager:
         return len(self._keys)
     
     def rotate_to_next_key(self) -> bool:
-        """Rotate to the next available API key.
+        """Rotate to the next API key (circular / round-robin).
         
-        Marks the current key as failed and switches to the next available key.
+        Increments the consecutive-failure counter. Returns False only after
+        2 full cycles (``_MAX_CYCLES * total_keys``) of consecutive failures.
+        Calling ``reset_failed_keys()`` resets the counter.
         
         Returns:
-            bool: True if rotation succeeded, False if all keys exhausted
+            bool: True if rotated successfully, False if cycles exhausted
         """
         with self._lock:
             if not self._keys:
                 return False
-            
-            # Mark current key as failed
-            self._failed_keys.add(self._current_index)
-            logger.warning(f"API key {self._current_index + 1}/{len(self._keys)} marked as failed (quota exceeded)")
-            
-            # Find next available key
-            for i in range(len(self._keys)):
-                next_index = (self._current_index + 1 + i) % len(self._keys)
-                if next_index not in self._failed_keys:
-                    self._current_index = next_index
-                    logger.info(f"Rotated to API key {self._current_index + 1}/{len(self._keys)}")
-                    return True
-            
-            # All keys exhausted
-            logger.error("All API keys have exceeded their quota!")
-            self._last_error = "All API keys have exceeded their quota. Please try again later or add more keys."
-            return False
+
+            self._consecutive_failures += 1
+            max_attempts = self._MAX_CYCLES * len(self._keys)
+
+            if self._consecutive_failures >= max_attempts:
+                logger.error(
+                    f"All API keys exhausted after {self._MAX_CYCLES} full cycle(s) "
+                    f"({self._consecutive_failures} consecutive failures)."
+                )
+                self._last_error = (
+                    f"All API keys have exceeded their quota after {self._MAX_CYCLES} "
+                    "full rotation cycle(s). Please try again later or add more keys."
+                )
+                return False
+
+            # Circular rotation — wrap from last key back to first
+            self._current_index = (self._current_index + 1) % len(self._keys)
+            cycle_num = (self._consecutive_failures - 1) // len(self._keys) + 1
+            logger.warning(
+                f"API key quota error #{self._consecutive_failures}. "
+                f"Rotated to key {self._current_index + 1}/{len(self._keys)} "
+                f"(cycle {cycle_num}/{self._MAX_CYCLES})"
+            )
+            return True
     
     def mark_key_failed(self, index: int = None):
-        """Mark a specific key as failed.
+        """Increment the failure counter (same as one rotation step).
         
         Args:
-            index: Key index to mark as failed. If None, marks current key.
+            index: Ignored (kept for backward compatibility).
         """
-        with self._lock:
-            if index is None:
-                index = self._current_index
-            if 0 <= index < len(self._keys):
-                self._failed_keys.add(index)
-                logger.warning(f"API key {index + 1}/{len(self._keys)} manually marked as failed")
+        self.rotate_to_next_key()
     
     def reset_failed_keys(self):
-        """Reset all failed keys, making them available again.
+        """Reset the failure counter and restart from the first key.
         
         Call this periodically (e.g., daily) to retry previously failed keys
         as their quotas may have been refreshed.
         """
         with self._lock:
-            self._failed_keys.clear()
+            self._consecutive_failures = 0
             self._current_index = 0
             self._last_error = ""
-            logger.info("All API keys reset and available")
+            logger.info("API key failure counter reset — all keys available again")
     
     def has_available_keys(self) -> bool:
-        """Check if any API keys are available (not failed).
+        """Check if we have not yet exhausted all rotation cycles.
         
         Returns:
-            bool: True if at least one key is available
+            bool: True if more retries are allowed
         """
         with self._lock:
-            return len(self._failed_keys) < len(self._keys)
+            if not self._keys:
+                return False
+            return self._consecutive_failures < self._MAX_CYCLES * len(self._keys)
     
     def get_last_error(self) -> str:
         """Get the last error message.
@@ -198,20 +210,32 @@ class APIKeyManager:
         """
         self._last_error = error
     
+    def reset_success(self):
+        """Reset the consecutive failure counter after a successful API call.
+        
+        Call this whenever a key succeeds so the cycle counter starts fresh.
+        """
+        with self._lock:
+            if self._consecutive_failures > 0:
+                logger.debug(f"API key {self._current_index + 1} succeeded — resetting failure counter.")
+                self._consecutive_failures = 0
+
     def get_status(self) -> dict:
         """Get the current status of the key manager.
         
         Returns:
             dict: Status information including total keys, current key index,
-                  failed keys count, and availability
+                  consecutive failures, and availability
         """
         with self._lock:
+            total = len(self._keys)
+            max_attempts = self._MAX_CYCLES * total
             return {
-                "total_keys": len(self._keys),
+                "total_keys": total,
                 "current_key_index": self._current_index + 1,  # 1-indexed for display
-                "failed_keys_count": len(self._failed_keys),
-                "available_keys_count": len(self._keys) - len(self._failed_keys),
-                "has_available_keys": len(self._failed_keys) < len(self._keys),
+                "consecutive_failures": self._consecutive_failures,
+                "max_attempts_before_give_up": max_attempts,
+                "has_available_keys": self._consecutive_failures < max_attempts,
                 "last_error": self._last_error
             }
 
@@ -230,13 +254,13 @@ if __name__ == "__main__":
     print(f"Status: {manager.get_status()}")
     print(f"Current key: {manager.get_current_key()}")
     
-    # Simulate quota errors
-    print("\nSimulating quota errors...")
-    for i in range(4):
+    # Simulate quota errors — should allow 2 * 3 = 6 rotations before giving up
+    print("\nSimulating quota errors (expect 6 rotations before exhaustion)...")
+    for i in range(8):
         if manager.rotate_to_next_key():
-            print(f"Rotated to key: {manager.get_current_key()}")
+            print(f"  Rotation {i+1}: now on key '{manager.get_current_key()}'")
         else:
-            print("All keys exhausted!")
+            print(f"  Rotation {i+1}: All keys exhausted after {i} attempts!")
             break
     
     print(f"\nFinal status: {manager.get_status()}")

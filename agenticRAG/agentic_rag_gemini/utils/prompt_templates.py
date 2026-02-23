@@ -297,6 +297,71 @@ Return JSON with:
 }"""
 }
 
+# Query reformulation prompts
+QUERY_REFORMULATION_PROMPTS = {
+    "reformulate": """You are a search query optimizer. The user asked a question and the retrieval system returned poor results.
+
+Original user question: {query}
+
+Retrieved snippets (with similarity scores):
+{context_summary}
+
+The results have low relevance (avg similarity: {avg_similarity:.2f}).
+
+Rewrite the user's question as a better search query that is more likely to match the database contents.
+Rules:
+- Keep the core intent of the original question
+- Use different keywords, synonyms, or phrasings
+- Make the query more specific if the original was vague
+- Make the query broader if the original was too narrow
+- Output ONLY the rewritten query, nothing else
+
+Rewritten query:"""
+}
+
+# Iterative reflection prompts
+REFLECTION_PROMPTS = {
+    "reflect": """You are a fact-checking reviewer. Your job is to verify whether an AI-generated answer is factually grounded in the retrieved context.
+
+=== USER QUESTION ===
+{query}
+
+=== RETRIEVED CONTEXT ===
+{context}
+
+=== DRAFT ANSWER ===
+{draft_answer}
+
+Evaluate whether the draft answer:
+1. Is factually consistent with the retrieved context
+2. Does not fabricate information not present in the context
+3. Correctly attributes information to the right sources
+4. Answers the user's actual question
+
+Respond with JSON:
+{{
+  "is_grounded": true | false,
+  "issues": ["list of specific factual issues, empty if grounded"],
+  "revised_answer": "If not grounded, provide a corrected answer that only uses information from the context. If grounded, repeat the draft answer unchanged."
+}}"""
+}
+
+# Session summarization prompts (for chat history memory)
+SESSION_SUMMARY_PROMPTS = {
+    "system": """You are a precise summarization assistant. Your job is to condense chat transcripts
+into concise, factual summaries that preserve the key information for future reference.""",
+
+    "summarize": """Summarize the following conversation in 3-5 sentences.
+Capture: main topics discussed, the user's questions or concerns,
+key answers or advice given, and any unresolved items.
+Be factual and concise — do NOT add information not present in the transcript.
+
+=== CONVERSATION TRANSCRIPT ===
+{transcript}
+
+=== SUMMARY ==="""
+}
+
 # Fallback messages
 FALLBACK_MESSAGES = {
     "generic": "I'm having trouble processing your request right now. Could you rephrase that or provide more details?",
@@ -351,7 +416,10 @@ def get_prompt(category: str, key: str) -> str:
         "llm": LLM_PROMPTS,
         "validation": VALIDATION_PROMPTS,
         "expansion": QUERY_EXPANSION_PROMPTS,
+        "reformulation": QUERY_REFORMULATION_PROMPTS,
+        "reflection": REFLECTION_PROMPTS,
         "summarization": SUMMARIZATION_PROMPTS,
+        "session_summary": SESSION_SUMMARY_PROMPTS,
         "motion": MOTION_PROMPTS,
         "fallback": FALLBACK_MESSAGES,
         "error": ERROR_MESSAGES

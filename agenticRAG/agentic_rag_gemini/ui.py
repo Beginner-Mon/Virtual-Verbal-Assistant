@@ -18,8 +18,10 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
 from agents.orchestrator import OrchestratorAgent
+from agents.summarize_agent import SummarizeAgent
 from memory.memory_manager import MemoryManager
 from memory.document_store import DocumentStore
+from memory.session_store import SessionStore
 from memory.vector_store import VectorStore
 from memory.embedding_service import EmbeddingService
 from retrieval.rag_pipeline import RAGPipeline
@@ -142,6 +144,15 @@ def init_session_state():
         st.session_state.current_user = "web_user"
         st.session_state.user_id = "web_user"
 
+        # Session management
+        st.session_state.session_store = SessionStore(user_id="web_user")
+        st.session_state.current_session_id = None
+        st.session_state.summarize_agent = SummarizeAgent(
+            client=gemini_client,
+            vector_store=vector_store,
+            embedding_service=embedding_service,
+        )
+
         # UI state
         st.session_state.loaded_documents = {}
         st.session_state.active_documents = set()
@@ -159,13 +170,85 @@ init_session_state()
 
 
 def add_message_to_chat(role: str, content: str, metadata: Dict = None):
-    """Add message to chat history."""
-    st.session_state.messages.append({
+    """Add message to chat history and persist to session file."""
+    msg = {
         "role": role,
         "content": content,
         "timestamp": datetime.now().isoformat(),
         "metadata": metadata or {}
-    })
+    }
+    st.session_state.messages.append(msg)
+
+    # Persist to session JSON
+    sid = st.session_state.current_session_id
+    if sid:
+        try:
+            st.session_state.session_store.save_turn(
+                session_id=sid,
+                role=role,
+                content=content,
+                metadata=metadata,
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to persist turn: {exc}")
+
+
+def _ensure_session():
+    """Make sure there is an active session. Create one if needed."""
+    if not st.session_state.current_session_id:
+        sid = st.session_state.session_store.create_session()
+        st.session_state.current_session_id = sid
+        st.session_state.messages = []
+
+
+def _switch_to_session(session_id: str):
+    """Load an existing session into the Chat tab."""
+    # Summarize outgoing session first
+    _summarize_current_session()
+
+    # Load target session
+    data = st.session_state.session_store.load_session(session_id)
+    if data is None:
+        st.error("Session not found.")
+        return
+
+    st.session_state.current_session_id = session_id
+    st.session_state.messages = data.get("messages", [])
+
+
+def _start_new_session():
+    """Start a brand-new chat session."""
+    _summarize_current_session()
+
+    # Prune old sessions based on config
+    config = get_config()
+    max_sessions = getattr(config.memory, "max_chat_sessions", 5)
+    st.session_state.session_store.delete_oldest_sessions(keep=max_sessions)
+
+    sid = st.session_state.session_store.create_session()
+    st.session_state.current_session_id = sid
+    st.session_state.messages = []
+
+
+def _summarize_current_session():
+    """Summarize the current session if it qualifies (≥2 turns, not yet summarized)."""
+    sid = st.session_state.current_session_id
+    if not sid:
+        return
+    data = st.session_state.session_store.get_unsummarized_session(sid)
+    if data is None:
+        return
+    try:
+        summary = st.session_state.summarize_agent.summarize_and_store(
+            user_id=st.session_state.user_id,
+            session_id=sid,
+            messages=data["messages"],
+            session_title=data.get("title", ""),
+        )
+        if summary:
+            st.session_state.session_store.mark_summarized(sid, summary)
+    except Exception as exc:
+        logger.error(f"Session summarization failed: {exc}")
 
 
 def process_user_query(query: str) -> str:
@@ -291,9 +374,11 @@ with st.sidebar:
         **RAG Top-K:** {config.rag.top_k_documents}
         """)
     
-    # Clear chat
+    # Clear chat — wipes all sessions from History tab and starts fresh
     if st.button("🗑️ Clear Chat History", use_container_width=True):
-        st.session_state.messages = []
+        st.session_state.session_store.clear_all_sessions()
+        st.session_state.current_session_id = None
+        _start_new_session()
         st.rerun()
     
     # Clear all data with confirmation
@@ -325,10 +410,28 @@ with st.sidebar:
                             st.session_state.active_documents = set()
                             st.session_state.show_clear_confirmation = False
                             
+                            # Clear in-memory state from MemoryManager
+                            st.session_state.memory_manager.clear_memory()
+
+                            # Clear session files on disk and reset session state
+                            st.session_state.session_store.clear_all_sessions()
+                            st.session_state.current_session_id = None
+                            _ensure_session()
+
+                            # Reinitialize RAG pipeline's DocumentStore with fresh references
+                            st.session_state.rag_pipeline.document_store = DocumentStore(
+                                st.session_state.vector_store,
+                                st.session_state.embedding_service
+                            )
+
                             # Reinitialize document store to clear any cached data
                             if st.session_state.document_store is not None:
                                 st.session_state.document_store = None
-                            
+
+                            # Reset quota error state
+                            st.session_state.quota_error = False
+                            st.session_state.last_failed_message = ""
+
                             st.success("✅ All data has been cleared successfully!")
                             st.balloons()
                             time.sleep(2)
@@ -360,15 +463,26 @@ with st.sidebar:
 st.title("🤖 AgenticRAG - Intelligent Conversational AI")
 st.markdown("_Powered by Google Gemini with Document Memory_")
 
+# Ensure there is always an active session
+_ensure_session()
+
 # Create tabs
-tab1, tab2, tab3, tab4 = st.tabs(["💬 Chat", "📄 Documents", "🔍 Search", "⚙️ Settings"])
+tab1, tab2, tab3, tab4 = st.tabs(["💬 Chat", "📄 Documents", "📜 History", "⚙️ Settings"])
 
 # =====================
 # TAB 1 - CHAT
 # =====================
 
 with tab1:
-    st.subheader("💬 Conversation with Memory")
+    # Header with New Chat button
+    header_col1, header_col2 = st.columns([0.8, 0.2])
+    with header_col1:
+        st.subheader("💬 Conversation with Memory")
+    with header_col2:
+        if st.button("➕ New Chat", use_container_width=True, type="primary"):
+            _start_new_session()
+            st.rerun()
+
     st.markdown("Ask questions and the system will remember previous conversations and loaded documents.")
     
     # Chat display
@@ -381,31 +495,7 @@ with tab1:
             else:
                 st_message(msg["content"], is_user=False, key=f"msg_assistant_{idx}")
     
-    # User input
-    st.divider()
-    col1, col2 = st.columns([0.9, 0.1])
-    
-    with col1:
-        user_input = st.text_input(
-            "Your message:",
-            placeholder="Ask me anything...",
-            label_visibility="collapsed"
-        )
-    
-    with col2:
-        send_button = st.button("Send ➤", use_container_width=True)
-    
-    # Process input
-    if send_button and user_input:
-        with st.spinner("💭 Thinking..."):
-            # Add user message
-            add_message_to_chat("user", user_input)
-            
-            # Get response
-            response = process_user_query(user_input)
-            add_message_to_chat("assistant", response)
-            
-            st.rerun()
+    # (input handled below, outside tabs)
     
     # Quota error retry button
     if st.session_state.quota_error:
@@ -615,59 +705,63 @@ with tab2:
 
 
 # =====================
-# TAB 3 - SEARCH
+# TAB 3 - CHAT HISTORY
 # =====================
 
 with tab3:
-    st.subheader("🔍 Search Memory & Documents")
-    st.markdown("Search through all stored documents, memories, and past conversations.")
-    
-    search_query = st.text_input(
-        "Search query:",
-        placeholder="e.g., 'neck exercises', 'physical therapy'",
-        label_visibility="collapsed"
-    )
-    
-    search_top_k = st.slider(
-        "Number of results",
-        min_value=1,
-        max_value=20,
-        value=5
-    )
-    
-    if search_query:
-        with st.spinner("🔎 Searching..."):
-            try:
-                # Use vector store for search instead
-                results = st.session_state.memory_manager.vector_store.search(
-                    query=search_query,
-                    top_k=search_top_k
-                )
-                
-                if results:
-                    st.success(f"Found {len(results)} matching results")
-                    
-                    for idx, result in enumerate(results, 1):
-                        with st.expander(
-                            f"**Result {idx}** - Similarity: {result.get('similarity', 0):.2%}",
-                            expanded=(idx == 1)
-                        ):
-                            st.markdown(result.get("document", "No content")[:500])
-                            if len(result.get("document", "")) > 500:
-                                st.caption("... (truncated)")
-                            
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                if st.button(f"Use in Chat", key=f"use_{idx}"):
-                                    st.session_state.search_result = result.get("document", "")
-                                    st.rerun()
-                            with col2:
-                                st.caption(f"Similarity: {result.get('similarity', 0):.2%}")
-                else:
-                    st.info("No results found. Try different keywords.")
-                    
-            except Exception as e:
-                st.error(f"Search error: {e}")
+    st.subheader("📜 Chat History")
+    st.markdown("Browse and resume previous conversations. The system remembers context from past sessions.")
+
+    sessions = st.session_state.session_store.list_sessions(limit=10)
+
+    if not sessions:
+        st.info("No chat history yet. Start a conversation in the Chat tab!")
+    else:
+        for idx, meta in enumerate(sessions):
+            is_current = meta.session_id == st.session_state.current_session_id
+            badge = "  🟢 _active_" if is_current else ""
+
+            with st.expander(
+                f"**{meta.title}**{badge}  —  {meta.message_count} messages",
+                expanded=False,
+            ):
+                col1, col2, col3 = st.columns([0.4, 0.3, 0.3])
+                with col1:
+                    st.caption(f"📅 {meta.created_at[:16]}")
+                with col2:
+                    st.caption(f"🔄 {meta.updated_at[:16]}")
+                with col3:
+                    summarized_icon = "✅ Summarized" if meta.is_summarized else "⏳ Not summarized"
+                    st.caption(summarized_icon)
+
+                # Preview first few messages
+                data = st.session_state.session_store.load_session(meta.session_id)
+                if data and data.get("messages"):
+                    preview_msgs = data["messages"][:4]
+                    for pm in preview_msgs:
+                        role_icon = "👤" if pm["role"] == "user" else "🤖"
+                        st.markdown(f"{role_icon} {pm['content'][:120]}{'…' if len(pm['content']) > 120 else ''}")
+                    if len(data["messages"]) > 4:
+                        st.caption(f"… and {len(data['messages']) - 4} more messages")
+
+                # Show summary if available
+                if data and data.get("summary"):
+                    st.info(f"📝 **Summary:** {data['summary']}")
+
+                btn_col1, btn_col2 = st.columns(2)
+                with btn_col1:
+                    if not is_current:
+                        if st.button("💬 Resume", key=f"resume_{meta.session_id}", use_container_width=True):
+                            _switch_to_session(meta.session_id)
+                            st.rerun()
+                    else:
+                        st.button("💬 Current", key=f"current_{meta.session_id}", disabled=True, use_container_width=True)
+                with btn_col2:
+                    if st.button("🗑️ Delete", key=f"del_{meta.session_id}", use_container_width=True):
+                        st.session_state.session_store.delete_session(meta.session_id)
+                        if is_current:
+                            _start_new_session()
+                        st.rerun()
 
 
 # =====================
@@ -721,6 +815,16 @@ with tab4:
                 value=0.7,
                 step=0.05,
                 help="Minimum similarity score for retrieval"
+            )
+
+            st.caption("Chat History Limit")
+            max_sessions = st.slider(
+                "Max Chat Sessions",
+                min_value=1,
+                max_value=10,
+                value=config.memory.max_chat_sessions,
+                help="Number of chat sessions to keep in history (1-10)",
+                key="max_chat_sessions_slider",
             )
     
     with col2:
@@ -815,6 +919,19 @@ with tab4:
         - Check system logs for errors
         """)
 
+
+# =====================
+# CHAT INPUT (top-level — required by Streamlit, cannot be inside tabs/columns/expanders)
+# =====================
+
+user_input = st.chat_input("Ask me anything...")
+
+if user_input:
+    with st.spinner("💭 Thinking..."):
+        add_message_to_chat("user", user_input)
+        response = process_user_query(user_input)
+        add_message_to_chat("assistant", response)
+        st.rerun()
 
 # =====================
 # FOOTER

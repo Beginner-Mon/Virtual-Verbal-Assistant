@@ -16,6 +16,7 @@ from utils.logger import get_logger
 from utils.validators import ResponseValidator
 from utils.gemini_client import GeminiClientWrapper
 from utils.web_search import get_web_search_service
+from utils.prompt_templates import QUERY_REFORMULATION_PROMPTS, REFLECTION_PROMPTS
 
 
 logger = get_logger(__name__)
@@ -99,6 +100,14 @@ class RAGPipeline:
     ) -> Dict[str, Any]:
         """Generate a response using RAG pipeline.
         
+        Pipeline steps:
+        1. Process / expand query
+        2. Retrieve context (with query reformulation loop)
+        3. Web search fallback
+        4. Build prompt & generate LLM response
+        5. Iterative reflection (self-correction against context)
+        6. Validate safety/length
+        
         Args:
             query: User query
             user_id: User identifier
@@ -113,25 +122,68 @@ class RAGPipeline:
         # Step 1: Process query (expansion if enabled)
         processed_query = self._process_query(query)
         
-        # Step 2: Retrieve relevant context
+        # Step 2: Retrieve context with query reformulation loop
         retrieved_context = []
         web_search_used = False
-        if use_memory:
-            retrieved_context = self._retrieve_context(
-                user_id=user_id,
-                query=processed_query
-            )
+        reformulation_count = 0
+        current_query = processed_query
         
-        # Step 2.5: Web search fallback if context insufficient
+        if use_memory:
+            max_attempts = (
+                self.config.max_reformulation_attempts + 1
+                if self.config.enable_query_reformulation
+                else 1
+            )
+            
+            for attempt in range(max_attempts):
+                retrieved_context = self._retrieve_context(
+                    user_id=user_id,
+                    query=current_query
+                )
+                
+                quality = self._assess_context_quality(retrieved_context)
+                
+                # Good enough or reformulation disabled — stop
+                if (quality >= self.config.reformulation_quality_threshold
+                        or not self.config.enable_query_reformulation):
+                    break
+                
+                # Still have reformulation budget — rewrite query
+                if attempt < self.config.max_reformulation_attempts:
+                    new_query = self._reformulate_query(
+                        original_query=query,
+                        retrieved_context=retrieved_context,
+                        attempt=attempt
+                    )
+                    if new_query and new_query != current_query:
+                        current_query = new_query
+                        reformulation_count += 1
+                        logger.info(f"Reformulated query (attempt {attempt + 1}): {current_query[:100]}")
+                    else:
+                        break  # reformulation returned same text, no point retrying
+        
+        # Step 2.5: Web search fallback if context insufficient OR low quality
         if self.enable_web_search and self.web_search.is_available():
-            if len(retrieved_context) < self.min_context_threshold:
-                logger.info(f"Context insufficient ({len(retrieved_context)}/{self.min_context_threshold}), trying web search...")
-                web_context = self.web_search.search_and_summarize(processed_query)
+            context_quality = self._assess_context_quality(retrieved_context)
+            ws_quality_threshold = getattr(self.config, 'web_search_quality_threshold', 0.65)
+            too_few = len(retrieved_context) < self.min_context_threshold
+            too_poor = context_quality < ws_quality_threshold and len(retrieved_context) > 0
+            logger.info(f"Web search check: quality={context_quality:.2f}, threshold={ws_quality_threshold}, count={len(retrieved_context)}, too_few={too_few}, too_poor={too_poor}")
+
+            if too_few or too_poor:
+                reason = (
+                    f"too few results ({len(retrieved_context)}/{self.min_context_threshold})"
+                    if too_few
+                    else f"low quality (avg similarity {context_quality:.2f} < {ws_quality_threshold})"
+                )
+                logger.info(f"Context insufficient — {reason}, trying web search...")
+                web_context = self.web_search.search_and_summarize(current_query)
                 if web_context:
                     retrieved_context.append({
-                        "source": "web_search",
-                        "content": web_context,
-                        "relevance_score": 0.7  # Default score for web results
+                        "document": web_context,
+                        "source_type": "web_search",
+                        "similarity": 0.7,
+                        "metadata": {"source": "DuckDuckGo"}
                     })
                     web_search_used = True
                     logger.info("Added web search results to context")
@@ -146,7 +198,26 @@ class RAGPipeline:
         # Step 4: Generate response
         response_text = self._generate_llm_response(prompt)
         
-        # Step 5: Validate response
+        # Step 4a: Iterative reflection — self-correct against retrieved facts
+        reflection_used = False
+        if (self.config.enable_iterative_reflection
+                and retrieved_context
+                and not response_text.startswith("[ERROR]")):
+            for iteration in range(self.config.max_reflection_iterations):
+                reflection = self._reflect_on_response(
+                    query=query,
+                    retrieved_context=retrieved_context,
+                    draft_response=response_text,
+                    iteration=iteration
+                )
+                if reflection["is_grounded"]:
+                    logger.info(f"Reflection pass {iteration + 1}: response is grounded")
+                    break
+                logger.info(f"Reflection pass {iteration + 1}: self-correcting ({reflection['issues']})")
+                response_text = reflection["revised_answer"]
+                reflection_used = True
+        
+        # Step 5: Validate response (safety / length)
         validation_result = self.validator.validate_response(
             response=response_text,
             query=query
@@ -155,8 +226,6 @@ class RAGPipeline:
         # Step 6: Handle validation failures
         if not validation_result["is_valid"] and self.llm_config.enable_validation:
             logger.warning(f"Response failed validation: {validation_result['issues']}")
-            
-            # Retry with modified prompt
             if self.llm_config.max_retries > 0:
                 response_text = self._retry_generation(
                     prompt=prompt,
@@ -170,16 +239,15 @@ class RAGPipeline:
                 "retrieved_context_count": len(retrieved_context),
                 "validation": validation_result,
                 "query_processed": processed_query != query,
-                "web_search_used": web_search_used
+                "web_search_used": web_search_used,
+                "reformulation_count": reformulation_count,
+                "reflection_used": reflection_used
             }
         }
         
-        # Store interaction in memory
-        self.memory_manager.store_interaction(
-            user_id=user_id,
-            user_message=query,
-            assistant_response=response_text
-        )
+        # NOTE: Interaction storage is handled by the UI layer (process_user_query)
+        # which stores with richer metadata (active documents, source info).
+        # Do NOT store here to avoid duplicate entries in the vector DB.
         
         logger.info("Response generation complete")
         return result
@@ -232,14 +300,14 @@ Return only the expanded keywords, comma-separated."""
         user_id: str,
         query: str
     ) -> List[Dict[str, Any]]:
-        """Retrieve relevant context from memory AND documents (hybrid retrieval).
+        """Retrieve relevant context from memory, documents, AND chat session summaries (hybrid retrieval).
         
         Args:
             user_id: User identifier
             query: Query text
             
         Returns:
-            List of relevant context items (conversations + documents combined)
+            List of relevant context items (conversations + documents + session summaries combined)
         """
         all_results = []
         
@@ -275,6 +343,19 @@ Return only the expanded keywords, comma-separated."""
                 result["filename"] = result["metadata"].get("filename", "unknown")
         all_results.extend(document_results)
         
+        # Retrieve from chat session summaries (past conversation memory)
+        try:
+            session_results = self.memory_manager.retrieve_session_context(
+                user_id=user_id,
+                query=query,
+                top_k=3  # Keep small to avoid overwhelming context
+            )
+            for result in session_results:
+                result["source_type"] = "session_summary"
+            all_results.extend(session_results)
+        except Exception as exc:
+            logger.warning(f"Session summary retrieval skipped: {exc}")
+        
         # Filter by similarity threshold
         filtered_results = [
             r for r in all_results
@@ -290,9 +371,136 @@ Return only the expanded keywords, comma-separated."""
         # Separate conversation and document sources for logging
         doc_count = sum(1 for r in filtered_results if r["source_type"] == "document")
         conv_count = sum(1 for r in filtered_results if r["source_type"] == "conversation")
+        session_count = sum(1 for r in filtered_results if r["source_type"] == "session_summary")
         
-        logger.info(f"Retrieved {len(filtered_results)} items: {doc_count} documents, {conv_count} conversations")
+        logger.info(f"Retrieved {len(filtered_results)} items: {doc_count} documents, {conv_count} conversations, {session_count} session summaries")
         return filtered_results
+    
+    def _assess_context_quality(self, retrieved_context: List[Dict[str, Any]]) -> float:
+        """Compute average similarity of retrieved context.
+        
+        Args:
+            retrieved_context: List of retrieved items with 'similarity' scores
+            
+        Returns:
+            Average similarity score (0.0 if no context)
+        """
+        if not retrieved_context:
+            return 0.0
+        scores = [item.get("similarity", 0.0) for item in retrieved_context]
+        avg = sum(scores) / len(scores)
+        logger.debug(f"Context quality: avg_similarity={avg:.3f} over {len(scores)} items")
+        return avg
+    
+    def _reformulate_query(
+        self,
+        original_query: str,
+        retrieved_context: List[Dict[str, Any]],
+        attempt: int
+    ) -> str:
+        """Use LLM to rewrite the query for better retrieval.
+        
+        Args:
+            original_query: The user's original question
+            retrieved_context: Current (poor) retrieval results
+            attempt: Current reformulation attempt number
+            
+        Returns:
+            Reformulated query string
+        """
+        # Build a summary of what was retrieved
+        context_lines = []
+        for item in retrieved_context[:5]:  # top 5 for brevity
+            text_preview = item.get("document", "")[:150]
+            sim = item.get("similarity", 0.0)
+            context_lines.append(f"  - (sim={sim:.2f}) {text_preview}")
+        context_summary = "\n".join(context_lines) if context_lines else "  (no results)"
+        
+        avg_similarity = self._assess_context_quality(retrieved_context)
+        
+        prompt = QUERY_REFORMULATION_PROMPTS["reformulate"].format(
+            query=original_query,
+            context_summary=context_summary,
+            avg_similarity=avg_similarity
+        )
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.llm_config.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.4,
+                max_tokens=200
+            )
+            reformulated = response.choices[0].message.content.strip()
+            # Strip quotes if the LLM wrapped the query
+            reformulated = reformulated.strip('"').strip("'")
+            logger.info(f"Query reformulation attempt {attempt + 1}: '{original_query[:60]}' -> '{reformulated[:60]}'")
+            return reformulated
+        except Exception as e:
+            logger.warning(f"Query reformulation failed: {e}")
+            return original_query
+    
+    def _reflect_on_response(
+        self,
+        query: str,
+        retrieved_context: List[Dict[str, Any]],
+        draft_response: str,
+        iteration: int
+    ) -> Dict[str, Any]:
+        """Use LLM to check if the draft response is grounded in retrieved context.
+        
+        Args:
+            query: Original user question
+            retrieved_context: Retrieved context items
+            draft_response: The generated response to verify
+            iteration: Current reflection iteration
+            
+        Returns:
+            Dict with 'is_grounded', 'issues', and 'revised_answer'
+        """
+        # Build context text for the reflection prompt
+        context_parts = []
+        for item in retrieved_context:
+            source = item.get("source_type", "unknown")
+            text = item.get("document", "")[:500]
+            sim = item.get("similarity", 0.0)
+            filename = item.get("filename", "")
+            label = f"[{source}" + (f": {filename}" if filename else "") + f", sim={sim:.2f}]"
+            context_parts.append(f"{label}\n{text}")
+        context_text = "\n\n".join(context_parts)
+        
+        prompt = REFLECTION_PROMPTS["reflect"].format(
+            query=query,
+            context=context_text,
+            draft_answer=draft_response
+        )
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.llm_config.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=self.llm_config.max_tokens,
+                response_format={"type": "json_object"}
+            )
+            
+            response_text = response.choices[0].message.content.strip()
+            cleaned = clean_json_response(response_text)
+            result = json.loads(cleaned)
+            
+            return {
+                "is_grounded": result.get("is_grounded", True),
+                "issues": result.get("issues", []),
+                "revised_answer": result.get("revised_answer", draft_response)
+            }
+        except (json.JSONDecodeError, Exception) as e:
+            logger.warning(f"Reflection failed (iteration {iteration}): {e}")
+            # On failure, assume grounded to avoid blocking the user
+            return {
+                "is_grounded": True,
+                "issues": [],
+                "revised_answer": draft_response
+            }
     
     def _build_prompt(
         self,
@@ -315,9 +523,11 @@ Return only the expanded keywords, comma-separated."""
         # Add retrieved context if available with enhanced metadata
         if retrieved_context:
             if self.config.include_metadata:
-                # Separate documents and conversations
+                # Separate documents, conversations, and web search results
                 documents = [item for item in retrieved_context if item.get("source_type") == "document"]
                 conversations = [item for item in retrieved_context if item.get("source_type") == "conversation"]
+                web_results = [item for item in retrieved_context if item.get("source_type") == "web_search"]
+                session_summaries = [item for item in retrieved_context if item.get("source_type") == "session_summary"]
                 
                 context_sections = []
                 
@@ -391,6 +601,22 @@ Return only the expanded keywords, comma-separated."""
                         conv_content.append(f"  • {text}...")
                     
                     context_sections.append(f"💬 CONVERSATION HISTORY:\n" + "\n".join(conv_content))
+                
+                # Add web search results section
+                if web_results:
+                    web_content = []
+                    for item in web_results:
+                        text = item.get("document", "")
+                        web_content.append(f"  {text}")
+                    context_sections.append(f"🌐 WEB SEARCH RESULTS:\n" + "\n".join(web_content))
+                
+                # Add session summary context
+                if session_summaries:
+                    summary_content = []
+                    for item in session_summaries:
+                        text = item.get("document", "")[:300]
+                        summary_content.append(f"  • {text}")
+                    context_sections.append(f"🧠 PAST SESSION CONTEXT:\n" + "\n".join(summary_content))
                 
                 if context_sections:
                     context_text = "\n\n".join(context_sections)

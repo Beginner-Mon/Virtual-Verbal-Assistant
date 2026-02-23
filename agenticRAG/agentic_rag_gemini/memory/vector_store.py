@@ -71,7 +71,15 @@ class VectorStore:
             embedding_function=None  # Use custom embeddings
         )
         
-        logger.info(f"ChromaDB collections: {conversations_collection_name}, {documents_collection_name}")
+        # Get or create chat summaries collection (session memory for chat history)
+        summaries_collection_name = f"{conversations_collection_name}_chat_summaries"
+        self.chat_summaries_collection = self.client.get_or_create_collection(
+            name=summaries_collection_name,
+            metadata={"description": "KineticChat chat session summaries for memory recall"},
+            embedding_function=None  # Use custom embeddings
+        )
+        
+        logger.info(f"ChromaDB collections: {conversations_collection_name}, {documents_collection_name}, {summaries_collection_name}")
     
     def _init_qdrant(self):
         """Initialize Qdrant client and collection."""
@@ -306,6 +314,128 @@ class VectorStore:
         # Similar Qdrant logic would go here...
         return []
     
+    def add_chat_summary(
+        self,
+        summary: str,
+        embedding: List[float],
+        metadata: Optional[Dict[str, Any]] = None,
+        id: Optional[str] = None
+    ) -> str:
+        """Add a single chat summary to the chat summaries collection.
+        
+        Args:
+            summary: Chat summary text
+            embedding: Embedding vector
+            metadata: Summary metadata
+            id: Optional summary ID
+            
+        Returns:
+            Summary ID
+        """
+        if id is None:
+            id = str(uuid.uuid4())
+        
+        if metadata is None:
+            metadata = {}
+        
+        if "timestamp" not in metadata:
+            metadata["timestamp"] = datetime.now().isoformat()
+        
+        if self.db_type == "chromadb":
+            self.chat_summaries_collection.add(
+                documents=[summary],
+                embeddings=[embedding],
+                metadatas=[metadata],
+                ids=[id]
+            )
+        elif self.db_type == "qdrant":
+            from qdrant_client.models import PointStruct
+            
+            point = PointStruct(
+                id=id,
+                vector=embedding,
+                payload={"text": summary, **metadata}
+            )
+            
+            self.client.upsert(
+                collection_name=f"{self.collection_name}_chat_summaries", # Assuming a separate Qdrant collection for summaries
+                points=[point]
+            )
+        
+        logger.info(f"Added chat summary with ID: {id}")
+        return id
+    
+    def search_chat_summaries(
+        self,
+        query_embedding: List[float],
+        top_k: int = 5,
+        filter_metadata: Optional[Dict[str, Any]] = None
+    ) -> List[Dict[str, Any]]:
+        """Search chat summaries collection specifically.
+        
+        Args:
+            query_embedding: Query embedding vector
+            top_k: Number of results to return
+            filter_metadata: Optional metadata filters
+            
+        Returns:
+            List of summaries with scores
+        """
+        if self.db_type == "chromadb":
+            where_clause = filter_metadata
+            if filter_metadata and len(filter_metadata) > 1:
+                where_clause = {"$and": [{k: v} for k, v in filter_metadata.items()]}
+            
+            results = self.chat_summaries_collection.query(
+                query_embeddings=[query_embedding],
+                n_results=top_k,
+                where=where_clause
+            )
+            
+            formatted_results = []
+            for i in range(len(results["ids"][0])):
+                formatted_results.append({
+                    "id": results["ids"][0][i],
+                    "document": results["documents"][0][i],
+                    "metadata": results["metadatas"][0][i],
+                    "distance": results["distances"][0][i] if "distances" in results else None,
+                    "similarity": max(0.0, 1.0 - (results["distances"][0][i] / 2.0)) if "distances" in results else None
+                })
+            
+            return formatted_results
+        
+        elif self.db_type == "qdrant":
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            
+            query_filter = None
+            if filter_metadata:
+                conditions = [
+                    FieldCondition(key=k, match=MatchValue(value=v))
+                    for k, v in filter_metadata.items()
+                ]
+                query_filter = Filter(must=conditions)
+            
+            results = self.client.search(
+                collection_name=f"{self.collection_name}_chat_summaries", # Assuming a separate Qdrant collection for summaries
+                query_vector=query_embedding,
+                limit=top_k,
+                query_filter=query_filter
+            )
+            
+            formatted_results = []
+            for result in results:
+                formatted_results.append({
+                    "id": str(result.id),
+                    "document": result.payload.get("text", ""),
+                    "metadata": {k: v for k, v in result.payload.items() if k != "text"},
+                    "distance": 1 - result.score,
+                    "similarity": result.score
+                })
+            
+            return formatted_results
+        
+        return []
+    
     def get_documents_collection(self):
         """Get the documents collection object.
         
@@ -347,7 +477,7 @@ class VectorStore:
         return True
     
     def clear_all_data(self) -> bool:
-        """Clear all data from both collections (conversations and documents).
+        """Clear all data from all collections (conversations, documents, and chat summaries).
         
         Returns:
             True if successful
@@ -380,26 +510,42 @@ class VectorStore:
                 except Exception as e:
                     logger.warning(f"Error clearing documents collection: {e}")
                 
+                # Clear chat summaries collection
+                try:
+                    sum_data = self.chat_summaries_collection.get()
+                    sum_ids = sum_data.get("ids", [])
+                    if sum_ids:
+                        logger.info(f"Deleting {len(sum_ids)} chat summary records")
+                        self.chat_summaries_collection.delete(ids=sum_ids)
+                    else:
+                        logger.info("No chat summary records to delete")
+                except Exception as e:
+                    logger.warning(f"Error clearing chat summaries collection: {e}")
+                
                 # Verify collections are empty
                 conv_remaining = self.collection.count()
                 doc_remaining = self.documents_collection.count()
+                sum_remaining = self.chat_summaries_collection.count()
                 
-                if conv_remaining == 0 and doc_remaining == 0:
+                if conv_remaining == 0 and doc_remaining == 0 and sum_remaining == 0:
                     logger.info("✅ Successfully cleared all ChromaDB data")
                     return True
                 else:
-                    logger.warning(f"⚠️ Data may remain - Conversations: {conv_remaining}, Documents: {doc_remaining}")
+                    logger.warning(f"⚠️ Data may remain - Conversations: {conv_remaining}, Documents: {doc_remaining}, Summaries: {sum_remaining}")
                     return False
                     
             elif self.db_type == "qdrant":
+                from qdrant_client import models
                 logger.info("Clearing all Qdrant data...")
                 
                 # Clear conversation memory
                 try:
                     self.client.delete(
                         collection_name=self.collection_name,
-                        points_selector=models.Filter(
-                            must=[]
+                        points_selector=models.FilterSelector(
+                            filter=models.Filter(
+                                must=[]
+                            )
                         )
                     )
                     logger.info("Cleared conversation collection")
@@ -410,13 +556,29 @@ class VectorStore:
                 try:
                     self.client.delete(
                         collection_name=f"{self.collection_name}_documents",
-                        points_selector=models.Filter(
-                            must=[]
+                        points_selector=models.FilterSelector(
+                            filter=models.Filter(
+                                must=[]
+                            )
                         )
                     )
                     logger.info("Cleared documents collection")
                 except Exception as e:
                     logger.warning(f"Error clearing documents collection: {e}")
+                
+                # Clear chat summaries
+                try:
+                    self.client.delete(
+                        collection_name=f"{self.collection_name}_chat_summaries",
+                        points_selector=models.FilterSelector(
+                            filter=models.Filter(
+                                must=[]
+                            )
+                        )
+                    )
+                    logger.info("Cleared chat summaries collection")
+                except Exception as e:
+                    logger.warning(f"Error clearing chat summaries collection: {e}")
                 
                 logger.info("✅ Successfully cleared all Qdrant data")
                 return True
@@ -441,6 +603,7 @@ class VectorStore:
                 # Get collection names
                 conversations_collection_name = self.collection.name
                 documents_collection_name = self.documents_collection.name
+                summaries_collection_name = self.chat_summaries_collection.name
                 
                 # Delete existing collections
                 try:
@@ -455,6 +618,12 @@ class VectorStore:
                 except Exception as e:
                     logger.warning(f"Failed to delete documents collection: {e}")
                 
+                try:
+                    self.client.delete_collection(name=summaries_collection_name)
+                    logger.info(f"Deleted collection: {summaries_collection_name}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete chat summaries collection: {e}")
+                
                 # Recreate collections
                 self.collection = self.client.get_or_create_collection(
                     name=conversations_collection_name,
@@ -465,6 +634,12 @@ class VectorStore:
                 self.documents_collection = self.client.get_or_create_collection(
                     name=documents_collection_name,
                     metadata={"description": "KineticChat uploaded documents and knowledge base"},
+                    embedding_function=None
+                )
+                
+                self.chat_summaries_collection = self.client.get_or_create_collection(
+                    name=summaries_collection_name,
+                    metadata={"description": "KineticChat chat session summaries for memory recall"},
                     embedding_function=None
                 )
                 

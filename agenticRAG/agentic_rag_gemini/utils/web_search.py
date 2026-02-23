@@ -15,13 +15,29 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Import duckduckgo_search with fallback
-try:
-    from duckduckgo_search import DDGS
-    DDGS_AVAILABLE = True
-except ImportError:
-    DDGS_AVAILABLE = False
-    logger.warning("duckduckgo-search not installed. Web search disabled. Install with: pip install duckduckgo-search")
+
+def _load_ddgs_class():
+    """Lazy-load the DDGS class at call time (not module import time).
+    
+    This avoids issues with Streamlit's ScriptRunner caching module-level
+    imports: if the package is installed after the process starts, the
+    module-level variable would remain False forever.
+    """
+    try:
+        from ddgs import DDGS
+        logger.debug("Loaded DDGS from 'ddgs' package")
+        return DDGS
+    except Exception as e1:
+        logger.debug(f"ddgs not available: {type(e1).__name__}: {e1}")
+    
+    try:
+        from duckduckgo_search import DDGS
+        logger.debug("Loaded DDGS from deprecated 'duckduckgo_search' package")
+        return DDGS
+    except Exception as e2:
+        logger.debug(f"duckduckgo_search not available: {type(e2).__name__}: {e2}")
+    
+    return None
 
 
 class WebSearchService:
@@ -45,19 +61,25 @@ class WebSearchService:
         """
         self.max_results = max_results
         self.timeout = timeout
-        self.enabled = DDGS_AVAILABLE
+        # Lazy-load: resolve the DDGS class at init time
+        self._ddgs_class = _load_ddgs_class()
+        self.enabled = self._ddgs_class is not None
         
         if self.enabled:
             logger.info(f"WebSearchService initialized (max_results={max_results})")
         else:
-            logger.warning("WebSearchService disabled - duckduckgo-search not installed")
+            logger.warning("WebSearchService disabled — install with: pip install ddgs")
     
     def is_available(self) -> bool:
         """Check if web search is available.
         
         Returns:
-            True if duckduckgo-search is installed and service is enabled
+            True if ddgs is installed and service is enabled
         """
+        # Re-check on every call in case the package was installed after init
+        if not self.enabled:
+            self._ddgs_class = _load_ddgs_class()
+            self.enabled = self._ddgs_class is not None
         return self.enabled
     
     def search(
@@ -76,7 +98,7 @@ class WebSearchService:
         Returns:
             List of dicts with keys: title, url, snippet
         """
-        if not self.enabled:
+        if not self.is_available():
             logger.warning("Web search attempted but service is disabled")
             return []
         
@@ -85,12 +107,12 @@ class WebSearchService:
         try:
             logger.info(f"Web search: '{query[:50]}...' (max={max_results})")
             
-            with DDGS() as ddgs:
-                results = list(ddgs.text(
-                    keywords=query,
-                    region=region,
-                    max_results=max_results
-                ))
+            ddgs = self._ddgs_class()
+            results = list(ddgs.text(
+                query,
+                region=region,
+                max_results=max_results
+            ))
             
             # Format results
             formatted = []
@@ -206,4 +228,4 @@ if __name__ == "__main__":
         context = service.search_and_summarize("yoga stretches for stress relief")
         print(context)
     else:
-        print("Web search not available. Install: pip install duckduckgo-search")
+        print("Web search not available. Install: pip install ddgs")
