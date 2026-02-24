@@ -1,0 +1,6 @@
+phi3:
+  model_name: phi3:3.8b
+
+whisper:
+  model_size: base
+  device: cpu

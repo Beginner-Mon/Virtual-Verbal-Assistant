@@ -1,0 +1,9 @@
+faster-whisper
+torch
+numpy
+sounddevice
+soundfile
+pyaudio
+pyyaml
+python-dotenv
+requests
