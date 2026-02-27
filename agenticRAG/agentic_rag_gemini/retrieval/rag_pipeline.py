@@ -609,6 +609,12 @@ Return only the expanded keywords, comma-separated."""
                         text = item.get("document", "")
                         web_content.append(f"  {text}")
                     context_sections.append(f"🌐 WEB SEARCH RESULTS:\n" + "\n".join(web_content))
+                    context_sections.append(
+                        "⚠️ INSTRUCTION: The above web search results are REAL and RELEVANT. "
+                        "You MUST use them to build a comprehensive, helpful answer. "
+                        "Include source URLs in your response. "
+                        "Do NOT say you don't have information — the web results ARE your information source."
+                    )
                 
                 # Add session summary context
                 if session_summaries:
