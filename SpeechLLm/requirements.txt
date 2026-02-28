@@ -8,4 +8,4 @@ pyyaml
 python-dotenv
 requests
 tts
-ollamas
+ollama
