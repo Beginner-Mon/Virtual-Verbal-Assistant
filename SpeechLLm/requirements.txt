@@ -7,3 +7,5 @@ pyaudio
 pyyaml
 python-dotenv
 requests
+ollama
+TTS
