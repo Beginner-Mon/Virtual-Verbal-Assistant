@@ -1,0 +1,225 @@
+# Agentic RAG Configuration
+
+orchestrator:
+  model: "gemini-2.5-flash"  # Fast, efficient Gemini model
+  temperature: 0.1  # Low temperature for consistent routing
+  max_tokens: 500
+  
+  # Decision thresholds
+  memory_retrieval_threshold: 0.6
+  llm_call_threshold: 0.7
+  motion_generation_threshold: 0.8
+  
+  # Prompt configuration
+  system_prompt: |
+    You are an intelligent orchestrator agent for KineticChat.
+    Your role is to analyze user queries and decide the BEST action to take.
+    
+    Available Actions:
+    1. RETRIEVE_DOCUMENT - When user asks about uploaded files, documents, PDFs, etc.
+    2. RETRIEVE_MEMORY - When user references past conversations
+    3. CALL_LLM - For general questions and conversational responses
+    4. HYBRID - When multiple actions are needed
+    
+    Routing Rules:
+    - ANY question about uploaded documents → RETRIEVE_DOCUMENT
+    - Questions mentioning filenames → RETRIEVE_DOCUMENT
+    - References to "document", "file", "PDF", "uploaded" → RETRIEVE_DOCUMENT
+    - Past conversation references → RETRIEVE_MEMORY
+    - General questions → CALL_LLM
+    
+    IMPORTANT: Always route document questions to RETRIEVE_DOCUMENT, even if they seem outside scope.
+    You are ONLY a router - do NOT answer questions directly.
+    Return only valid JSON routing decisions.
+
+llm:
+  model: "gemini-2.5-flash"  # Fast, capable Gemini model for response generation
+  temperature: 0.7
+  max_tokens: 2000
+  
+  # Safety settings
+  enable_validation: false  # Disabled temporarily for debugging
+  max_retries: 1  # Reduced to minimize API calls
+  retry_delay: 1.0
+  
+  # System prompt
+  system_prompt: |
+    You are KineticChat, a helpful, adaptive AI assistant.
+    
+    SOURCE PRIORITY (use in this order):
+    1. UPLOADED DOCUMENTS — When documents are uploaded, use them as your primary knowledge source.
+       Be explicit: "Based on [filename], ..." or "According to the document, ..."
+    2. WEB SEARCH RESULTS — When documents don't have the answer but web search results are provided
+       (marked as 🌐 WEB SEARCH RESULTS), use them to build a helpful response.
+       Always cite sources: "Theo [title] (source_url), ..." or "Dựa trên thông tin tìm kiếm, ..."
+    3. GENERAL KNOWLEDGE — Only when neither documents nor web results are available.
+    
+    IMPORTANT RULES:
+    - NEVER refuse to answer just because documents don't contain the information.
+      If web search results are provided, USE them to answer the question fully.
+    - When using web search results, always mention the source URLs so the user can verify.
+    - Respond in the SAME LANGUAGE as the user's query.
+    - If the user asks in Vietnamese, respond entirely in Vietnamese.
+    - If the user asks in English, respond in English.
+    
+    WHAT YOU CAN DO:
+    - Answer ANY question using documents, web search, or general knowledge
+    - Provide non-clinical guidance for physical well-being
+    - Give practical, step-by-step advice
+    - Have supportive conversations on any topic
+    
+    LIMITATIONS:
+    - NOT a medical professional — always recommend consulting a doctor for serious issues
+    - Cannot provide medical diagnoses or prescribe medications
+    
+    Tone: Clear, practical, supportive, and professional.
+    Always adapt to the user's language and context.
+
+embedding:
+  model: "sentence-transformers/all-MiniLM-L6-v2"
+  # Alternative models:
+  # - "models/text-embedding-004" (Gemini, requires API key)
+  # - "sentence-transformers/all-mpnet-base-v2" (higher quality, slower)
+  dimension: 384
+  batch_size: 32
+
+vector_database:
+  type: "chromadb"  # or "qdrant"
+  
+  chromadb:
+    persist_directory: "./data/vector_store"
+    collection_name: "kinetichat_memory"
+    
+  qdrant:
+    url: "http://localhost:6333"
+    collection_name: "kinetichat_memory"
+    vector_size: 384
+
+memory:
+  # Storage settings
+  max_items_per_user: 100
+  retention_days: 90
+  
+  # Retrieval settings
+  top_k: 5
+  similarity_threshold: 0.3
+  enable_reranking: false
+  
+  # Summarization
+  summarization_interval: 5  # Summarize every 5 interactions
+  summary_max_length: 500
+  
+  # Memory types to store
+  store_user_info: true
+  store_preferences: true
+  store_physical_context: true
+  store_conversation_summaries: true
+  
+  # Chat session history
+  max_chat_sessions: 5  # Number of chat sessions to keep (1-10)
+
+rag:
+  # Retrieval settings
+  top_k_documents: 8  # Increased from 5 to get more matches
+  similarity_threshold: 0.1  # Lowered to catch theme content with lower similarity
+  max_chunks_per_document: 3  # Maximum chunks to return per document
+  
+  # Query processing
+  enable_query_expansion: true
+  query_expansion_method: "llm"  # or "wordnet", "embeddings"
+  
+  # Context building
+  max_context_length: 2000  # tokens
+  include_metadata: true
+  
+  # Response generation
+  enable_citation: false
+  response_format: "conversational"
+  
+  # Query Reformulation
+  enable_query_reformulation: true
+  max_reformulation_attempts: 2        # Max query re-writes before falling back
+  reformulation_quality_threshold: 0.3  # Min avg similarity to consider context "good enough"
+
+  # Iterative Reflection (self-correction)
+  enable_iterative_reflection: true
+  max_reflection_iterations: 1          # LLM self-checks (keep low to save API calls)
+
+  # Web Search Fallback
+  enable_web_search: true
+  web_search_quality_threshold: 0.65  # Trigger web search when avg similarity below this (higher = more aggressive)
+  min_context_threshold: 2  # Trigger web search if fewer than N context items
+  max_web_results: 5
+  web_search_timeout: 10  # seconds
+
+# Document chunking settings
+chunking:
+  enable_chunking: true              # Enable document chunking for better retrieval
+  chunk_size: 1500                  # Characters per chunk
+  chunk_overlap: 300                 # Increased overlap to preserve complete theme descriptions
+  min_chunk_size: 300               # Minimum chunk size to store
+  chunk_search_multiplier: 3        # Search multiplier for chunk deduplication
+
+validation:
+  # Response validation rules
+  enable_safety_check: true
+  enable_factuality_check: false
+  enable_relevance_check: true
+  
+  # Safety keywords to flag
+  unsafe_keywords:
+    - "diagnosis"
+    - "treatment plan"
+    - "prescription"
+    - "surgery"
+    - "medication dosage"
+  
+  # Minimum response quality
+  min_response_length: 50
+  max_response_length: 1500
+
+retry_fallback:
+  # Retry configuration
+  max_retries: 3
+  retry_delay: 1.0
+  exponential_backoff: true
+  
+  # Fallback responses
+  enable_fallback: true
+  fallback_messages:
+    generic: "I'm having trouble processing your request right now. Could you rephrase that?"
+    memory_failure: "I couldn't retrieve relevant context. Could you provide more details?"
+    llm_failure: "I'm experiencing technical difficulties. Please try again in a moment."
+
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: "json"
+  output_file: "logs/agentic_rag.log"
+  
+  # Log specific events
+  log_orchestrator_decisions: true
+  log_memory_retrievals: true
+  log_llm_calls: true
+  log_validation_results: true
+
+performance:
+  # Caching
+  enable_caching: true
+  cache_ttl: 3600  # seconds
+  
+  # Batch processing
+  enable_batch_processing: false
+  batch_size: 10
+  
+  # Timeouts
+  orchestrator_timeout: 5
+  memory_retrieval_timeout: 3
+  llm_timeout: 30
+
+features:
+  # Feature flags
+  enable_memory_retrieval: true
+  enable_response_validation: true
+  enable_conversation_summarization: true
+  enable_query_expansion: true
+  enable_performance_monitoring: true
