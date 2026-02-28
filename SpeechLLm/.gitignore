@@ -1,0 +1,141 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyc.*
+*.pkl
+*.so
+
+# Virtual environments
+venv/
+.env/
+.venv/
+env/
+
+# =========================
+# Environment variables (IMPORTANT)
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Logs
+# =========================
+*.log
+logs/
+
+# =========================
+# Temporary audio files
+# =========================
+data/temp_audio/
+*.wav
+*.mp3
+
+# =========================
+# Model weights (can be very large)
+# =========================
+models/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.bin
+
+# =========================
+# IDE / Editor
+# =========================
+.vscode/
+.idea/
+*.swp
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# Build / Distribution
+# =========================
+dist/
+build/
+*.egg-info/# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyc.*
+*.pkl
+*.so
+
+# Virtual environments
+venv/
+.env/
+.venv/
+env/
+
+# =========================
+# Environment variables (IMPORTANT)
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Logs
+# =========================
+*.log
+logs/
+
+# =========================
+# Temporary audio files
+# =========================
+data/temp_audio/
+*.wav
+*.mp3
+
+# =========================
+# Model weights (can be very large)
+# =========================
+models/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.bin
+
+# =========================
+# IDE / Editor
+# =========================
+.vscode/
+.idea/
+*.swp
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# Build / Distribution
+# =========================
+dist/
+build/
+*.egg-info/

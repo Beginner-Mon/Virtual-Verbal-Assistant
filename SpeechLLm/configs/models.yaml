@@ -1,0 +1,16 @@
+phi3:
+  model_name: phi3:3.8b
+
+whisper:
+  model_size: base
+  device: cpu
+
+tts:
+  provider: elevenlabs  
+  voice_id: EXAVITQu4vr4xnSDxMaL
+
+coqui:
+  model_name: tts_models/en/vctk/vits
+  output_dir: data/temp_audio
+  use_gpu: false
+  speaker: null
