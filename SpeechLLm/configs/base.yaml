@@ -1,0 +1,10 @@
+audio:
+  sample_rate: 16000
+  chunk_size: 1024
+
+tts:
+  voice: default
+  rate: 180
+
+system:
+  max_history: 10
