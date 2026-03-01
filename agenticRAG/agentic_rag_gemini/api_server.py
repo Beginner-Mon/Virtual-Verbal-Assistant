@@ -10,6 +10,7 @@ from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
 
@@ -239,6 +240,15 @@ app = FastAPI(
     description="REST API for Agentic Retrieval-Augmented Generation",
     version="1.0.0",
     lifespan=lifespan,
+)
+
+# Enable CORS for test UI
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 

@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pipeline Test Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <div class="logo-icon">⚡</div>
+                    <div>
+                        <h1>Pipeline Dashboard</h1>
+                        <p class="subtitle">Virtual Verbal Assistant — Service Tester</p>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <button class="btn btn-ghost" onclick="checkAllHealth()">
+                        <span class="btn-icon">🔄</span> Refresh All
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Service Status Cards -->
+        <section class="section">
+            <h2 class="section-title">Service Status</h2>
+            <div class="status-grid">
+                <!-- AgenticRAG -->
+                <div class="status-card" id="card-rag">
+                    <div class="status-header">
+                        <div class="status-dot" id="dot-rag"></div>
+                        <div class="status-info">
+                            <span class="service-name">AgenticRAG</span>
+                            <span class="service-port">Port 8000 · Windows · firstconda</span>
+                        </div>
+                    </div>
+                    <div class="status-body">
+                        <span class="status-label" id="label-rag">Checking...</span>
+                    </div>
+                    <button class="btn btn-sm btn-outline" onclick="checkHealth('rag')">Check Health</button>
+                </div>
+
+                <!-- DART -->
+                <div class="status-card" id="card-dart">
+                    <div class="status-header">
+                        <div class="status-dot" id="dot-dart"></div>
+                        <div class="status-info">
+                            <span class="service-name">DART Motion</span>
+                            <span class="service-port">Port 5001 · WSL/Linux · DART env</span>
+                        </div>
+                    </div>
+                    <div class="status-body">
+                        <span class="status-label" id="label-dart">Checking...</span>
+                    </div>
+                    <button class="btn btn-sm btn-outline" onclick="checkHealth('dart')">Check Health</button>
+                </div>
+
+                <!-- Orchestrator -->
+                <div class="status-card" id="card-orchestrator">
+                    <div class="status-header">
+                        <div class="status-dot" id="dot-orchestrator"></div>
+                        <div class="status-info">
+                            <span class="service-name">Orchestrator</span>
+                            <span class="service-port">Port 8080 · Windows · firstconda</span>
+                        </div>
+                    </div>
+                    <div class="status-body">
+                        <span class="status-label" id="label-orchestrator">Checking...</span>
+                    </div>
+                    <button class="btn btn-sm btn-outline" onclick="checkHealth('orchestrator')">Check Health</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Test Panels -->
+        <section class="section">
+            <h2 class="section-title">Test Endpoints</h2>
+
+            <!-- Tab Navigation -->
+            <div class="tabs">
+                <button class="tab active" onclick="switchTab('rag-test')" id="tab-rag-test">
+                    🧠 AgenticRAG
+                </button>
+                <button class="tab" onclick="switchTab('dart-test')" id="tab-dart-test">
+                    🏃 DART Motion
+                </button>
+                <button class="tab" onclick="switchTab('pipeline-test')" id="tab-pipeline-test">
+                    🔗 Full Pipeline
+                </button>
+            </div>
+
+            <!-- AgenticRAG Test Panel -->
+            <div class="test-panel active" id="panel-rag-test">
+                <div class="panel-header">
+                    <h3>AgenticRAG Query</h3>
+                    <span class="endpoint-badge">POST /query → :8000</span>
+                </div>
+                <div class="form-group">
+                    <label>Query</label>
+                    <input type="text" id="rag-query" placeholder="e.g., How do I walk forward?" value="How do I walk?">
+                </div>
+                <div class="form-group">
+                    <label>User ID</label>
+                    <input type="text" id="rag-user-id" placeholder="User identifier" value="test">
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary" onclick="testAgenticRAG()" id="btn-rag">
+                        <span class="btn-icon">▶</span> Send Query
+                    </button>
+                    <span class="timer" id="timer-rag"></span>
+                </div>
+                <div class="result-container" id="result-rag">
+                    <div class="result-placeholder">Results will appear here...</div>
+                </div>
+            </div>
+
+            <!-- DART Test Panel -->
+            <div class="test-panel" id="panel-dart-test">
+                <div class="panel-header">
+                    <h3>DART Motion Generation</h3>
+                    <span class="endpoint-badge">POST /generate_motion → :5001</span>
+                </div>
+                <div class="form-row">
+                    <div class="form-group flex-2">
+                        <label>Text Prompt</label>
+                        <input type="text" id="dart-prompt" placeholder="e.g., walk forward, dance, jump" value="walk forward">
+                    </div>
+                    <div class="form-group flex-1">
+                        <label>Primitives</label>
+                        <input type="number" id="dart-primitives" value="20" min="1" max="100">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group flex-1">
+                        <label>Guidance Scale</label>
+                        <input type="number" id="dart-guidance" value="5.0" step="0.5" min="1" max="20">
+                    </div>
+                    <div class="form-group flex-1">
+                        <label>Diffusion Steps</label>
+                        <input type="number" id="dart-steps" value="10" min="1" max="50">
+                    </div>
+                    <div class="form-group flex-1">
+                        <label>Seed (optional)</label>
+                        <input type="number" id="dart-seed" placeholder="Random">
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary" onclick="testDART()" id="btn-dart">
+                        <span class="btn-icon">▶</span> Generate Motion
+                    </button>
+                    <span class="timer" id="timer-dart"></span>
+                </div>
+                <div class="result-container" id="result-dart">
+                    <div class="result-placeholder">Results will appear here...</div>
+                </div>
+            </div>
+
+            <!-- Full Pipeline Test Panel -->
+            <div class="test-panel" id="panel-pipeline-test">
+                <div class="panel-header">
+                    <h3>Full Pipeline (Orchestrator)</h3>
+                    <span class="endpoint-badge">POST /answer → :8080</span>
+                </div>
+                <div class="form-group">
+                    <label>Query</label>
+                    <input type="text" id="pipeline-query" placeholder="Ask anything..." value="Show me how to walk forward">
+                </div>
+                <div class="form-group">
+                    <label>User ID</label>
+                    <input type="text" id="pipeline-user-id" value="test">
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary btn-large" onclick="testPipeline()" id="btn-pipeline">
+                        <span class="btn-icon">🚀</span> Run Full Pipeline
+                    </button>
+                    <span class="timer" id="timer-pipeline"></span>
+                </div>
+                <div class="result-container" id="result-pipeline">
+                    <div class="result-placeholder">Full pipeline results will appear here...</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Response Log -->
+        <section class="section">
+            <div class="log-header">
+                <h2 class="section-title">Response Log</h2>
+                <button class="btn btn-ghost btn-sm" onclick="clearLog()">Clear</button>
+            </div>
+            <div class="log-container" id="log-container">
+                <div class="log-empty">No requests yet. Test an endpoint above.</div>
+            </div>
+        </section>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

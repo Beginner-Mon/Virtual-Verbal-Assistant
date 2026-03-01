@@ -7,10 +7,33 @@ for downstream services (motion generation and voice synthesis).
 import logging
 import re
 from typing import Optional, Dict, Any
-from api_server import MotionPrompt, VoicePrompt
+
+from pydantic import BaseModel, Field
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# Define models locally to avoid circular import with api_server.py
+class MotionPrompt(BaseModel):
+    """Motion generation prompt."""
+
+    description: str = Field(..., description="Natural language motion description")
+    primitive_sequence: str = Field(
+        ...,
+        description='Primitive action sequence (e.g., "walk*20,turn_left*10")',
+    )
+    num_frames: int = Field(160, description="Number of frames to generate")
+    fps: int = Field(30, description="Frames per second")
+
+
+class VoicePrompt(BaseModel):
+    """Voice synthesis prompt."""
+
+    text: str = Field(..., description="Text to synthesize")
+    emotion: Optional[str] = Field(None, description="Detected or requested emotion")
+    duration_estimate_seconds: float = Field(5.0, description="Estimated audio duration")
+
 
 
 class ResponseTemplateGenerator:
