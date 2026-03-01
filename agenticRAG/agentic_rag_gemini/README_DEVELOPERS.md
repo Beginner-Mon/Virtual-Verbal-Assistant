@@ -1,621 +1,1172 @@
-# AgenticRAG - System Overview for Developers
+# AgenticRAG — Developer Documentation
 
-## What This System Does
-
-**AgenticRAG** is an intelligent conversational system powered by Google's Gemini AI that:
-- 🤖 Understands user queries intelligently using an Orchestrator Agent
-- 💾 Maintains conversation memory with semantic search capabilities
-- 📚 Retrieves relevant context from uploaded documents and past interactions (RAG - Retrieval Augmented Generation)
-- 🎯 Routes queries to appropriate modules (memory retrieval, document search, LLM response)
-- ✅ Validates responses for quality and relevance
-- 📄 Supports document upload (PDF, Word, Images) with OCR capabilities
-
-**Example Use Case**: Upload course documents (PDFs, Word files) and ask questions about their content. The system remembers past conversations and provides accurate, document-based answers.
+> **Last updated**: 2026-02-28  
+> **Python**: 3.13+ &nbsp;|&nbsp; **LLM**: Google Gemini 2.5 Flash &nbsp;|&nbsp; **Vector DB**: ChromaDB 1.5  
+> **Status**: Active development
 
 ---
 
-## 🧠 Vector Database & Chunking Architecture
+## Table of Contents
 
-### **Document Processing Pipeline**
+1. [System Overview](#system-overview)
+2. [High-Level Architecture](#high-level-architecture)
+3. [Project Structure](#project-structure)
+4. [Module Reference](#module-reference)
+5. [Agentic Pipeline — Detailed Flow](#agentic-pipeline--detailed-flow)
+6. [Vector Database & Chunking Architecture](#vector-database--chunking-architecture)
+7. [Session & Memory Management](#session--memory-management)
+8. [Web Search Fallback](#web-search-fallback)
+9. [API Key Rotation System](#api-key-rotation-system)
+10. [Prompt Engineering](#prompt-engineering)
+11. [Configuration Reference](#configuration-reference)
+12. [Environment Variables](#environment-variables)
+13. [Setup & Installation](#setup--installation)
+14. [Running the System](#running-the-system)
+15. [Testing](#testing)
+16. [How to Extend the System](#how-to-extend-the-system)
+17. [Dependency Matrix](#dependency-matrix)
+18. [Resolved Issues & Fixes](#resolved-issues--fixes)
+19. [Known Limitations & Open Issues](#known-limitations--open-issues)
+20. [Production Deployment Checklist](#production-deployment-checklist)
+
+---
+
+## System Overview
+
+**AgenticRAG** (internally branded *KineticChat*) is an intelligent conversational AI system built on a **Retrieval-Augmented Generation** (RAG) architecture with **agentic decision-making**. The system:
+
+- 🤖 **Routes queries intelligently** — An Orchestrator Agent (powered by Gemini) analyzes intent and decides the action plan before any retrieval or generation happens.
+- 📚 **Multi-source knowledge** — Retrieves context from uploaded documents (PDF, Word, Images w/ OCR), conversation memory, chat session summaries, and live web search.
+- 🔁 **Self-correcting pipeline** — Implements query reformulation (rewrites poor queries), iterative reflection (verifies answers against sources), and web search fallback.
+- 💾 **Persistent memory** — Stores conversations, documents, and session summaries in ChromaDB with semantic vector search.
+- 🔑 **Multi-key API management** — Rotates across multiple Gemini API keys automatically on quota errors.
+- 🌐 **Streamlit web UI** — Full-featured chat interface with document upload, session management, and sidebar controls.
+
+### Example Use Case
+
+Upload course documents (PDFs, Word files) and ask questions about their content. The system remembers past conversations, searches across documents semantically, and falls back to web search when local knowledge is insufficient.
+
+---
+
+## High-Level Architecture
 
 ```
-Document Upload → Text Extraction → Chunking → Embedding Generation → ChromaDB Storage
-     ↓                ↓              ↓              ↓                    ↓
-  PDF/Word/Img    pypdf/OCR    Overlapping    Sentence-Transformers   Individual Chunks
-   Files         Extract      Chunks         (384-dim vectors)      with Metadata
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         USER (Streamlit UI / CLI)                       │
+│                    ui.py  ·  run_ui.py  ·  main.py                     │
+└─────────────────────┬───────────────────────────────────┬───────────────┘
+                      │ query + uploaded files             │ response
+                      ▼                                    ▲
+┌─────────────────────────────────────────────────────────────────────────┐
+│  1. ORCHESTRATOR AGENT               agents/orchestrator.py            │
+│     ┌────────────────────────────────────────────────────┐              │
+│     │ Gemini 2.5 Flash (temp=0.1)                        │              │
+│     │ Analyzes query → decides action plan (JSON)        │              │
+│     │ Actions: RETRIEVE_DOCUMENT | RETRIEVE_MEMORY |     │              │
+│     │          CALL_LLM | HYBRID | CLARIFY               │              │
+│     └────────────────────────────────────────────────────┘              │
+└─────────────────────┬───────────────────────────────────────────────────┘
+                      ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  2. RAG PIPELINE                     retrieval/rag_pipeline.py         │
+│                                                                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌────────────┐  │
+│  │ Query        │→ │ Retrieve     │→ │ Quality      │→ │ Build      │  │
+│  │ Expansion    │  │ Context      │  │ Assessment   │  │ Prompt     │  │
+│  │ (LLM)       │  │ (hybrid)     │  │ + Reformulate│  │ + Generate │  │
+│  └──────────────┘  └──────────────┘  └──────────────┘  └────────────┘  │
+│                           │                 │                │          │
+│                           ▼                 ▼                ▼          │
+│                    ┌─────────────┐   ┌────────────┐   ┌────────────┐   │
+│                    │ Web Search  │   │ Iterative  │   │ Response   │   │
+│                    │ Fallback    │   │ Reflection │   │ Validation │   │
+│                    │ (DuckDuckGo)│   │ (grounding)│   │ (safety)   │   │
+│                    └─────────────┘   └────────────┘   └────────────┘   │
+└─────────────────────┬───────────────────────────────────────────────────┘
+                      ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  3. MEMORY LAYER                                                        │
+│                                                                         │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────┐ │
+│  │ Memory Manager  │  │ Document Store  │  │ Session Store           │ │
+│  │ (conversations) │  │ (doc chunks)    │  │ (JSON-on-disk sessions) │ │
+│  └────────┬────────┘  └────────┬────────┘  └────────────┬────────────┘ │
+│           │                    │                         │              │
+│           ▼                    ▼                         ▼              │
+│  ┌─────────────────────────────────────────────────────────────────┐    │
+│  │                    Vector Store (ChromaDB)                      │    │
+│  │  Collections:                                                   │    │
+│  │  • kinetichat_memory           (conversations)                  │    │
+│  │  • kinetichat_memory_documents (document chunks)                │    │
+│  │  • kinetichat_chat_summaries   (session summaries)              │    │
+│  └─────────────────────────────────────────────────────────────────┘    │
+│                                                                         │
+│  ┌─────────────────┐  ┌──────────────────────────────────────────┐     │
+│  │ Embedding       │  │ Summarize Agent                          │     │
+│  │ Service         │  │ (condenses sessions → vector summaries)  │     │
+│  │ (MiniLM-L6-v2)  │  │ agents/summarize_agent.py                │     │
+│  └─────────────────┘  └──────────────────────────────────────────┘     │
+└─────────────────────────────────────────────────────────────────────────┘
+                      ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  4. UTILITIES                                                           │
+│                                                                         │
+│  ┌───────────────┐ ┌───────────────┐ ┌──────────────┐ ┌─────────────┐  │
+│  │ Gemini Client │ │ API Key Mgr   │ │ Document     │ │ Logger      │  │
+│  │ (OpenAI-compat│ │ (multi-key    │ │ Loader       │ │ (loguru)    │  │
+│  │  wrapper)     │ │  rotation)    │ │ (PDF/OCR)    │ │             │  │
+│  └───────────────┘ └───────────────┘ └──────────────┘ └─────────────┘  │
+│  ┌───────────────┐ ┌───────────────┐ ┌──────────────┐                  │
+│  │ Web Search    │ │ Validators    │ │ Prompt       │                  │
+│  │ (DuckDuckGo)  │ │ (safety)      │ │ Templates    │                  │
+│  └───────────────┘ └───────────────┘ └──────────────┘                  │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### **🔪 Chunking System**
+---
 
-**Location**: [`memory/document_store.py`](memory/document_store.py) & [`utils/document_loader.py`](utils/document_loader.py)
+## Project Structure
 
-#### **Chunking Algorithm**:
+```
+agentic_rag_gemini/
+│
+├── main.py                          # CLI entry point (interactive / single-query mode)
+├── ui.py                            # Streamlit web interface (951 lines)
+├── run_ui.py                        # Streamlit launcher helper
+├── requirements.txt                 # Python dependencies
+├── setup.ps1                        # Windows PowerShell setup script
+├── setup.sh                         # Linux/macOS setup script
+├── .env.example                     # Environment variable template
+├── .env                             # API keys (not committed)
+├── .gitignore                       # Git ignore rules
+├── QUICKSTART.md                    # 5-minute user setup guide
+├── README_DEVELOPERS.md             # This file
+│
+├── config/
+│   ├── __init__.py                  # Pydantic config models + YAML loader
+│   └── config.yaml                  # Main configuration (226 lines)
+│
+├── agents/
+│   ├── __init__.py
+│   ├── orchestrator.py              # Query routing agent (340 lines)
+│   └── summarize_agent.py           # Chat session summarizer (144 lines)
+│
+├── retrieval/
+│   ├── __init__.py
+│   └── rag_pipeline.py              # RAG pipeline with agentic loops (759 lines)
+│
+├── memory/
+│   ├── __init__.py
+│   ├── memory_manager.py            # Conversation memory CRUD (555 lines)
+│   ├── document_store.py            # Document chunking & search (399 lines)
+│   ├── vector_store.py              # ChromaDB/Qdrant wrapper (765 lines)
+│   ├── embedding_service.py         # Sentence-Transformers + Gemini embeddings (261 lines)
+│   └── session_store.py             # JSON-on-disk chat session persistence (252 lines)
+│
+├── utils/
+│   ├── __init__.py
+│   ├── gemini_client.py             # OpenAI-compatible Gemini wrapper (517 lines)
+│   ├── api_key_manager.py           # Multi-key rotation with round-robin (267 lines)
+│   ├── document_loader.py           # PDF/Word/Image/OCR loader (409 lines)
+│   ├── web_search.py                # DuckDuckGo search service (232 lines)
+│   ├── prompt_templates.py          # All prompt templates (430 lines)
+│   ├── validators.py                # Response safety validation (283 lines)
+│   └── logger.py                    # Loguru-based logging (140 lines)
+│
+├── tests/
+│   ├── test_orchestrator.py         # Orchestrator unit tests
+│   └── test_session_store.py        # Session store unit tests
+│
+├── data/
+│   ├── vector_store/                # ChromaDB persistent storage
+│   └── sessions/                    # Chat session JSON files
+│
+└── logs/
+    └── agentic_rag.log              # Application logs (rotated at 10MB)
+```
+
+---
+
+## Module Reference
+
+### 1. Orchestrator Agent — `agents/orchestrator.py`
+
+The "brain" of the system. Uses Gemini (temperature=0.1) to analyze user queries and produce structured JSON routing decisions.
+
+| Class / Function | Purpose |
+|---|---|
+| `ActionType` (enum) | `RETRIEVE_MEMORY`, `CALL_LLM`, `GENERATE_MOTION`, `HYBRID`, `CLARIFY` |
+| `OrchestratorDecision` | Data class holding action, confidence, reasoning, parameters |
+| `OrchestratorAgent.analyze_query()` | Calls Gemini to classify intent → returns `OrchestratorDecision` |
+| `OrchestratorAgent.process_query()` | High-level entry: analyze → return action plan dict |
+| `OrchestratorAgent._build_analysis_prompt()` | Constructs the system+user prompt for the routing LLM |
+| `OrchestratorAgent.should_retrieve_memory()` | Decision helper: should memory be fetched? |
+| `OrchestratorAgent.should_call_llm()` | Decision helper: should LLM generate a response? |
+| `clean_json_response()` | Strips markdown fences / fixes malformed JSON from LLM |
+
+**Key design choice**: The orchestrator is a *pure router* — it never generates user-facing text. Its output is a JSON routing decision consumed by `main.py` or `ui.py`.
+
+---
+
+### 2. Summarize Agent — `agents/summarize_agent.py`
+
+Condenses chat session transcripts into concise summaries that are embedded into ChromaDB for cross-session recall.
+
+| Method | Purpose |
+|---|---|
+| `summarize_session()` | Calls Gemini to generate a 3–5 sentence summary of a message list |
+| `store_summary()` | Embeds the summary vector into the `chat_summaries` collection |
+| `summarize_and_store()` | Convenience: summarize + embed in one call |
+
+**Trigger**: Called from `ui.py._summarize_current_session()` when the user switches to a new chat session.
+
+---
+
+### 3. RAG Pipeline — `retrieval/rag_pipeline.py`
+
+The core response-generation engine. Implements a multi-step agentic pipeline:
+
+| Method | Pipeline Step |
+|---|---|
+| `generate_response()` | **Orchestrates the full pipeline** (see Agentic Pipeline below) |
+| `_process_query()` | Step 1: Query expansion via LLM |
+| `_retrieve_context()` | Step 2: Hybrid retrieval (memory + documents + session summaries) |
+| `_assess_context_quality()` | Step 3: Compute average similarity score |
+| `_reformulate_query()` | Step 3b: LLM-based query rewrite if quality is low |
+| `_build_prompt()` | Step 4: Construct full prompt with context, history, and instructions |
+| `_generate_llm_response()` | Step 5: Call Gemini to generate answer |
+| `_reflect_on_response()` | Step 6: LLM self-check for grounding/hallucination |
+| `_retry_generation()` | Step 7: Retry with validation feedback if needed |
+
+---
+
+### 4. Memory Manager — `memory/memory_manager.py`
+
+CRUD layer for conversation-level memory.
+
+| Method | Purpose |
+|---|---|
+| `store_interaction()` | Saves a user↔assistant turn as an embedded vector |
+| `retrieve_relevant_memory()` | Semantic search over past interactions |
+| `get_recent_interactions()` | Chronological fetch of recent turns |
+| `store_user_context()` | Stores user preferences, physical state, constraints |
+| `get_user_profile()` | Aggregates user info from memory |
+| `load_documents_from_file()` | ⚠️ **Deprecated** — forwards to DocumentStore |
+| `load_documents_from_directory()` | ⚠️ **Deprecated** — forwards to DocumentStore |
+| `clear_memory()` | Resets in-memory counters and state |
+| `_create_summary()` | Periodic conversation summarization |
+
+---
+
+### 5. Document Store — `memory/document_store.py`
+
+Manages uploaded documents with intelligent chunking and deduplication.
+
+| Method | Purpose |
+|---|---|
+| `store_document()` | Routes to single-chunk or chunked storage based on doc size |
+| `_store_single_document()` | Stores small docs (< `min_chunk_size`) as one vector |
+| `_store_chunked_document()` | Splits large docs into overlapping chunks with rich metadata |
+| `search_documents()` | Semantic search with chunk deduplication |
+| `_deduplicate_chunks()` | Keeps top-N chunks per document to prevent result domination |
+| `get_user_documents()` | Lists all documents for a user |
+| `delete_document()` / `delete_user_documents()` | Cleanup operations |
+| `count_documents()` | Document count (optionally per user) |
+
+---
+
+### 6. Vector Store — `memory/vector_store.py`
+
+Low-level ChromaDB (and Qdrant stub) wrapper managing three collections.
+
+| Collection | Contents | Collection Name |
+|---|---|---|
+| Conversations | User↔assistant interaction embeddings | `kinetichat_memory` |
+| Documents | Uploaded document chunk embeddings | `kinetichat_memory_documents` |
+| Chat Summaries | Session summary embeddings | `kinetichat_chat_summaries` |
+
+| Key Method | Purpose |
+|---|---|
+| `_init_chromadb()` | Initializes `PersistentClient` + creates/gets all 3 collections |
+| `add_documents()` | Batch add to conversations or documents collection |
+| `search()` | Similarity search on conversations with proper filter handling |
+| `search_documents()` | Similarity search on document chunks |
+| `add_chat_summary()` / `search_chat_summaries()` | CRUD for session summaries |
+| `clear_all_data()` | Wipes all 3 collections with verification |
+| `reset_collections()` | Delete + recreate collections (for schema fixes) |
+
+**Similarity Calculation** (critical fix):
+```python
+# ChromaDB returns squared L2 distance. Conversion to cosine similarity:
+similarity = max(0.0, 1.0 - (distance / 2.0))
+```
+
+---
+
+### 7. Embedding Service — `memory/embedding_service.py`
+
+Text → vector conversion using Sentence Transformers (local) or Gemini (API).
+
+| Property | Value |
+|---|---|
+| Default model | `sentence-transformers/all-MiniLM-L6-v2` |
+| Embedding dimension | 384 |
+| Batch size | 32 |
+| Normalization | Disabled (to work with ChromaDB's L2 distance) |
+
+| Method | Purpose |
+|---|---|
+| `embed_texts()` | Main entry — single text or batch |
+| `compute_similarity()` | Cosine similarity between two vectors |
+| `count_tokens()` / `truncate_text()` | Token management via tiktoken |
+
+---
+
+### 8. Session Store — `memory/session_store.py`
+
+JSON-on-disk persistence for chat sessions. Each session is a JSON file under `data/sessions/{user_id}/`.
+
+| Method | Purpose |
+|---|---|
+| `create_session()` | Creates a new empty session file |
+| `save_turn()` | Appends a message to a session |
+| `load_session()` | Reads full session data |
+| `list_sessions()` | Returns sessions sorted by most-recently-updated |
+| `delete_oldest_sessions()` | Prunes sessions beyond a keep limit |
+| `mark_summarized()` | Stores summary text and flags session as summarized |
+
+**Session file format**:
+```json
+{
+  "session_id": "uuid",
+  "title": "Auto-generated from first message",
+  "created_at": "ISO-8601",
+  "updated_at": "ISO-8601",
+  "is_summarized": false,
+  "summary": null,
+  "messages": [
+    {"role": "user", "content": "...", "timestamp": "..."},
+    {"role": "assistant", "content": "...", "timestamp": "...", "metadata": {}}
+  ]
+}
+```
+
+---
+
+### 9. Gemini Client — `utils/gemini_client.py`
+
+OpenAI-compatible wrapper around Google's Gemini API.
+
+| Class | Purpose |
+|---|---|
+| `GeminiClient` | Core API wrapper with auto-retry and key rotation |
+| `GeminiClientWrapper` | Top-level interface exposing `GeminiClientWrapper.generate()` and `GeminiClientWrapper.chat.completions.create()` |
+| `GeminiChatCompletion` | Mimics `client.chat.completions.create()` (OpenAI interface) |
+| `GeminiResponse` / `GeminiChoice` / `GeminiMessage` | Response objects matching OpenAI's structure |
+
+**Key features**:
+- Automatic API key rotation on 429 (quota exceeded) errors
+- Converts OpenAI-style `messages` list to Gemini's `contents` format
+- System prompt extracted from messages and passed as `system_instruction`
+- Supports `response_format` parameter for JSON mode
+
+---
+
+### 10. API Key Manager — `utils/api_key_manager.py`
+
+Thread-safe singleton that manages multiple Gemini API keys with round-robin rotation.
+
+```
+GEMINI_API_KEYS=key1,key2,key3  # Comma-separated in .env
+```
+
+| Method | Purpose |
+|---|---|
+| `get_current_key()` | Returns the active API key |
+| `rotate_to_next_key()` | Moves to next key (circular). Returns `False` after 2 full cycles |
+| `mark_key_failed()` | Increments failure counter |
+| `reset_success()` | Resets failure counter after successful call |
+| `has_available_keys()` | Checks if more retries are allowed |
+
+**Rotation logic**: Allows `2 × total_keys` consecutive failures before declaring all keys exhausted.
+
+---
+
+### 11. Document Loader — `utils/document_loader.py`
+
+Multi-format document text extraction.
+
+| Format | Method | Features |
+|---|---|---|
+| PDF | `_load_pdf()` | Text extraction via pypdf + OCR via pdf2image + pytesseract |
+| PDF (scanned) | `_ocr_pdf()` / `_ocr_pdf_images()` | Full-page OCR for scanned documents |
+| Word (.docx) | `_load_docx()` | Extracts paragraphs + tables |
+| Images | `_load_image()` | OCR via pytesseract |
+| Text (.txt) | `_load_text()` | Plain text reading |
+
+**PDF Strategy**: Always extracts regular text first, then OCR-renders each page as an image to catch diagrams, screenshots, and figures. Both sources are merged.
+
+---
+
+### 12. Web Search — `utils/web_search.py`
+
+DuckDuckGo-powered web search fallback (free, no API key required).
+
+| Method | Purpose |
+|---|---|
+| `search()` | Raw search → list of `{title, url, snippet}` |
+| `search_and_summarize()` | Formatted markdown context for RAG prompt injection |
+| `search_health_topics()` | Health-focused search with enhanced keywords |
+
+**Trigger**: Activated by the RAG pipeline when local context quality is below `web_search_quality_threshold` (default 0.65) or fewer than `min_context_threshold` items (default 2) are retrieved.
+
+---
+
+### 13. Validators — `utils/validators.py`
+
+Response safety and quality validation.
+
+| Check | Description |
+|---|---|
+| Safety check | Flags unsafe keywords (diagnosis, treatment plan, prescription, etc.) |
+| Length check | Ensures response is between 50–1500 characters |
+| Relevance check | Compares response keywords against query keywords |
+
+**Note**: Validation is currently **disabled** (`enable_validation: false` in config) to reduce API latency during development.
+
+---
+
+### 14. Logger — `utils/logger.py`
+
+Structured logging via Loguru with console + file output.
+
+- **Console**: Colorized human-readable format
+- **File**: `logs/agentic_rag.log` with 10MB rotation, 30-day retention, zip compression
+- **Context manager**: `LogContext` binds `user_id`, `session_id` to log entries
+
+---
+
+## Agentic Pipeline — Detailed Flow
+
+This is the complete query processing flow when a user sends a message:
+
+```
+User Query
+    │
+    ▼
+┌───────────────────────────────────────────────────────┐
+│ 1. ORCHESTRATOR ANALYSIS                               │
+│    • Build analysis prompt (system + user query)       │
+│    • Call Gemini (temp=0.1, max_tokens=500)             │
+│    • Parse JSON decision                               │
+│    • Output: action, confidence, parameters             │
+└───────────────┬───────────────────────────────────────┘
+                │
+    ┌───────────┼──────────────┐
+    │           │              │
+    ▼           ▼              ▼
+RETRIEVE    CALL_LLM      HYBRID
+DOCUMENT/   (direct)      (retrieve +
+MEMORY                     generate)
+    │           │              │
+    └───────────┴──────────────┘
+                │
+                ▼
+┌───────────────────────────────────────────────────────┐
+│ 2. QUERY PROCESSING                                    │
+│    • If enable_query_expansion: LLM rewrites query     │
+│    • Cleaned, expanded query passed to retrieval       │
+└───────────────┬───────────────────────────────────────┘
+                │
+                ▼
+┌───────────────────────────────────────────────────────┐
+│ 3. HYBRID CONTEXT RETRIEVAL                            │
+│    Source A: Memory (conversations collection)         │
+│    Source B: Documents (document chunks collection)     │
+│    Source C: Chat Summaries (session summaries)         │
+│    • All 3 sources searched in parallel                 │
+│    • Results merged and sorted by similarity            │
+└───────────────┬───────────────────────────────────────┘
+                │
+                ▼
+┌───────────────────────────────────────────────────────┐
+│ 4. QUALITY ASSESSMENT + QUERY REFORMULATION LOOP       │
+│    • Compute avg similarity of retrieved context       │
+│    • If avg < reformulation_quality_threshold (0.3):   │
+│      → LLM rewrites query (up to 2 attempts)           │
+│      → Re-run retrieval with reformulated query        │
+│    • If still poor → trigger web search fallback       │
+└───────────────┬───────────────────────────────────────┘
+                │
+                ▼
+┌───────────────────────────────────────────────────────┐
+│ 5. WEB SEARCH FALLBACK (if enabled)                    │
+│    • Triggered when:                                   │
+│      - avg similarity < web_search_quality_threshold   │
+│      - OR fewer than min_context_threshold items       │
+│    • DuckDuckGo search → results injected into prompt  │
+└───────────────┬───────────────────────────────────────┘
+                │
+                ▼
+┌───────────────────────────────────────────────────────┐
+│ 6. PROMPT BUILDING                                     │
+│    • System prompt (from config)                       │
+│    • Retrieved context (documents, memory, summaries)  │
+│    • Web search results (if any)                       │
+│    • Conversation history                              │
+│    • User query                                        │
+│    • Response guidelines + source priority instructions │
+└───────────────┬───────────────────────────────────────┘
+                │
+                ▼
+┌───────────────────────────────────────────────────────┐
+│ 7. LLM RESPONSE GENERATION                            │
+│    • Call Gemini (temp=0.7, max_tokens=2000)            │
+│    • Full prompt with all context                      │
+└───────────────┬───────────────────────────────────────┘
+                │
+                ▼
+┌───────────────────────────────────────────────────────┐
+│ 8. ITERATIVE REFLECTION (if enabled)                   │
+│    • LLM checks if response is grounded in context     │
+│    • Returns: is_grounded, issues, revised_answer      │
+│    • If not grounded → uses revised answer             │
+│    • Max 1 reflection iteration (configurable)         │
+└───────────────┬───────────────────────────────────────┘
+                │
+                ▼
+┌───────────────────────────────────────────────────────┐
+│ 9. MEMORY STORAGE                                      │
+│    • Store interaction (query + response) in memory    │
+│    • Save turn to session JSON file                    │
+│    • Periodic summarization if threshold reached       │
+└───────────────┬───────────────────────────────────────┘
+                │
+                ▼
+           User Response
+```
+
+---
+
+## Vector Database & Chunking Architecture
+
+### Document Processing Pipeline
+
+```
+Document Upload → Text Extraction → Chunking → Embedding → ChromaDB Storage
+     ↓                ↓              ↓           ↓              ↓
+  PDF/Word/Img    pypdf/OCR    Overlapping   MiniLM-L6-v2   Chunks with
+   files         extraction    chunks        (384-dim)       rich metadata
+```
+
+### Chunking System
+
+**Location**: `memory/document_store.py` & `utils/document_loader.py`
+
+#### Algorithm
 ```python
 def _chunk_text(text: str, chunk_size: int = 1500, overlap: int = 300) -> List[str]:
     chunks = []
     start = 0
-    
     while start < len(text):
         end = start + chunk_size
         chunks.append(text[start:end])
         start = end - overlap  # Overlap ensures context continuity
-    
     return chunks
 ```
 
-#### **Current Configuration** (`config/config.yaml`):
+#### Configuration (`config/config.yaml`)
 ```yaml
 chunking:
-  enable_chunking: true              # Enable document chunking
-  chunk_size: 1500                  # Characters per chunk
-  chunk_overlap: 300                 # Overlap between chunks (preserves context)
-  min_chunk_size: 300               # Minimum chunk size to store
-  chunk_search_multiplier: 3        # Search multiplier for deduplication
+  enable_chunking: true
+  chunk_size: 1500          # Characters per chunk
+  chunk_overlap: 300        # Overlap between consecutive chunks
+  min_chunk_size: 300       # Documents smaller than this → single chunk
+  chunk_search_multiplier: 3  # Fetch 3× top_k for deduplication headroom
 ```
 
-#### **Chunk Storage Strategy**:
-1. **Small Documents** (< 300 chars): Stored as single chunk
-2. **Large Documents**: Split into overlapping chunks
-3. **Each Chunk Gets**:
-   - Individual vector embedding (384 dimensions)
-   - Rich metadata (filename, chunk_number, position, etc.)
-   - Separate storage in ChromaDB documents collection
-
-#### **Metadata per Chunk**:
+#### Chunk Metadata
+Each chunk is stored with:
 ```python
-chunk_metadata = {
-    "user_id": user_id,
-    "filename": filename,
-    "chunk_number": i,
-    "total_chunks": len(chunks),
-    "chunk_type": "chunked",  # vs "single"
-    "start_position": start_pos,
-    "end_position": end_pos,
-    "content_length": len(chunk),
-    "timestamp": datetime.now().isoformat(),
+{
+    "user_id": "web_user",
+    "filename": "document.pdf",
+    "chunk_number": 0,           # 0-indexed
+    "total_chunks": 5,
+    "chunk_type": "chunked",     # or "single"
+    "start_position": 0,
+    "end_position": 1500,
+    "content_length": 1500,
+    "timestamp": "2026-02-28T...",
     "document_type": "uploaded_knowledge"
 }
 ```
 
-### **🔍 Search & Retrieval System**
+### Search & Deduplication
 
-#### **Search Process**:
-1. **Query Embedding**: Convert user query to 384-dim vector
-2. **Vector Search**: Find similar chunks in ChromaDB
-3. **Chunk Deduplication**: Group chunks by document, keep best ones
-4. **Context Building**: Combine selected chunks for LLM
+1. **Query embedding**: Convert query → 384-dim vector
+2. **Vector search**: ChromaDB similarity search (top_k × chunk_search_multiplier)
+3. **Deduplication**: Group chunks by document, keep top `max_chunks_per_document` (default 3) per document
+4. **Context assembly**: Merge selected chunks for prompt injection
 
-#### **Deduplication Algorithm**:
-```python
-def _deduplicate_chunks(results, max_chunks_per_document=3):
-    # Group chunks by document
-    document_groups = {}
-    
-    for result in results:
-        filename = result.get("metadata", {}).get("filename")
-        doc_key = f"{filename}_chunked"
-        
-        if doc_key not in document_groups:
-            document_groups[doc_key] = []
-        document_groups[doc_key].append(result)
-    
-    # Select best chunks from each document
-    deduplicated_results = []
-    for doc_key, chunks in document_groups.items():
-        # Sort by similarity score (descending)
-        chunks.sort(key=lambda x: x.get("similarity", 0), reverse=True)
-        # Take top chunks for this document
-        best_chunks = chunks[:max_chunks_per_document]
-        deduplicated_results.extend(best_chunks)
-    
-    # Sort all results by similarity
-    deduplicated_results.sort(key=lambda x: x.get("similarity", 0), reverse=True)
-    return deduplicated_results
-```
-
-#### **Search Configuration**:
 ```yaml
 rag:
-  top_k_documents: 8              # Initial search results
-  similarity_threshold: 0.1       # Minimum similarity score
-  max_chunks_per_document: 3       # Max chunks per doc after dedup
+  top_k_documents: 8
+  similarity_threshold: 0.1
+  max_chunks_per_document: 3
 ```
 
-### **💾 ChromaDB Architecture**
+### ChromaDB Collections
 
-#### **Collections**:
-- **`kinetichat_memory`**: Conversation history and summaries
-- **`kinetichat_memory_documents`**: Uploaded document chunks
+| Collection | Purpose | Similarity Formula |
+|---|---|---|
+| `kinetichat_memory` | Conversation history | `max(0.0, 1.0 - (distance / 2.0))` |
+| `kinetichat_memory_documents` | Document chunks | `max(0.0, 1.0 - (distance / 2.0))` |
+| `kinetichat_chat_summaries` | Session summaries | `max(0.0, 1.0 - (distance / 2.0))` |
 
-#### **Vector Storage**:
-- **Embedding Dimension**: 384 (sentence-transformers/all-MiniLM-L6-v2)
-- **Distance Metric**: Squared Euclidean (converted to cosine similarity)
-- **Persistence**: `data/vector_store/` directory
-- **Similarity Calculation**: `max(0.0, 1.0 - (distance / 2.0))`
-
-#### **Schema Management**:
-- **Collections auto-created** on first use
-- **Metadata fields** indexed for filtering
-- **Reset capability**: `reset_collections()` for schema fixes
-
-### **🎯 Why This Architecture Works**
-
-#### **Chunking Benefits**:
-- **Context Preservation**: 300-char overlap ensures complete thoughts aren't split
-- **Granular Search**: Smaller chunks allow more precise matching
-- **Flexible Retrieval**: Can retrieve specific sections vs entire documents
-- **Memory Efficiency**: Only relevant chunks loaded into context
-
-#### **Deduplication Benefits**:
-- **Diverse Results**: Prevents one document from dominating results
-- **Quality Focus**: Keeps highest similarity chunks per document
-- **Context Balance**: Mix of multiple sources for comprehensive answers
-
-#### **Vector Database Benefits**:
-- **Semantic Search**: Finds content by meaning, not just keywords
-- **Scalable Storage**: Efficient for large document collections
-- **Fast Retrieval**: Optimized for similarity search operations
-- **Persistent Storage**: Data survives application restarts
+**Storage**: `data/vector_store/` (persistent across restarts via `chromadb.PersistentClient`)
 
 ---
 
-## Core System Architecture
+## Session & Memory Management
+
+### Session Flow (in `ui.py`)
 
 ```
-User Query (with optional uploaded documents)
-    ↓
-1. ORCHESTRATOR AGENT (gemini-2.5-flash)
-   └─ Analyzes query → decides action (retrieve memory? search documents? call LLM?)
-    ↓
-2. MEMORY RETRIEVAL (if needed)
-   ├─ Embedding Service (sentence-transformers/all-MiniLM-L6-v2)
-   ├─ Vector Store (ChromaDB with PersistentClient)
-   └─ Retrieves relevant past interactions
-    ↓
-3. DOCUMENT SEARCH (if documents uploaded)
-   ├─ Document Store (ChromaDB with proper similarity calculation)
-   ├─ Document Loader (PDF, Word, Images with OCR)
-   └─ Retrieves relevant document content
-    ↓
-4. RAG PIPELINE (gemini-2.5-flash)
-   ├─ Query Processing
-   ├─ Context Building (with retrieved memory + documents)
-   ├─ LLM Response Generation
-   └─ Response Validation
-    ↓
-5. MEMORY STORAGE
-   └─ Stores new interaction for future retrieval
-    ↓
-User Response
+User opens app
+    │
+    ├─ init_session_state() → loads cached resources (embedding model, vector store, etc.)
+    │
+    ├─ _ensure_session() → creates/loads session via SessionStore
+    │
+    ├─ User sends message
+    │   ├─ process_user_query() → orchestrator → RAG pipeline → response
+    │   ├─ add_message_to_chat() → saves to session JSON file
+    │   └─ Store interaction in memory (vector store)
+    │
+    ├─ User starts new session
+    │   ├─ _summarize_current_session() → SummarizeAgent condenses prior session
+    │   ├─ Summary embedded in chat_summaries collection
+    │   └─ _start_new_session() → creates fresh session file
+    │
+    └─ Session history sidebar → list/switch/delete sessions
 ```
 
----
+### Session Pruning
+```yaml
+memory:
+  max_chat_sessions: 5    # Oldest sessions auto-deleted beyond this limit
+```
 
-## Main Code Components
-
-### **1. Orchestrator Agent** 
-**Location**: [`agents/orchestrator.py`](agents/orchestrator.py)  
-**What it does**: Analyzes incoming queries and decides which modules to activate
-- **Key method**: `analyze_query()` - Uses LLM to parse query intent
-- **Key method**: `process_query()` - Routes to appropriate action
-- **Config**: `config.orchestrator` in `config/config.yaml`
-
-**If you need to modify routing logic**: Edit the `_build_analysis_prompt()` method
-
----
-
-### **2. RAG Pipeline** 
-**Location**: [`retrieval/rag_pipeline.py`](retrieval/rag_pipeline.py)  
-**What it does**: Generates context-aware responses using retrieved memory and documents
-- **Key method**: `generate_response()` - Main RAG orchestration
-- **Key method**: `_retrieve_context()` - Fetches relevant past interactions AND documents
-- **Key method**: `_build_prompt()` - Constructs full prompt for LLM with keyword extraction
-- **Key method**: `_generate_llm_response()` - Calls Gemini API
-- **Config**: `config.rag` and `config.llm` in `config/config.yaml`
-
-**If you need to modify response generation**: Edit `_generate_llm_response()` or `_build_prompt()`
+### Summarization Pipeline
+1. When user switches sessions, `_summarize_current_session()` is called
+2. If session has ≥ 2 messages and hasn't been summarized:
+   - `SummarizeAgent.summarize_session()` calls Gemini to generate a summary
+   - Summary is embedded via `SummarizeAgent.store_summary()` into `chat_summaries` collection
+   - Session marked as `is_summarized = true` in JSON file
+3. Future queries can retrieve relevant past session summaries via `VectorStore.search_chat_summaries()`
 
 ---
 
-### **3. Memory Manager** 
-**Location**: [`memory/memory_manager.py`](memory/memory_manager.py)  
-**What it does**: Manages conversation memory and interactions
-- **Key method**: `store_interaction()` - Saves user query + assistant response
-- **Key method**: `get_user_memory()` - Retrieves stored interactions for a user
-- **Key method**: `search_memory()` - Semantic search in memory
-- **Key method**: `load_documents_from_file()` - Load and index uploaded documents
-- **Config**: `config.memory` in `config/config.yaml`
+## Web Search Fallback
 
-**If you need to modify memory behavior**: Edit methods here
+The system uses DuckDuckGo as a free web search fallback when local knowledge is insufficient.
 
----
+### Trigger Conditions (any of):
+- Average similarity of retrieved context < `web_search_quality_threshold` (0.65)
+- Fewer than `min_context_threshold` (2) context items retrieved
 
-### **4. Document Store** 
-**Location**: [`memory/document_store.py`](memory/document_store.py)  
-**What it does**: Advanced document storage with intelligent chunking and retrieval
-- **Key method**: `store_document()` - Intelligent chunking based on document size
-- **Key method**: `search_documents()` - Semantic search with chunk deduplication
-- **Key method**: `_store_chunked_document()` - Handles large document chunking
-- **Key method**: `_deduplicate_chunks()` - Prevents document domination in results
-- **Integration**: Works with DocumentLoader for multi-format file processing
-- **Storage**: Uses ChromaDB with separate collections for conversations and documents
-- **Chunking Config**: `config.chunking` in `config/config.yaml`
+### Configuration
+```yaml
+rag:
+  enable_web_search: true
+  web_search_quality_threshold: 0.65
+  min_context_threshold: 2
+  max_web_results: 5
+  web_search_timeout: 10  # seconds
+```
 
-**Chunking Strategy**:
-- **< 300 chars**: Single chunk storage
-- **≥ 300 chars**: Overlapping chunks (1500 chars, 300 overlap)
-- **Metadata**: Rich chunk information (position, number, parent doc, etc.)
+### Integration Point
+In `rag_pipeline.py → generate_response()`:
+```python
+if web_search_triggered:
+    web_context = web_search_service.search_and_summarize(query)
+    # Web results injected as "🌐 WEB SEARCH RESULTS" section in prompt
+```
 
-**If you need to modify document storage**: Edit chunking parameters in `config.yaml` or methods in `document_store.py`
+The LLM is instructed to cite web sources with URLs when using web search results.
 
 ---
 
-### **5. Vector Store** 
-**Location**: [`memory/vector_store.py`](memory/vector_store.py)  
-**What it does**: Advanced vector storage with dual collections and schema management
-- **Backend**: ChromaDB with PersistentClient for data persistence
-- **Collections**: Separate storage for conversations and document chunks
-- **Key method**: `add_documents()` - Stores embeddings with metadata
-- **Key method**: `search()` - Semantic search with proper similarity calculation
-- **Key method**: `clear_all_data()` - Enhanced data clearing with verification
-- **Key method**: `reset_collections()` - Complete collection reset for schema fixes
-- **Key fix**: Similarity calculation fixed from `1 - distance` to `max(0.0, 1.0 - (distance / 2.0))`
-- **Storage**: `data/vector_store/` directory (persistent across restarts)
+## API Key Rotation System
 
-**Collections**:
-- **`kinetichat_memory`**: Conversation history and summaries
-- **`kinetichat_memory_documents`**: Document chunks with rich metadata
+### Setup
+```bash
+# .env file — comma-separated keys
+GEMINI_API_KEYS=AIza..._key1,AIza..._key2,AIza..._key3
+```
 
-**Schema Management**:
-- **Auto-creation**: Collections created on first use
-- **Reset capability**: Full schema reset for corruption recovery
-- **Metadata indexing**: Optimized for filtering by user_id, filename, etc.
+### Flow
+```
+API Call → 200 OK → reset_success() (reset failure counter)
+    │
+    └→ 429 Quota Error → rotate_to_next_key()
+                              │
+                              ├─ Cycles < 2 × total_keys → retry with next key
+                              │
+                              └─ Cycles exhausted → raise error
+```
 
-**If you need to switch backends**: Edit `_init_chromadb()` or `_init_qdrant()`
-
----
-
-### **6. Embedding Service** 
-**Location**: [`memory/embedding_service.py`](memory/embedding_service.py)  
-**What it does**: Converts text to embeddings for semantic search
-- **Model**: `sentence-transformers/all-MiniLM-L6-v2` (384-dim)
-- **Key method**: `embed_texts()` - Converts text to embedding vector
-- **Config**: `config.embedding` in `config/config.yaml`
-- **Note**: Normalization removed to work with ChromaDB's distance calculation
-
-**If you need to change embedding model**: Edit `_init_sentence_transformer()`
+### Thread Safety
+- Singleton pattern with `threading.Lock()`
+- All state mutations are thread-safe
+- Used by `GeminiClient._rotate_and_retry()`
 
 ---
 
-### **7. Gemini Client** 
-**Location**: [`utils/gemini_client.py`](utils/gemini_client.py)  
-**What it does**: Wrapper around Google's Gemini API
-- **Compatible with**: OpenAI-style interface (chat.completions.create())
-- **Key class**: `GeminiClientWrapper` - Main interface
-- **Key method**: `chat_completion()` - Calls Gemini API
-- **Note**: Handles both old (0.3.x) and new (0.4.0+) API versions
+## Prompt Engineering
 
-**If you need to modify API calls**: Edit `chat_completion()` method
+All prompts are centralized in `utils/prompt_templates.py`. The system uses 7 prompt categories:
 
----
+| Category | Variable | Used By |
+|---|---|---|
+| `ORCHESTRATOR_PROMPTS` | system, decision_format | `agents/orchestrator.py` |
+| `RAG_PROMPTS` | system, with_context | `retrieval/rag_pipeline.py` |
+| `VALIDATION_PROMPTS` | safety_check | `utils/validators.py` |
+| `SUMMARIZATION_PROMPTS` | conversation_summary, user_profile | `memory/memory_manager.py` |
+| `QUERY_REFORMULATION_PROMPTS` | reformulate | `retrieval/rag_pipeline.py` |
+| `REFLECTION_PROMPTS` | reflect | `retrieval/rag_pipeline.py` |
+| `SESSION_SUMMARY_PROMPTS` | system, summarize | `agents/summarize_agent.py` |
+| `FALLBACK_MESSAGES` | generic, memory_failure, etc. | Various |
 
-### **8. Document Loader** 
-**Location**: [`utils/document_loader.py`](utils/document_loader.py)  
-**What it does**: Loads and extracts text from multiple document formats
-- **Supported formats**: PDF (text + OCR for scans), Word (.docx), Images (PNG/JPG with OCR), Text files
-- **Key method**: `load_file()` - Loads single file
-- **Key method**: `load_directory()` - Loads all files from folder
-- **Dependencies**: pypdf, python-docx, pytesseract, pdf2image, pillow
+### Source Priority (built into system prompt)
+```
+1. UPLOADED DOCUMENTS — Primary knowledge source
+   → "Based on [filename], ..."
+2. WEB SEARCH RESULTS — When documents don't have the answer
+   → Always cite source URLs
+3. GENERAL KNOWLEDGE — Only when neither is available
+```
 
-**Integration**: Use via `MemoryManager.load_documents_from_file()` or `.load_documents_from_directory()`
-
----
-
-### **9. Web Interface** 
-**Location**: [`ui.py`](ui.py) and [`run_ui.py`](run_ui.py)  
-**What it does**: Streamlit web interface for user interaction
-- **Features**: File upload, chat interface, document management
-- **Key method**: Handles file uploads and stores them in DocumentStore
-- **User ID**: Uses `"web_user"` for all web interactions
-
-**If you need to modify UI**: Edit `ui.py` for interface changes
+### Language Adaptation
+The system prompt instructs the LLM to respond in the same language as the user's query (supports Vietnamese and English natively).
 
 ---
 
 ## Configuration Reference
 
-**File**: `config/config.yaml`
+**File**: `config/config.yaml` (226 lines)
 
+### Orchestrator
 ```yaml
 orchestrator:
-  model: "gemini-2.5-flash"        # LLM for routing decisions
-  temperature: 0.1                   # Low for consistent routing
+  model: "gemini-2.5-flash"
+  temperature: 0.1          # Low for consistent routing
   max_tokens: 500
+  memory_retrieval_threshold: 0.6
+  llm_call_threshold: 0.7
+  motion_generation_threshold: 0.8
+```
 
+### LLM (Response Generation)
+```yaml
 llm:
-  model: "gemini-2.5-flash"         # LLM for response generation
-  temperature: 0.7                   # Higher for more creative responses
-  max_tokens: 1000
-  enable_validation: false           # Disabled temporarily for debugging
+  model: "gemini-2.5-flash"
+  temperature: 0.7
+  max_tokens: 2000
+  enable_validation: false   # Disabled for debugging
+  max_retries: 1
+```
 
+### Embedding
+```yaml
 embedding:
   model: "sentence-transformers/all-MiniLM-L6-v2"
   dimension: 384
+  batch_size: 32
+```
 
+### RAG Pipeline
+```yaml
 rag:
-  enable_query_expansion: true       # Expand queries before search
-  top_k_documents: 8                 # Return top 8 document matches
-  similarity_threshold: 0.3          # Min similarity for document retrieval
+  top_k_documents: 8
+  similarity_threshold: 0.1
+  max_chunks_per_document: 3
+  enable_query_expansion: true
+  enable_query_reformulation: true
+  max_reformulation_attempts: 2
+  reformulation_quality_threshold: 0.3
+  enable_iterative_reflection: true
+  max_reflection_iterations: 1
+  enable_web_search: true
+  web_search_quality_threshold: 0.65
+  min_context_threshold: 2
+  max_web_results: 5
+```
 
+### Memory
+```yaml
 memory:
-  max_items: 100                     # Max items to keep
-  relevance_threshold: 0.7           # Min similarity for memory retrieval
+  max_items_per_user: 100
+  retention_days: 90
+  top_k: 5
+  similarity_threshold: 0.3
+  summarization_interval: 5
+  max_chat_sessions: 5
+```
+
+### Chunking
+```yaml
+chunking:
+  enable_chunking: true
+  chunk_size: 1500
+  chunk_overlap: 300
+  min_chunk_size: 300
+  chunk_search_multiplier: 3
+```
+
+### Validation
+```yaml
+validation:
+  enable_safety_check: true
+  enable_factuality_check: false
+  enable_relevance_check: true
+  min_response_length: 50
+  max_response_length: 1500
+```
+
+### Performance
+```yaml
+performance:
+  enable_caching: true
+  cache_ttl: 3600
+  orchestrator_timeout: 5
+  memory_retrieval_timeout: 3
+  llm_timeout: 30
 ```
 
 ---
 
-## Recent Fixes & Improvements
+## Environment Variables
 
-### ✅ Fixed: ChromaDB Persistence Issue
-**Problem**: Documents not persisting between sessions  
-**Solution**: Changed from `chromadb.Client()` to `chromadb.PersistentClient()`  
-**Location**: `memory/vector_store.py` - `_init_chromadb()` method
+**File**: `.env` (see `.env.example` for template)
 
-### ✅ Fixed: ChromaDB Query Error with Multiple Filters
-**Problem**: Query failed with multiple filter conditions  
-**Solution**: Used `$and` operator for multiple filter keys  
-**Location**: `memory/vector_store.py` - `search()` and `search_documents()` methods
+| Variable | Required | Description |
+|---|---|---|
+| `GEMINI_API_KEYS` | ✅ | Comma-separated Gemini API keys for rotation |
+| `ORCHESTRATOR_MODEL` | ❌ | Override orchestrator model (default: from config.yaml) |
+| `LLM_MODEL` | ❌ | Override LLM model (default: from config.yaml) |
+| `EMBEDDING_MODEL` | ❌ | Override embedding model |
+| `VECTOR_DB_TYPE` | ❌ | `chromadb` or `qdrant` |
+| `VECTOR_DB_PATH` | ❌ | Path for ChromaDB persistence |
+| `QDRANT_URL` | ❌ | Qdrant server URL |
+| `QDRANT_API_KEY` | ❌ | Qdrant API key |
+| `LOG_LEVEL` | ❌ | Logging level (DEBUG/INFO/WARNING/ERROR) |
 
-### ✅ Fixed: Similarity Calculation Issue
-**Problem**: Negative similarities despite good embeddings  
-**Solution**: Fixed similarity calculation from `1 - distance` to `max(0.0, 1.0 - (distance / 2.0))`  
-**Location**: `memory/vector_store.py` - similarity calculation in both search methods
-
-### ✅ Improved: Document Context Building
-**Improvement**: Increased content limit from 300 to 800 characters, added keyword-based sentence extraction  
-**Location**: `retrieval/rag_pipeline.py` - `_build_prompt()` method
-
-### ✅ Optimized: Retrieval Parameters
-**Improvement**: Increased top_k from 5 to 8, adjusted similarity threshold to 0.3  
-**Location**: `config/config.yaml` - rag section
+**Priority**: Environment variables override `config.yaml` values (handled in `config/__init__.py`).
 
 ---
 
-## Known Issues & Where to Fix
+## Setup & Installation
 
-### ❌ Issue: Model not found (404 errors)
-**Cause**: Invalid model name in config  
-**Where to fix**: 
-- Check available models: `python list_available_models.py`
-- Update models in `config/config.yaml` (lines 36, 46)
+### Prerequisites
+- Python 3.10+ (tested with 3.13)
+- Gemini API key(s) from [Google AI Studio](https://aistudio.google.com/app/apikey)
+- *Optional*: Tesseract OCR for scanned document support
 
-### ❌ Issue: API rate limiting (429 errors)
-**Cause**: Too many requests to Gemini API (free tier: 20 requests/day)  
-**Where to fix**: 
-- Reduce `max_retries` in `config/config.yaml`
-- Add delays between requests in `retrieval/rag_pipeline.py`
-- Consider upgrading to paid Gemini API tier
+### Quick Setup (Windows — PowerShell)
+```powershell
+cd agentic_rag_gemini
 
-### ❌ Issue: Documents not being retrieved
-**Cause**: Similarity threshold too high or embedding issues  
-**Where to fix**: 
-- Adjust `similarity_threshold` in `config/config.yaml`
-- Check document storage with `test_upload_flow.py`
+# Option A: Automated
+.\setup.ps1
 
-### ❌ Issue: Memory not retrieving relevant context
-**Cause**: Embedding quality or vector store issue  
-**Where to fix**: 
-- Try different embedding model in `memory/embedding_service.py`
-- Adjust similarity threshold in `memory/memory_manager.py`
+# Option B: Manual
+pip install -r requirements.txt
+mkdir -Force data\vector_store, logs
+cp .env.example .env
+# Edit .env → add GEMINI_API_KEYS=your_key_here
+```
+
+### Quick Setup (Linux/macOS)
+```bash
+cd agentic_rag_gemini
+pip install -r requirements.txt
+mkdir -p data/vector_store logs
+cp .env.example .env
+# Edit .env → add GEMINI_API_KEYS=your_key_here
+```
+
+### OCR Setup (Optional)
+```bash
+# Windows (via Chocolatey)
+choco install tesseract
+
+# Linux
+sudo apt-get install tesseract-ocr
+
+# Verify
+python -c "import pytesseract; print(pytesseract.get_tesseract_version())"
+```
 
 ---
 
-## ⚙️ Configuration Overview
+## Running the System
 
-### **Key Configuration Files**
-- **`config/config.yaml`**: Main system configuration
-- **`.env`**: API keys and environment variables
+### Web Interface (Recommended)
+```bash
+python run_ui.py
+# OR directly:
+streamlit run ui.py
+# Opens at http://localhost:8501
+```
 
-### Test individual components
+### CLI Interactive Mode
+```bash
+python main.py --mode interactive
+```
+
+### Single Query (Programmatic)
+```python
+from main import AgenticRAGSystem
+
+system = AgenticRAGSystem()
+result = system.process_query(
+    query="What are the evaluation criteria?",
+    user_id="web_user"
+)
+print(result["response"])
+```
+
+---
+
+## Testing
+
+### Run Tests
+```bash
+# Orchestrator tests
+python -m pytest tests/test_orchestrator.py -v
+
+# Session store tests
+python -m pytest tests/test_session_store.py -v
+```
+
+### Test Individual Components
 ```bash
 # Test embedding service
 python -c "from memory.embedding_service import EmbeddingService; e = EmbeddingService(); print(len(e.embed_texts('test')))"
 
 # Test vector store
-python -c "from memory.vector_store import VectorStore; v = VectorStore(); print(v.search('test', 5))"
+python -c "from memory.vector_store import VectorStore; v = VectorStore(); print('Collections initialized')"
 
-# Test Gemini API
+# Test Gemini API connection
 python -c "from utils.gemini_client import GeminiClientWrapper; c = GeminiClientWrapper(); print(c.chat.completions.create(model='gemini-2.5-flash', messages=[{'role': 'user', 'content': 'hi'}]).choices[0].message.content)"
-```
 
-### Test document upload flow
-```bash
-python test_upload_flow.py
-```
+# Test document loader
+python -c "from utils.document_loader import DocumentLoader; d = DocumentLoader(); print('Supported:', d.SUPPORTED_FORMATS)"
 
-### List available models
-```bash
-python list_available_models.py
-```
-
----
-
-## File Structure
-
-```
-agentic_rag_gemini/
-├── main.py                        # Entry point
-├── run_ui.py                      # Web interface launcher
-├── ui.py                          # Streamlit web interface
-├── config/
-│   ├── __init__.py               # Config loader
-│   └── config.yaml               # Configuration (EDIT HERE FOR SETTINGS)
-├── agents/
-│   └── orchestrator.py           # Query routing logic
-├── retrieval/
-│   └── rag_pipeline.py           # Response generation pipeline
-├── memory/
-│   ├── memory_manager.py         # Conversation memory
-│   ├── document_store.py         # Document storage and search
-│   ├── vector_store.py           # Embedding storage (FIXED)
-│   └── embedding_service.py      # Text-to-vector conversion
-├── utils/
-│   ├── gemini_client.py          # Gemini API wrapper
-│   ├── validators.py             # Response validation
-│   ├── prompt_templates.py       # Prompt templates
-│   ├── logger.py                 # Logging setup
-│   └── document_loader.py        # Document processing (PDF, Word, Images)
-├── tests/
-│   └── test_orchestrator.py      # Essential test file
-├── data/
-│   └── vector_store/             # Vector database files (PERSISTENT)
-├── logs/
-│   └── agentic_rag.log          # Runtime logs
-├── QUICKSTART.md                 # User setup guide (KEEP THIS)
-└── README_DEVELOPERS.md         # This file (KEEP THIS)
+# Test web search
+python -c "from utils.web_search import WebSearchService; s = WebSearchService(); print('Available:', s.is_available())"
 ```
 
 ---
 
 ## How to Extend the System
 
-### Add a new action type
-1. Edit `agents/orchestrator.py` - add to `ActionType` enum
-2. Edit `main.py` - handle new action in `process_query()`
-3. Create new module if needed
+### Add a new orchestrator action type
+1. Add to `ActionType` enum in `agents/orchestrator.py`
+2. Update `OrchestratorAgent._build_analysis_prompt()` to include the new action
+3. Handle the new action in `main.py:AgenticRAGSystem.process_query()`
+4. Update ORCHESTRATOR_PROMPTS in `utils/prompt_templates.py`
 
-### Change embedding model
-1. Edit `config/config.yaml` - change `embedding.model`
-2. Edit `memory/embedding_service.py` - update `_init_sentence_transformer()`
+### Change the LLM model
+1. Update `config/config.yaml` → `llm.model` and/or `orchestrator.model`
+2. Available models: `gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-2.0-flash`, `gemini-3-pro-preview`
+
+### Change the embedding model
+1. Update `config/config.yaml` → `embedding.model` and `embedding.dimension`
+2. Update `memory/embedding_service.py` → `_init_sentence_transformer()`
+3. **Critical**: Reset vector store (`VectorStore.reset_collections()`) since embeddings are dimension-dependent
+
+### Add a new document format
+1. Add the extension to `DocumentLoader.SUPPORTED_FORMATS`
+2. Implement `_load_<format>()` method in `utils/document_loader.py`
+3. Add the routing in `DocumentLoader.load_file()`
+
+### Switch vector database to Qdrant
+1. Set `VECTOR_DB_TYPE=qdrant` in `.env`
+2. Start Qdrant server: `docker run -p 6333:6333 qdrant/qdrant`
+3. Complete `VectorStore._init_qdrant()` implementation (currently a stub)
 
 ### Add response post-processing
-1. Edit `retrieval/rag_pipeline.py` - add logic after `_generate_llm_response()`
-2. Update response before returning
+1. Edit `retrieval/rag_pipeline.py` → add logic after `_generate_llm_response()`
+2. Or add a new validation rule in `utils/validators.py`
 
-### Switch vector database
-1. Edit `config/config.yaml` - set `vector_db.type: qdrant`
-2. Edit `memory/vector_store.py` - update `_init_qdrant()`
-
----
-
-## Testing the System
-
-### Run interactive mode
-```bash
-python main.py --mode interactive
-```
-
-### Run web interface
-```bash
-python run_ui.py
-```
-
-### Run with test queries (add to main.py)
-```python
-test_queries = [
-    "Hello",
-    "What documents have been uploaded?",
-    "What are the evaluation criteria?"
-]
-for query in test_queries:
-    result = system.process_query(query, "web_user")
-    print(result["response"])
-```
+### Add a new prompt template
+1. Add the template dict to `utils/prompt_templates.py`
+2. Use `format_prompt()` or `get_prompt()` to retrieve it
 
 ---
 
-## Loading Documents (PDF, Word, Images)
+## Dependency Matrix
 
-### Quick Start
+### Core Dependencies (as of 2026-02-28)
 
-```python
-from memory.memory_manager import MemoryManager
+| Package | Required Version | Installed | Purpose |
+|---|---|---|---|
+| streamlit | ≥ 1.28.0 | 1.54.0 | Web interface |
+| streamlit-chat | ≥ 0.1.0 | ✔️ | Chat bubbles |
+| pydantic | ≥ 2.0.0 | 2.12.4 | Config models |
+| pydantic-settings | ≥ 2.0.0 | 2.12.0 | Settings management |
+| python-dotenv | ≥ 1.0.0 | ✔️ | .env file loading |
+| PyYAML | ≥ 6.0 | ✔️ | Config file parsing |
+| chromadb | ≥ 0.6.0 | 1.5.1 | Vector database |
+| qdrant-client | ≥ 1.6.0 | 1.17.0 | Vector DB (alt) |
+| google-generativeai | ≥ 0.3.0 | 0.8.6 | Gemini API ⚠️ |
+| sentence-transformers | ≥ 2.2.0 | 5.2.3 | Embeddings |
+| numpy | ≥ 1.24.0 | 2.4.2 | Numeric operations |
+| tiktoken | ≥ 0.5.0 | ✔️ | Token counting |
+| pypdf | ≥ 3.17.0 | 6.7.4 | PDF text extraction |
+| python-docx | ≥ 0.8.11 | ✔️ | Word documents |
+| pytesseract | ≥ 0.3.10 | ✔️ | OCR |
+| pdf2image | ≥ 1.16.0 | ✔️ | PDF → image for OCR |
+| Pillow | ≥ 9.5.0 | ✔️ | Image processing |
+| loguru | ≥ 0.7.0 | ✔️ | Structured logging |
+| colorlog | ≥ 6.7.0 | ✔️ | Colored log output |
+| ddgs | ≥ 9.0.0 | ✔️ | DuckDuckGo search |
 
-mm = MemoryManager()
+### ⚠️ Deprecation Notice
 
-# Load a single PDF
-mm.load_documents_from_file(
-    user_id="web_user",
-    file_path="documents/guide.pdf",
-    context_type="uploaded_document"
-)
+**`google-generativeai`** (v0.8.6) is deprecated. Google has ended support for this package.
+- **Action required**: Migrate to **`google-genai`** (the new official SDK)
+- **Impact**: No breaking changes currently, but no future bug fixes or updates
+- **Migration guide**: https://github.com/google-gemini/deprecated-generative-ai-python
 
-# Search loaded documents
-results = mm.search_documents(
-    user_id="web_user",
-    query="evaluation criteria",
-    top_k=5
-)
+### Verified Compatibility (2026-02-28)
+
 ```
-
-### Supported Formats
-
-| Format | Support | Features |
-|--------|---------|----------|
-| PDF | ✅ Text + OCR | Scanned PDFs automatically detected and OCR'd |
-| DOCX | ✅ Full | Extracts paragraphs and tables |
-| TXT | ✅ Full | Plain text files |
-| PNG/JPG | ✅ OCR | Automatic text extraction from images |
-| GIF/BMP | ✅ OCR | Additional image formats |
-
-### Setup OCR (Optional but Recommended)
-
-For best OCR performance on scanned documents and images:
-
-```bash
-# Install system dependency (Windows)
-choco install tesseract
-
-# Install system dependency (Linux)
-sudo apt-get install tesseract-ocr
-
-# Verify installation
-python -c "import pytesseract; print(pytesseract.get_tesseract_version())"
+✅ pydantic 2.12 + chromadb 1.5  → Compatible
+✅ grpcio 1.78 + protobuf 5.29   → Compatible
+✅ numpy 2.4 + sentence-transformers 5.2 → Compatible
+✅ pip check → "No broken requirements found"
 ```
 
 ---
 
-## Common Errors & Solutions
+## Resolved Issues & Fixes
 
-| Error | Cause | Solution |
-|-------|-------|----------|
-| `GEMINI_API_KEY not set` | Missing .env | Copy .env.example to .env and add your API key |
-| `404 Model not found` | Invalid model name | Run `python list_available_models.py` to see available models |
-| `Rate limited (429)` | Too many API calls | Wait 1-2 minutes or upgrade API quota |
-| `Documents not retrieved` | Similarity threshold too high | Lower `similarity_threshold` in config.yaml |
-| `ChromaDB persistence issue` | Using wrong client | Ensure PersistentClient is used (already fixed) |
-| `Negative similarities` | Distance calculation error | Fixed with proper similarity calculation |
+### ✅ ChromaDB Persistence Issue
+**Problem**: Documents lost between sessions (using in-memory client)  
+**Fix**: Changed `chromadb.Client()` → `chromadb.PersistentClient(path="data/vector_store/")`  
+**File**: `memory/vector_store.py` → `_init_chromadb()`
+
+### ✅ ChromaDB Query Filters
+**Problem**: Query failed with multiple metadata filter conditions  
+**Fix**: Used `$and` operator for compound filters  
+**File**: `memory/vector_store.py` → `search()` and `search_documents()`
+
+### ✅ Negative Similarity Scores
+**Problem**: Similarity scores went negative with good embeddings  
+**Root cause**: Incorrect distance-to-similarity conversion  
+**Fix**: Changed `1 - distance` → `max(0.0, 1.0 - (distance / 2.0))`  
+**File**: `memory/vector_store.py`
+
+### ✅ Pydantic v1/v2 ConfigError with ChromaDB
+**Problem**: `pydantic.v1.errors.ConfigError` on startup  
+**Root cause**: Old ChromaDB versions bundled pydantic v1 compatibility layer that clashed with pydantic v2  
+**Fix**: Upgraded chromadb to ≥ 1.5.1  
+**File**: `requirements.txt`
+
+### ✅ Document Context Truncation
+**Problem**: Document content cut off too early in prompts  
+**Fix**: Increased content limit to 800 characters + added keyword-based sentence extraction  
+**File**: `retrieval/rag_pipeline.py` → `_build_prompt()`
+
+### ✅ Embedding Normalization Conflict
+**Problem**: Normalized embeddings + ChromaDB's L2 distance = incorrect similarities  
+**Fix**: Removed manual normalization in EmbeddingService  
+**File**: `memory/embedding_service.py`
+
+### ✅ Web Search Import Issue
+**Problem**: `ddgs` package import failed under Streamlit's ScriptRunner  
+**Fix**: Lazy-load `DDGS` class at call time instead of module-level import  
+**File**: `utils/web_search.py` → `_load_ddgs_class()`
 
 ---
 
-## For Production Deployment
+## Known Limitations & Open Issues
 
-1. ✅ Use environment variables for secrets (API key, model names)
-2. ✅ Set `log_level: WARNING` in config
-3. ✅ Increase `max_retries` for stability
-4. ✅ Monitor `logs/` directory
-5. ✅ Use persistent vector store (already configured)
-6. ✅ Add authentication/authorization around web interface
-7. ✅ Handle API rate limiting gracefully
+### ⚠️ `google-generativeai` Deprecation
+**Status**: Working but deprecated  
+**Impact**: No future updates  
+**Action**: Plan migration to `google-genai` SDK
+
+### ⚠️ Qdrant Backend is a Stub
+**Status**: `VectorStore._init_qdrant()` exists but is not fully implemented  
+**Impact**: Setting `VECTOR_DB_TYPE=qdrant` will not work end-to-end
+
+### ⚠️ Response Validation Disabled
+**Status**: `enable_validation: false` in config  
+**Reason**: Was adding latency and occasionally blocking valid responses during development  
+**Action**: Re-enable and tune validation rules before production
+
+### ⚠️ No Authentication
+**Status**: Web UI uses hardcoded `"web_user"` for all sessions  
+**Impact**: No multi-user isolation  
+**Action**: Add session-based auth before production deployment
+
+### ⚠️ Single-Language Embedding Model
+**Status**: `all-MiniLM-L6-v2` is English-optimized  
+**Impact**: Vietnamese document retrieval may have lower similarity scores  
+**Action**: Consider multilingual models (e.g., `paraphrase-multilingual-MiniLM-L12-v2`)
 
 ---
 
-## Quick Reference for Common Modifications
+## Production Deployment Checklist
 
-**Change LLM model**: `config/config.yaml` line 36  
-**Change embedding model**: `config/config.yaml` line 40  
-**Adjust response temperature**: `config/config.yaml` line 38  
-**Increase document retrieval**: `config/config.yaml` line 118 (top_k_documents)  
-**Adjust similarity threshold**: `config/config.yaml` line 119 (similarity_threshold)  
-**Change validation rules**: `utils/validators.py` line ~60  
-**Modify prompt template**: `utils/prompt_templates.py` or in each component  
-**Add document support**: Use `memory.load_documents_from_file()` or `.load_documents_from_directory()`
+| # | Item | Status |
+|---|---|---|
+| 1 | Use environment variables for all secrets | ✅ Done |
+| 2 | Set `log_level: WARNING` in config | ⬜ TODO |
+| 3 | Enable response validation | ⬜ TODO |
+| 4 | Increase `max_retries` for stability | ⬜ TODO |
+| 5 | Add authentication to web interface | ⬜ TODO |
+| 6 | Monitor `logs/` directory (set up alerting) | ⬜ TODO |
+| 7 | Use persistent vector store | ✅ Done |
+| 8 | Handle API rate limiting gracefully | ✅ Done (key rotation) |
+| 9 | Migrate to `google-genai` SDK | ⬜ TODO |
+| 10 | Consider multilingual embedding model | ⬜ TODO |
+| 11 | Implement proper error pages in Streamlit | ⬜ TODO |
+| 12 | Set up CI/CD pipeline with tests | ⬜ TODO |
 
 ---
 
-## Contact/Questions
+## Quick Reference — Common Modifications
 
-See individual files for detailed docstrings and method documentation.
+| What to Change | Where |
+|---|---|
+| LLM model | `config/config.yaml` → `llm.model` |
+| Orchestrator model | `config/config.yaml` → `orchestrator.model` |
+| Response creativity | `config/config.yaml` → `llm.temperature` |
+| Embedding model | `config/config.yaml` → `embedding.model` + `embedding.dimension` |
+| Number of retrieved documents | `config/config.yaml` → `rag.top_k_documents` |
+| Similarity threshold | `config/config.yaml` → `rag.similarity_threshold` |
+| Chunk size | `config/config.yaml` → `chunking.chunk_size` |
+| Max sessions kept | `config/config.yaml` → `memory.max_chat_sessions` |
+| Web search aggressiveness | `config/config.yaml` → `rag.web_search_quality_threshold` |
+| Prompt templates | `utils/prompt_templates.py` |
+| System persona | `config/config.yaml` → `llm.system_prompt` |
+| Routing behavior | `config/config.yaml` → `orchestrator.system_prompt` |
+| Safety keywords | `config/config.yaml` → `validation.unsafe_keywords` |
+| API keys | `.env` → `GEMINI_API_KEYS` |
+| UI layout | `ui.py` |
+| Add document format | `utils/document_loader.py` → `SUPPORTED_FORMATS` + new `_load_*()` |
 
-**Start with QUICKSTART.md for user setup**  
-**Start with this README_DEVELOPERS.md for development**
+---
+
+## Contact / Further Reading
+
+- **User setup**: See [`QUICKSTART.md`](QUICKSTART.md)
+- **Config details**: See [`config/config.yaml`](config/config.yaml)
+- **Prompt templates**: See [`utils/prompt_templates.py`](utils/prompt_templates.py)
+- **Individual modules**: Each file contains detailed docstrings and method documentation
