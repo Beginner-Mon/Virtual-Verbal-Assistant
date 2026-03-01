@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ECA · Embodied Conversational Agent</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body, #root { height: 100%; }
+  button { cursor: pointer; border: none; background: none; font-family: inherit; }
+  textarea { font-family: inherit; resize: none; outline: none; border: none; background: none; }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-thumb { background: #D1D1D6; border-radius: 10px; }
+
+  /* ── LIGHT THEME (default) ── */
+  :root {
+    --bg:           #F2F2F7;
+    --sidebar-bg:   rgba(255,255,255,0.72);
+    --sidebar-blur: blur(28px);
+    --panel-bg:     #ffffff;
+    --toolbar-bg:   rgba(242,242,247,0.9);
+    --toolbar-blur: blur(20px);
+    --divider:      rgba(0,0,0,0.07);
+    --bubble-ai:    #ffffff;
+    --bubble-ai-shadow: 0 1px 4px rgba(0,0,0,0.07), 0 0 0 1px rgba(0,0,0,0.04);
+    --text-primary: #1C1C1E;
+    --text-secondary:#8E8E93;
+    --text-tertiary: #AEAEB2;
+    --text-label:   #3C3C43;
+    --input-bg:     #ffffff;
+    --input-shadow: 0 2px 12px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.05);
+    --chip-bg:      #F2F2F7;
+    --chip-hover:   #E5E5EA;
+    --tag-bg:       rgba(0,0,0,0.05);
+    --motion-bg:    #F5F5F7;
+    --grid-color:   #D1D1D6;
+    --grid-opacity: 0.45;
+    --fig-card-bg:  #ffffff;
+    --fig-label-bg: #ffffff;
+    --output-bg:    #F2F2F7;
+    --session-active: rgba(0,122,255,0.1);
+    --session-hover:  rgba(0,0,0,0.04);
+    --scrollbar-thumb: #D1D1D6;
+    --live-bg:      rgba(52,199,89,0.1);
+    --motion-chip-active-bg: 14; /* hex alpha suffix */
+  }
+
+  /* ── DARK THEME ── */
+  [data-theme="dark"] {
+    --bg:           #000000;
+    --sidebar-bg:   rgba(28,28,30,0.85);
+    --sidebar-blur: blur(28px);
+    --panel-bg:     #1C1C1E;
+    --toolbar-bg:   rgba(0,0,0,0.75);
+    --toolbar-blur: blur(20px);
+    --divider:      rgba(255,255,255,0.08);
+    --bubble-ai:    #2C2C2E;
+    --bubble-ai-shadow: 0 1px 4px rgba(0,0,0,0.4);
+    --text-primary: #F2F2F7;
+    --text-secondary:#8E8E93;
+    --text-tertiary: #636366;
+    --text-label:   #EBEBF5;
+    --input-bg:     #1C1C1E;
+    --input-shadow: 0 2px 12px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.06);
+    --chip-bg:      #2C2C2E;
+    --chip-hover:   #3A3A3C;
+    --tag-bg:       rgba(255,255,255,0.08);
+    --motion-bg:    #111111;
+    --grid-color:   #2C2C2E;
+    --grid-opacity: 0.9;
+    --fig-card-bg:  #2C2C2E;
+    --fig-label-bg: #2C2C2E;
+    --output-bg:    #2C2C2E;
+    --session-active: rgba(0,122,255,0.18);
+    --session-hover:  rgba(255,255,255,0.05);
+    --scrollbar-thumb: #3A3A3C;
+    --live-bg:      rgba(52,199,89,0.12);
+  }
+
+  [data-theme="dark"] ::-webkit-scrollbar-thumb { background: #3A3A3C; }
+
+  @keyframes spin    { to { transform: rotate(360deg); } }
+  @keyframes fadeUp  { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  @keyframes pulse   { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+  .session-row:hover { background: var(--session-hover) !important; }
+  .send-btn:hover:not(:disabled) { opacity: 0.82 !important; }
+  .suggestion:hover  { background: var(--chip-hover) !important; }
+  .chip:hover        { background: var(--chip-hover) !important; }
+  .new-btn:hover     { opacity: 0.85 !important; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useRef, useEffect } = React;
+
+// ── DATA ─────────────────────────────────────────────────────────────────────
+
+const INIT = [
+  { id: 1, role: "assistant", text: "Hi! I'm ECA. Ask me about any physical movement or exercise and I'll demonstrate it in 3D.", motion: null, time: "Now" },
+];
+
+const MOTIONS = {
+  idle:    { label: "Standing Idle",    color: "#34C759", frames: 60 },
+  walk:    { label: "Walking",          color: "#007AFF", frames: 45 },
+  raise:   { label: "Raising Arms",     color: "#FF9500", frames: 30 },
+  squat:   { label: "Squat",           color: "#AF52DE", frames: 50 },
+  stretch: { label: "Shoulder Stretch", color: "#FF3B30", frames: 40 },
+};
+
+const SESSIONS = [
+  { id: 1, title: "Shoulder rehabilitation", time: "2m ago" },
+  { id: 2, title: "Walking gait analysis",   time: "1h ago" },
+  { id: 3, title: "Knee flexion therapy",    time: "Yesterday" },
+  { id: 4, title: "Posture correction",      time: "Jan 28" },
+];
+
+const SUGGESTIONS = [
+  "Show me a shoulder stretch",
+  "Demonstrate a squat",
+  "Walking gait pattern",
+  "Raise both arms slowly",
+];
+
+const RESPONSES = {
+  walk:    "Here's a walking gait pattern. Notice the natural arm-leg opposition — left arm swings forward with the right leg. This is key for rehab after lower limb surgery.",
+  raise:   "Demonstrating a bilateral arm raise. For shoulder rehab, keep the movement slow and controlled through the full range of motion.",
+  squat:   "Showing a squat pattern. Keep your back straight, weight through your heels, and knees tracking over your second toe.",
+  stretch: "This shoulder stretch targets the posterior capsule and rotator cuff. Hold each end position for 20–30 seconds.",
+};
+
+// ── STICK FIGURE ─────────────────────────────────────────────────────────────
+
+function StickFigure({ motionKey, tick }) {
+  const m = MOTIONS[motionKey] || MOTIONS.idle;
+  const t = (tick % m.frames) / m.frames;
+  const PI = Math.PI;
+  const cx = 100;
+
+  let lA = 18 * Math.sin(t * 2 * PI);
+  let rA = -18 * Math.sin(t * 2 * PI);
+  let lL = 14 * Math.sin(t * 2 * PI);
+  let rL = -14 * Math.sin(t * 2 * PI);
+  let bob = 1.5 * Math.sin(t * 4 * PI);
+  let squat = 0;
+
+  if (motionKey === "raise") {
+    lA = -55 - 25 * Math.sin(t * 2 * PI);
+    rA =  55 + 25 * Math.sin(t * 2 * PI);
+    lL = rL = 0;
+  } else if (motionKey === "squat") {
+    squat = 18 * Math.abs(Math.sin(t * PI));
+    lL = 8 * Math.sin(t * 2 * PI);
+    rL = -8 * Math.sin(t * 2 * PI);
+  } else if (motionKey === "stretch") {
+    lA = -40 + 20 * Math.sin(t * 2 * PI);
+    rA =  40 - 20 * Math.sin(t * 2 * PI);
+    bob = 2.5 * Math.sin(t * 2 * PI);
+  }
+
+  const by = bob + squat;
+  const hY = 32, sY = 56 + by, hipY = 96 + by;
+  const aLen = 27, lLen = 30;
+
+  const lax  = cx - aLen * Math.sin(lA * PI / 180);
+  const lay  = sY  + aLen * Math.cos(lA * PI / 180);
+  const rax  = cx + aLen * Math.sin(rA * PI / 180);
+  const ray  = sY  + aLen * Math.cos(rA * PI / 180);
+  const llkx = cx - lLen * 0.55 * Math.sin(lL * PI / 180);
+  const llky = hipY + lLen * 0.6;
+  const rrkx = cx + lLen * 0.55 * Math.sin(rL * PI / 180);
+  const rrky = hipY + lLen * 0.6;
+
+  const s = m.color;
+  const joints = [
+    [cx, hY + by + 12], [cx - 17, sY], [cx + 17, sY],
+    [lax, lay], [rax, ray],
+    [cx - 12, hipY], [cx + 12, hipY],
+    [llkx, llky], [rrkx, rrky],
+  ];
+
+  return (
+    <svg width="200" height="185" viewBox="0 0 200 185">
+      <defs>
+        <filter id="sf">
+          <feGaussianBlur stdDeviation="2" result="b"/>
+          <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+      <g filter="url(#sf)" strokeLinecap="round" strokeLinejoin="round">
+        <ellipse cx={cx} cy={178} rx={22} ry={4} fill={s} opacity={0.12}/>
+        <circle cx={cx} cy={hY+by} r={12} fill="none" stroke={s} strokeWidth="2.2"/>
+        <line x1={cx} y1={hY+by+12} x2={cx} y2={sY} stroke={s} strokeWidth="2.2"/>
+        <line x1={cx} y1={sY} x2={cx} y2={hipY} stroke={s} strokeWidth="2.2"/>
+        <line x1={cx-17} y1={sY} x2={cx+17} y2={sY} stroke={s} strokeWidth="1.8"/>
+        <line x1={cx-12} y1={hipY} x2={cx+12} y2={hipY} stroke={s} strokeWidth="1.8"/>
+        <line x1={cx-17} y1={sY} x2={lax} y2={lay} stroke={s} strokeWidth="2.2"/>
+        <line x1={cx+17} y1={sY} x2={rax} y2={ray} stroke={s} strokeWidth="2.2"/>
+        <line x1={cx-12} y1={hipY} x2={llkx} y2={llky} stroke={s} strokeWidth="2.2"/>
+        <line x1={llkx} y1={llky} x2={llkx-5} y2={llky+lLen*0.55} stroke={s} strokeWidth="2.2"/>
+        <line x1={cx+12} y1={hipY} x2={rrkx} y2={rrky} stroke={s} strokeWidth="2.2"/>
+        <line x1={rrkx} y1={rrky} x2={rrkx+5} y2={rrky+lLen*0.55} stroke={s} strokeWidth="2.2"/>
+        {joints.map(([x, y], i) => <circle key={i} cx={x} cy={y} r={2.8} fill={s} opacity={0.9}/>)}
+      </g>
+    </svg>
+  );
+}
+
+// ── MOTION VIEWER ─────────────────────────────────────────────────────────────
+
+function MotionViewer({ motionKey, isGenerating }) {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const iv = setInterval(() => setTick(t => t + 1), 40);
+    return () => clearInterval(iv);
+  }, []);
+
+  const m = MOTIONS[motionKey] || MOTIONS.idle;
+
+  return (
+    <div style={{ width:"100%", height:"100%", background:"#F5F5F7", display:"flex",
+      flexDirection:"column", alignItems:"center", justifyContent:"center", position:"relative" }}>
+
+      {/* Grid background */}
+      <svg style={{ position:"absolute", inset:0, width:"100%", height:"100%", opacity:0.45 }}>
+        <defs>
+          <pattern id="g" width="28" height="28" patternUnits="userSpaceOnUse">
+            <path d="M 28 0 L 0 0 0 28" fill="none" stroke="#D1D1D6" strokeWidth="0.5"/>
+          </pattern>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#g)"/>
+      </svg>
+
+      {isGenerating ? (
+        <div style={{ textAlign:"center", zIndex:2 }}>
+          <div style={{ width:40, height:40, borderRadius:"50%",
+            border:"2.5px solid #E5E5EA", borderTopColor:"#007AFF",
+            animation:"spin 0.8s linear infinite", margin:"0 auto 12px" }}/>
+          <p style={{ color:"#8E8E93", fontSize:13, fontWeight:500 }}>Generating motion…</p>
+        </div>
+      ) : (
+        <div style={{ zIndex:2, display:"flex", flexDirection:"column", alignItems:"center", gap:12 }}>
+          <div style={{ background:"#fff", borderRadius:20, padding:"18px 24px",
+            boxShadow:"0 2px 16px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.04)" }}>
+            <StickFigure motionKey={motionKey} tick={tick}/>
+          </div>
+          <div style={{ background:"#fff", borderRadius:20, padding:"5px 14px",
+            boxShadow:"0 1px 6px rgba(0,0,0,0.08)", display:"flex", alignItems:"center", gap:7 }}>
+            <div style={{ width:7, height:7, borderRadius:"50%", background:m.color }}/>
+            <span style={{ fontSize:12, fontWeight:600, color:"#1C1C1E", letterSpacing:-0.1 }}>{m.label}</span>
+          </div>
+        </div>
+      )}
+
+      <span style={{ position:"absolute", bottom:12, left:14, fontSize:10, color:"#C7C7CC", fontWeight:500 }}>22 joints · T×3</span>
+      <span style={{ position:"absolute", bottom:12, right:14, fontSize:10, color:"#C7C7CC", fontWeight:500 }}>25 FPS</span>
+    </div>
+  );
+}
+
+// ── BUBBLE ────────────────────────────────────────────────────────────────────
+
+function Bubble({ msg }) {
+  const isUser = msg.role === "user";
+  return (
+    <div style={{ display:"flex", justifyContent:isUser?"flex-end":"flex-start",
+      marginBottom:12, animation:"fadeUp 0.25s ease" }}>
+      <div style={{ maxWidth:"72%", display:"flex", flexDirection:"column",
+        gap:5, alignItems:isUser?"flex-end":"flex-start" }}>
+
+        <div style={{
+          background: isUser ? "#007AFF" : "#fff",
+          color: isUser ? "#fff" : "#1C1C1E",
+          borderRadius: isUser ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
+          padding: "11px 15px", fontSize:14.5, lineHeight:1.55, letterSpacing:-0.1,
+          boxShadow: isUser
+            ? "0 2px 10px rgba(0,122,255,0.22)"
+            : "0 1px 4px rgba(0,0,0,0.07), 0 0 0 1px rgba(0,0,0,0.04)",
+        }}>
+          {msg.text}
+        </div>
+
+        {msg.motion && (
+          <div style={{ display:"flex", alignItems:"center", gap:6,
+            background:"#F2F2F7", borderRadius:10, padding:"5px 10px" }}>
+            <div style={{ width:6, height:6, borderRadius:"50%", background:MOTIONS[msg.motion]?.color }}/>
+            <span style={{ fontSize:11.5, color:"#636366", fontWeight:500 }}>
+              Motion: {MOTIONS[msg.motion]?.label}
+            </span>
+          </div>
+        )}
+
+        <span style={{ fontSize:11, color:"#AEAEB2", paddingLeft:4, paddingRight:4 }}>{msg.time}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── APP ───────────────────────────────────────────────────────────────────────
+
+function App() {
+  const [messages, setMessages]           = useState(INIT);
+  const [input, setInput]                 = useState("");
+  const [thinking, setThinking]           = useState(false);
+  const [generatingMotion, setGenerating] = useState(false);
+  const [motionKey, setMotionKey]         = useState("idle");
+  const [activeSession, setActiveSession] = useState(1);
+  const [micActive, setMicActive]         = useState(false);
+  const [dark, setDark]                   = useState(false);
+  const bottomRef = useRef(null);
+  const textRef   = useRef(null);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  }, [dark]);
+
+  const detectMotion = (t) => {
+    const l = t.toLowerCase();
+    if (l.includes("walk") || l.includes("step") || l.includes("gait")) return "walk";
+    if (l.includes("raise") || l.includes("arm")  || l.includes("lift")) return "raise";
+    if (l.includes("squat") || l.includes("knee") || l.includes("leg"))  return "squat";
+    if (l.includes("stretch") || l.includes("shoulder") || l.includes("flex")) return "stretch";
+    return null;
+  };
+
+  const send = async (text) => {
+    if (!text.trim()) return;
+    const now = new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
+    setMessages(m => [...m, { id:Date.now(), role:"user", text, motion:null, time:now }]);
+    setInput("");
+    if (textRef.current) textRef.current.style.height = "auto";
+
+    setThinking(true);
+    await new Promise(r => setTimeout(r, 700));
+
+    const detected = detectMotion(text);
+    if (detected) {
+      setGenerating(true);
+      await new Promise(r => setTimeout(r, 1100));
+      setGenerating(false);
+      setMotionKey(detected);
+    }
+
+    await new Promise(r => setTimeout(r, 300));
+    setThinking(false);
+
+    const reply = detected
+      ? RESPONSES[detected]
+      : "I can demonstrate any physical movement or exercise in 3D. Try describing a motion like \"raise your arms\" or \"show a squat pattern.\"";
+
+    setMessages(m => [...m, {
+      id: Date.now() + 1, role:"assistant", text:reply, motion:detected,
+      time: new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }),
+    }]);
+  };
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior:"smooth" }); }, [messages, thinking]);
+
+  return (
+    <div style={{ display:"flex", height:"100vh",
+      background:"var(--bg)",
+      fontFamily:"-apple-system,'SF Pro Display','SF Pro Text',BlinkMacSystemFont,sans-serif",
+      WebkitFontSmoothing:"antialiased", color:"var(--text-primary)", overflow:"hidden",
+      transition:"background 0.25s, color 0.25s" }}>
+
+      {/* ── SIDEBAR ── */}
+      <aside style={{ width:232, background:"var(--sidebar-bg)",
+        backdropFilter:"var(--sidebar-blur)", WebkitBackdropFilter:"var(--sidebar-blur)",
+        borderRight:"1px solid var(--divider)",
+        display:"flex", flexDirection:"column", flexShrink:0,
+        transition:"background 0.25s, border-color 0.25s" }}>
+
+        <div style={{ padding:"20px 14px 12px" }}>
+          {/* Logo */}
+          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:20 }}>
+            <div style={{ width:30, height:30, borderRadius:8,
+              background:"linear-gradient(145deg,#007AFF,#34AADC)",
+              display:"flex", alignItems:"center", justifyContent:"center",
+              fontSize:13, fontWeight:800, color:"#fff",
+              boxShadow:"0 2px 8px rgba(0,122,255,0.3)" }}>E</div>
+            <div>
+              <div style={{ fontSize:14, fontWeight:700, letterSpacing:-0.4, color:"var(--text-primary)" }}>ECA</div>
+              <div style={{ fontSize:10.5, color:"var(--text-secondary)", fontWeight:500 }}>Alpha · v1.0</div>
+            </div>
+          </div>
+
+          <button className="new-btn"
+            onClick={() => { setMessages(INIT); setMotionKey("idle"); }}
+            style={{ width:"100%", padding:"8px 0", background:"#007AFF",
+              borderRadius:10, color:"#fff", fontSize:13.5, fontWeight:600,
+              letterSpacing:-0.2, transition:"opacity 0.12s" }}>
+            + New Session
+          </button>
+        </div>
+
+        {/* Sessions */}
+        <div style={{ padding:"0 6px", flex:1, overflowY:"auto" }}>
+          <p style={{ fontSize:11, fontWeight:600, color:"var(--text-secondary)", letterSpacing:0.5,
+            padding:"4px 8px 8px", textTransform:"uppercase" }}>Recents</p>
+          {SESSIONS.map(s => (
+            <button key={s.id} className="session-row"
+              onClick={() => setActiveSession(s.id)}
+              style={{ width:"100%", textAlign:"left", padding:"8px 10px", borderRadius:8,
+                background:activeSession===s.id ? "var(--session-active)" : "transparent",
+                marginBottom:1, transition:"background 0.1s" }}>
+              <div style={{ fontSize:13.5, fontWeight:500, letterSpacing:-0.2,
+                color:activeSession===s.id ? "#007AFF" : "var(--text-primary)" }}>{s.title}</div>
+              <div style={{ fontSize:11, color:"var(--text-tertiary)", marginTop:1 }}>{s.time}</div>
+            </button>
+          ))}
+        </div>
+
+        {/* Module status */}
+        <div style={{ padding:"12px 14px 20px", borderTop:"1px solid var(--divider)" }}>
+          <p style={{ fontSize:11, fontWeight:600, color:"var(--text-secondary)", letterSpacing:0.5,
+            marginBottom:8, textTransform:"uppercase" }}>Modules</p>
+          {[["Speech LLM","#34C759"],["Agentic RAG","#34C759"],["Motion 3D","#34C759"]].map(([label, color]) => (
+            <div key={label} style={{ display:"flex", alignItems:"center",
+              justifyContent:"space-between", marginBottom:6 }}>
+              <span style={{ fontSize:12.5, color:"var(--text-label)", fontWeight:500 }}>{label}</span>
+              <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                <div style={{ width:6, height:6, borderRadius:"50%", background:color }}/>
+                <span style={{ fontSize:11, color, fontWeight:600 }}>On</span>
+              </div>
+            </div>
+          ))}
+
+          {/* Dark mode toggle */}
+          <div style={{ marginTop:12, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+            <span style={{ fontSize:12.5, color:"var(--text-label)", fontWeight:500 }}>Dark Mode</span>
+            <button onClick={() => setDark(d => !d)} style={{
+              width:44, height:26, borderRadius:13,
+              background: dark ? "#007AFF" : "#E5E5EA",
+              position:"relative", transition:"background 0.25s", flexShrink:0,
+            }}>
+              <div style={{
+                position:"absolute", top:3, left: dark ? 21 : 3,
+                width:20, height:20, borderRadius:"50%",
+                background:"#fff",
+                boxShadow:"0 1px 4px rgba(0,0,0,0.25)",
+                transition:"left 0.22s cubic-bezier(.4,0,.2,1)",
+              }}/>
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      {/* ── CHAT ── */}
+      <main style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", minWidth:0 }}>
+
+        {/* Toolbar */}
+        <div style={{ height:52, background:"var(--toolbar-bg)",
+          backdropFilter:"var(--toolbar-blur)", WebkitBackdropFilter:"var(--toolbar-blur)",
+          borderBottom:"1px solid var(--divider)",
+          display:"flex", alignItems:"center", justifyContent:"space-between",
+          padding:"0 20px", flexShrink:0, transition:"background 0.25s, border-color 0.25s" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <span style={{ fontSize:15, fontWeight:600, letterSpacing:-0.3, color:"var(--text-primary)" }}>Shoulder rehabilitation</span>
+            <div style={{ display:"flex", alignItems:"center", gap:5,
+              background:"var(--live-bg)", borderRadius:20, padding:"3px 9px" }}>
+              <div style={{ width:5, height:5, borderRadius:"50%",
+                background:"#34C759", animation:"pulse 2s ease infinite" }}/>
+              <span style={{ fontSize:11, fontWeight:600, color:"#34C759" }}>Live</span>
+            </div>
+          </div>
+          <div style={{ display:"flex", gap:6 }}>
+            {["HumanML3D","MDM","Gemini"].map(tag => (
+              <span key={tag} style={{ fontSize:11.5, color:"var(--text-secondary)", fontWeight:500,
+                background:"var(--tag-bg)", borderRadius:6, padding:"3px 9px",
+                transition:"background 0.25s" }}>{tag}</span>
+            ))}
+          </div>
+        </div>
+
+        {/* Messages */}
+        <div style={{ flex:1, overflowY:"auto", padding:"24px 20px" }}>
+          {messages.map(msg => <Bubble key={msg.id} msg={msg}/>)}
+
+          {thinking && (
+            <div style={{ display:"flex", justifyContent:"flex-start",
+              marginBottom:12, animation:"fadeUp 0.2s ease" }}>
+              <div style={{ background:"#fff",
+                borderRadius:"18px 18px 18px 4px", padding:"12px 16px",
+                boxShadow:"0 1px 4px rgba(0,0,0,0.07), 0 0 0 1px rgba(0,0,0,0.04)",
+                display:"flex", gap:5, alignItems:"center" }}>
+                {[0,1,2].map(i => (
+                  <div key={i} style={{ width:7, height:7, borderRadius:"50%",
+                    background:"#C7C7CC",
+                    animation:`pulse 1.1s ease-in-out ${i*0.18}s infinite` }}/>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Suggestion chips */}
+          {messages.length === 1 && !thinking && (
+            <div style={{ marginTop:16 }}>
+              <p style={{ fontSize:12, color:"var(--text-secondary)", fontWeight:500, marginBottom:10 }}>Try asking…</p>
+              <div style={{ display:"flex", flexWrap:"wrap", gap:8 }}>
+                {SUGGESTIONS.map(s => (
+                  <button key={s} className="suggestion" onClick={() => send(s)} style={{
+                    padding:"8px 14px", background:"var(--bubble-ai)", borderRadius:20,
+                    fontSize:13.5, color:"#007AFF", fontWeight:500,
+                    boxShadow:"0 1px 3px rgba(0,0,0,0.1)",
+                    transition:"background 0.12s", letterSpacing:-0.1 }}>
+                    {s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <div ref={bottomRef}/>
+        </div>
+
+        {/* Input bar */}
+        <div style={{ padding:"10px 16px 16px", flexShrink:0 }}>
+          <div style={{ background:"var(--input-bg)", borderRadius:16,
+            padding:"8px 8px 8px 16px",
+            boxShadow:"var(--input-shadow)",
+            display:"flex", alignItems:"flex-end", gap:8,
+            transition:"background 0.25s, box-shadow 0.25s" }}>
+            <textarea ref={textRef} value={input}
+              onChange={e => {
+                setInput(e.target.value);
+                e.target.style.height = "auto";
+                e.target.style.height = Math.min(e.target.scrollHeight, 100) + "px";
+              }}
+              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(input); } }}
+              placeholder="Ask about a movement or exercise…" rows={1}
+              style={{ flex:1, fontSize:15, color:"var(--text-primary)",
+                lineHeight:1.5, letterSpacing:-0.2, minHeight:26, maxHeight:100 }}/>
+
+            <button onClick={() => setMicActive(a => !a)} style={{
+              width:34, height:34, borderRadius:10,
+              background:micActive ? "#007AFF" : "var(--chip-bg)",
+              color:micActive ? "#fff" : "var(--text-secondary)",
+              fontSize:15, display:"flex", alignItems:"center", justifyContent:"center",
+              transition:"all 0.15s", flexShrink:0 }}>🎙</button>
+
+            <button className="send-btn" onClick={() => send(input)} disabled={!input.trim()} style={{
+              width:34, height:34, borderRadius:10,
+              background:input.trim() ? "#007AFF" : "var(--chip-bg)",
+              color:input.trim() ? "#fff" : "var(--text-tertiary)",
+              fontSize:17, fontWeight:700,
+              display:"flex", alignItems:"center", justifyContent:"center",
+              transition:"all 0.15s", flexShrink:0 }}>↑</button>
+          </div>
+          <p style={{ textAlign:"center", fontSize:11, color:"var(--text-tertiary)", marginTop:8, letterSpacing:-0.1 }}>
+            ECA · RAG + Speech LLM + Text-to-3D Motion
+          </p>
+        </div>
+      </main>
+
+      {/* ── MOTION PANEL ── */}
+      <aside style={{ width:280, display:"flex", flexDirection:"column",
+        borderLeft:"1px solid rgba(0,0,0,0.07)", flexShrink:0, background:"#fff" }}>
+
+        <div style={{ flex:1, overflow:"hidden" }}>
+          <MotionViewer motionKey={motionKey} isGenerating={generatingMotion}/>
+        </div>
+
+        <div style={{ padding:"14px 14px 20px", borderTop:"1px solid rgba(0,0,0,0.06)" }}>
+          <p style={{ fontSize:11, fontWeight:600, color:"#8E8E93", letterSpacing:0.5,
+            marginBottom:10, textTransform:"uppercase" }}>Presets</p>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
+            {Object.entries(MOTIONS).map(([key, val]) => (
+              <button key={key} className="chip" onClick={() => setMotionKey(key)} style={{
+                padding:"7px 10px", borderRadius:9,
+                background:motionKey===key ? `${val.color}14` : "#F2F2F7",
+                border:`1.5px solid ${motionKey===key ? val.color+"50" : "transparent"}`,
+                textAlign:"left", transition:"all 0.15s",
+                display:"flex", alignItems:"center", gap:7 }}>
+                <div style={{ width:7, height:7, borderRadius:"50%",
+                  background:val.color, flexShrink:0 }}/>
+                <span style={{ fontSize:12, fontWeight:500, letterSpacing:-0.1,
+                  color:motionKey===key ? val.color : "#3C3C43" }}>{val.label}</span>
+              </button>
+            ))}
+          </div>
+
+          {/* Output info */}
+          <div style={{ marginTop:12, background:"#F2F2F7", borderRadius:10, padding:"10px 12px" }}>
+            <p style={{ fontSize:11, fontWeight:600, color:"#8E8E93", letterSpacing:0.4,
+              marginBottom:6, textTransform:"uppercase" }}>Output</p>
+            {[["Format","T × 22 × 3"],["Dataset","HumanML3D"],["Model","MDM / DART"]].map(([k,v]) => (
+              <div key={k} style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
+                <span style={{ fontSize:12, color:"#8E8E93", fontWeight:500 }}>{k}</span>
+                <span style={{ fontSize:12, color:"#1C1C1E", fontWeight:600 }}>{v}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
