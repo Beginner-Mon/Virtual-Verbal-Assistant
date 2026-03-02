@@ -246,6 +246,162 @@ async function testPipeline() {
 }
 
 // ==============================
+// NPZ Runner
+// ==============================
+
+let npzPlaybackTimer = null;
+let npzSummary = null;
+
+function getNpzBaseUrl() {
+    const value = document.getElementById('npz-base-url')?.value?.trim();
+    return value || 'http://127.0.0.1:8090';
+}
+
+async function loadNpzSummary() {
+    const btn = document.getElementById('btn-npz-load');
+    const container = document.getElementById('result-npz');
+    const timer = document.getElementById('timer-npz');
+    const slider = document.getElementById('npz-frame-slider');
+    const frameInput = document.getElementById('npz-frame-input');
+    const baseUrl = getNpzBaseUrl();
+
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Loading...';
+    container.innerHTML = '<div class="result-placeholder">Loading NPZ summary...</div>';
+    const start = performance.now();
+    updateTimer(timer, start);
+
+    try {
+        const response = await fetch(`${baseUrl}/api/npz/summary`);
+        if (!response.ok) {
+            const text = await response.text();
+            throw new Error(`HTTP ${response.status}: ${text}`);
+        }
+        npzSummary = await response.json();
+        const maxFrame = Math.max(0, (npzSummary.num_frames || 1) - 1);
+        slider.max = String(maxFrame);
+        frameInput.max = String(maxFrame);
+
+        const elapsed = Math.round(performance.now() - start);
+        clearTimerInterval();
+        showResult(container, npzSummary, elapsed, response.status);
+        addLog('success', 'NPZ Runner', `Loaded ${npzSummary.num_frames} frames from ${npzSummary.file}`);
+
+        await loadNpzFrame(0);
+    } catch (err) {
+        clearTimerInterval();
+        const elapsed = Math.round(performance.now() - start);
+        showError(container, err.message, elapsed);
+        addLog('error', 'NPZ Runner', err.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span class="btn-icon">▶</span> Load NPZ';
+    }
+}
+
+async function loadNpzFrame(frame) {
+    const container = document.getElementById('result-npz');
+    const slider = document.getElementById('npz-frame-slider');
+    const frameInput = document.getElementById('npz-frame-input');
+    const baseUrl = getNpzBaseUrl();
+    const safeFrame = Math.max(0, parseInt(frame, 10) || 0);
+
+    slider.value = String(safeFrame);
+    frameInput.value = String(safeFrame);
+
+    try {
+        const response = await fetch(`${baseUrl}/api/npz/frame?i=${safeFrame}`);
+        if (!response.ok) {
+            const text = await response.text();
+            throw new Error(`HTTP ${response.status}: ${text}`);
+        }
+        const data = await response.json();
+        const payload = {
+            summary: npzSummary || null,
+            frame: data,
+        };
+        const json = syntaxHighlight(JSON.stringify(payload, null, 2));
+        container.className = 'result-container result-success';
+        container.innerHTML = `
+            <div class="result-content">
+                <pre class="result-json">${json}</pre>
+            </div>
+            <div class="result-meta">
+                <span>Frame ${data.frame}</span>
+                <span>t=${data.time_seconds}s</span>
+                <span>transl=(${data.transl.map(v => Number(v).toFixed(3)).join(', ')})</span>
+            </div>
+        `;
+    } catch (err) {
+        showError(container, err.message, 0);
+        addLog('error', 'NPZ Runner', err.message);
+    }
+}
+
+function stopNpzPlayback() {
+    if (npzPlaybackTimer) {
+        clearInterval(npzPlaybackTimer);
+        npzPlaybackTimer = null;
+    }
+    const playBtn = document.getElementById('btn-npz-play');
+    if (playBtn) {
+        playBtn.innerHTML = '<span class="btn-icon">▶</span> Play';
+    }
+}
+
+function toggleNpzPlayback() {
+    const playBtn = document.getElementById('btn-npz-play');
+    const slider = document.getElementById('npz-frame-slider');
+    const timer = document.getElementById('timer-npz');
+
+    if (!npzSummary) {
+        loadNpzSummary();
+        return;
+    }
+
+    if (npzPlaybackTimer) {
+        stopNpzPlayback();
+        return;
+    }
+
+    const fps = npzSummary.fps || 30;
+    const intervalMs = Math.max(1, Math.floor(1000 / fps));
+    const maxFrame = parseInt(slider.max, 10) || 0;
+    let frame = parseInt(slider.value, 10) || 0;
+
+    playBtn.innerHTML = '<span class="btn-icon">⏸</span> Pause';
+    const start = performance.now() - frame * intervalMs;
+    updateTimer(timer, start);
+
+    npzPlaybackTimer = setInterval(async () => {
+        if (frame > maxFrame) {
+            stopNpzPlayback();
+            clearTimerInterval();
+            return;
+        }
+        await loadNpzFrame(frame);
+        frame += 1;
+    }, intervalMs);
+}
+
+function setupNpzControls() {
+    const slider = document.getElementById('npz-frame-slider');
+    const frameInput = document.getElementById('npz-frame-input');
+    if (!slider || !frameInput) return;
+
+    slider.addEventListener('input', () => {
+        stopNpzPlayback();
+        loadNpzFrame(slider.value);
+    });
+
+    frameInput.addEventListener('change', () => {
+        stopNpzPlayback();
+        const frame = parseInt(frameInput.value, 10) || 0;
+        loadNpzFrame(frame);
+    });
+}
+
+// ==============================
 // Result Rendering
 // ==============================
 
@@ -374,6 +530,11 @@ document.addEventListener('keydown', (e) => {
             if (id === 'panel-rag-test') testAgenticRAG();
             else if (id === 'panel-dart-test') testDART();
             else if (id === 'panel-pipeline-test') testPipeline();
+            else if (id === 'panel-npz-test') loadNpzSummary();
         }
     }
+});
+
+window.addEventListener('DOMContentLoaded', () => {
+    setupNpzControls();
 });
