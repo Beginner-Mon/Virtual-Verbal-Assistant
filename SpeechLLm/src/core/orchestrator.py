@@ -32,12 +32,12 @@ class Orchestrator:
         self.state_machine.set_state(AssistantState.SPEAKING)
 
         self.audio_buffer.start()
-        self.tts.process(response)
-
+        audio_path = self.tts.process(response)   # capture return value
         self.audio_buffer.stop()
+
         self.state_machine.set_state(AssistantState.IDLE)
 
-        return response
+        return response, audio_path   # return BOTH
 
     def handle_voice_input(self, audio_buffer_data, sample_rate: int):
         self.state_machine.set_state(AssistantState.LISTENING)
@@ -51,11 +51,11 @@ class Orchestrator:
 
         self.state_machine.set_state(AssistantState.SPEAKING)
 
-        self.tts.process(response)
+        audio_path = self.tts.process(response)
 
         self.state_machine.set_state(AssistantState.IDLE)
 
-        return response
+        return response, audio_path
 
     def interrupt_speaking(self):
         if self.state_machine.is_speaking():
