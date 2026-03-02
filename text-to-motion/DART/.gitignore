@@ -176,8 +176,8 @@ cython_debug/
 data/
 
 # allow ONLY this dataset
-!text-to-motion/DART/data_loaders/humanml/data/
-!text-to-motion/DART/data_loaders/humanml/data/**
+!data_loaders/humanml/data/
+!data_loaders/humanml/data/**
 .vscode/
 mld_denoiser/
 mvae/
