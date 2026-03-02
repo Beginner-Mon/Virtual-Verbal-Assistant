@@ -1,4 +1,4 @@
-from ollama import chat
+from ollama import Client
 from typing import List, Dict, Generator
 
 
@@ -8,13 +8,6 @@ class Phi3Client:
     """
 
     def __init__(self, config: dict):
-        """
-        Expected config format:
-        {
-            "model_name": "phi3:3.8b",
-            "temperature": 0.7
-        }
-        """
 
         self.model_name = config.get("model_name", "phi3:3.8b")
         self.temperature = config.get("temperature", 0.7)
@@ -22,12 +15,15 @@ class Phi3Client:
         if not isinstance(self.model_name, str):
             raise ValueError("model_name must be a string")
 
+        # 🔥 Explicit client with correct host
+        self.client = Client(host="http://127.0.0.1:11434")
+
     # --------------------------------------------------
     # Standard (non-streaming) generation
     # --------------------------------------------------
     def generate(self, messages: List[Dict[str, str]]) -> str:
 
-        response = chat(
+        response = self.client.chat(
             model=self.model_name,
             messages=messages,
             options={
@@ -35,7 +31,6 @@ class Phi3Client:
             }
         )
 
-        # Ollama returns dict-style response
         return response["message"]["content"]
 
     # --------------------------------------------------
@@ -46,7 +41,7 @@ class Phi3Client:
         messages: List[Dict[str, str]],
     ) -> Generator[str, None, None]:
 
-        stream = chat(
+        stream = self.client.chat(
             model=self.model_name,
             messages=messages,
             stream=True,

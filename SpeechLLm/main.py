@@ -138,8 +138,10 @@ if __name__ == "__main__":
 
         elif mode == "text":
             user_text = input("You: ")
-            response = orchestrator.handle_text_input(user_text)
+            response, audio_path = orchestrator.handle_text_input(user_text)
             print("Assistant:", response)
+            if audio_path and os.path.exists(audio_path):
+                os.system(f'start "" "{audio_path}"')
 
         elif mode == "voice":
             print("Recording...")
@@ -151,9 +153,11 @@ if __name__ == "__main__":
             print("You:", transcript)
 
             print("Processing...")
-            response = orchestrator.handle_text_input(transcript)
+            response, audio_path = orchestrator.handle_text_input(transcript)
 
             print("Assistant:", response)
+            if audio_path and os.path.exists(audio_path):
+                os.system(f'start "" "{audio_path}"')
 
         else:
             print("Invalid mode.")
