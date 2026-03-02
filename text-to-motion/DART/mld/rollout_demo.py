@@ -100,7 +100,7 @@ def load_mld(denoiser_checkpoint, device):
     denoiser_model = denoiser_class(
         **asdict(denoiser_args.model_args),
     ).to(device)
-    checkpoint = torch.load(denoiser_checkpoint)
+    checkpoint = torch.load(denoiser_checkpoint, map_location=device)
     model_state_dict = checkpoint['model_state_dict']
     print(f"Loading denoiser checkpoint from {denoiser_checkpoint}")
     denoiser_model.load_state_dict(model_state_dict)
@@ -119,7 +119,7 @@ def load_mld(denoiser_checkpoint, device):
     vae_model = AutoMldVae(
         **asdict(vae_args.model_args),
     ).to(device)
-    checkpoint = torch.load(denoiser_args.mvae_path)
+    checkpoint = torch.load(denoiser_args.mvae_path, map_location=device)
     model_state_dict = checkpoint['model_state_dict']
     if 'latent_mean' not in model_state_dict:
         model_state_dict['latent_mean'] = torch.tensor(0)

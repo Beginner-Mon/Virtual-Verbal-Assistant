@@ -8,31 +8,11 @@ import logging
 import re
 from typing import Optional, Dict, Any
 
-from pydantic import BaseModel, Field
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-# Define models locally to avoid circular import with api_server.py
-class MotionPrompt(BaseModel):
-    """Motion generation prompt."""
-
-    description: str = Field(..., description="Natural language motion description")
-    primitive_sequence: str = Field(
-        ...,
-        description='Primitive action sequence (e.g., "walk*20,turn_left*10")',
-    )
-    num_frames: int = Field(160, description="Number of frames to generate")
-    fps: int = Field(30, description="Frames per second")
-
-
-class VoicePrompt(BaseModel):
-    """Voice synthesis prompt."""
-
-    text: str = Field(..., description="Text to synthesize")
-    emotion: Optional[str] = Field(None, description="Detected or requested emotion")
-    duration_estimate_seconds: float = Field(5.0, description="Estimated audio duration")
 
 
 
@@ -95,16 +75,11 @@ class ResponseTemplateGenerator:
         query: str,
         action_plan: Dict[str, Any],
         response: str,
-    ) -> Optional[MotionPrompt]:
+    ) -> Optional[Dict[str, Any]]:
         """Generate a motion prompt from query and action plan.
 
-        Args:
-            query: Original user query
-            action_plan: Orchestrator action plan
-            response: Generated response text
-
-        Returns:
-            MotionPrompt or None if motion generation not applicable
+        Returns a plain dict so api_server.py can construct its own
+        typed MotionPrompt, avoiding cross-module Pydantic type mismatches.
         """
         try:
             # Extract motion type from action plan parameters
@@ -126,12 +101,12 @@ class ResponseTemplateGenerator:
             num_primitives = len(primitive_sequence.split(","))
             num_frames = num_primitives * 8
 
-            motion_prompt = MotionPrompt(
-                description=f"Motion for: {query}",
-                primitive_sequence=primitive_sequence,
-                num_frames=num_frames,
-                fps=30,
-            )
+            motion_prompt = {
+                "description": f"Motion for: {query}",
+                "primitive_sequence": primitive_sequence,
+                "num_frames": num_frames,
+                "fps": 30,
+            }
 
             logger.info(f"Generated motion prompt: {primitive_sequence}")
             return motion_prompt
@@ -146,17 +121,11 @@ class ResponseTemplateGenerator:
         query: str,
         user_id: str,
         action_plan: Dict[str, Any],
-    ) -> Optional[VoicePrompt]:
+    ) -> Optional[Dict[str, Any]]:
         """Generate a voice prompt for TTS synthesis.
 
-        Args:
-            text: Text to synthesize
-            query: Original user query
-            user_id: User identifier
-            action_plan: Orchestrator action plan
-
-        Returns:
-            VoicePrompt for voice synthesis
+        Returns a plain dict so api_server.py can construct its own
+        typed VoicePrompt, avoiding cross-module Pydantic type mismatches.
         """
         try:
             # Detect emotion from text and query
@@ -166,11 +135,11 @@ class ResponseTemplateGenerator:
             word_count = len(text.split())
             estimated_duration = max(2.0, word_count * 0.4)
 
-            voice_prompt = VoicePrompt(
-                text=text,
-                emotion=emotion,
-                duration_estimate_seconds=estimated_duration,
-            )
+            voice_prompt = {
+                "text": text,
+                "emotion": emotion,
+                "duration_estimate_seconds": estimated_duration,
+            }
 
             logger.info(f"Generated voice prompt with emotion: {emotion}")
             return voice_prompt

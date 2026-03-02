@@ -51,8 +51,10 @@ DEFAULT_CONFIG = {
     "agenticrag_url": "http://localhost:8000",
     "speechllm_url": "http://localhost:5000",
     "dart_url": "http://localhost:5001",
-    "timeout_seconds": 5.0,
-    "service_timeout_seconds": 4.0,  # Max 4s per service, leaving 1s for aggregation
+    "timeout_seconds": 120.0,           # overall httpx client timeout (must be >= largest service timeout)
+    "agenticrag_timeout_seconds": 90.0, # AgenticRAG: LLM + RAG pipeline can be slow
+    "service_timeout_seconds": 4.0,    # SpeechLLm timeout (fast TTS)
+    "dart_timeout_seconds": 10.0,      # DART timeout — wait up to 10s before skipping
     "retry_count": 1,
 }
 
@@ -118,66 +120,58 @@ class PipelineOrchestrator:
 
                 logger.info(f"[{user_id}] Step 1 complete: {result.text_answer[:100]}...")
 
-                # Step 2: Parallel calls to SpeechLLm and DART
-                logger.info(f"[{user_id}] Step 2: Calling SpeechLLm and DART in parallel...")
+                # Wrap each task with its own individual timeout so they
+                # fail independently — SpeechLLm is fast (4s), DART is slow (10s).
+                async def run_speechllm():
+                    if voice_prompt:
+                        try:
+                            return await asyncio.wait_for(
+                                self._call_speechllm(client, voice_prompt),
+                                timeout=self.config["service_timeout_seconds"],
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(f"[{user_id}] SpeechLLm timed out after {self.config['service_timeout_seconds']}s")
+                            return None
+                        except Exception as e:
+                            logger.warning(f"[{user_id}] SpeechLLm error: {e}")
+                            return None
+                    return None
 
-                tasks = []
+                async def run_dart():
+                    if motion_prompt:
+                        try:
+                            return await asyncio.wait_for(
+                                self._call_dart(client, motion_prompt),
+                                timeout=self.config["dart_timeout_seconds"],
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(
+                                f"[{user_id}] DART timed out after {self.config['dart_timeout_seconds']}s — skipping motion"
+                            )
+                            result.errors["dart"] = f"DART timed out after {self.config['dart_timeout_seconds']}s"
+                            return None
+                        except Exception as e:
+                            logger.warning(f"[{user_id}] DART error: {e}")
+                            result.errors["dart"] = str(e)
+                            return None
+                    return None
 
-                # Add SpeechLLm task if we have voice prompt
-                if voice_prompt:
-                    tasks.append(
-                        self._call_speechllm(
-                            client,
-                            voice_prompt,
-                        )
-                    )
-                else:
-                    tasks.append(asyncio.sleep(0))
+                tts_response, motion_response = await asyncio.gather(
+                    run_speechllm(), run_dart()
+                )
 
-                # Add DART task if we have motion prompt
-                if motion_prompt:
-                    tasks.append(
-                        self._call_dart(
-                            client,
-                            motion_prompt,
-                        )
-                    )
-                else:
-                    tasks.append(asyncio.sleep(0))
+                # Process SpeechLLm response
+                if tts_response:
+                    result.voice_file = tts_response.get("audio_file")
+                    result.voice_duration = tts_response.get("duration_seconds")
+                    logger.info(f"[{user_id}] SpeechLLm complete: {result.voice_file}")
 
-                # Execute tasks in parallel with timeout
-                try:
-                    responses = await asyncio.wait_for(
-                        asyncio.gather(*tasks, return_exceptions=True),
-                        timeout=self.config["service_timeout_seconds"],
-                    )
-
-                    # Process SpeechLLm response
-                    if voice_prompt and responses[0] and not isinstance(responses[0], Exception):
-                        tts_response = responses[0]
-                        result.voice_file = tts_response.get("audio_file")
-                        result.voice_duration = tts_response.get("duration_seconds")
-                        logger.info(f"[{user_id}] SpeechLLm complete: {result.voice_file}")
-                    elif responses[0] and isinstance(responses[0], Exception):
-                        result.errors["speechllm"] = str(responses[0])
-                        logger.warning(f"[{user_id}] SpeechLLm error: {responses[0]}")
-
-                    # Process DART response
-                    if motion_prompt and responses[1] and not isinstance(responses[1], Exception):
-                        motion_response = responses[1]
-                        result.motion_file = motion_response.get("motion_file")
-                        result.motion_frames = motion_response.get("num_frames")
-                        result.motion_fps = motion_response.get("fps", 30)
-                        logger.info(f"[{user_id}] DART complete: {result.motion_file}")
-                    elif responses[1] and isinstance(responses[1], Exception):
-                        result.errors["dart"] = str(responses[1])
-                        logger.warning(f"[{user_id}] DART error: {responses[1]}")
-
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        f"[{user_id}] Parallel services timed out after {self.config['service_timeout_seconds']}s"
-                    )
-                    result.errors["timeout"] = "Parallel service execution timed out"
+                # Process DART response
+                if motion_response:
+                    result.motion_file = motion_response.get("motion_file")
+                    result.motion_frames = motion_response.get("num_frames")
+                    result.motion_fps = motion_response.get("fps", 30)
+                    logger.info(f"[{user_id}] DART complete: {result.motion_file}")
 
         except Exception as e:
             logger.error(f"[{user_id}] Pipeline error: {e}")
@@ -222,7 +216,11 @@ class PipelineOrchestrator:
 
             logger.debug(f"Calling AgenticRAG: POST {url}")
 
-            response = await client.post(url, json=payload)
+            response = await client.post(
+                url,
+                json=payload,
+                timeout=self.config["agenticrag_timeout_seconds"],
+            )
             response.raise_for_status()
 
             data = response.json()
