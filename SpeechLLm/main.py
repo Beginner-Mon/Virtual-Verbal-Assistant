@@ -76,14 +76,9 @@ if __name__ == "__main__":
     # =========================
     # Initialize TTS Clients
     # =========================
-    eleven_api_key = os.getenv("ELEVENLABS_API_KEY")
-    if not eleven_api_key:
-        raise ValueError("ELEVENLABS_API_KEY not found in .env")
-
     eleven_client = ElevenLabsClient(
-        api_key=eleven_api_key,
         voice_id=model_config["tts"]["voice_id"]
-    )
+)
 
     # =========================
     # Select Coqui Speaker
