@@ -2,7 +2,9 @@ import os
 import yaml
 from dotenv import load_dotenv
 
+# =========================
 # Clients
+# =========================
 from src.services.phi3_client import Phi3Client
 from src.services.whisper_client import WhisperClient
 from src.services.voice_driver import VoiceDriver
@@ -10,13 +12,23 @@ from src.services.elevenlabs_client import ElevenLabsClient
 from src.services.coqui_client import CoquiClient
 from src.services.tts_router import TTSRouter
 
+# =========================
 # Core / Stages
+# =========================
 from src.context.memory_manager import MemoryManager
 from src.stages.llm_stage import LLMStage
 from src.stages.stt_stage import STTStage
 from src.stages.tts_stage import TTSStage
 from src.stages.emotion_stage import EmotionStage
 
+# =========================
+# Utils
+# =========================
+from src.utils.action_normalizer import normalize
+
+# =========================
+# Streaming / Control
+# =========================
 from streaming.audio_stream_buffer import AudioStreamBuffer
 from streaming.interrupt_controller import InterruptController
 from src.core.orchestrator import Orchestrator
@@ -25,6 +37,20 @@ from src.core.orchestrator import Orchestrator
 def load_yaml(path):
     with open(path, "r") as f:
         return yaml.safe_load(f)
+
+
+def handle_action_response(response: dict):
+    """
+    Prints raw + normalized action output.
+    Used for testing before DART integration.
+    """
+    raw_action = response.get("action", {})
+    print("\n--- ACTION DETECTED ---")
+    print("Raw Action Output:", raw_action)
+
+    normalized = normalize(raw_action)
+    print("Normalized Action:", normalized)
+    print("-----------------------\n")
 
 
 if __name__ == "__main__":
@@ -50,18 +76,12 @@ if __name__ == "__main__":
     # =========================
     # Initialize TTS Clients
     # =========================
-    eleven_api_key = os.getenv("ELEVENLABS_API_KEY")
-
-    if not eleven_api_key:
-        raise ValueError("ELEVENLABS_API_KEY not found in .env")
-
     eleven_client = ElevenLabsClient(
-        api_key=eleven_api_key,
         voice_id=model_config["tts"]["voice_id"]
-    )
+)
 
     # =========================
-    # Initialize Coqui (temporary for speaker listing)
+    # Select Coqui Speaker
     # =========================
     temp_coqui = CoquiClient(model_config["coqui"])
 
@@ -84,10 +104,8 @@ if __name__ == "__main__":
 
     print(f"Selected Speaker: {selected_speaker}\n")
 
-    # Recreate Coqui client with selected speaker
     coqui_config = model_config["coqui"]
     coqui_config["speaker"] = selected_speaker
-
     coqui_client = CoquiClient(coqui_config)
 
     tts_router = TTSRouter(
@@ -131,29 +149,54 @@ if __name__ == "__main__":
     # Main Loop
     # =========================
     while True:
+
         mode = input("Mode: ").strip().lower()
 
         if mode == "exit":
             break
 
+        # =========================
+        # TEXT MODE
+        # =========================
         elif mode == "text":
-            user_text = input("You: ")
-            response = orchestrator.handle_text_input(user_text)
-            print("Assistant:", response)
 
+            user_text = input("You: ")
+            response, audio_path = orchestrator.handle_text_input(user_text)
+
+            # If structured action output
+            if isinstance(response, dict) and response.get("intent") == "action":
+                handle_action_response(response)
+
+            else:
+                print("Assistant:", response)
+
+                if audio_path and os.path.exists(audio_path):
+                    os.system(f'start "" "{audio_path}"')
+
+        # =========================
+        # VOICE MODE
+        # =========================
         elif mode == "voice":
+
             print("Recording...")
-            audio_path = voice_driver.record()
+            recorded_path = voice_driver.record()
 
             print("Transcribing...")
-            transcript = stt_stage.process(audio_path)
+            transcript = stt_stage.process(recorded_path)
 
             print("You:", transcript)
 
             print("Processing...")
-            response = orchestrator.handle_text_input(transcript)
+            response, audio_path = orchestrator.handle_text_input(transcript)
 
-            print("Assistant:", response)
+            if isinstance(response, dict) and response.get("intent") == "action":
+                handle_action_response(response)
+
+            else:
+                print("Assistant:", response)
+
+                if audio_path and os.path.exists(audio_path):
+                    os.system(f'start "" "{audio_path}"')
 
         else:
             print("Invalid mode.")
