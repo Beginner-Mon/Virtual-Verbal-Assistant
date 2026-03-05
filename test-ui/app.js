@@ -10,8 +10,8 @@ const SERVICES = {
     },
     dart: {
         name: 'DART',
-        baseUrl: 'http://localhost:5001',
-        healthUrl: 'http://localhost:5001/health',
+        baseUrl: 'http://localhost:8000',
+        healthUrl: 'http://localhost:8000/health',
     },
     orchestrator: {
         name: 'Orchestrator',
@@ -136,15 +136,14 @@ async function testAgenticRAG() {
 }
 
 async function testDART() {
-    const prompt = document.getElementById('dart-prompt').value;
-    const primitives = parseInt(document.getElementById('dart-primitives').value) || 20;
+    const prompt   = document.getElementById('dart-prompt').value.trim();
     const guidance = parseFloat(document.getElementById('dart-guidance').value) || 5.0;
-    const steps = parseInt(document.getElementById('dart-steps').value) || 10;
-    const seedInput = document.getElementById('dart-seed').value;
-    const seed = seedInput ? parseInt(seedInput) : null;
-    const btn = document.getElementById('btn-dart');
+    const seedStr  = document.getElementById('dart-seed').value.trim();
+    const respacing = "";   // can make this configurable later if needed
+
+    const btn       = document.getElementById('btn-dart');
     const container = document.getElementById('result-dart');
-    const timer = document.getElementById('timer-dart');
+    const timer     = document.getElementById('timer-dart');
 
     if (!prompt) return;
 
@@ -158,13 +157,15 @@ async function testDART() {
     try {
         const body = {
             text_prompt: prompt,
-            num_primitives: primitives,
             guidance_scale: guidance,
-            num_steps: steps,
+            respacing: respacing,
         };
-        if (seed !== null) body.seed = seed;
 
-        const response = await fetch('http://localhost:5001/generate_motion', {
+        if (seedStr !== "" && !isNaN(Number(seedStr))) {
+            body.seed = Number(seedStr);
+        }
+
+        const response = await fetch('http://localhost:8000/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
@@ -174,19 +175,19 @@ async function testDART() {
         clearTimerInterval();
 
         if (!response.ok) {
-            const error = await response.text();
-            throw new Error(`HTTP ${response.status}: ${error}`);
+            const errorText = await response.text();
+            throw new Error(`HTTP ${response.status}: ${errorText}`);
         }
 
         const data = await response.json();
         showResult(container, data, elapsed, response.status);
-        addLog('success', 'DART', `Motion generated in ${elapsed}ms — ${data.num_frames} frames, ${data.duration_seconds?.toFixed(1)}s`);
+        addLog('success', 'Text-to-Motion', `Generated in ${elapsed}ms`);
 
     } catch (err) {
         clearTimerInterval();
         const elapsed = Math.round(performance.now() - start);
         showError(container, err.message, elapsed);
-        addLog('error', 'DART', err.message);
+        addLog('error', 'Text-to-Motion', err.message);
     } finally {
         btn.disabled = false;
         btn.innerHTML = '<span class="btn-icon">▶</span> Generate Motion';

@@ -288,7 +288,15 @@ class MotionGenerator:
 # ── FastAPI App ──────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Text-to-Motion API (MLD)", version="0.2")
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],                   # ← easiest for local dev
+    allow_credentials=True,
+    allow_methods=["*", "OPTIONS"],        # important: OPTIONS must be allowed
+    allow_headers=["*"],
+    expose_headers=["Content-Disposition"],# useful if you add file downloads later
+    max_age=600,
+)
 generator: Optional[MotionGenerator] = None
 OUTPUT_DIR = Path("outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
