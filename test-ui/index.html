@@ -6,6 +6,26 @@
     <title>Pipeline Test Dashboard</title>
     <link rel="stylesheet" href="styles.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        /* ── Result card layout (shared by all three specialised renderers) ── */
+        .result-card { display:flex; flex-direction:column; gap:12px; padding:16px; }
+        .result-card-section { display:flex; flex-direction:column; gap:4px; }
+        .result-card-row { display:flex; flex-wrap:wrap; gap:16px; }
+        .result-card-label { font-size:0.72rem; font-weight:600; text-transform:uppercase;
+            letter-spacing:.05em; color:var(--text-muted,#888); }
+        .result-card-value { font-size:0.9rem; line-height:1.5; }
+        .result-text { white-space:pre-wrap; background:var(--bg-secondary,#1a1a2e);
+            border-radius:6px; padding:10px 12px; font-size:0.88rem; line-height:1.6; }
+        .result-card-row .result-card-section { flex:1; min-width:120px; }
+        .result-error-banner { background:rgba(255,80,80,.08); border:1px solid rgba(255,80,80,.3);
+            border-radius:8px; padding:10px; }
+        /* Chips (motion metadata pills) */
+        .chip { display:inline-block; background:var(--bg-secondary,#1a1a2e);
+            border:1px solid var(--border,#2a2a4a); border-radius:20px;
+            padding:3px 10px; font-size:0.78rem; color:var(--text-muted,#aaa); }
+        .chip-link { color:var(--accent,#7c80ff) !important; text-decoration:none; }
+        .chip-link:hover { text-decoration:underline; }
+    </style>
 </head>
 <body>
     <div class="app">
@@ -126,8 +146,8 @@
             <!-- DART Test Panel -->
             <div class="test-panel" id="panel-dart-test">
                 <div class="panel-header">
-                    <h3>Text-to-Motion (new API)</h3>
-                    <span class="endpoint-badge">POST /generate → :8000</span>
+                    <h3>Text-to-Motion (DART)</h3>
+                    <span class="endpoint-badge">POST /generate → :5001 (WSL/Linux)</span>
                 </div>
                 <div class="form-row">
                     <div class="form-group flex-2">
@@ -169,6 +189,10 @@
                 <div class="panel-header">
                     <h3>Full Pipeline (Orchestrator)</h3>
                     <span class="endpoint-badge">POST /answer → :8080</span>
+                </div>
+                <div class="form-note" style="font-size:0.8rem;color:var(--text-muted,#888);margin-bottom:8px;padding:6px 10px;background:rgba(124,128,255,.08);border-radius:6px;border-left:3px solid var(--accent,#7c80ff)">
+                    ⚡ Fans out to <strong>AgenticRAG :8000</strong> + <strong>DART :5001</strong> in parallel.<br>
+                    🔒 DART motion prompt is hardcoded to <code>jump*20</code> (integration test mode).
                 </div>
                 <div class="form-group">
                     <label>Query</label>

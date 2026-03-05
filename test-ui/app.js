@@ -9,9 +9,9 @@ const SERVICES = {
         healthUrl: 'http://localhost:8000/health',
     },
     dart: {
-        name: 'DART',
-        baseUrl: 'http://localhost:8000',
-        healthUrl: 'http://localhost:8000/health',
+        name: 'DART Motion',
+        baseUrl: 'http://localhost:5001',
+        healthUrl: 'http://localhost:5001/health',
     },
     orchestrator: {
         name: 'Orchestrator',
@@ -26,31 +26,32 @@ const SERVICES = {
 
 async function checkHealth(serviceKey) {
     const service = SERVICES[serviceKey];
-    const dot = document.getElementById(`dot-${serviceKey}`);
+    const dot   = document.getElementById(`dot-${serviceKey}`);
     const label = document.getElementById(`label-${serviceKey}`);
 
-    dot.className = 'status-dot checking';
+    dot.className   = 'status-dot checking';
     label.textContent = 'Checking...';
 
     try {
-        const start = performance.now();
+        const start    = performance.now();
         const response = await fetch(service.healthUrl);
-        const elapsed = Math.round(performance.now() - start);
-        const data = await response.json();
+        const elapsed  = Math.round(performance.now() - start);
+        const data     = await response.json();
 
-        if (data.status === 'healthy') {
-            dot.className = 'status-dot online';
+        const isOk = data.status === 'healthy' || data.status === 'ok';
+        if (isOk) {
+            dot.className     = 'status-dot online';
             label.textContent = `✅ Healthy (${elapsed}ms)`;
-            addLog('success', `${service.name}`, `Health check passed in ${elapsed}ms`);
+            addLog('success', service.name, `Health check passed in ${elapsed}ms`);
         } else {
-            dot.className = 'status-dot offline';
+            dot.className     = 'status-dot offline';
             label.textContent = `⚠️ Unexpected: ${JSON.stringify(data)}`;
-            addLog('error', `${service.name}`, `Unexpected response: ${JSON.stringify(data)}`);
+            addLog('error', service.name, `Unexpected response: ${JSON.stringify(data)}`);
         }
     } catch (err) {
-        dot.className = 'status-dot offline';
+        dot.className     = 'status-dot offline';
         label.textContent = `❌ Offline — ${err.message}`;
-        addLog('error', `${service.name}`, `Health check failed: ${err.message}`);
+        addLog('error', service.name, `Health check failed: ${err.message}`);
     }
 }
 
@@ -72,11 +73,8 @@ window.addEventListener('DOMContentLoaded', () => {
 // ==============================
 
 function switchTab(tabId) {
-    // Deactivate all tabs and panels
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.test-panel').forEach(p => p.classList.remove('active'));
-
-    // Activate selected
     document.getElementById(`tab-${tabId}`).classList.add('active');
     document.getElementById(`panel-${tabId}`).classList.add('active');
 }
@@ -86,16 +84,16 @@ function switchTab(tabId) {
 // ==============================
 
 async function testAgenticRAG() {
-    const query = document.getElementById('rag-query').value;
-    const userId = document.getElementById('rag-user-id').value;
-    const btn = document.getElementById('btn-rag');
+    const query   = document.getElementById('rag-query').value;
+    const userId  = document.getElementById('rag-user-id').value;
+    const btn       = document.getElementById('btn-rag');
     const container = document.getElementById('result-rag');
-    const timer = document.getElementById('timer-rag');
+    const timer     = document.getElementById('timer-rag');
 
     if (!query) return;
 
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Sending...';
+    btn.disabled    = true;
+    btn.innerHTML   = '<span class="spinner"></span> Sending...';
     container.innerHTML = '<div class="result-placeholder">Processing query...</div>';
 
     const start = performance.now();
@@ -105,41 +103,33 @@ async function testAgenticRAG() {
         const response = await fetch('http://localhost:8000/query', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                query,
-                user_id: userId,
-                conversation_history: [],
-            }),
+            body: JSON.stringify({ query, user_id: userId, conversation_history: [] }),
         });
 
         const elapsed = Math.round(performance.now() - start);
         clearTimerInterval();
 
-        if (!response.ok) {
-            const error = await response.text();
-            throw new Error(`HTTP ${response.status}: ${error}`);
-        }
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
 
         const data = await response.json();
-        showResult(container, data, elapsed, response.status);
+        showRagResult(container, data, elapsed, response.status);
         addLog('success', 'AgenticRAG', `Query processed in ${elapsed}ms`);
 
     } catch (err) {
         clearTimerInterval();
-        const elapsed = Math.round(performance.now() - start);
-        showError(container, err.message, elapsed);
+        showError(container, err.message, Math.round(performance.now() - start));
         addLog('error', 'AgenticRAG', err.message);
     } finally {
-        btn.disabled = false;
+        btn.disabled  = false;
         btn.innerHTML = '<span class="btn-icon">▶</span> Send Query';
     }
 }
 
 async function testDART() {
-    const prompt   = document.getElementById('dart-prompt').value.trim();
-    const guidance = parseFloat(document.getElementById('dart-guidance').value) || 5.0;
-    const seedStr  = document.getElementById('dart-seed').value.trim();
-    const respacing = "";   // can make this configurable later if needed
+    const prompt    = document.getElementById('dart-prompt').value.trim();
+    const guidance  = parseFloat(document.getElementById('dart-guidance').value) || 5.0;
+    const seedStr   = document.getElementById('dart-seed').value.trim();
+    const respacing = 'ddim50';
 
     const btn       = document.getElementById('btn-dart');
     const container = document.getElementById('result-dart');
@@ -147,25 +137,19 @@ async function testDART() {
 
     if (!prompt) return;
 
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Generating...';
-    container.innerHTML = '<div class="result-placeholder">Generating motion...</div>';
+    btn.disabled    = true;
+    btn.innerHTML   = '<span class="spinner"></span> Generating...';
+    container.innerHTML = '<div class="result-placeholder">Generating motion (this can take 30–120s on GPU)...</div>';
 
     const start = performance.now();
     updateTimer(timer, start);
 
     try {
-        const body = {
-            text_prompt: prompt,
-            guidance_scale: guidance,
-            respacing: respacing,
-        };
+        const body = { text_prompt: prompt, guidance_scale: guidance, num_steps: 50, respacing };
+        if (seedStr !== '' && !isNaN(Number(seedStr))) body.seed = Number(seedStr);
 
-        if (seedStr !== "" && !isNaN(Number(seedStr))) {
-            body.seed = Number(seedStr);
-        }
-
-        const response = await fetch('http://localhost:8000/generate', {
+        // DART runs on port 5001 (WSL/Linux)
+        const response = await fetch('http://localhost:5001/generate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
@@ -174,76 +158,204 @@ async function testDART() {
         const elapsed = Math.round(performance.now() - start);
         clearTimerInterval();
 
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`HTTP ${response.status}: ${errorText}`);
-        }
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
 
         const data = await response.json();
-        showResult(container, data, elapsed, response.status);
-        addLog('success', 'Text-to-Motion', `Generated in ${elapsed}ms`);
+        showDartResult(container, data, elapsed, response.status);
+        addLog('success', 'DART Motion', `Generated ${data.num_frames} frames in ${elapsed}ms`);
 
     } catch (err) {
         clearTimerInterval();
-        const elapsed = Math.round(performance.now() - start);
-        showError(container, err.message, elapsed);
-        addLog('error', 'Text-to-Motion', err.message);
+        showError(container, err.message, Math.round(performance.now() - start));
+        addLog('error', 'DART Motion', err.message);
     } finally {
-        btn.disabled = false;
+        btn.disabled  = false;
         btn.innerHTML = '<span class="btn-icon">▶</span> Generate Motion';
     }
 }
 
 async function testPipeline() {
-    const query = document.getElementById('pipeline-query').value;
-    const userId = document.getElementById('pipeline-user-id').value;
-    const btn = document.getElementById('btn-pipeline');
+    const query   = document.getElementById('pipeline-query').value;
+    const userId  = document.getElementById('pipeline-user-id').value;
+    const btn       = document.getElementById('btn-pipeline');
     const container = document.getElementById('result-pipeline');
-    const timer = document.getElementById('timer-pipeline');
+    const timer     = document.getElementById('timer-pipeline');
 
     if (!query) return;
 
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Running Pipeline...';
-    container.innerHTML = '<div class="result-placeholder">Running full pipeline (AgenticRAG → DART)...</div>';
+    btn.disabled    = true;
+    btn.innerHTML   = '<span class="spinner"></span> Running Pipeline...';
+    container.innerHTML = '<div class="result-placeholder">Calling AgenticRAG (:8000) + DART (:5001) in parallel…</div>';
 
     const start = performance.now();
     updateTimer(timer, start);
 
     try {
+        // main_api.py fans out to AgenticRAG + DART simultaneously
         const response = await fetch('http://localhost:8080/answer', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                query,
-                user_id: userId,
-                conversation_history: [],
-            }),
+            body: JSON.stringify({ query, user_id: userId, conversation_history: [] }),
         });
 
         const elapsed = Math.round(performance.now() - start);
         clearTimerInterval();
 
-        if (!response.ok) {
-            const error = await response.text();
-            throw new Error(`HTTP ${response.status}: ${error}`);
-        }
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
 
         const data = await response.json();
-        showResult(container, data, elapsed, response.status);
+        showPipelineResult(container, data, elapsed, response.status);
 
-        const motionInfo = data.motion ? ` | Motion: ${data.motion.num_frames} frames` : ' | No motion';
-        addLog('success', 'Pipeline', `Completed in ${elapsed}ms${motionInfo}`);
+        const motionInfo = data.motion
+            ? ` | 🏃 Motion: ${data.motion.num_frames} frames (${data.motion.duration_seconds}s)`
+            : ' | No motion';
+        const errorsInfo = data.errors ? ` | ⚠️ Errors: ${Object.keys(data.errors).join(', ')}` : '';
+        addLog('success', 'Pipeline', `Completed in ${elapsed}ms${motionInfo}${errorsInfo}`);
 
     } catch (err) {
         clearTimerInterval();
-        const elapsed = Math.round(performance.now() - start);
-        showError(container, err.message, elapsed);
+        showError(container, err.message, Math.round(performance.now() - start));
         addLog('error', 'Pipeline', err.message);
     } finally {
-        btn.disabled = false;
+        btn.disabled  = false;
         btn.innerHTML = '<span class="btn-icon">🚀</span> Run Full Pipeline';
     }
+}
+
+// ==============================
+// Specialised Result Renderers
+// ==============================
+
+/** Render AgenticRAG /query response with text_answer highlight. */
+function showRagResult(container, data, elapsed, status) {
+    const textAnswer = data.text_answer || '';
+    const decision   = data.orchestrator_decision || {};
+    const motion     = data.motion_prompt;
+
+    container.className = 'result-container result-success';
+    container.innerHTML = `
+        <div class="result-card">
+            <div class="result-card-section">
+                <div class="result-card-label">💬 Text Answer</div>
+                <div class="result-card-value result-text">${escapeHtml(textAnswer)}</div>
+            </div>
+            <div class="result-card-row">
+                <div class="result-card-section">
+                    <div class="result-card-label">🎯 Decision</div>
+                    <div class="result-card-value"><code>${escapeHtml(decision.action || '—')}</code>
+                        (confidence: ${((decision.confidence || 0) * 100).toFixed(0)}%)</div>
+                </div>
+                ${motion ? `<div class="result-card-section">
+                    <div class="result-card-label">🏃 Motion Prompt</div>
+                    <div class="result-card-value"><code>${escapeHtml(motion.text || JSON.stringify(motion))}</code></div>
+                </div>` : ''}
+            </div>
+            <details>
+                <summary style="cursor:pointer;color:var(--text-muted);font-size:0.8rem;margin-top:8px">Full JSON</summary>
+                <pre class="result-json">${syntaxHighlight(JSON.stringify(data, null, 2))}</pre>
+            </details>
+        </div>
+        <div class="result-meta">
+            <span>✅ Status: ${status}</span>
+            <span>⏱️ ${elapsed}ms</span>
+            <span>📦 ${JSON.stringify(data).length} bytes</span>
+        </div>
+    `;
+}
+
+/** Render DART /generate response with download link. */
+function showDartResult(container, data, elapsed, status) {
+    const fileUrl = data.motion_file_url ? `http://localhost:5001${data.motion_file_url}` : null;
+
+    container.className = 'result-container result-success';
+    container.innerHTML = `
+        <div class="result-card">
+            <div class="result-card-row">
+                <div class="result-card-section">
+                    <div class="result-card-label">🎬 Frames</div>
+                    <div class="result-card-value">${data.num_frames || '—'} @ ${data.fps || 30} fps</div>
+                </div>
+                <div class="result-card-section">
+                    <div class="result-card-label">⏱ Duration</div>
+                    <div class="result-card-value">${data.duration_seconds || '—'}s</div>
+                </div>
+                <div class="result-card-section">
+                    <div class="result-card-label">🆔 Request ID</div>
+                    <div class="result-card-value"><code>${data.request_id || '—'}</code></div>
+                </div>
+            </div>
+            <div class="result-card-section">
+                <div class="result-card-label">📝 Prompt</div>
+                <div class="result-card-value"><code>${escapeHtml(data.text_prompt || '—')}</code></div>
+            </div>
+            ${fileUrl ? `<div class="result-card-section">
+                <div class="result-card-label">📥 Download NPZ</div>
+                <div class="result-card-value">
+                    <a href="${fileUrl}" target="_blank" style="color:var(--accent)">${fileUrl}</a>
+                </div>
+            </div>` : ''}
+            <details>
+                <summary style="cursor:pointer;color:var(--text-muted);font-size:0.8rem;margin-top:8px">Full JSON</summary>
+                <pre class="result-json">${syntaxHighlight(JSON.stringify(data, null, 2))}</pre>
+            </details>
+        </div>
+        <div class="result-meta">
+            <span>✅ Status: ${status}</span>
+            <span>⏱️ ${elapsed}ms</span>
+        </div>
+    `;
+}
+
+/** Render main_api /answer response — combined AgenticRAG + DART. */
+function showPipelineResult(container, data, elapsed, status) {
+    const motion  = data.motion;
+    const errors  = data.errors;
+    const fileUrl = motion?.motion_file_url
+        ? `http://localhost:5001${motion.motion_file_url}`
+        : null;
+
+    const errBanner = errors
+        ? `<div class="result-card-section result-error-banner">
+               <div class="result-card-label">⚠️ Service Errors</div>
+               <pre class="result-json" style="color:var(--error)">${syntaxHighlight(JSON.stringify(errors, null, 2))}</pre>
+           </div>`
+        : '';
+
+    const motionBlock = motion ? `
+        <div class="result-card-section">
+            <div class="result-card-label">🏃 DART Motion (hardcoded: <code>${escapeHtml(motion.text_prompt || 'jump*20')}</code>)</div>
+            <div class="result-card-row" style="gap:12px;margin-top:4px">
+                <span class="chip">🎬 ${motion.num_frames} frames</span>
+                <span class="chip">⏱ ${motion.duration_seconds}s @ ${motion.fps}fps</span>
+                ${fileUrl ? `<a class="chip chip-link" href="${fileUrl}" target="_blank">📥 Download NPZ</a>` : ''}
+            </div>
+        </div>` : `
+        <div class="result-card-section">
+            <div class="result-card-label">🏃 DART Motion</div>
+            <div class="result-card-value" style="color:var(--text-muted)">Not available</div>
+        </div>`;
+
+    container.className = 'result-container result-success';
+    container.innerHTML = `
+        <div class="result-card">
+            ${errBanner}
+            <div class="result-card-section">
+                <div class="result-card-label">💬 AgenticRAG Answer</div>
+                <div class="result-card-value result-text">${escapeHtml(data.text_answer || '')}</div>
+            </div>
+            ${motionBlock}
+            <details>
+                <summary style="cursor:pointer;color:var(--text-muted);font-size:0.8rem;margin-top:8px">Full JSON</summary>
+                <pre class="result-json">${syntaxHighlight(JSON.stringify(data, null, 2))}</pre>
+            </details>
+        </div>
+        <div class="result-meta">
+            <span>✅ Status: ${status}</span>
+            <span>⏱️ ${elapsed}ms wall-clock</span>
+            <span>🔧 Pipeline: ${Math.round(data.generation_time_ms || elapsed)}ms</span>
+            ${errors ? `<span style="color:var(--error)">⚠️ ${Object.keys(errors).length} error(s)</span>` : ''}
+        </div>
+    `;
 }
 
 // ==============================
@@ -254,74 +366,66 @@ let npzPlaybackTimer = null;
 let npzSummary = null;
 
 function getNpzBaseUrl() {
-    const value = document.getElementById('npz-base-url')?.value?.trim();
-    return value || 'http://127.0.0.1:8090';
+    return document.getElementById('npz-base-url')?.value?.trim() || 'http://127.0.0.1:8090';
 }
 
 async function loadNpzSummary() {
-    const btn = document.getElementById('btn-npz-load');
+    const btn       = document.getElementById('btn-npz-load');
     const container = document.getElementById('result-npz');
-    const timer = document.getElementById('timer-npz');
-    const slider = document.getElementById('npz-frame-slider');
+    const timer     = document.getElementById('timer-npz');
+    const slider    = document.getElementById('npz-frame-slider');
     const frameInput = document.getElementById('npz-frame-input');
-    const baseUrl = getNpzBaseUrl();
+    const baseUrl   = getNpzBaseUrl();
 
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Loading...';
+    btn.disabled    = true;
+    btn.innerHTML   = '<span class="spinner"></span> Loading...';
     container.innerHTML = '<div class="result-placeholder">Loading NPZ summary...</div>';
     const start = performance.now();
     updateTimer(timer, start);
 
     try {
         const response = await fetch(`${baseUrl}/api/npz/summary`);
-        if (!response.ok) {
-            const text = await response.text();
-            throw new Error(`HTTP ${response.status}: ${text}`);
-        }
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+
         npzSummary = await response.json();
         const maxFrame = Math.max(0, (npzSummary.num_frames || 1) - 1);
-        slider.max = String(maxFrame);
+        slider.max     = String(maxFrame);
         frameInput.max = String(maxFrame);
 
         const elapsed = Math.round(performance.now() - start);
         clearTimerInterval();
         showResult(container, npzSummary, elapsed, response.status);
         addLog('success', 'NPZ Runner', `Loaded ${npzSummary.num_frames} frames from ${npzSummary.file}`);
-
         await loadNpzFrame(0);
+
     } catch (err) {
         clearTimerInterval();
-        const elapsed = Math.round(performance.now() - start);
-        showError(container, err.message, elapsed);
+        showError(container, err.message, Math.round(performance.now() - start));
         addLog('error', 'NPZ Runner', err.message);
     } finally {
-        btn.disabled = false;
+        btn.disabled  = false;
         btn.innerHTML = '<span class="btn-icon">▶</span> Load NPZ';
     }
 }
 
 async function loadNpzFrame(frame) {
-    const container = document.getElementById('result-npz');
-    const slider = document.getElementById('npz-frame-slider');
+    const container  = document.getElementById('result-npz');
+    const slider     = document.getElementById('npz-frame-slider');
     const frameInput = document.getElementById('npz-frame-input');
-    const baseUrl = getNpzBaseUrl();
-    const safeFrame = Math.max(0, parseInt(frame, 10) || 0);
+    const baseUrl    = getNpzBaseUrl();
+    const safeFrame  = Math.max(0, parseInt(frame, 10) || 0);
 
-    slider.value = String(safeFrame);
+    slider.value     = String(safeFrame);
     frameInput.value = String(safeFrame);
 
     try {
         const response = await fetch(`${baseUrl}/api/npz/frame?i=${safeFrame}`);
-        if (!response.ok) {
-            const text = await response.text();
-            throw new Error(`HTTP ${response.status}: ${text}`);
-        }
-        const data = await response.json();
-        const payload = {
-            summary: npzSummary || null,
-            frame: data,
-        };
-        const json = syntaxHighlight(JSON.stringify(payload, null, 2));
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+
+        const data    = await response.json();
+        const payload = { summary: npzSummary || null, frame: data };
+        const json    = syntaxHighlight(JSON.stringify(payload, null, 2));
+
         container.className = 'result-container result-success';
         container.innerHTML = `
             <div class="result-content">
@@ -340,79 +444,54 @@ async function loadNpzFrame(frame) {
 }
 
 function stopNpzPlayback() {
-    if (npzPlaybackTimer) {
-        clearInterval(npzPlaybackTimer);
-        npzPlaybackTimer = null;
-    }
+    if (npzPlaybackTimer) { clearInterval(npzPlaybackTimer); npzPlaybackTimer = null; }
     const playBtn = document.getElementById('btn-npz-play');
-    if (playBtn) {
-        playBtn.innerHTML = '<span class="btn-icon">▶</span> Play';
-    }
+    if (playBtn) playBtn.innerHTML = '<span class="btn-icon">▶</span> Play';
 }
 
 function toggleNpzPlayback() {
+    const slider  = document.getElementById('npz-frame-slider');
+    const timer   = document.getElementById('timer-npz');
     const playBtn = document.getElementById('btn-npz-play');
-    const slider = document.getElementById('npz-frame-slider');
-    const timer = document.getElementById('timer-npz');
 
-    if (!npzSummary) {
-        loadNpzSummary();
-        return;
-    }
+    if (!npzSummary) { loadNpzSummary(); return; }
+    if (npzPlaybackTimer) { stopNpzPlayback(); return; }
 
-    if (npzPlaybackTimer) {
-        stopNpzPlayback();
-        return;
-    }
-
-    const fps = npzSummary.fps || 30;
+    const fps        = npzSummary.fps || 30;
     const intervalMs = Math.max(1, Math.floor(1000 / fps));
-    const maxFrame = parseInt(slider.max, 10) || 0;
-    let frame = parseInt(slider.value, 10) || 0;
+    const maxFrame   = parseInt(slider.max, 10) || 0;
+    let frame        = parseInt(slider.value, 10) || 0;
 
     playBtn.innerHTML = '<span class="btn-icon">⏸</span> Pause';
-    const start = performance.now() - frame * intervalMs;
-    updateTimer(timer, start);
+    updateTimer(timer, performance.now() - frame * intervalMs);
 
     npzPlaybackTimer = setInterval(async () => {
-        if (frame > maxFrame) {
-            stopNpzPlayback();
-            clearTimerInterval();
-            return;
-        }
-        await loadNpzFrame(frame);
-        frame += 1;
+        if (frame > maxFrame) { stopNpzPlayback(); clearTimerInterval(); return; }
+        await loadNpzFrame(frame++);
     }, intervalMs);
 }
 
 function setupNpzControls() {
-    const slider = document.getElementById('npz-frame-slider');
+    const slider     = document.getElementById('npz-frame-slider');
     const frameInput = document.getElementById('npz-frame-input');
     if (!slider || !frameInput) return;
 
-    slider.addEventListener('input', () => {
-        stopNpzPlayback();
-        loadNpzFrame(slider.value);
-    });
-
+    slider.addEventListener('input', () => { stopNpzPlayback(); loadNpzFrame(slider.value); });
     frameInput.addEventListener('change', () => {
         stopNpzPlayback();
-        const frame = parseInt(frameInput.value, 10) || 0;
-        loadNpzFrame(frame);
+        loadNpzFrame(parseInt(frameInput.value, 10) || 0);
     });
 }
 
 // ==============================
-// Result Rendering
+// Generic Result Rendering
 // ==============================
 
 function showResult(container, data, elapsed, status) {
     const json = syntaxHighlight(JSON.stringify(data, null, 2));
     container.className = 'result-container result-success';
     container.innerHTML = `
-        <div class="result-content">
-            <pre class="result-json">${json}</pre>
-        </div>
+        <div class="result-content"><pre class="result-json">${json}</pre></div>
         <div class="result-meta">
             <span>✅ Status: ${status}</span>
             <span>⏱️ ${elapsed}ms</span>
@@ -442,19 +521,11 @@ function syntaxHighlight(json) {
     json = escapeHtml(json);
     return json.replace(
         /("(\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
-        function (match) {
+        (match) => {
             let cls = 'json-number';
-            if (/^"/.test(match)) {
-                if (/:$/.test(match)) {
-                    cls = 'json-key';
-                } else {
-                    cls = 'json-string';
-                }
-            } else if (/true|false/.test(match)) {
-                cls = 'json-bool';
-            } else if (/null/.test(match)) {
-                cls = 'json-null';
-            }
+            if (/^"/.test(match)) cls = /:$/.test(match) ? 'json-key' : 'json-string';
+            else if (/true|false/.test(match)) cls = 'json-bool';
+            else if (/null/.test(match)) cls = 'json-null';
             return `<span class="${cls}">${match}</span>`;
         }
     );
@@ -475,16 +546,12 @@ let timerInterval = null;
 function updateTimer(timerEl, startTime) {
     clearTimerInterval();
     timerInterval = setInterval(() => {
-        const elapsed = Math.round(performance.now() - startTime);
-        timerEl.textContent = `${elapsed}ms`;
+        timerEl.textContent = `${Math.round(performance.now() - startTime)}ms`;
     }, 50);
 }
 
 function clearTimerInterval() {
-    if (timerInterval) {
-        clearInterval(timerInterval);
-        timerInterval = null;
-    }
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
 }
 
 // ==============================
@@ -493,11 +560,10 @@ function clearTimerInterval() {
 
 function addLog(type, service, message) {
     const container = document.getElementById('log-container');
-    const emptyMsg = container.querySelector('.log-empty');
+    const emptyMsg  = container.querySelector('.log-empty');
     if (emptyMsg) emptyMsg.remove();
 
-    const now = new Date().toLocaleTimeString('en-US', { hour12: false });
-
+    const now   = new Date().toLocaleTimeString('en-US', { hour12: false });
     const entry = document.createElement('div');
     entry.className = 'log-entry';
     entry.innerHTML = `
@@ -505,18 +571,13 @@ function addLog(type, service, message) {
         <span class="log-badge ${type}">${type}</span>
         <span class="log-message"><strong>${service}</strong> — ${escapeHtml(message)}</span>
     `;
-
     container.insertBefore(entry, container.firstChild);
-
-    // Keep max 50 entries
-    while (container.children.length > 50) {
-        container.removeChild(container.lastChild);
-    }
+    while (container.children.length > 50) container.removeChild(container.lastChild);
 }
 
 function clearLog() {
-    const container = document.getElementById('log-container');
-    container.innerHTML = '<div class="log-empty">No requests yet. Test an endpoint above.</div>';
+    document.getElementById('log-container').innerHTML =
+        '<div class="log-empty">No requests yet. Test an endpoint above.</div>';
 }
 
 // ==============================
@@ -526,16 +587,13 @@ function clearLog() {
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
         const activePanel = document.querySelector('.test-panel.active');
-        if (activePanel) {
-            const id = activePanel.id;
-            if (id === 'panel-rag-test') testAgenticRAG();
-            else if (id === 'panel-dart-test') testDART();
-            else if (id === 'panel-pipeline-test') testPipeline();
-            else if (id === 'panel-npz-test') loadNpzSummary();
-        }
+        if (!activePanel) return;
+        const id = activePanel.id;
+        if      (id === 'panel-rag-test')      testAgenticRAG();
+        else if (id === 'panel-dart-test')     testDART();
+        else if (id === 'panel-pipeline-test') testPipeline();
+        else if (id === 'panel-npz-test')      loadNpzSummary();
     }
 });
 
-window.addEventListener('DOMContentLoaded', () => {
-    setupNpzControls();
-});
+window.addEventListener('DOMContentLoaded', () => { setupNpzControls(); });

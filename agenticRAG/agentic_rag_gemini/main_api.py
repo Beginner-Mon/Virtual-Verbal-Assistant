@@ -1,30 +1,45 @@
 """Unified main API endpoint for the complete three-service pipeline.
 
 This is the single entry point for the frontend. It coordinates:
-1. AgenticRAG (query processing)
-2. SpeechLLm (voice synthesis)
-3. DART (motion generation)
+1. AgenticRAG (port 8000) — query processing and text generation
+2. DART (port 5001, WSL/Linux) — text-to-motion generation
 
 Frontend calls: POST /answer { query, user_id }
-Response: { text_answer, voice, motion, generation_time_ms }
+Response: { text_answer, motion, generation_time_ms, errors }
+
+NOTE: DART input is currently hardcoded to "jump*20" for integration testing.
 """
 
+import time
 import logging
 from typing import Optional, List, Dict, Any
-from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
 
-from orchestration import PipelineOrchestrator, format_pipeline_result
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 # ===========================
-# Request/Response Models
+# Service URLs
+# ===========================
+
+AGENTIC_RAG_URL = "http://localhost:8000"
+DART_URL = "http://localhost:5001"
+
+# Hardcoded DART motion prompt (for integration testing)
+DART_HARDCODED_PROMPT = "jump*20"
+
+# HTTP timeout (seconds) for downstream service calls
+DOWNSTREAM_TIMEOUT = 60.0
+
+
+# ===========================
+# Request / Response Models
 # ===========================
 
 
@@ -32,7 +47,7 @@ class ConversationTurn(BaseModel):
     """Single conversation turn."""
 
     role: str = Field(..., description="'user' or 'assistant'")
-    content: str = Field(...)
+    content: str = Field(..., description="Message content")
 
 
 class AnswerRequest(BaseModel):
@@ -41,50 +56,74 @@ class AnswerRequest(BaseModel):
     query: str = Field(..., description="User query")
     user_id: str = Field(default="default", description="User identifier")
     conversation_history: Optional[List[ConversationTurn]] = Field(
-        None, description="Previous turns"
+        None, description="Previous conversation turns"
     )
 
 
-class VoiceMetadata(BaseModel):
-    """Voice output metadata."""
-
-    file: str = Field(..., description="Path to audio file")
-    duration_seconds: float = Field(..., description="Duration in seconds")
-
-
 class MotionMetadata(BaseModel):
-    """Motion output metadata."""
+    """Motion output metadata returned from DART."""
 
-    file: str = Field(..., description="Path to motion file")
-    num_frames: int = Field(..., description="Number of frames")
-    fps: int = Field(..., description="Frames per second")
+    motion_file_url: str = Field(..., description="URL to download the .npz motion file")
+    num_frames: int = Field(..., description="Total number of motion frames")
+    fps: int = Field(..., description="Frames per second (always 30 for DART)")
+    duration_seconds: float = Field(..., description="Total clip duration in seconds")
+    text_prompt: str = Field(..., description="The prompt that was sent to DART")
 
 
 class AnswerResponse(BaseModel):
-    """Complete answer response from all services."""
+    """Combined response from AgenticRAG + DART."""
 
-    text_answer: str = Field(..., description="Text response")
-    voice: Optional[VoiceMetadata] = Field(None, description="Voice output")
-    motion: Optional[MotionMetadata] = Field(None, description="Motion output")
-    generation_time_ms: float = Field(..., description="Total generation time")
-    errors: Optional[Dict[str, str]] = Field(None, description="Service errors if any")
+    text_answer: str = Field(..., description="Text response from AgenticRAG")
+    motion: Optional[MotionMetadata] = Field(None, description="Motion output from DART")
+    generation_time_ms: float = Field(..., description="Total wall-clock time in ms")
+    errors: Optional[Dict[str, str]] = Field(None, description="Per-service errors if any")
 
 
 # ===========================
-# Global State
+# Downstream helpers
 # ===========================
 
-pipeline_orchestrator: Optional[PipelineOrchestrator] = None
+
+async def call_agenticrag(
+    client: httpx.AsyncClient,
+    query: str,
+    user_id: str,
+    conversation_history: Optional[List[Dict[str, str]]],
+) -> Dict[str, Any]:
+    """POST to AgenticRAG /query and return the parsed JSON body."""
+    payload: Dict[str, Any] = {
+        "query": query,
+        "user_id": user_id,
+    }
+    if conversation_history:
+        payload["conversation_history"] = conversation_history
+
+    logger.info(f"[AgenticRAG] → POST {AGENTIC_RAG_URL}/query  query={query[:80]}...")
+    resp = await client.post(f"{AGENTIC_RAG_URL}/query", json=payload)
+    resp.raise_for_status()
+    data = resp.json()
+    logger.info(f"[AgenticRAG] ← {resp.status_code} OK")
+    return data
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """FastAPI lifespan for startup/shutdown."""
-    global pipeline_orchestrator
-    logger.info("Starting unified API server...")
-    pipeline_orchestrator = PipelineOrchestrator()
-    yield
-    logger.info("Shutting down unified API server...")
+async def call_dart(
+    client: httpx.AsyncClient,
+    text_prompt: str,
+) -> Dict[str, Any]:
+    """POST to DART /generate and return the parsed JSON body."""
+    payload = {
+        "text_prompt": text_prompt,
+        "guidance_scale": 5.0,
+        "num_steps": 50,
+        "respacing": "ddim50",
+    }
+
+    logger.info(f"[DART] → POST {DART_URL}/generate  prompt={text_prompt!r}")
+    resp = await client.post(f"{DART_URL}/generate", json=payload)
+    resp.raise_for_status()
+    data = resp.json()
+    logger.info(f"[DART] ← {resp.status_code} OK  frames={data.get('num_frames')}")
+    return data
 
 
 # ===========================
@@ -93,12 +132,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Unified Multi-Service Pipeline API",
-    description="Single entry point for AgenticRAG, SpeechLLm, and DART",
-    version="1.0.0",
-    lifespan=lifespan,
+    description="Single entry point that fans out to AgenticRAG (port 8000) and DART (port 5001)",
+    version="2.0.0",
 )
 
-# Enable CORS for test UI
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -113,116 +150,115 @@ app.add_middleware(
 # ===========================
 
 
-@app.post("/answer", response_model=AnswerResponse, summary="Get complete answer with voice and motion")
+@app.post("/answer", response_model=AnswerResponse, summary="Get text answer + motion")
 async def get_answer(request: AnswerRequest) -> AnswerResponse:
-    """Get a complete answer with text, voice, and motion.
-
-    This endpoint coordinates:
-    1. AgenticRAG for query understanding and response generation
-    2. SpeechLLm for voice synthesis
-    3. DART for motion generation
-
-    Args:
-        request: AnswerRequest with query and optional history
-
-    Returns:
-        AnswerResponse with text, voice, motion, and generation time
-
-    Example:
-        POST /answer
-        {
-            "query": "How do I walk forward?",
-            "user_id": "user123",
-            "conversation_history": []
-        }
-
-        Response:
-        {
-            "text_answer": "To walk forward, move one foot in front of the other...",
-            "voice": {
-                "file": "/path/to/audio.wav",
-                "duration_seconds": 5.2
-            },
-            "motion": {
-                "file": "/path/to/motion.npy",
-                "num_frames": 160,
-                "fps": 30
-            },
-            "generation_time_ms": 3500.0,
-            "errors": null
-        }
     """
-    global pipeline_orchestrator
+    Fan out to AgenticRAG and DART **in parallel**, then merge results.
 
-    if pipeline_orchestrator is None:
-        raise HTTPException(status_code=500, detail="Pipeline not initialized")
+    Flow:
+    ┌─ AgenticRAG POST /query  (uses user query) ─┐
+    │                                              │  both start simultaneously
+    └─ DART POST /generate    (hardcoded: jump*20)─┘
+                       ↓
+            merge → AnswerResponse
+    """
+    t_start = time.perf_counter()
 
-    try:
-        logger.info(f"[{request.user_id}] Processing answer request: {request.query[:100]}...")
+    # Convert history to the dict format expected by AgenticRAG
+    history: Optional[List[Dict[str, str]]] = None
+    if request.conversation_history:
+        history = [{"role": t.role, "content": t.content} for t in request.conversation_history]
 
-        # Convert history to dict format if provided
-        history = None
-        if request.conversation_history:
-            history = [turn.dict() for turn in request.conversation_history]
+    errors: Dict[str, str] = {}
+    rag_data: Optional[Dict[str, Any]] = None
+    dart_data: Optional[Dict[str, Any]] = None
 
-        # Process through pipeline
-        result = pipeline_orchestrator.process_query_sync(
-            query=request.query,
-            user_id=request.user_id,
-            conversation_history=history,
+    # ── Fan-out: call both services concurrently ─────────────────────────────
+    import asyncio
+
+    async with httpx.AsyncClient(timeout=DOWNSTREAM_TIMEOUT) as client:
+        rag_task = asyncio.create_task(
+            call_agenticrag(client, request.query, request.user_id, history)
+        )
+        dart_task = asyncio.create_task(
+            call_dart(client, DART_HARDCODED_PROMPT)
         )
 
-        # Format response
-        formatted = format_pipeline_result(result)
+        # Gather — return_exceptions=True so one failure doesn't kill the other
+        results = await asyncio.gather(rag_task, dart_task, return_exceptions=True)
 
-        response = AnswerResponse(
-            text_answer=formatted["text_answer"],
-            voice=VoiceMetadata(**formatted["voice"]) if formatted["voice"] else None,
-            motion=MotionMetadata(**formatted["motion"]) if formatted["motion"] else None,
-            generation_time_ms=formatted["generation_time_ms"],
-            errors=formatted["errors"],
+    rag_result, dart_result = results
+
+    # ── Unpack AgenticRAG result ─────────────────────────────────────────────
+    if isinstance(rag_result, Exception):
+        logger.error(f"[AgenticRAG] failed: {rag_result}")
+        errors["agenticrag"] = str(rag_result)
+        text_answer = "[AgenticRAG unavailable — check that port 8000 is running]"
+    else:
+        rag_data = rag_result
+        text_answer = rag_data.get("text_answer", "")
+
+    # ── Unpack DART result ────────────────────────────────────────────────────
+    motion: Optional[MotionMetadata] = None
+    if isinstance(dart_result, Exception):
+        logger.error(f"[DART] failed: {dart_result}")
+        errors["dart"] = str(dart_result)
+    else:
+        dart_data = dart_result
+        motion = MotionMetadata(
+            motion_file_url=dart_data.get("motion_file_url", ""),
+            num_frames=dart_data.get("num_frames", 0),
+            fps=dart_data.get("fps", 30),
+            duration_seconds=dart_data.get("duration_seconds", 0.0),
+            text_prompt=dart_data.get("text_prompt", DART_HARDCODED_PROMPT),
         )
 
-        logger.info(
-            f"[{request.user_id}] Answer request complete in {response.generation_time_ms:.1f}ms"
-        )
+    generation_time_ms = (time.perf_counter() - t_start) * 1000
+    logger.info(
+        f"[{request.user_id}] Completed in {generation_time_ms:.0f}ms  "
+        f"rag={'ok' if rag_data else 'ERROR'}  dart={'ok' if dart_data else 'ERROR'}"
+    )
 
-        return response
-
-    except Exception as e:
-        logger.error(f"[{request.user_id}] Error processing answer request: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return AnswerResponse(
+        text_answer=text_answer,
+        motion=motion,
+        generation_time_ms=round(generation_time_ms, 1),
+        errors=errors if errors else None,
+    )
 
 
 @app.get("/health", summary="Health check")
-async def health_check() -> Dict[str, str]:
-    """Health check endpoint."""
-    return {
-        "status": "healthy",
-        "service": "unified-pipeline",
-        "orchestrator": "ready" if pipeline_orchestrator else "not-initialized",
-    }
+async def health_check() -> Dict[str, Any]:
+    """Ping both downstream services and report their status."""
+    statuses: Dict[str, str] = {}
+
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for name, base_url in [("agenticrag", AGENTIC_RAG_URL), ("dart", DART_URL)]:
+            try:
+                r = await client.get(f"{base_url}/health")
+                statuses[name] = "ok" if r.status_code == 200 else f"http_{r.status_code}"
+            except Exception as exc:
+                statuses[name] = f"unreachable ({type(exc).__name__})"
+
+    overall = "healthy" if all(v == "ok" for v in statuses.values()) else "degraded"
+    return {"status": overall, "services": statuses}
 
 
 @app.get("/info", summary="Get service info")
 async def get_info() -> Dict[str, Any]:
-    """Get service information."""
+    """Return configuration and endpoint documentation."""
     return {
         "service": "Unified Multi-Service Pipeline",
-        "version": "1.0.0",
-        "description": "Coordinates AgenticRAG, SpeechLLm, and DART",
-        "components": {
-            "agenticrag": "Query processing and decision making",
-            "speechllm": "Voice synthesis",
-            "dart": "Motion generation",
+        "version": "2.0.0",
+        "upstream_services": {
+            "agenticrag": f"{AGENTIC_RAG_URL}/query",
+            "dart": f"{DART_URL}/generate  (hardcoded prompt: '{DART_HARDCODED_PROMPT}')",
         },
         "endpoints": {
-            "POST /answer": "Get complete answer with text, voice, and motion",
-            "GET /health": "Health check",
-            "GET /info": "Service information",
+            "POST /answer": "Fan-out to AgenticRAG + DART, merge and return",
+            "GET /health": "Ping both downstream services",
+            "GET /info": "This document",
         },
-        "latency_target_ms": 5000,
-        "orchestrator": "ready" if pipeline_orchestrator else "not-initialized",
     }
 
 
@@ -231,14 +267,15 @@ async def get_info() -> Dict[str, Any]:
 # ===========================
 
 if __name__ == "__main__":
-    logger.info("Starting Unified Multi-Service Pipeline API on port 8080...")
+    logger.info("Starting Unified Pipeline API on port 8080...")
     logger.info("")
-    logger.info("Make sure you have these services running:")
-    logger.info("  1. SpeechLLm:      python SpeechLLm/api_server.py         (port 5000)")
-    logger.info("  2. DART:           python text-to-motion/DART/api_server.py (port 5001, Linux)")
-    logger.info("  3. AgenticRAG:     python agenticRAG/agentic_rag_gemini/api_server.py (port 8000)")
+    logger.info("Requires these services to be running:")
+    logger.info(f"  AgenticRAG : {AGENTIC_RAG_URL}  (Windows, firstconda env)")
+    logger.info(f"  DART       : {DART_URL}  (WSL/Linux, DART env)")
     logger.info("")
-    logger.info("Frontend can call: POST http://localhost:8080/answer")
+    logger.info(f"DART motion prompt is hardcoded to: '{DART_HARDCODED_PROMPT}'")
+    logger.info("")
+    logger.info("Frontend: POST http://localhost:8080/answer")
     logger.info("")
 
     uvicorn.run(
