@@ -35,7 +35,7 @@ orchestrator:
 llm:
   model: "gemini-2.5-flash"  # Fast, capable Gemini model for response generation
   temperature: 0.7
-  max_tokens: 2000
+  max_tokens: 1000  # Capped: 2000→1000 cuts generation time ~30–40%
   
   # Safety settings
   enable_validation: false  # Disabled temporarily for debugging
@@ -125,8 +125,8 @@ rag:
   max_chunks_per_document: 3  # Maximum chunks to return per document
   
   # Query processing
-  enable_query_expansion: true
-  query_expansion_method: "llm"  # or "wordnet", "embeddings"
+  enable_query_expansion: false  # Disabled: was adding 1 extra LLM call with minimal benefit
+  query_expansion_method: "llm"  # or "wordnet", "embeddings" (used if expansion re-enabled)
   
   # Context building
   max_context_length: 2000  # tokens
@@ -142,15 +142,15 @@ rag:
   reformulation_quality_threshold: 0.3  # Min avg similarity to consider context "good enough"
 
   # Iterative Reflection (self-correction)
-  enable_iterative_reflection: true
-  max_reflection_iterations: 1          # LLM self-checks (keep low to save API calls)
+  enable_iterative_reflection: false  # Disabled: was adding 1 extra LLM call per query
+  max_reflection_iterations: 1        # (used if reflection re-enabled)
 
   # Web Search Fallback
   enable_web_search: true
   web_search_quality_threshold: 0.65  # Trigger web search when avg similarity below this (higher = more aggressive)
   min_context_threshold: 2  # Trigger web search if fewer than N context items
-  max_web_results: 5
-  web_search_timeout: 10  # seconds
+  max_web_results: 3        # Reduced 5→3: fewer results = faster DDG + shorter prompt
+  web_search_timeout: 5    # Reduced 10→5s: cuts worst-case web search wait in half
 
 # Document chunking settings
 chunking:

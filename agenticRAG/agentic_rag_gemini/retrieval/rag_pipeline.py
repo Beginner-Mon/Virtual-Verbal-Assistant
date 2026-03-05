@@ -4,17 +4,19 @@
 This module implements the complete RAG pipeline for context-aware response generation.
 
 Changes vs original:
-  - RateLimiter class (sliding window) throttles LLM calls — learned from index.ts
+  - RateLimiter class (sliding window) throttles LLM calls
   - _assess_context_quality: weighted scoring by source_type instead of plain avg
   - _retrieve_context: error-isolated per-source retrieval (no single failure kills all)
   - _retry_generation: iterative loop instead of recursion (stack-safe)
   - Removed duplicate `from config import get_config` inside _retrieve_context
+  - generate_response: retrieval + speculative web search run in parallel (ThreadPoolExecutor)
 """
 
 import re
 import json
 import time
 import threading
+import concurrent.futures
 from typing import List, Dict, Any, Optional
 
 from memory.memory_manager import MemoryManager
@@ -176,6 +178,7 @@ class RAGPipeline:
         self._rate_limiter = RateLimiter(
             requests_per_minute=getattr(self.llm_config, 'requests_per_minute', 20)
         )
+        self._last_error: Optional[Exception] = None  # Set by _generate_llm_response on failure
 
         logger.info("Initialized RAGPipeline with Gemini and hybrid retrieval")
 
@@ -214,75 +217,110 @@ class RAGPipeline:
         # Step 1: Process query (expansion if enabled)
         processed_query = self._process_query(query)
 
-        # Step 2: Retrieve context with query reformulation loop
+        # Step 2: Retrieve context with query reformulation loop.
+        # Simultaneously launch a speculative web search in the background so
+        # that its network I/O overlaps with local retrieval (both are I/O-bound
+        # and share no mutable state, so ThreadPoolExecutor is safe here).
         retrieved_context: List[Dict[str, Any]] = []
         web_search_used = False
         reformulation_count = 0
         current_query = processed_query
+        ws_quality_threshold = getattr(self.config, 'web_search_quality_threshold', 0.65)
 
-        if use_memory:
-            max_attempts = (
-                self.config.max_reformulation_attempts + 1
-                if self.config.enable_query_reformulation
-                else 1
+        # --- Speculative web search future (started immediately, used only if needed) ---
+        _web_future: Optional[concurrent.futures.Future] = None
+        _executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        if self.enable_web_search and self.web_search.is_available():
+            _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            _web_future = _executor.submit(
+                self.web_search.search_and_summarize, current_query
             )
+            logger.debug("Speculative web search started in background")
 
-            for attempt in range(max_attempts):
-                retrieved_context = self._retrieve_context(
-                    user_id=user_id,
-                    query=current_query,
+        try:
+            if use_memory:
+                max_attempts = (
+                    self.config.max_reformulation_attempts + 1
+                    if self.config.enable_query_reformulation
+                    else 1
                 )
 
-                quality = self._assess_context_quality(retrieved_context)
-
-                if (quality >= self.config.reformulation_quality_threshold
-                        or not self.config.enable_query_reformulation):
-                    break
-
-                if attempt < self.config.max_reformulation_attempts:
-                    new_query = self._reformulate_query(
-                        original_query=query,
-                        retrieved_context=retrieved_context,
-                        attempt=attempt,
+                for attempt in range(max_attempts):
+                    retrieved_context = self._retrieve_context(
+                        user_id=user_id,
+                        query=current_query,
                     )
-                    if new_query and new_query != current_query:
-                        current_query = new_query
-                        reformulation_count += 1
-                        logger.info(
-                            f"Reformulated query (attempt {attempt + 1}): {current_query[:100]}"
-                        )
-                    else:
+
+                    quality = self._assess_context_quality(retrieved_context)
+
+                    if (quality >= self.config.reformulation_quality_threshold
+                            or not self.config.enable_query_reformulation):
                         break
 
-        # Step 2.5: Web search fallback
-        if self.enable_web_search and self.web_search.is_available():
-            context_quality = self._assess_context_quality(retrieved_context)
-            ws_quality_threshold = getattr(self.config, 'web_search_quality_threshold', 0.65)
-            too_few = len(retrieved_context) < self.min_context_threshold
-            too_poor = context_quality < ws_quality_threshold and len(retrieved_context) > 0
-            logger.info(
-                f"Web search check: quality={context_quality:.2f}, "
-                f"threshold={ws_quality_threshold}, count={len(retrieved_context)}, "
-                f"too_few={too_few}, too_poor={too_poor}"
-            )
+                    if attempt < self.config.max_reformulation_attempts:
+                        new_query = self._reformulate_query(
+                            original_query=query,
+                            retrieved_context=retrieved_context,
+                            attempt=attempt,
+                        )
+                        if new_query and new_query != current_query:
+                            current_query = new_query
+                            reformulation_count += 1
+                            logger.info(
+                                f"Reformulated query (attempt {attempt + 1}): {current_query[:100]}"
+                            )
+                        else:
+                            break
 
-            if too_few or too_poor:
-                reason = (
-                    f"too few results ({len(retrieved_context)}/{self.min_context_threshold})"
-                    if too_few
-                    else f"low quality (avg similarity {context_quality:.2f} < {ws_quality_threshold})"
+            # Step 2.5: Decide whether to use speculative web search result.
+            if _web_future is not None:
+                context_quality = self._assess_context_quality(retrieved_context)
+                too_few = len(retrieved_context) < self.min_context_threshold
+                too_poor = context_quality < ws_quality_threshold and len(retrieved_context) > 0
+                logger.info(
+                    f"Web search check: quality={context_quality:.2f}, "
+                    f"threshold={ws_quality_threshold}, count={len(retrieved_context)}, "
+                    f"too_few={too_few}, too_poor={too_poor}"
                 )
-                logger.info(f"Context insufficient — {reason}, trying web search...")
-                web_context = self.web_search.search_and_summarize(current_query)
-                if web_context:
-                    retrieved_context.append({
-                        "document": web_context,
-                        "source_type": "web_search",
-                        "similarity": 0.7,
-                        "metadata": {"source": "DuckDuckGo"},
-                    })
-                    web_search_used = True
-                    logger.info("Added web search results to context")
+
+                if too_few or too_poor:
+                    reason = (
+                        f"too few results ({len(retrieved_context)}/{self.min_context_threshold})"
+                        if too_few
+                        else f"low quality (avg similarity {context_quality:.2f} < {ws_quality_threshold})"
+                    )
+                    logger.info(f"Context insufficient — {reason}, collecting web search result...")
+                    try:
+                        # Result is already computed (ran in parallel), so this
+                        # .result() call returns almost immediately.
+                        web_context = _web_future.result(timeout=getattr(self.config, 'web_search_timeout', 5))
+                    except concurrent.futures.TimeoutError:
+                        logger.warning("Speculative web search timed out — skipping")
+                        web_context = ""
+                    except Exception as exc:
+                        logger.warning(f"Speculative web search failed: {exc}")
+                        web_context = ""
+
+                    if web_context:
+                        retrieved_context.append({
+                            "document": web_context,
+                            "source_type": "web_search",
+                            "similarity": 0.7,
+                            "metadata": {"source": "DuckDuckGo"},
+                        })
+                        web_search_used = True
+                        logger.info("Added parallel web search results to context")
+                    else:
+                        logger.info("Web search result empty — skipping")
+                else:
+                    # Context is good enough — cancel / discard the web search future.
+                    _web_future.cancel()
+                    logger.debug("Context sufficient — web search result discarded")
+
+        finally:
+            # Always shut down the executor to free the background thread.
+            if _executor is not None:
+                _executor.shutdown(wait=False)
 
         # Step 3: Build prompt with context
         prompt = self._build_prompt(
