@@ -1,42 +1,119 @@
-import requests
+import os
+import time
+from typing import Tuple, Optional
+from dotenv import load_dotenv
+from elevenlabs.client import ElevenLabs
+
+
+load_dotenv()
+
 
 class ElevenLabsClient:
-    def __init__(self, api_key: str, voice_id: str = "EXAVITQu4vr4xnSDxMaL"):
-        self.api_key = api_key
+    """
+    Production-ready ElevenLabs TTS client.
+
+    Features:
+    - Streaming audio
+    - Timeout protection
+    - Duration estimation
+    - Clean error handling
+    - Designed for motion sync
+    """
+
+    def __init__(
+        self,
+        voice_id: str = "EXAVITQu4vr4xnSDxMaL",
+        model_id: str = "eleven_multilingual_v2",
+        timeout: int = 20
+    ):
+        api_key = os.getenv("ELEVENLABS_API_KEY")
+
+        if not api_key:
+            raise ValueError("ELEVENLABS_API_KEY not found in environment variables.")
+
+        self.client = ElevenLabs(api_key=api_key)
         self.voice_id = voice_id
-        self.base_url = "https://api.elevenlabs.io/v1/text-to-speech"
+        self.model_id = model_id
+        self.timeout = timeout
 
-    def synthesize(self, text: str, output_path: str = None) -> bytes:
-        url = f"{self.base_url}/{self.voice_id}"
+    def synthesize(
+        self,
+        text: str,
+        output_path: Optional[str] = None
+    ) -> Tuple[bytes, float]:
+        """
+        Stream TTS audio and return:
+            (audio_bytes, estimated_duration_seconds)
+        """
 
-        headers = {
-            "xi-api-key": self.api_key,
-            "Content-Type": "application/json"
-        }
+        if not text or not text.strip():
+            raise ValueError("Text for synthesis cannot be empty.")
 
-        payload = {
-            "text": text,
-            "model_id": "eleven_multilingual_v2",  # good default
-            "voice_settings": {
-                "stability": 0.5,
-                "similarity_boost": 0.8
-            }
-        }
+        start_time = time.time()
 
         try:
-            response = requests.post(url, json=payload, headers=headers)
+            audio_stream = self.client.text_to_speech.convert(
+                voice_id=self.voice_id,
+                model_id=self.model_id,
+                text=text,
+                voice_settings={
+                    "stability": 0.6,
+                    "similarity_boost": 0.7,
+                    "use_speaker_boost": True
+                }
+            )
 
-            if response.status_code != 200:
-                raise Exception(f"ElevenLabs API error: {response.text}")
+            audio_buffer = bytearray()
 
-            audio_bytes = response.content
+            for chunk in audio_stream:
+
+                # Timeout protection
+                if time.time() - start_time > self.timeout:
+                    raise TimeoutError("ElevenLabs streaming timed out.")
+
+                if chunk:
+                    audio_buffer.extend(chunk)
+
+            audio_bytes = bytes(audio_buffer)
+
+            if not audio_bytes:
+                raise RuntimeError("Received empty audio from ElevenLabs.")
 
             if output_path:
                 with open(output_path, "wb") as f:
                     f.write(audio_bytes)
 
-            return audio_bytes
+            duration = self._estimate_duration(audio_bytes)
+
+            return audio_bytes, duration
+
+        except TimeoutError:
+            raise
+
+        except requests.exceptions.RequestException as e:
+            print("\n[ElevenLabs REQUEST ERROR]")
+            print(e)
+            raise
 
         except Exception as e:
-            print(f"[ElevenLabs ERROR] {e}")
+            print("\n[ElevenLabs UNKNOWN ERROR]")
+            print(type(e))
+            print(e)
             raise
+
+    # -------------------------------------------------------
+    # Utility: Estimate MP3 Duration (Lightweight)
+    # -------------------------------------------------------
+
+    def _estimate_duration(self, audio_bytes: bytes) -> float:
+        """
+        Estimate duration assuming ~128kbps MP3.
+        This is lightweight and avoids heavy audio libraries.
+        """
+
+        bitrate = 128000  # bits per second
+        file_size_bits = len(audio_bytes) * 8
+
+        duration_seconds = file_size_bits / bitrate
+
+        return round(duration_seconds, 2)

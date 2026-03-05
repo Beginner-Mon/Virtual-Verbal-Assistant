@@ -174,7 +174,12 @@ cython_debug/
 .pypirc
 
 data/
+
+# allow ONLY this dataset
+!data_loaders/humanml/data/
+!data_loaders/humanml/data/**
 .vscode/
 mld_denoiser/
 mvae/
 smplh/
+outputs/

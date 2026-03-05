@@ -93,6 +93,9 @@
                 <button class="tab" onclick="switchTab('pipeline-test')" id="tab-pipeline-test">
                     🔗 Full Pipeline
                 </button>
+                <button class="tab" onclick="switchTab('npz-test')" id="tab-npz-test">
+                    🎞 NPZ Runner
+                </button>
             </div>
 
             <!-- AgenticRAG Test Panel -->
@@ -123,8 +126,8 @@
             <!-- DART Test Panel -->
             <div class="test-panel" id="panel-dart-test">
                 <div class="panel-header">
-                    <h3>DART Motion Generation</h3>
-                    <span class="endpoint-badge">POST /generate_motion → :5001</span>
+                    <h3>Text-to-Motion (new API)</h3>
+                    <span class="endpoint-badge">POST /generate → :8000</span>
                 </div>
                 <div class="form-row">
                     <div class="form-group flex-2">
@@ -183,6 +186,40 @@
                 </div>
                 <div class="result-container" id="result-pipeline">
                     <div class="result-placeholder">Full pipeline results will appear here...</div>
+                </div>
+            </div>
+
+            <!-- NPZ Runner Test Panel -->
+            <div class="test-panel" id="panel-npz-test">
+                <div class="panel-header">
+                    <h3>NPZ Motion Runner</h3>
+                    <span class="endpoint-badge">GET /api/npz/* → :8090</span>
+                </div>
+                <div class="form-row">
+                    <div class="form-group flex-1">
+                        <label>NPZ API Base URL</label>
+                        <input type="text" id="npz-base-url" value="http://127.0.0.1:8090">
+                    </div>
+                    <div class="form-group flex-1">
+                        <label>Frame</label>
+                        <input type="number" id="npz-frame-input" value="0" min="0">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Playback</label>
+                    <input type="range" id="npz-frame-slider" min="0" max="159" value="0">
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary" onclick="loadNpzSummary()" id="btn-npz-load">
+                        <span class="btn-icon">▶</span> Load NPZ
+                    </button>
+                    <button class="btn btn-outline" onclick="toggleNpzPlayback()" id="btn-npz-play">
+                        <span class="btn-icon">▶</span> Play
+                    </button>
+                    <span class="timer" id="timer-npz"></span>
+                </div>
+                <div class="result-container" id="result-npz">
+                    <div class="result-placeholder">Load NPZ to inspect and play frame-by-frame.</div>
                 </div>
             </div>
         </section>
