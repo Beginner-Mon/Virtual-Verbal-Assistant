@@ -12,6 +12,7 @@ class Orchestrator:
         voice_driver,
         audio_buffer,
         interrupt_controller,
+        motion_stage=None,
     ):
         self.stt = stt_stage
         self.emotion = emotion_stage
@@ -22,22 +23,37 @@ class Orchestrator:
         self.interrupt = interrupt_controller
 
         self.state_machine = StateMachine()
+        self.motion = motion_stage
 
     def handle_text_input(self, user_text: str):
         self.state_machine.set_state(AssistantState.THINKING)
 
         emotion = self.emotion.process(user_text)
-        response = self.llm.process(user_text, emotion)
+        result = self.llm.process(user_text, emotion)
 
-        self.state_machine.set_state(AssistantState.SPEAKING)
+        audio_path = None
 
-        self.audio_buffer.start()
-        audio_path = self.tts.process(response)   # capture return value
-        self.audio_buffer.stop()
+        # -----------------------
+        # Routing Logic
+        # -----------------------
+        intent = result.get("intent", "speech")
+
+        if intent in ["speech", "both"] and "text" in result:
+            self.state_machine.set_state(AssistantState.SPEAKING)
+
+            self.audio_buffer.start()
+            audio_path = self.tts.process(result["text"])
+            self.audio_buffer.stop()
+
+        if intent in ["action", "both"] and self.motion:
+            action_data = result.get("action")
+            if action_data:
+                # Call your DART wrapper
+                self.motion.process(action_data)
 
         self.state_machine.set_state(AssistantState.IDLE)
 
-        return response, audio_path   # return BOTH
+        return result, audio_path
 
     def handle_voice_input(self, audio_buffer_data, sample_rate: int):
         self.state_machine.set_state(AssistantState.LISTENING)
@@ -47,15 +63,23 @@ class Orchestrator:
         self.state_machine.set_state(AssistantState.THINKING)
 
         emotion = self.emotion.process(user_text)
-        response = self.llm.process(user_text, emotion)
+        result = self.llm.process(user_text, emotion)
 
-        self.state_machine.set_state(AssistantState.SPEAKING)
+        audio_path = None
+        intent = result.get("intent", "speech")
 
-        audio_path = self.tts.process(response)
+        if intent in ["speech", "both"] and "text" in result:
+            self.state_machine.set_state(AssistantState.SPEAKING)
+            audio_path = self.tts.process(result["text"])
+
+        if intent in ["action", "both"] and self.motion:
+            action_data = result.get("action")
+            if action_data:
+                self.motion.process(action_data)
 
         self.state_machine.set_state(AssistantState.IDLE)
 
-        return response, audio_path
+        return result, audio_path
 
     def interrupt_speaking(self):
         if self.state_machine.is_speaking():
