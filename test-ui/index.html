@@ -152,7 +152,7 @@
                 <div class="form-row">
                     <div class="form-group flex-2">
                         <label>Text Prompt</label>
-                        <input type="text" id="dart-prompt" placeholder="e.g., walk forward, dance, jump" value="walk forward">
+                        <input type="text" id="dart-prompt" placeholder="e.g., walk forward*5,jump*3 or walk forward" value="walk forward">
                     </div>
                     <div class="form-group flex-1">
                         <label>Primitives</label>
@@ -165,8 +165,15 @@
                         <input type="number" id="dart-guidance" value="5.0" step="0.5" min="1" max="20">
                     </div>
                     <div class="form-group flex-1">
-                        <label>Diffusion Steps</label>
-                        <input type="number" id="dart-steps" value="10" min="1" max="50">
+                        <label>Respacing (optional)</label>
+                        <input type="text" id="dart-respacing" value="" placeholder="Leave blank (recommended). Example: ddim5">
+                    </div>
+                    <div class="form-group flex-1">
+                        <label>Gender</label>
+                        <select id="dart-gender">
+                            <option value="female" selected>female</option>
+                            <option value="male">male</option>
+                        </select>
                     </div>
                     <div class="form-group flex-1">
                         <label>Seed (optional)</label>

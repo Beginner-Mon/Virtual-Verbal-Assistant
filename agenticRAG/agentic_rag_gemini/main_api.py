@@ -115,7 +115,7 @@ async def call_dart(
         "text_prompt": text_prompt,
         "guidance_scale": 5.0,
         "num_steps": 50,
-        "respacing": "ddim50",
+        "respacing": "",
     }
 
     logger.info(f"[DART] → POST {DART_URL}/generate  prompt={text_prompt!r}")
