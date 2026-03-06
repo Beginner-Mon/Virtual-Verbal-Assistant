@@ -12,6 +12,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import uvicorn
 import yaml
@@ -24,7 +26,6 @@ from src.context.memory_manager import MemoryManager
 from src.stages.llm_stage import LLMStage
 from src.stages.emotion_stage import EmotionStage
 from src.stages.tts_stage import TTSStage
-from src.core.state_machine import StateMachine, AssistantState
 
 # ===========================
 # Setup Logging
@@ -98,9 +99,8 @@ class SpeechLLmAPI:
             # Initialize stages
             self.emotion_stage = EmotionStage()
             self.llm_stage = LLMStage(
-                llm_client=self.phi3_client,
+                phi3_client=self.phi3_client,
                 memory_manager=self.memory_manager,
-                config=self.model_config["phi3"],
             )
             logger.info("✓ LLM stage initialized")
 
@@ -112,7 +112,6 @@ class SpeechLLmAPI:
                 self.coqui_client = CoquiClient(self.model_config["coqui"])
             else:
                 eleven_client = ElevenLabsClient(
-                    api_key=eleven_api_key,
                     voice_id=self.model_config["tts"]["voice_id"],
                 )
                 coqui_client = CoquiClient(self.model_config["coqui"])
@@ -164,35 +163,28 @@ class SpeechLLmAPI:
                 logger.info(f"[{request_id}] Detected emotion: {emotion}")
 
             # Generate LLM response based on text (can be enhanced with context)
-            llm_response = self.llm_stage.process(text, emotion_context=emotion)
-            logger.info(f"[{request_id}] LLM response generated: {llm_response[:100]}...")
+            llm_response_dict = self.llm_stage.process(text, emotion=emotion)
+            llm_response_text = llm_response_dict.get("text", "") if isinstance(llm_response_dict, dict) else str(llm_response_dict)
+            logger.info(f"[{request_id}] LLM response generated: {llm_response_text[:100]}...")
 
-            # Synthesize speech
             # Generate audio file
             audio_file_name = f"synthesis_{request_id}.wav"
             audio_file_path = self.audio_output_dir / audio_file_name
 
-            # Use TTS to generate audio
-            if self.tts_router:
-                self.tts_router.synthesize(
-                    text=llm_response,
-                    output_path=str(audio_file_path),
-                    emotion=emotion,
-                )
-            else:
-                # Fallback to Coqui
-                self.coqui_client.synthesize(
-                    text=llm_response,
-                    output_path=str(audio_file_path),
-                )
+            # Use TTS stage to synthesize audio
+            self.tts_stage.tts_router.synthesize(
+                text=llm_response_text,
+                output_path=str(audio_file_path)
+            )
+            logger.info(f"[{request_id}] Audio synthesized: {audio_file_path}")
 
             # Estimate duration (rough heuristic: 150 words per minute)
-            word_count = len(llm_response.split())
+            word_count = len(llm_response_text.split())
             duration_seconds = max(2.0, word_count * 0.4)
 
             response = SynthesizeResponse(
                 audio_file=str(audio_file_path),
-                text=llm_response,
+                text=llm_response_text,
                 duration_seconds=duration_seconds,
                 emotion=emotion,
                 request_id=request_id,
@@ -228,6 +220,15 @@ app = FastAPI(
     description="REST API for multimodal speech and LLM synthesis",
     version="1.0.0",
     lifespan=lifespan,
+)
+
+# Add CORS middleware to allow cross-origin requests from the web UI
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for development
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -275,8 +276,45 @@ async def get_info() -> Dict[str, Any]:
             "POST /synthesize": "Synthesize speech from text",
             "GET /health": "Health check",
             "GET /info": "Service information",
+            "GET /audio/{filename}": "Download generated audio file",
         },
     }
+
+
+@app.get("/audio/{filename}", summary="Download generated audio")
+async def get_audio(filename: str):
+    """Stream generated audio file.
+    
+    Args:
+        filename: Name of the audio file to download
+        
+    Returns:
+        Audio file in WAV format
+    """
+    try:
+        # Security: prevent directory traversal
+        if ".." in filename or "/" in filename or "\\" in filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        
+        # Get the audio directory from api_instance
+        if api_instance is None:
+            raise HTTPException(status_code=500, detail="API not initialized")
+        
+        audio_path = api_instance.audio_output_dir / filename
+        
+        if not audio_path.exists():
+            raise HTTPException(status_code=404, detail="Audio file not found")
+        
+        return FileResponse(
+            path=audio_path,
+            media_type="audio/wav",
+            filename=filename
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error serving audio file: {e}")
+        raise HTTPException(status_code=500, detail="Error serving audio file")
 
 
 # ===========================
