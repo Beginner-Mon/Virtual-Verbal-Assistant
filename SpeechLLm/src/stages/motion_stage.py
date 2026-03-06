@@ -8,7 +8,7 @@ class MotionStage:
     def process(self, action_text: str):
         normalized = self.normalizer.normalize(action_text)
 
-        # For now just return normalized result
+        # for testing
         return {
             "normalized_action": normalized
         }
