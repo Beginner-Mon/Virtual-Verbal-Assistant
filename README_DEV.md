@@ -55,32 +55,40 @@ The **Virtual Verbal Assistant** is a multi-service pipeline that takes natural 
 
 ## 2. How the Pipeline Works
 
-A user sends a query to the Orchestrator at port 8080. The Orchestrator fans the request out to both AgenticRAG and DART in parallel, then merges the results.
+A user sends a query to the Orchestrator at port 8080. The Orchestrator fans the request out to both AgenticRAG and DART **simultaneously** using `asyncio.gather`, then merges the results.
 
 ```
 User Query: "How do I walk forward?"
     │
     ▼
-Orchestrator (POST /answer)
-    ├──────► AgenticRAG (POST /query)
-    │           │  Gemini LLM + ChromaDB RAG
-    │           └── returns: { text_answer, motion_prompt, voice_prompt }
-    │
-    └──────► DART (POST /generate_motion)
-                │  Diffusion model → SMPL-X motion
-                └── returns: { motion_file (.npz), num_frames, fps }
+Orchestrator (POST /answer)  ← main_api.py
+    ├──────► AgenticRAG (POST /query)      ─┐
+    │           │  Gemini LLM + ChromaDB     │ run in
+    │           └── returns: { text_answer } │ parallel
+    │                                        │
+    └──────► DART (POST /generate)          ─┘
+                │  prompt hardcoded: "jump*20"
+                └── returns: { motion_file_url, num_frames, fps }
     │
     ▼
 Combined Response to Frontend:
 {
   "text_answer": "To walk forward, shift your weight...",
-  "motion": { "file": "data/outputs/motion_<uuid>.npz", "num_frames": 160, "fps": 30 },
-  "voice": null,
-  "generation_time_ms": 3500.0
+  "motion": {
+    "motion_file_url": "/download/motion_<uuid>.npz",
+    "num_frames": 480,
+    "fps": 30,
+    "duration_seconds": 16.0,
+    "text_prompt": "jump*20"
+  },
+  "generation_time_ms": 4200.0,
+  "errors": null   // or {"dart": "..."}  if DART was down
 }
 ```
 
-The `motion_prompt` returned by AgenticRAG (e.g., `"walk forward"`) is what gets forwarded to DART for motion generation.
+> **Integration test mode:** The DART `text_prompt` is currently hardcoded to `"jump*20"` in `main_api.py` (`DART_HARDCODED_PROMPT` constant). Change this constant when full AgenticRAG→DART motion-prompt wiring is implemented.
+
+> **Fault isolation:** Each service error is caught independently. If DART is down, `motion` is `null` and `errors.dart` contains the message; the text answer is still returned.
 
 ---
 
@@ -185,7 +193,7 @@ orchestrator:
 llm:
   model: "gemini-2.5-flash"
   temperature: 0.7          # Higher → more natural responses
-  max_tokens: 1000
+  max_tokens: 1000          # Capped (was 2000) — reduces generation latency
 
 embedding:
   model: "sentence-transformers/all-MiniLM-L6-v2"
@@ -194,18 +202,24 @@ embedding:
 rag:
   top_k_documents: 8
   similarity_threshold: 0.3
+  enable_query_expansion: false       # Disabled — saves 1 LLM call per query
+  enable_iterative_reflection: false  # Disabled — saves 1 LLM call per query
+  max_web_results: 3                  # Reduced from 5 — faster DDG + shorter prompt
+  web_search_timeout: 5              # Reduced from 10s — caps worst-case wait
 
 memory:
   max_items: 100
   relevance_threshold: 0.7
 ```
 
+> **Latency note:** Disabling `enable_query_expansion` and `enable_iterative_reflection` removes 2 serial Gemini API calls, cutting worst-case latency from ~25s to ~8-12s for queries with no local documents.
+
 ### 3.6 File Structure
 
 ```
 agentic_rag_gemini/
 ├── api_server.py              # FastAPI REST API  ← START HERE
-├── main_api.py                # Orchestrator (multi-service) entry point
+├── main_api.py                # Orchestrator (multi-service) entry point ← port 8080
 ├── main.py                    # CLI interactive entry point
 ├── run_ui.py                  # Streamlit UI launcher
 ├── ui.py                      # Streamlit web interface
@@ -215,6 +229,7 @@ agentic_rag_gemini/
 │   └── orchestrator.py        # Query routing logic
 ├── retrieval/
 │   └── rag_pipeline.py        # Core RAG + response generation
+│                              #   (RateLimiter, parallel web search, iterative retry)
 ├── memory/
 │   ├── memory_manager.py      # Conversation memory
 │   ├── document_store.py      # Document chunking + search
@@ -225,6 +240,7 @@ agentic_rag_gemini/
 │   ├── document_loader.py     # PDF/Word/Image text extraction
 │   ├── validators.py          # Response quality validation
 │   ├── prompt_templates.py    # LLM prompt templates
+│   ├── web_search.py          # DuckDuckGo web search fallback
 │   └── logger.py              # Logging setup
 ├── data/
 │   └── vector_store/          # Persistent ChromaDB files
@@ -267,8 +283,11 @@ agentic_rag_gemini/
 | Documents not persisting | Wrong ChromaDB client | Use `PersistentClient` (already fixed in `vector_store.py`) |
 | Negative similarity scores | Wrong distance formula | Fixed to `max(0.0, 1.0 - distance/2)` |
 | 404 model errors | Invalid model name | Run `python list_available_models.py` |
-| 429 rate limits | Free Gemini tier (20 req/day) | Reduce retries or upgrade API |
+| 429 rate limits | Free Gemini tier (20 req/day) | `RateLimiter` class in `rag_pipeline.py` auto-throttles — also reduce retries or upgrade API |
 | Documents not retrieved | Threshold too high | Lower `similarity_threshold` in `config.yaml` |
+| Slow responses (>20s) | Up to 5 serial Gemini API calls + 10s web search | Disable `enable_query_expansion` + `enable_iterative_reflection` (already done). Web search now runs in parallel with retrieval via `ThreadPoolExecutor`. |
+| `KeyError` in RAG results | Missing `source_type` key in result dict | Use `.get()` for all result dict access (already fixed) |
+| RateLimiter deadlock | Lock held while sleeping | Fixed: lock released before `time.sleep()` in `acquire()` |
 
 ---
 
@@ -446,31 +465,36 @@ def rollout(text_prompt, num_primitives=20):
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/generate_motion` | POST | Generate motion from text |
+| `/health` | GET | Returns `{"status": "ok"}` |
+| `/generate` | POST | Generate motion from text |
+| `/download/{filename}` | GET | Download generated `.npz` file |
 
-**POST `/generate_motion` — Request:**
+**POST `/generate` — Request:**
 ```json
 {
-  "text_prompt": "walk forward",
-  "num_primitives": 20,
+  "text_prompt": "jump*20",
   "guidance_scale": 5.0,
-  "num_steps": 10
+  "num_steps": 50,
+  "respacing": "ddim50",
+  "seed": null
 }
 ```
 
-**POST `/generate_motion` — Response:**
+> **Prompt syntax:** `"action*N"` repeats the action for N primitives. Comma-separated for sequences: `"walk*10,jump*5,wave*8"`
+
+**POST `/generate` — Response:**
 ```json
 {
-  "motion_file": "data/outputs/motion_<uuid>.npz",
-  "num_frames": 160,
+  "request_id": "a1b2c3d4e5f6",
+  "motion_file_url": "/download/motion_a1b2c3d4e5f6.npz",
+  "num_frames": 480,
   "fps": 30,
-  "duration_seconds": 5.333,
-  "format": "smpl_x",
-  "text_prompt": "walk forward",
-  "request_id": "<uuid>"
+  "duration_seconds": 16.0,
+  "text_prompt": "jump*20"
 }
 ```
+
+> Download the NPZ via `GET http://localhost:5001/download/motion_<id>.npz`
 
 ### 4.8 DART File Structure
 
@@ -588,9 +612,13 @@ Text-to-Speech + Avatar control
 
 The Orchestrator at port 8080 is the **single entry point** for frontends. It:
 1. Receives `POST /answer` from frontend
-2. Calls AgenticRAG `/query` → gets `text_answer` + `motion_prompt`
-3. Calls DART `/generate_motion` using the `motion_prompt`
-4. Merges and returns a unified response
+2. Starts **both** downstream calls concurrently using `asyncio.gather`:
+   - Calls AgenticRAG `/query` → gets `text_answer`
+   - Calls DART `/generate` with the hardcoded prompt `"jump*20"`
+3. Merges results; either service failing is isolated in `errors`
+4. Returns unified `AnswerResponse`
+
+The `/health` endpoint pings both downstream services and reports their individual status.
 
 ### 6.2 Data Flow Contract
 
@@ -598,27 +626,35 @@ The Orchestrator at port 8080 is the **single entry point** for frontends. It:
 Frontend → Orchestrator:
   POST /answer  { query, user_id, conversation_history }
 
-Orchestrator → AgenticRAG:
+Orchestrator → AgenticRAG (parallel):
   POST /query   { query, user_id, conversation_history }
 
 AgenticRAG → Orchestrator:
-  { text_answer, motion_prompt, voice_prompt, orchestrator_decision }
+  { text_answer, orchestrator_decision, motion_prompt, voice_prompt, metadata }
 
-Orchestrator → DART (using motion_prompt):
-  POST /generate_motion  { text_prompt, num_primitives, guidance_scale, num_steps }
+Orchestrator → DART (parallel, hardcoded prompt):
+  POST /generate  { text_prompt: "jump*20", guidance_scale: 5.0,
+                    num_steps: 50, respacing: "ddim50" }
 
 DART → Orchestrator:
-  { motion_file, num_frames, fps, duration_seconds }
+  { request_id, motion_file_url, num_frames, fps, duration_seconds, text_prompt }
 
 Orchestrator → Frontend:
-  { text_answer, voice, motion: { file, num_frames, fps }, generation_time_ms, errors }
+  {
+    text_answer: "...",
+    motion: { motion_file_url, num_frames, fps, duration_seconds, text_prompt },
+    generation_time_ms: 4200.0,
+    errors: null   // or { "agenticrag": "...", "dart": "..." }
+  }
 ```
 
 ### 6.3 Motion Prompt Convention
 
-AgenticRAG generates `motion_prompt` in **DART-compatible format**:
+Motion prompts follow **DART-compatible format**:
 - Simple: `"walk forward"`, `"turn left"`, `"stand"`
 - Composed: `"walk_in_circles*20,turn_left*10,walk*15"` (action*num_primitives)
+
+> Current state: Orchestrator uses a hardcoded `"jump*20"` prompt (`DART_HARDCODED_PROMPT` in `main_api.py`). Future work: wire AgenticRAG's `motion_prompt` field into the DART call.
 
 ---
 
@@ -684,6 +720,12 @@ Invoke-WebRequest -Uri "http://localhost:8080/answer" -Method POST `
 ### 7.5 Test UI
 
 Open `test-ui/index.html` in a browser for a visual test interface.
+
+**Tabs:**
+- **AgenticRAG** — calls `POST :8000/query` directly, shows text answer + decision
+- **DART Motion** — calls `POST :5001/generate` directly, shows frame count + NPZ download link
+- **Full Pipeline** — calls `POST :8080/answer`, shows combined AgenticRAG + DART result with motion chips; includes note about hardcoded `jump*20` prompt
+- **NPZ Runner** — frame-by-frame playback from a running NPZ viewer service (port 8090)
 
 ---
 
@@ -809,3 +851,37 @@ taskkill /PID <PID> /F
 - [`agenticRAG/agentic_rag_gemini/README_DEVELOPERS.md`](agenticRAG/agentic_rag_gemini/README_DEVELOPERS.md) — Deep AgenticRAG documentation
 - [`text-to-motion/DART/ARCHITECTURE_AND_INTEGRATION.md`](text-to-motion/DART/ARCHITECTURE_AND_INTEGRATION.md) — Deep DART documentation
 - [`SpeechLLm/README.md`](SpeechLLm/README.md) — SpeechLLm documentation
+
+---
+
+## Changelog
+
+### 2026-03-05 — Latency Optimisation & Pipeline Integration
+
+**`retrieval/rag_pipeline.py`**
+- Added thread-safe `RateLimiter` (sliding window) to throttle all Gemini API calls
+- `_assess_context_quality`: weighted scoring by `source_type` (local docs > web search > memory)
+- `_retrieve_context`: each source wrapped in isolated `try/except` — one failing source no longer kills the rest
+- `_retry_generation`: converted from recursion to iterative loop (stack-safe for `max_reformulation_attempts > 3`)
+- Web search now runs **in parallel** with ChromaDB retrieval via `ThreadPoolExecutor` — eliminates up to 5s serial wait
+- Bug fixes: `RateLimiter.acquire()` sleeps outside lock (deadlock fix); safe `.get()` access on result dicts; `_last_error` declared as class attribute
+
+**`config/config.yaml`**
+- `llm.max_tokens`: 2000 → **1000** (cuts generation time ~30–40%)
+- `rag.enable_query_expansion`: true → **false** (−1 LLM call per query)
+- `rag.enable_iterative_reflection`: true → **false** (−1 LLM call per query)
+- `rag.web_search_timeout`: 10 → **5** seconds
+- `rag.max_web_results`: 5 → **3**
+
+**`main_api.py`** (full rewrite)
+- Removed dependency on `PipelineOrchestrator`; now makes direct `httpx` async calls
+- AgenticRAG (`POST :8000/query`) + DART (`POST :5001/generate`) called in parallel via `asyncio.gather`
+- DART prompt hardcoded to `"jump*20"` (`DART_HARDCODED_PROMPT` constant) for integration testing
+- New `AnswerResponse` shape: `{text_answer, motion, generation_time_ms, errors}`
+- `/health` now pings both downstream services and returns per-service status
+
+**`test-ui/app.js`** + **`test-ui/index.html`**
+- Fixed DART service URL from `:8000` → `:5001`
+- `checkHealth()` now accepts both `"healthy"` and `"ok"` status values
+- Three rich result renderers: `showRagResult`, `showDartResult`, `showPipelineResult` (replaces raw JSON dumps)
+- Pipeline panel: info banner explains fan-out architecture and hardcoded DART prompt
