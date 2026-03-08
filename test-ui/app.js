@@ -18,6 +18,11 @@ const SERVICES = {
         baseUrl: 'http://localhost:8080',
         healthUrl: 'http://localhost:8080/health',
     },
+    speechllm: {
+        name: 'SpeechLLm',
+        baseUrl: 'http://localhost:5000',
+        healthUrl: 'http://localhost:5000/health',
+    },
 };
 
 // ==============================
@@ -60,6 +65,7 @@ async function checkAllHealth() {
         checkHealth('rag'),
         checkHealth('dart'),
         checkHealth('orchestrator'),
+        checkHealth('speechllm'),
     ]);
 }
 
@@ -222,6 +228,66 @@ async function testPipeline() {
     }
 }
 
+async function testSpeechLLm() {
+    const text     = document.getElementById('speechllm-text').value.trim();
+    const userId   = document.getElementById('speechllm-user-id').value.trim();
+    const emotion  = document.getElementById('speechllm-emotion').value;
+    const btn      = document.getElementById('btn-speechllm');
+    const container = document.getElementById('result-speechllm');
+    const timer    = document.getElementById('timer-speechllm');
+
+    if (!text) {
+        alert('Please enter some text to synthesize.');
+        return;
+    }
+
+    btn.disabled    = true;
+    btn.innerHTML   = '<span class="spinner"></span> Generating Speech...';
+    container.innerHTML = '<div class="result-placeholder">Processing text and generating audio...</div>';
+
+    const start = performance.now();
+    updateTimer(timer, start);
+
+    try {
+        const payload = {
+            text: text,
+            user_id: userId || 'test-user',
+        };
+
+        if (emotion) {
+            payload.emotion = emotion;
+        }
+
+        const response = await fetch(`${SERVICES.speechllm.baseUrl}/synthesize`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || `HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        const elapsed = Math.round(performance.now() - start);
+
+        showSpeechLLmResult(container, data, elapsed, response.status);
+
+        addLog('success', 'SpeechLLm', `Generated speech for "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`);
+
+    } catch (err) {
+        const elapsed = Math.round(performance.now() - start);
+        showError(container, err.message, elapsed);
+        addLog('error', 'SpeechLLm', err.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span class="btn-icon">🎤</span> Generate Speech';
+    }
+}
+
 // ==============================
 // Specialised Result Renderers
 // ==============================
@@ -354,6 +420,58 @@ function showPipelineResult(container, data, elapsed, status) {
             <span>⏱️ ${elapsed}ms wall-clock</span>
             <span>🔧 Pipeline: ${Math.round(data.generation_time_ms || elapsed)}ms</span>
             ${errors ? `<span style="color:var(--error)">⚠️ ${Object.keys(errors).length} error(s)</span>` : ''}
+        </div>
+    `;
+}
+
+/** Render SpeechLLm /synthesize response with audio player and download link. */
+function showSpeechLLmResult(container, data, elapsed, status) {
+    const audioFilename = data.audio_file ? data.audio_file.split('\\').pop().split('/').pop() : null;
+    const audioUrl = audioFilename ? `${SERVICES.speechllm.baseUrl}/audio/${encodeURIComponent(audioFilename)}` : null;
+
+    container.className = 'result-container result-success';
+    container.innerHTML = `
+        <div class="result-card">
+            <div class="result-card-section">
+                <div class="result-card-label">🎵 Generated Audio</div>
+                <div class="result-card-value">
+                    ${audioUrl ? `
+                        <audio controls style="width:100%;margin-bottom:8px;">
+                            <source src="${audioUrl}" type="audio/wav">
+                            Your browser does not support the audio element.
+                        </audio>
+                        <a href="${audioUrl}" target="_blank" style="color:var(--accent);text-decoration:none;">
+                            📥 Download Audio File
+                        </a>
+                    ` : 'Audio file not available'}
+                </div>
+            </div>
+            <div class="result-card-section">
+                <div class="result-card-label">💬 Synthesized Text</div>
+                <div class="result-card-value result-text">${escapeHtml(data.text || '')}</div>
+            </div>
+            <div class="result-card-row">
+                <div class="result-card-section">
+                    <div class="result-card-label">🎭 Emotion</div>
+                    <div class="result-card-value">${data.emotion || 'N/A'}</div>
+                </div>
+                <div class="result-card-section">
+                    <div class="result-card-label">⏱ Duration</div>
+                    <div class="result-card-value">${data.duration_seconds ? `${data.duration_seconds.toFixed(2)}s` : 'N/A'}</div>
+                </div>
+                <div class="result-card-section">
+                    <div class="result-card-label">🆔 Request ID</div>
+                    <div class="result-card-value"><code>${data.request_id || 'N/A'}</code></div>
+                </div>
+            </div>
+            <details>
+                <summary style="cursor:pointer;color:var(--text-muted);font-size:0.8rem;margin-top:8px">Full JSON</summary>
+                <pre class="result-json">${syntaxHighlight(JSON.stringify(data, null, 2))}</pre>
+            </details>
+        </div>
+        <div class="result-meta">
+            <span>✅ Status: ${status}</span>
+            <span>⏱️ ${elapsed}ms</span>
         </div>
     `;
 }

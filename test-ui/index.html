@@ -95,6 +95,21 @@
                     </div>
                     <button class="btn btn-sm btn-outline" onclick="checkHealth('orchestrator')">Check Health</button>
                 </div>
+
+                <!-- SpeechLLm -->
+                <div class="status-card" id="card-speechllm">
+                    <div class="status-header">
+                        <div class="status-dot" id="dot-speechllm"></div>
+                        <div class="status-info">
+                            <span class="service-name">SpeechLLm</span>
+                            <span class="service-port">Port 5000 · Windows · firstconda</span>
+                        </div>
+                    </div>
+                    <div class="status-body">
+                        <span class="status-label" id="label-speechllm">Checking...</span>
+                    </div>
+                    <button class="btn btn-sm btn-outline" onclick="checkHealth('speechllm')">Check Health</button>
+                </div>
             </div>
         </section>
 
@@ -115,6 +130,9 @@
                 </button>
                 <button class="tab" onclick="switchTab('npz-test')" id="tab-npz-test">
                     🎞 NPZ Runner
+                </button>
+                <button class="tab" onclick="switchTab('speechllm-test')" id="tab-speechllm-test">
+                    🎤 SpeechLLm
                 </button>
             </div>
 
@@ -244,6 +262,43 @@
                 </div>
                 <div class="result-container" id="result-npz">
                     <div class="result-placeholder">Load NPZ to inspect and play frame-by-frame.</div>
+                </div>
+            </div>
+
+            <!-- SpeechLLm Test Panel -->
+            <div class="test-panel" id="panel-speechllm-test">
+                <div class="panel-header">
+                    <h3>Text-to-Speech (SpeechLLm)</h3>
+                    <span class="endpoint-badge">POST /synthesize → :5000</span>
+                </div>
+                <div class="form-group">
+                    <label>Text to Synthesize</label>
+                    <textarea id="speechllm-text" placeholder="Enter text to convert to speech..." rows="3">Hello, this is a test of the speech synthesis system. I can generate audio from text with emotion detection.</textarea>
+                </div>
+                <div class="form-row">
+                    <div class="form-group flex-1">
+                        <label>User ID</label>
+                        <input type="text" id="speechllm-user-id" placeholder="User identifier" value="test-user">
+                    </div>
+                    <div class="form-group flex-1">
+                        <label>Emotion (optional)</label>
+                        <select id="speechllm-emotion">
+                            <option value="">Auto-detect</option>
+                            <option value="happy">Happy</option>
+                            <option value="sad">Sad</option>
+                            <option value="angry">Angry</option>
+                            <option value="neutral">Neutral</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary" onclick="testSpeechLLm()" id="btn-speechllm">
+                        <span class="btn-icon">🎤</span> Generate Speech
+                    </button>
+                    <span class="timer" id="timer-speechllm"></span>
+                </div>
+                <div class="result-container" id="result-speechllm">
+                    <div class="result-placeholder">Results will appear here...</div>
                 </div>
             </div>
         </section>
