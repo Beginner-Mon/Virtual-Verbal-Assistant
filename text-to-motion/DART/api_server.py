@@ -10,7 +10,7 @@ import os
 import uuid
 import random
 import copy
-from typing import Optional
+from typing import Optional, Literal
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 # ── Imports from your project (exact same as rollout_mld.py) ───────────────
 from mld.train_mld import create_gaussian_diffusion
+from diffusion.respace import space_timesteps
 from data_loaders.humanml.data.dataset import SinglePrimitiveDataset
 from utils.misc_util import encode_text, compose_texts_with_and
 from pytorch3d import transforms as pyt3d_transforms
@@ -53,7 +54,11 @@ class MotionGenerationRequest(BaseModel):
     seed: Optional[int] = Field(None)
     respacing: str = Field(
         "", 
-        description="e.g. ddim50, ddim100, 250")
+        description="Optional diffusion respacing (examples: '', ddim5, 10).")
+    gender: Literal["female", "male"] = Field(
+        "female",
+        description="Body gender for SMPL-X motion generation."
+    )
 
 
 class MotionGenerationResponse(BaseModel):
@@ -76,6 +81,7 @@ class MotionGenerator:
         self.vae = None
         self.dataset = None
         self.primitive_utility = None
+        self.standing_seed_path = None
 
         logger.info(f"Initializing motion generator on {device}")
         self.output_dir = Path("outputs")
@@ -89,6 +95,7 @@ class MotionGenerator:
         # Use the exact same loader as rollout_mld.py (correct VAE args, ClassifierFreeWrapper, etc.)
         self.denoiser_args, self.denoiser, self.vae_args, self.vae = load_mld(denoiser_ckpt, self.device)
 
+        self.standing_seed_path = standing_seed_path
         # Dataset (exact same as rollout_mld.py)
         self.dataset = SinglePrimitiveDataset(
             cfg_path=self.vae_args.data_args.cfg_path,
@@ -97,7 +104,7 @@ class MotionGenerator:
             sequence_path=standing_seed_path,
             batch_size=1,
             device=self.device,
-            enforce_gender="male",
+            enforce_gender="female",
             enforce_zero_beta=1,
         )
         self.primitive_utility = self.dataset.primitive_utility
@@ -108,12 +115,22 @@ class MotionGenerator:
     def generate(
         self,
         text_prompt: str,
-    
         guidance_scale: float,
         num_steps: int,          # unused (respacing controls steps)
         seed: Optional[int] = None,
         respacing: str = "",
+        gender: Literal["female", "male"] = "female",
     ):
+        if self.dataset is None:
+            raise HTTPException(503, "Dataset not initialized")
+        if self.standing_seed_path is None:
+            raise HTTPException(500, "Standing seed path is not configured")
+
+        # Dataset caches sequence metadata; refresh if requested gender changed.
+        if self.dataset.enforce_gender != gender:
+            self.dataset.enforce_gender = gender
+            self.dataset.update_seq(self.standing_seed_path)
+
         if seed is not None:
             random.seed(seed)
             np.random.seed(seed)
@@ -174,9 +191,45 @@ class MotionGenerator:
         history_motion = motion_tensor[:, :history_length, :]
 
         # === Diffusion with per-request respacing (exact as rollout_mld.py) ===
+        raw_respacing = (respacing or "").strip()
+        respacing = raw_respacing
+        total_steps = int(self.denoiser_args.diffusion_args.diffusion_steps)
+
+        # DDIM with full step count is equivalent to full schedule here.
+        if respacing.lower().startswith("ddim"):
+            try:
+                desired = int(respacing[4:])
+            except ValueError as exc:
+                raise HTTPException(400, f"Invalid respacing format: '{raw_respacing}'") from exc
+            if desired == total_steps:
+                respacing = ""
+            else:
+                try:
+                    space_timesteps(total_steps, respacing)
+                except ValueError as exc:
+                    raise HTTPException(
+                        400,
+                        f"Invalid respacing '{raw_respacing}' for diffusion_steps={total_steps}: {exc}",
+                    ) from exc
+        elif respacing:
+            try:
+                space_timesteps(total_steps, respacing)
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(
+                    400,
+                    f"Invalid respacing '{raw_respacing}' for diffusion_steps={total_steps}: {exc}",
+                ) from exc
+
         diffusion_args = copy.deepcopy(self.denoiser_args.diffusion_args)
         diffusion_args.respacing = respacing
-        diffusion = create_gaussian_diffusion(diffusion_args)
+        try:
+            diffusion = create_gaussian_diffusion(diffusion_args)
+        except ValueError as exc:
+            raise HTTPException(
+                400,
+                f"Failed to create diffusion schedule (respacing='{raw_respacing}', "
+                f"diffusion_steps={total_steps}): {exc}",
+            ) from exc
         sample_fn = diffusion.p_sample_loop if respacing == '' else diffusion.ddim_sample_loop
 
         # === Rollout loop (100% copy of working code from rollout_mld.py) ===
@@ -323,6 +376,7 @@ async def generate_motion(req: MotionGenerationRequest):
         num_steps=req.num_steps,
         seed=req.seed,
         respacing=req.respacing,
+        gender=req.gender,
     )
 
     response = MotionGenerationResponse(
@@ -356,7 +410,7 @@ class ServerArgs:
     denoiser_checkpoint: str = "mld_denoiser/mld_fps_clip_repeat_euler/checkpoint_300000.pt"
     standing_seed: str = "./data/stand.pkl"
     host: str = "0.0.0.0"
-    port: int = 8000
+    port: int = 5001
 
 
 # Module-level default (so startup can see it before __main__ block runs)
