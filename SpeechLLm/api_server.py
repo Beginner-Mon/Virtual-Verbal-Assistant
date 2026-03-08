@@ -167,30 +167,30 @@ class SpeechLLmAPI:
             llm_response_text = llm_response_dict.get("text", "") if isinstance(llm_response_dict, dict) else str(llm_response_dict)
             logger.info(f"[{request_id}] LLM response generated: {llm_response_text[:100]}...")
 
-            # Generate audio file
-            audio_file_name = f"synthesis_{request_id}.wav"
-            audio_file_path = self.audio_output_dir / audio_file_name
+            # Sanitize text: strip non-ASCII chars that cause Coqui/eSpeak phonemizer errors
+            tts_text = llm_response_text.encode("ascii", errors="ignore").decode("ascii").strip()
+            if not tts_text:
+                tts_text = text  # fallback to original input if LLM reply is empty after sanitization
 
-            # Use TTS stage to synthesize audio
-            self.tts_stage.tts_router.synthesize(
-                text=llm_response_text,
-                output_path=str(audio_file_path)
+            # Use TTS to synthesize audio — returns the actual saved path
+            actual_audio_path = self.tts_stage.tts_router.synthesize(
+                text=tts_text,
             )
-            logger.info(f"[{request_id}] Audio synthesized: {audio_file_path}")
+            logger.info(f"[{request_id}] Audio synthesized: {actual_audio_path}")
 
             # Estimate duration (rough heuristic: 150 words per minute)
             word_count = len(llm_response_text.split())
             duration_seconds = max(2.0, word_count * 0.4)
 
             response = SynthesizeResponse(
-                audio_file=str(audio_file_path),
+                audio_file=str(actual_audio_path),
                 text=llm_response_text,
                 duration_seconds=duration_seconds,
                 emotion=emotion,
                 request_id=request_id,
             )
 
-            logger.info(f"[{request_id}] Synthesis complete: {audio_file_path}")
+            logger.info(f"[{request_id}] Synthesis complete: {actual_audio_path}")
             return response
 
         except Exception as e:

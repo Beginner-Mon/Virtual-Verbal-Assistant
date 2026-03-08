@@ -27,7 +27,9 @@ class TTSRouter:
             try:
                 print("[TTS] Using Coqui TTS...")
                 return self.coqui.synthesize(text)
-            except Exception:
-                print("[TTS] Coqui also failed.")
+            except Exception as e:
+                import traceback
+                print(f"[TTS] Coqui also failed: {e}")
+                traceback.print_exc()
 
         raise Exception("All TTS providers failed.")

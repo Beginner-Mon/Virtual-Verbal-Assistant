@@ -31,30 +31,30 @@ const SERVICES = {
 
 async function checkHealth(serviceKey) {
     const service = SERVICES[serviceKey];
-    const dot   = document.getElementById(`dot-${serviceKey}`);
+    const dot = document.getElementById(`dot-${serviceKey}`);
     const label = document.getElementById(`label-${serviceKey}`);
 
-    dot.className   = 'status-dot checking';
+    dot.className = 'status-dot checking';
     label.textContent = 'Checking...';
 
     try {
-        const start    = performance.now();
+        const start = performance.now();
         const response = await fetch(service.healthUrl);
-        const elapsed  = Math.round(performance.now() - start);
-        const data     = await response.json();
+        const elapsed = Math.round(performance.now() - start);
+        const data = await response.json();
 
         const isOk = data.status === 'healthy' || data.status === 'ok';
         if (isOk) {
-            dot.className     = 'status-dot online';
+            dot.className = 'status-dot online';
             label.textContent = `✅ Healthy (${elapsed}ms)`;
             addLog('success', service.name, `Health check passed in ${elapsed}ms`);
         } else {
-            dot.className     = 'status-dot offline';
+            dot.className = 'status-dot offline';
             label.textContent = `⚠️ Unexpected: ${JSON.stringify(data)}`;
             addLog('error', service.name, `Unexpected response: ${JSON.stringify(data)}`);
         }
     } catch (err) {
-        dot.className     = 'status-dot offline';
+        dot.className = 'status-dot offline';
         label.textContent = `❌ Offline — ${err.message}`;
         addLog('error', service.name, `Health check failed: ${err.message}`);
     }
@@ -90,16 +90,16 @@ function switchTab(tabId) {
 // ==============================
 
 async function testAgenticRAG() {
-    const query   = document.getElementById('rag-query').value;
-    const userId  = document.getElementById('rag-user-id').value;
-    const btn       = document.getElementById('btn-rag');
+    const query = document.getElementById('rag-query').value;
+    const userId = document.getElementById('rag-user-id').value;
+    const btn = document.getElementById('btn-rag');
     const container = document.getElementById('result-rag');
-    const timer     = document.getElementById('timer-rag');
+    const timer = document.getElementById('timer-rag');
 
     if (!query) return;
 
-    btn.disabled    = true;
-    btn.innerHTML   = '<span class="spinner"></span> Sending...';
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Sending...';
     container.innerHTML = '<div class="result-placeholder">Processing query...</div>';
 
     const start = performance.now();
@@ -126,27 +126,27 @@ async function testAgenticRAG() {
         showError(container, err.message, Math.round(performance.now() - start));
         addLog('error', 'AgenticRAG', err.message);
     } finally {
-        btn.disabled  = false;
+        btn.disabled = false;
         btn.innerHTML = '<span class="btn-icon">▶</span> Send Query';
     }
 }
 
 async function testDART() {
-    const prompt    = document.getElementById('dart-prompt').value.trim();
+    const prompt = document.getElementById('dart-prompt').value.trim();
     const primitives = Math.max(1, parseInt(document.getElementById('dart-primitives').value, 10) || 1);
-    const guidance  = parseFloat(document.getElementById('dart-guidance').value) || 5.0;
-    const seedStr   = document.getElementById('dart-seed').value.trim();
+    const guidance = parseFloat(document.getElementById('dart-guidance').value) || 5.0;
+    const seedStr = document.getElementById('dart-seed').value.trim();
     const respacing = document.getElementById('dart-respacing').value.trim();
-    const gender    = document.getElementById('dart-gender').value;
+    const gender = document.getElementById('dart-gender').value;
 
-    const btn       = document.getElementById('btn-dart');
+    const btn = document.getElementById('btn-dart');
     const container = document.getElementById('result-dart');
-    const timer     = document.getElementById('timer-dart');
+    const timer = document.getElementById('timer-dart');
 
     if (!prompt) return;
 
-    btn.disabled    = true;
-    btn.innerHTML   = '<span class="spinner"></span> Generating...';
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Generating...';
     container.innerHTML = '<div class="result-placeholder">Generating motion (this can take 30–120s on GPU)...</div>';
 
     const start = performance.now();
@@ -184,22 +184,22 @@ async function testDART() {
         showError(container, err.message, Math.round(performance.now() - start));
         addLog('error', 'DART Motion', err.message);
     } finally {
-        btn.disabled  = false;
+        btn.disabled = false;
         btn.innerHTML = '<span class="btn-icon">▶</span> Generate Motion';
     }
 }
 
 async function testPipeline() {
-    const query   = document.getElementById('pipeline-query').value;
-    const userId  = document.getElementById('pipeline-user-id').value;
-    const btn       = document.getElementById('btn-pipeline');
+    const query = document.getElementById('pipeline-query').value;
+    const userId = document.getElementById('pipeline-user-id').value;
+    const btn = document.getElementById('btn-pipeline');
     const container = document.getElementById('result-pipeline');
-    const timer     = document.getElementById('timer-pipeline');
+    const timer = document.getElementById('timer-pipeline');
 
     if (!query) return;
 
-    btn.disabled    = true;
-    btn.innerHTML   = '<span class="spinner"></span> Running Pipeline...';
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Running Pipeline...';
     container.innerHTML = '<div class="result-placeholder">Calling AgenticRAG (:8000) + DART (:5001) in parallel…</div>';
 
     const start = performance.now();
@@ -232,26 +232,26 @@ async function testPipeline() {
         showError(container, err.message, Math.round(performance.now() - start));
         addLog('error', 'Pipeline', err.message);
     } finally {
-        btn.disabled  = false;
+        btn.disabled = false;
         btn.innerHTML = '<span class="btn-icon">🚀</span> Run Full Pipeline';
     }
 }
 
 async function testSpeechLLm() {
-    const text     = document.getElementById('speechllm-text').value.trim();
-    const userId   = document.getElementById('speechllm-user-id').value.trim();
-    const emotion  = document.getElementById('speechllm-emotion').value;
-    const btn      = document.getElementById('btn-speechllm');
+    const text = document.getElementById('speechllm-text').value.trim();
+    const userId = document.getElementById('speechllm-user-id').value.trim();
+    const emotion = document.getElementById('speechllm-emotion').value;
+    const btn = document.getElementById('btn-speechllm');
     const container = document.getElementById('result-speechllm');
-    const timer    = document.getElementById('timer-speechllm');
+    const timer = document.getElementById('timer-speechllm');
 
     if (!text) {
         alert('Please enter some text to synthesize.');
         return;
     }
 
-    btn.disabled    = true;
-    btn.innerHTML   = '<span class="spinner"></span> Generating Speech...';
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Generating Speech...';
     container.innerHTML = '<div class="result-placeholder">Processing text and generating audio...</div>';
 
     const start = performance.now();
@@ -275,21 +275,23 @@ async function testSpeechLLm() {
             body: JSON.stringify(payload),
         });
 
+        const elapsed = Math.round(performance.now() - start);
+        clearTimerInterval();
+
         if (!response.ok) {
             const error = await response.json();
             throw new Error(error.detail || `HTTP ${response.status}`);
         }
 
         const data = await response.json();
-        const elapsed = Math.round(performance.now() - start);
 
         showSpeechLLmResult(container, data, elapsed, response.status);
 
         addLog('success', 'SpeechLLm', `Generated speech for "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`);
 
     } catch (err) {
-        const elapsed = Math.round(performance.now() - start);
-        showError(container, err.message, elapsed);
+        clearTimerInterval();
+        showError(container, err.message, Math.round(performance.now() - start));
         addLog('error', 'SpeechLLm', err.message);
     } finally {
         btn.disabled = false;
@@ -304,8 +306,8 @@ async function testSpeechLLm() {
 /** Render AgenticRAG /query response with text_answer highlight. */
 function showRagResult(container, data, elapsed, status) {
     const textAnswer = data.text_answer || '';
-    const decision   = data.orchestrator_decision || {};
-    const motion     = data.motion_prompt;
+    const decision = data.orchestrator_decision || {};
+    const motion = data.motion_prompt;
 
     container.className = 'result-container result-success';
     container.innerHTML = `
@@ -383,8 +385,8 @@ function showDartResult(container, data, elapsed, status) {
 
 /** Render main_api /answer response — combined AgenticRAG + DART. */
 function showPipelineResult(container, data, elapsed, status) {
-    const motion  = data.motion;
-    const errors  = data.errors;
+    const motion = data.motion;
+    const errors = data.errors;
     const fileUrl = motion?.motion_file_url
         ? `http://localhost:5001${motion.motion_file_url}`
         : null;
@@ -497,15 +499,15 @@ function getNpzBaseUrl() {
 }
 
 async function loadNpzSummary() {
-    const btn       = document.getElementById('btn-npz-load');
+    const btn = document.getElementById('btn-npz-load');
     const container = document.getElementById('result-npz');
-    const timer     = document.getElementById('timer-npz');
-    const slider    = document.getElementById('npz-frame-slider');
+    const timer = document.getElementById('timer-npz');
+    const slider = document.getElementById('npz-frame-slider');
     const frameInput = document.getElementById('npz-frame-input');
-    const baseUrl   = getNpzBaseUrl();
+    const baseUrl = getNpzBaseUrl();
 
-    btn.disabled    = true;
-    btn.innerHTML   = '<span class="spinner"></span> Loading...';
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Loading...';
     container.innerHTML = '<div class="result-placeholder">Loading NPZ summary...</div>';
     const start = performance.now();
     updateTimer(timer, start);
@@ -516,7 +518,7 @@ async function loadNpzSummary() {
 
         npzSummary = await response.json();
         const maxFrame = Math.max(0, (npzSummary.num_frames || 1) - 1);
-        slider.max     = String(maxFrame);
+        slider.max = String(maxFrame);
         frameInput.max = String(maxFrame);
 
         const elapsed = Math.round(performance.now() - start);
@@ -530,28 +532,28 @@ async function loadNpzSummary() {
         showError(container, err.message, Math.round(performance.now() - start));
         addLog('error', 'NPZ Runner', err.message);
     } finally {
-        btn.disabled  = false;
+        btn.disabled = false;
         btn.innerHTML = '<span class="btn-icon">▶</span> Load NPZ';
     }
 }
 
 async function loadNpzFrame(frame) {
-    const container  = document.getElementById('result-npz');
-    const slider     = document.getElementById('npz-frame-slider');
+    const container = document.getElementById('result-npz');
+    const slider = document.getElementById('npz-frame-slider');
     const frameInput = document.getElementById('npz-frame-input');
-    const baseUrl    = getNpzBaseUrl();
-    const safeFrame  = Math.max(0, parseInt(frame, 10) || 0);
+    const baseUrl = getNpzBaseUrl();
+    const safeFrame = Math.max(0, parseInt(frame, 10) || 0);
 
-    slider.value     = String(safeFrame);
+    slider.value = String(safeFrame);
     frameInput.value = String(safeFrame);
 
     try {
         const response = await fetch(`${baseUrl}/api/npz/frame?i=${safeFrame}`);
         if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
 
-        const data    = await response.json();
+        const data = await response.json();
         const payload = { summary: npzSummary || null, frame: data };
-        const json    = syntaxHighlight(JSON.stringify(payload, null, 2));
+        const json = syntaxHighlight(JSON.stringify(payload, null, 2));
 
         container.className = 'result-container result-success';
         container.innerHTML = `
@@ -577,17 +579,17 @@ function stopNpzPlayback() {
 }
 
 function toggleNpzPlayback() {
-    const slider  = document.getElementById('npz-frame-slider');
-    const timer   = document.getElementById('timer-npz');
+    const slider = document.getElementById('npz-frame-slider');
+    const timer = document.getElementById('timer-npz');
     const playBtn = document.getElementById('btn-npz-play');
 
     if (!npzSummary) { loadNpzSummary(); return; }
     if (npzPlaybackTimer) { stopNpzPlayback(); return; }
 
-    const fps        = npzSummary.fps || 30;
+    const fps = npzSummary.fps || 30;
     const intervalMs = Math.max(1, Math.floor(1000 / fps));
-    const maxFrame   = parseInt(slider.max, 10) || 0;
-    let frame        = parseInt(slider.value, 10) || 0;
+    const maxFrame = parseInt(slider.max, 10) || 0;
+    let frame = parseInt(slider.value, 10) || 0;
 
     playBtn.innerHTML = '<span class="btn-icon">⏸</span> Pause';
     updateTimer(timer, performance.now() - frame * intervalMs);
@@ -599,7 +601,7 @@ function toggleNpzPlayback() {
 }
 
 function setupNpzControls() {
-    const slider     = document.getElementById('npz-frame-slider');
+    const slider = document.getElementById('npz-frame-slider');
     const frameInput = document.getElementById('npz-frame-input');
     if (!slider || !frameInput) return;
 
@@ -687,10 +689,10 @@ function clearTimerInterval() {
 
 function addLog(type, service, message) {
     const container = document.getElementById('log-container');
-    const emptyMsg  = container.querySelector('.log-empty');
+    const emptyMsg = container.querySelector('.log-empty');
     if (emptyMsg) emptyMsg.remove();
 
-    const now   = new Date().toLocaleTimeString('en-US', { hour12: false });
+    const now = new Date().toLocaleTimeString('en-US', { hour12: false });
     const entry = document.createElement('div');
     entry.className = 'log-entry';
     entry.innerHTML = `
@@ -716,10 +718,10 @@ document.addEventListener('keydown', (e) => {
         const activePanel = document.querySelector('.test-panel.active');
         if (!activePanel) return;
         const id = activePanel.id;
-        if      (id === 'panel-rag-test')      testAgenticRAG();
-        else if (id === 'panel-dart-test')     testDART();
+        if (id === 'panel-rag-test') testAgenticRAG();
+        else if (id === 'panel-dart-test') testDART();
         else if (id === 'panel-pipeline-test') testPipeline();
-        else if (id === 'panel-npz-test')      loadNpzSummary();
+        else if (id === 'panel-npz-test') loadNpzSummary();
     }
 });
 
