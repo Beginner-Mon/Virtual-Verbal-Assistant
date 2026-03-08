@@ -133,9 +133,11 @@ async function testAgenticRAG() {
 
 async function testDART() {
     const prompt    = document.getElementById('dart-prompt').value.trim();
+    const primitives = Math.max(1, parseInt(document.getElementById('dart-primitives').value, 10) || 1);
     const guidance  = parseFloat(document.getElementById('dart-guidance').value) || 5.0;
     const seedStr   = document.getElementById('dart-seed').value.trim();
-    const respacing = 'ddim50';
+    const respacing = document.getElementById('dart-respacing').value.trim();
+    const gender    = document.getElementById('dart-gender').value;
 
     const btn       = document.getElementById('btn-dart');
     const container = document.getElementById('result-dart');
@@ -151,7 +153,14 @@ async function testDART() {
     updateTimer(timer, start);
 
     try {
-        const body = { text_prompt: prompt, guidance_scale: guidance, num_steps: 50, respacing };
+        // Keep advanced prompt syntax untouched, e.g. "walk*5,jump*3".
+        // If user typed a plain action, use the Primitives field as fallback.
+        const textPrompt = (prompt.includes('*') || prompt.includes(','))
+            ? prompt
+            : `${prompt}*${primitives}`;
+
+        const body = { text_prompt: textPrompt, guidance_scale: guidance, num_steps: 50, gender };
+        if (respacing !== '') body.respacing = respacing;
         if (seedStr !== '' && !isNaN(Number(seedStr))) body.seed = Number(seedStr);
 
         // DART runs on port 5001 (WSL/Linux)

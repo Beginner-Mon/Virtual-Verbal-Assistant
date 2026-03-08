@@ -8,7 +8,7 @@ import time
 # ==========================
 # CONFIG
 # ==========================
-NPZ_PATH = "motion_c9662673-e0b.npz"
+NPZ_PATH = "outputs/motion_64e6c614-0c7.npz"
 MODEL_PATH = "./data/smplx_lockedhead_20230207/models_lockedhead"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
