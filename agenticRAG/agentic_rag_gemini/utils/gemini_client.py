@@ -44,8 +44,10 @@ class GeminiClient:
         logger.info(f"Initialized GeminiClient with API key {self.key_manager.get_current_key_index() + 1}/{self.key_manager.get_total_keys()}")
     
     # Finish reasons that warrant rotating to another API key and retrying.
-    # SAFETY=2, RECITATION=4, OTHER=5  (MAX_TOKENS=3 is not retryable — no key will fix it)
-    _RETRYABLE_FINISH_REASONS = {2, 4, 5, "SAFETY", "RECITATION", "OTHER"}
+    # Gemini proto enum: STOP=1, MAX_TOKENS=2, SAFETY=3, RECITATION=4, OTHER=5
+    # MAX_TOKENS (2) is NOT retryable — a different key won't fix a token-length issue.
+    # SAFETY (3), RECITATION (4), OTHER (5) may succeed on a different key/session.
+    _RETRYABLE_FINISH_REASONS = {3, 4, 5, "SAFETY", "RECITATION", "OTHER"}
 
     def chat_completion(
         self,
@@ -76,20 +78,25 @@ class GeminiClient:
             # Create model instance
             model_instance = genai.GenerativeModel(model_name=model)
             
-            # Try to use generation_config if available (newer versions)
-            # Fall back to simple call for older versions
+            # Build generation config.
+            # NOTE: We intentionally do NOT set response_mime_type='application/json'
+            # here even when the caller requests JSON mode via response_format.
+            # Enforcing JSON mode at the Gemini API level causes finish_reason=OTHER
+            # on complex/long prompts, which triggers the key-rotation retry loop and
+            # exhausts all API keys.  JSON output is enforced through prompt instruction
+            # instead, and clean_json_response() strips any markdown fences afterward.
             try:
                 # Newer API (0.4.0+)
                 config = types.GenerateContentConfig(
                     temperature=temperature,
-                    max_output_tokens=max_tokens
+                    max_output_tokens=max_tokens,
                 )
                 response = model_instance.generate_content(
                     contents=gemini_contents,
                     generation_config=config
                 )
             except (AttributeError, TypeError):
-                # Older API (0.3.x) - use simpler parameters
+                # Older API (0.3.x)
                 logger.debug("Using older google-generativeai API (0.3.x)")
                 response = model_instance.generate_content(
                     contents=gemini_contents,

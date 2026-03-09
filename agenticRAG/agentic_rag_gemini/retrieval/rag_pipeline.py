@@ -192,45 +192,109 @@ class RAGPipeline:
         user_id: str,
         conversation_history: Optional[List[Dict[str, str]]] = None,
         use_memory: bool = True,
+        # Pre-fetched contexts from OrchestratorAgent tools (Agent+Tools pattern).
+        # When provided, internal retrieval for that source is skipped.
+        memory_context: Optional[List[Dict]] = None,
+        document_context: Optional[List[Dict]] = None,
+        web_context: Optional[str] = None,
+        skip_web_search: bool = False,
+        # Orchestrator pre-computed values — eliminate extra LLM calls
+        expanded_query: Optional[str] = None,    # skip _process_query() LLM expansion
+        skip_reflection: bool = False,           # skip self-correction loop
+        structured: bool = False,                # return JSON with text_answer + exercises
     ) -> Dict[str, Any]:
         """Generate a response using RAG pipeline.
 
         Pipeline steps:
         1. Process / expand query
-        2. Retrieve context (with query reformulation loop)
-        3. Web search fallback
-        4. Build prompt & generate LLM response
-        5. Iterative reflection (self-correction against context)
-        6. Validate safety/length
+        2. Inject pre-fetched tool contexts (if provided by orchestrator)
+        3. Retrieve any remaining context internally (with reformulation loop)
+        4. Web search fallback (skipped if web_context already provided)
+        5. Build prompt & generate LLM response
+        6. Iterative reflection (self-correction against context)
+        7. Validate safety/length
 
         Args:
-            query: User query
-            user_id: User identifier
+            query:                User query
+            user_id:              User identifier
             conversation_history: Previous conversation turns
-            use_memory: Whether to retrieve memory context
+            use_memory:           Whether to retrieve memory context internally
+                                  (ignored when memory_context is provided)
+            memory_context:       Pre-fetched memory items from MemoryTool.
+                                  When supplied, skips internal memory retrieval.
+            document_context:     Pre-fetched document chunks from DocumentRetrievalTool.
+                                  When supplied, merged into retrieved_context directly.
+            web_context:          Pre-fetched web search string from WebSearchTool.
+                                  When supplied, skips speculative web search.
 
         Returns:
             Dictionary with response and metadata
         """
         logger.info(f"Generating response for query: {query[:100]}...")
 
-        # Step 1: Process query (expansion if enabled)
-        processed_query = self._process_query(query)
+        # Step 1: Process / expand query.
+        # If the orchestrator already provided an expanded query, skip the LLM
+        # expansion call (saves one round-trip).
+        if expanded_query:
+            processed_query = expanded_query
+            logger.debug("Using orchestrator-provided expanded_query — skipping _process_query()")
+        else:
+            processed_query = self._process_query(query)
 
-        # Step 2: Retrieve context with query reformulation loop.
-        # Simultaneously launch a speculative web search in the background so
-        # that its network I/O overlaps with local retrieval (both are I/O-bound
-        # and share no mutable state, so ThreadPoolExecutor is safe here).
+        # Step 2: Inject pre-fetched contexts supplied by the orchestrator tools.
+        # Any context provided here is prepended to retrieved_context so the
+        # rest of the pipeline (prompt build, LLM call, reflection) is unchanged.
         retrieved_context: List[Dict[str, Any]] = []
         web_search_used = False
         reformulation_count = 0
         current_query = processed_query
         ws_quality_threshold = getattr(self.config, 'web_search_quality_threshold', 0.65)
 
-        # --- Speculative web search future (started immediately, used only if needed) ---
+        # --- Inject memory_context (pre-fetched by MemoryTool) ---
+        if memory_context:
+            for item in memory_context:
+                retrieved_context.append({
+                    "document": item.get("document", str(item)),
+                    "source_type": item.get("source_type", "memory"),
+                    "similarity": item.get("similarity", 0.8),
+                    "metadata": item.get("metadata", {}),
+                })
+            logger.debug(f"Injected {len(memory_context)} pre-fetched memory items")
+            use_memory = False  # skip internal memory retrieval
+
+        # --- Inject document_context (pre-fetched by DocumentRetrievalTool) ---
+        if document_context:
+            for chunk in document_context:
+                retrieved_context.append({
+                    "document": chunk.get("document", str(chunk)),
+                    "source_type": chunk.get("source_type", "document"),
+                    "similarity": chunk.get("similarity", 0.8),
+                    "metadata": chunk.get("metadata", {}),
+                })
+            logger.debug(f"Injected {len(document_context)} pre-fetched document chunks")
+
+        # --- Inject web_context (pre-fetched by WebSearchTool) ---
+        _pre_fetched_web = False
+        if web_context:
+            retrieved_context.append({
+                "document": web_context,
+                "source_type": "web_search",
+                "similarity": 0.7,
+                "metadata": {"source": "WebSearchTool (pre-fetched)"},
+            })
+            web_search_used = True
+            _pre_fetched_web = True
+            logger.debug("Injected pre-fetched web search context")
+
+        # Step 3: Retrieve remaining context internally (with query reformulation loop).
+        # Simultaneously launch a speculative web search in the background so
+        # that its network I/O overlaps with local retrieval (both are I/O-bound
+        # and share no mutable state, so ThreadPoolExecutor is safe here).
+        # --- Speculative web search future (started immediately, used only if pre-fetch was not done) ---
         _web_future: Optional[concurrent.futures.Future] = None
         _executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
-        if self.enable_web_search and self.web_search.is_available():
+        if self.enable_web_search and self.web_search.is_available() \
+                and not _pre_fetched_web and not skip_web_search:
             _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
             _web_future = _executor.submit(
                 self.web_search.search_and_summarize, current_query
@@ -330,11 +394,14 @@ class RAGPipeline:
         )
 
         # Step 4: Generate response
-        response_text = self._generate_llm_response(prompt)
+        response_text = self._generate_llm_response(prompt, structured=structured)
 
-        # Step 4a: Iterative reflection — self-correct against retrieved facts
+        # Step 4a: Iterative reflection — self-correct against retrieved facts.
+        # Skipped when skip_reflection=True (orchestrator-driven fast path)
+        # or when there is no grounding context to reflect against.
         reflection_used = False
-        if (self.config.enable_iterative_reflection
+        if (not skip_reflection
+                and self.config.enable_iterative_reflection
                 and retrieved_context
                 and not response_text.startswith("[ERROR]")):
             for iteration in range(self.config.max_reflection_iterations):
@@ -370,6 +437,7 @@ class RAGPipeline:
 
         result = {
             "response": response_text,
+            "exercises": [],        # populated below when structured=True
             "metadata": {
                 "retrieved_context_count": len(retrieved_context),
                 "validation": validation_result,
@@ -377,8 +445,25 @@ class RAGPipeline:
                 "web_search_used": web_search_used,
                 "reformulation_count": reformulation_count,
                 "reflection_used": reflection_used,
+                "structured": structured,
             },
         }
+
+        # Step 7: If structured mode, parse JSON to extract text_answer + exercises.
+        # Use clean_json_response() to strip any markdown fences Gemini may add
+        # (e.g. ```json ... ```) when json_object mode is not enforced at API level.
+        if structured:
+            try:
+                import json as _json
+                cleaned  = clean_json_response(response_text)
+                parsed   = _json.loads(cleaned)
+                result["response"]  = parsed.get("text_answer", response_text)
+                result["exercises"] = parsed.get("exercises", [])
+            except Exception as _exc:
+                logger.warning(
+                    f"Structured JSON parse failed ({_exc}); treating response as plain text"
+                )
+                # Keep response_text as-is, exercises stays []
 
         # NOTE: Interaction storage is handled by the UI layer (process_user_query)
         # which stores with richer metadata (active documents, source info).
@@ -762,22 +847,36 @@ class RAGPipeline:
         prompt_parts.append(f"\n=== CURRENT QUESTION ===\n{query}")
         return "\n".join(prompt_parts)
 
-    def _generate_llm_response(self, prompt: str) -> str:
+    def _generate_llm_response(self, prompt: str, structured: bool = False) -> str:
         """Generate response using LLM.
 
         Args:
-            prompt: Complete prompt with context
+            prompt:     Complete prompt with context
+            structured: When True, uses system_structured prompt and
+                        response_format=json_object to guarantee valid JSON output.
 
         Returns:
-            Generated response text
+            Generated response text (plain string or JSON string when structured=True)
         """
         try:
             self._rate_limiter.acquire()
+
+            if structured:
+                from utils.prompt_templates import LLM_PROMPTS as _LP
+                sys_prompt = _LP.get("system_structured", self.llm_config.system_prompt)
+            else:
+                sys_prompt = self.llm_config.system_prompt
+
+            # NOTE: We intentionally do NOT pass response_format=json_object here.
+            # Large context prompts (RAG with retrieved docs) cause Gemini to fail
+            # JSON mode enforcement, triggering the key-rotation retry loop and
+            # exhausting all API keys. The system_structured prompt instruction is
+            # sufficient — we extract JSON with clean_json_response() after the call.
             response = self.client.chat.completions.create(
                 model=self.llm_config.model,
                 messages=[
-                    {"role": "system", "content": self.llm_config.system_prompt},
-                    {"role": "user", "content": prompt},
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user",   "content": prompt},
                 ],
                 temperature=self.llm_config.temperature,
                 max_tokens=self.llm_config.max_tokens,

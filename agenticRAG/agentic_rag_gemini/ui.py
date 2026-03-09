@@ -217,7 +217,18 @@ def _switch_to_session(session_id: str):
 
 
 def _start_new_session():
-    """Start a brand-new chat session."""
+    """Start a brand-new chat session.
+
+    If the outgoing session has zero messages (user never typed anything),
+    it is deleted from disk before the new one is created, so the History
+    tab does not accumulate empty sessions.
+    """
+    # Delete the current session if it never received any messages
+    outgoing_sid = st.session_state.current_session_id
+    if outgoing_sid and not st.session_state.messages:
+        st.session_state.session_store.delete_session(outgoing_sid)
+        st.session_state.current_session_id = None
+
     _summarize_current_session()
 
     # Prune old sessions based on config

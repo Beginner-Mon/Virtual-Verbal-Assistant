@@ -34,8 +34,9 @@ DART_URL = "http://localhost:5001"
 # Hardcoded DART motion prompt (for integration testing)
 DART_HARDCODED_PROMPT = "jump*20"
 
-# HTTP timeout (seconds) for downstream service calls
-DOWNSTREAM_TIMEOUT = 60.0
+# HTTP timeout (seconds) for downstream service calls.
+# AgenticRAG LLM calls can take 15-30s — must be well above that.
+DOWNSTREAM_TIMEOUT = 90.0
 
 
 # ===========================
@@ -74,6 +75,9 @@ class AnswerResponse(BaseModel):
     """Combined response from AgenticRAG + DART."""
 
     text_answer: str = Field(..., description="Text response from AgenticRAG")
+    exercises: List[Dict[str, str]] = Field(
+        default_factory=list, description="List of recommended exercises from AgenticRAG"
+    )
     motion: Optional[MotionMetadata] = Field(None, description="Motion output from DART")
     generation_time_ms: float = Field(..., description="Total wall-clock time in ms")
     errors: Optional[Dict[str, str]] = Field(None, description="Per-service errors if any")
@@ -197,9 +201,12 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
     else:
         rag_data = rag_result
         text_answer = rag_data.get("text_answer", "")
+        exercises   = rag_data.get("exercises", [])
 
     # ── Unpack DART result ────────────────────────────────────────────────────
     motion: Optional[MotionMetadata] = None
+    if not exercises:  # preserve empty list scope before motion block
+        exercises = []
     if isinstance(dart_result, Exception):
         logger.error(f"[DART] failed: {dart_result}")
         errors["dart"] = str(dart_result)
@@ -221,6 +228,7 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
 
     return AnswerResponse(
         text_answer=text_answer,
+        exercises=exercises,
         motion=motion,
         generation_time_ms=round(generation_time_ms, 1),
         errors=errors if errors else None,

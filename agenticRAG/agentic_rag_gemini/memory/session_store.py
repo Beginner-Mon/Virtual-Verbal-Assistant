@@ -139,25 +139,32 @@ class SessionStore:
     # ------------------------------------------------------------------
 
     def list_sessions(self, limit: Optional[int] = None) -> List[SessionMeta]:
-        """Return sessions ordered by most-recently-updated first.
+        """Return non-empty sessions ordered by most-recently-updated first.
+
+        Sessions with zero messages are excluded — they are transient
+        placeholders created by ``create_session()`` that the user never
+        interacted with.
 
         Args:
             limit: Max number of sessions to return. None = all.
 
         Returns:
-            List of SessionMeta ordered newest-first.
+            List of SessionMeta ordered newest-first, message_count >= 1 only.
         """
         metas: List[SessionMeta] = []
         for path in self.user_dir.glob("*.json"):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
+                msg_count = len(data.get("messages", []))
+                if msg_count == 0:
+                    continue  # skip empty (never-used) sessions
                 metas.append(
                     SessionMeta(
                         session_id=data["session_id"],
                         title=data.get("title", "Untitled"),
                         created_at=data.get("created_at", ""),
                         updated_at=data.get("updated_at", ""),
-                        message_count=len(data.get("messages", [])),
+                        message_count=msg_count,
                         is_summarized=data.get("is_summarized", False),
                     )
                 )
