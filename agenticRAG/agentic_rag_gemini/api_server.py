@@ -233,6 +233,10 @@ class AgenticRAGAPI:
                 # The text answer is always shown; DART animation is a bonus.
                 logger.info("Intent=visualize_motion → LLM description + motion prompt")
                 exercise = action_plan.get("exercise_name") or query
+                
+                # Normalize the extraction for DART (e.g., "chin tuck exercise" -> "chin tuck")
+                exercise_motion_prompt = exercise.lower().replace(" exercise", "").strip()
+                
                 memory_ctx = tool_results.get("memory") or []
                 mem_text   = "\n".join(
                     str(m.get("document", m)) for m in memory_ctx

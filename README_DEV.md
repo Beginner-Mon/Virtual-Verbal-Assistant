@@ -89,10 +89,12 @@ Combined Response to Frontend:
 }
 ```
 
-> **Integration State:** `MotionGenerationTool` is now fully integrated. 
-> 1. The RAG system outputs lightweight exercise context inside the `exercises` JSON array limit, keeping `text_answer` purely informative.
-> 2. The frontend directly parses this array to natively render clickable "Visualize [Exercise]" buttons. 
-> 3. Clicking the buttons submits a deterministic query (`Visualize [Exercise]`) pointing to the orchestrator to guarantee proper animation intent classification.
+> **Integration State:** `MotionGenerationTool` is fully integrated and functional.
+> 1. The orchestrator correctly identifies `visualize_motion` intent and extracts exercise names
+> 2. Extracted exercise names are properly routed to DART via MotionGenerationTool  
+> 3. The system generates both step-by-step instructions and motion animations
+> 4. Frontend receives complete response with text, exercises, and motion metadata
+> 5. Test with queries like "Visualize chin tuck" to verify end-to-end functionality
 
 ---
 

@@ -7,7 +7,7 @@ This is the single entry point for the frontend. It coordinates:
 Frontend calls: POST /answer { query, user_id }
 Response: { text_answer, motion, generation_time_ms, errors }
 
-NOTE: DART input is currently hardcoded to "jump*20" for integration testing.
+NOTE: Motion generation is now handled by AgenticRAG based on extracted exercise names.
 """
 
 import time
@@ -30,9 +30,6 @@ logger = get_logger(__name__)
 
 AGENTIC_RAG_URL = "http://localhost:8000"
 DART_URL = "http://localhost:5001"
-
-# Hardcoded DART motion prompt (for integration testing)
-DART_HARDCODED_PROMPT = "jump*20"
 
 # HTTP timeout (seconds) for downstream service calls.
 # AgenticRAG LLM calls can take 15-30s — must be well above that.
@@ -109,27 +106,6 @@ async def call_agenticrag(
     logger.info(f"[AgenticRAG] ← {resp.status_code} OK")
     return data
 
-
-async def call_dart(
-    client: httpx.AsyncClient,
-    text_prompt: str,
-) -> Dict[str, Any]:
-    """POST to DART /generate and return the parsed JSON body."""
-    payload = {
-        "text_prompt": text_prompt,
-        "guidance_scale": 5.0,
-        "num_steps": 50,
-        "respacing": "",
-    }
-
-    logger.info(f"[DART] → POST {DART_URL}/generate  prompt={text_prompt!r}")
-    resp = await client.post(f"{DART_URL}/generate", json=payload)
-    resp.raise_for_status()
-    data = resp.json()
-    logger.info(f"[DART] ← {resp.status_code} OK  frames={data.get('num_frames')}")
-    return data
-
-
 # ===========================
 # FastAPI Application
 # ===========================
@@ -157,14 +133,8 @@ app.add_middleware(
 @app.post("/answer", response_model=AnswerResponse, summary="Get text answer + motion")
 async def get_answer(request: AnswerRequest) -> AnswerResponse:
     """
-    Fan out to AgenticRAG and DART **in parallel**, then merge results.
-
-    Flow:
-    ┌─ AgenticRAG POST /query  (uses user query) ─┐
-    │                                              │  both start simultaneously
-    └─ DART POST /generate    (hardcoded: jump*20)─┘
-                       ↓
-            merge → AnswerResponse
+    Passes the query to AgenticRAG, which orchestrates text + motion generation,
+    then returns the merged results.
     """
     t_start = time.perf_counter()
 
@@ -175,55 +145,44 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
 
     errors: Dict[str, str] = {}
     rag_data: Optional[Dict[str, Any]] = None
-    dart_data: Optional[Dict[str, Any]] = None
 
-    # ── Fan-out: call both services concurrently ─────────────────────────────
     import asyncio
 
     async with httpx.AsyncClient(timeout=DOWNSTREAM_TIMEOUT) as client:
-        rag_task = asyncio.create_task(
-            call_agenticrag(client, request.query, request.user_id, history)
-        )
-        dart_task = asyncio.create_task(
-            call_dart(client, DART_HARDCODED_PROMPT)
-        )
+        try:
+            rag_data = await call_agenticrag(client, request.query, request.user_id, history)
+            text_answer = rag_data.get("text_answer", "")
+            exercises   = rag_data.get("exercises", [])
+        except Exception as e:
+            logger.error(f"[AgenticRAG] failed: {e}")
+            errors["agenticrag"] = str(e)
+            text_answer = "[AgenticRAG unavailable — check that port 8000 is running]"
+            exercises = []
 
-        # Gather — return_exceptions=True so one failure doesn't kill the other
-        results = await asyncio.gather(rag_task, dart_task, return_exceptions=True)
-
-    rag_result, dart_result = results
-
-    # ── Unpack AgenticRAG result ─────────────────────────────────────────────
-    if isinstance(rag_result, Exception):
-        logger.error(f"[AgenticRAG] failed: {rag_result}")
-        errors["agenticrag"] = str(rag_result)
-        text_answer = "[AgenticRAG unavailable — check that port 8000 is running]"
-    else:
-        rag_data = rag_result
-        text_answer = rag_data.get("text_answer", "")
-        exercises   = rag_data.get("exercises", [])
-
-    # ── Unpack DART result ────────────────────────────────────────────────────
+    # ── Unpack DART result (returned inside AgenticRAG response) ─────────────
     motion: Optional[MotionMetadata] = None
-    if not exercises:  # preserve empty list scope before motion block
-        exercises = []
-    if isinstance(dart_result, Exception):
-        logger.error(f"[DART] failed: {dart_result}")
-        errors["dart"] = str(dart_result)
-    else:
-        dart_data = dart_result
+    if rag_data and rag_data.get("motion"):
+        dart_data = rag_data["motion"]
+        motion_file = dart_data.get("motion_file", "")
+        # Construct full download URL if we have a motion file
+        motion_file_url = f"{DART_URL}/download/{motion_file}" if motion_file else ""
         motion = MotionMetadata(
-            motion_file_url=dart_data.get("motion_file_url", ""),
-            num_frames=dart_data.get("num_frames", 0),
+            motion_file_url=motion_file_url,
+            num_frames=dart_data.get("frames", 0),
             fps=dart_data.get("fps", 30),
-            duration_seconds=dart_data.get("duration_seconds", 0.0),
-            text_prompt=dart_data.get("text_prompt", DART_HARDCODED_PROMPT),
+            duration_seconds=dart_data.get("duration", 0.0),
+            text_prompt=rag_data.get("exercise_motion_prompt", "unknown"),
         )
 
     generation_time_ms = (time.perf_counter() - t_start) * 1000
+    
+    # Check if AgenticRAG reported internal errors for DART
+    if rag_data and "dart" in rag_data.get("errors", {}):
+        errors["dart"] = rag_data["errors"]["dart"]
+
     logger.info(
         f"[{request.user_id}] Completed in {generation_time_ms:.0f}ms  "
-        f"rag={'ok' if rag_data else 'ERROR'}  dart={'ok' if dart_data else 'ERROR'}"
+        f"rag={'ok' if rag_data else 'ERROR'}  dart={'ok' if motion else 'none/ERROR'}"
     )
 
     return AnswerResponse(
@@ -260,11 +219,10 @@ async def get_info() -> Dict[str, Any]:
         "version": "2.0.0",
         "upstream_services": {
             "agenticrag": f"{AGENTIC_RAG_URL}/query",
-            "dart": f"{DART_URL}/generate  (hardcoded prompt: '{DART_HARDCODED_PROMPT}')",
         },
         "endpoints": {
-            "POST /answer": "Fan-out to AgenticRAG + DART, merge and return",
-            "GET /health": "Ping both downstream services",
+            "POST /answer": "Proxy to AgenticRAG and return merged text+motion response",
+            "GET /health": "Ping downstream services",
             "GET /info": "This document",
         },
     }
@@ -279,9 +237,6 @@ if __name__ == "__main__":
     logger.info("")
     logger.info("Requires these services to be running:")
     logger.info(f"  AgenticRAG : {AGENTIC_RAG_URL}  (Windows, firstconda env)")
-    logger.info(f"  DART       : {DART_URL}  (WSL/Linux, DART env)")
-    logger.info("")
-    logger.info(f"DART motion prompt is hardcoded to: '{DART_HARDCODED_PROMPT}'")
     logger.info("")
     logger.info("Frontend: POST http://localhost:8080/answer")
     logger.info("")

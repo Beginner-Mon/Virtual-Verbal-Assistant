@@ -5,9 +5,9 @@ interface so the OrchestratorAgent can request motion generation without
 knowing the HTTP details.
 
 API contract:
-    POST http://localhost:5001/generate_motion
-    Body:  {"text_prompt": "<exercise name>"}
-    200:   {"motion_file": "motion_abc123.npz", "frames": 160, "fps": 30}
+    POST http://localhost:5001/generate
+    Body:  {"text_prompt": "<exercise name>", "guidance_scale": 5.0, "num_steps": 50}
+    200:   {"request_id": "abc123", "motion_file_url": "/download/motion_abc123.npz", "num_frames": 160, "fps": 30, "duration_seconds": 5.33, "text_prompt": "..."}
 """
 
 from typing import Any, Dict
@@ -19,7 +19,7 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 # Defaults — can be overridden at construction time
-_DEFAULT_ENDPOINT = "http://localhost:5001/generate_motion"
+_DEFAULT_ENDPOINT = "http://localhost:5001/generate"
 _DEFAULT_TIMEOUT  = 30   # seconds
 
 
@@ -87,7 +87,12 @@ class MotionGenerationTool:
         try:
             response = requests.post(
                 self._endpoint,
-                json={"text_prompt": prompt},
+                json={
+                    "text_prompt": prompt,
+                    "guidance_scale": 5.0,
+                    "num_steps": 50,
+                    "respacing": "ddim50"
+                },
                 timeout=self._timeout,
             )
             response.raise_for_status()
@@ -119,17 +124,19 @@ class MotionGenerationTool:
             logger.error(msg)
             return {"error": msg, "motion_file": None, "frames": 0, "fps": 0}
 
-        # Validate required fields
-        missing = [f for f in ("motion_file", "frames", "fps") if f not in data]
+        # Validate required fields - DART returns motion_file_url and num_frames
+        missing = [f for f in ("motion_file_url", "num_frames", "fps") if f not in data]
         if missing:
             raise ValueError(
                 f"[MotionGenerationTool] DART response missing required fields: {missing}. "
                 f"Got: {list(data.keys())}"
             )
 
+        # Convert DART response format to internal format
+        motion_filename = data["motion_file_url"].split("/")[-1]  # Extract filename from URL
         result = {
-            "motion_file": data["motion_file"],
-            "frames":      int(data["frames"]),
+            "motion_file": motion_filename,
+            "frames":      int(data["num_frames"]),
             "fps":         int(data["fps"]),
         }
         logger.info(
