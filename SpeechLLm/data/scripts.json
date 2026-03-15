@@ -1,0 +1,26 @@
+{
+  "query": "How do I walk?",
+  "user_id": "test",
+  "text_answer": "{\n  \"text_answer\": \"Walking is a fundamental movement that involves a coordinated effort from your entire body. Here's a basic breakdown of how you walk:\n\n1.  *Posture:* Start by standing tall with your head level, shoulders relaxed and slightly back, and your core gently engaged. Look forward, not down at your feet.\n2.  *Initiate Movement:* Shift your weight slightly onto one leg.\n3.  *Step Forward:* Lift the other foot slightly off the ground and swing it forward from your hip, placing the heel down first, then rolling through the foot to the toes.\n4.  *Weight Transfer:* As your front foot makes contact with the ground, transfer your body weight onto that leg.\n5.  *Propulsion:* Push off with the toes of your back foot, propelling yourself forward.\n6.  *Opposite Arm Swing:* As one leg swings forward, the opposite arm should naturally swing forward to maintain balance. For example, if your right leg steps forward, your left arm swings forward.\n7.  *Repeat:* Continue this alternating pattern of stepping, weight transfer, and arm swing, creating a smooth, rhythmic gait.\n\nIt's a complex process that your brain handles largely automatically, coordinating hundreds of muscles! If you're experiencing difficulty walking or have specific concerns, it's always a good idea to consult with a physical therapist.\",\n  \"exercises\": []\n}",
+  "exercises": [],
+  "exercise_motion_prompt": null,
+  "motion": null,
+  "orchestrator_decision": {
+    "action": "call_llm",
+    "confidence": 0.9,
+    "reasoning": "The user is asking for an explanation of how to perform an action, which is a knowledge query.",
+    "parameters": {
+      "use_memory": true,
+      "use_documents": true,
+      "generate_motion": false,
+      "motion_type": null
+    }
+  },
+  "motion_prompt": null,
+  "voice_prompt": {
+    "text": "{\n  \"text_answer\": \"Walking is a fundamental movement that involves a coordinated effort from your entire body. Here's a basic breakdown of how you walk:\n\n1.  *Posture:* Start by standing tall with your head level, shoulders relaxed and slightly back, and your core gently engaged. Look forward, not down at your feet.\n2.  *Initiate Movement:* Shift your weight slightly onto one leg.\n3.  *Step Forward:* Lift the other foot slightly off the ground and swing it forward from your hip, placing the heel down first, then rolling through the foot to the toes.\n4.  *Weight Transfer:* As your front foot makes contact with the ground, transfer your body weight onto that leg.\n5.  *Propulsion:* Push off with the toes of your back foot, propelling yourself forward.\n6.  *Opposite Arm Swing:* As one leg swings forward, the opposite arm should naturally swing forward to maintain balance. For example, if your right leg steps forward, your left arm swings forward.\n7.  *Repeat:* Continue this alternating pattern of stepping, weight transfer, and arm swing, creating a smooth, rhythmic gait.\n\nIt's a complex process that your brain handles largely automatically, coordinating hundreds of muscles! If you're experiencing difficulty walking or have specific concerns, it's always a good idea to consult with a physical therapist.\",\n  \"exercises\": []\n}",
+    "emotion": "sad",
+    "duration_estimate_seconds": 84.80000000000001
+  },
+  "metadata": {}
+}
