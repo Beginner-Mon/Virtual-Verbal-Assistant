@@ -1,141 +1,196 @@
-# Virtual Verbal Assistant (SpeechSLM)
 
-This project implements a multimodal virtual assistant that accepts
-either **speech or text input**, detects the user's **emotion**, formats
-the interaction into a structured JSON representation, and generates
-responses using a **Small Language Model (SLM)** running locally.
+Virtual Verbal Assistant (SpeechLLM)
 
-The assistant then outputs both **text and speech**, and can optionally
-control a virtual avatar.
+Overview
+This project implements a modular streaming voice assistant capable of processing speech input,
+generating intelligent responses using a language model, synthesizing speech output, and optionally
+triggering motion or animation responses. The system is designed with a pipeline architecture that
+supports low-latency streaming interaction.
 
----
-
-## 🎯 Features
-
-- Speech or text input
-- Speech-to-Text (Whisper / wav2vec2)
-- Emotion recognition from text/audio
-- Context formatting using JSON
-- Local SLM inference (Phi / Mistral / Gemma via Ollama)
-- Text-to-Speech output
-- Modular system architecture
-
----
-
-## 🧠 System Pipeline
-
-Voice / Text Input
-↓
-Speech-to-Text
-↓
+Architecture
+User Speech
+    ↓
+Speech-to-Text (Whisper)
+    ↓
 Emotion Detection
-↓
-Context Formatter (JSON)
-↓
-SLM Reasoning Engine
-↓
-Text-to-Speech + Avatar
+    ↓
+LLM Response Generation (Phi-3)
+    ↓
+Text-to-Speech (Coqui / ElevenLabs)
+    ↓
+Motion Controller
+    ↓
+Audio + Motion Output
 
----
+Project Structure
+configs/
+    base.yaml
+    models.yaml
 
-## 📁 Project Structure
+data/
 
-SpeechLLM/
-├── src/
-│   ├── core/                   # The "Brain" and State Logic
-│   │   ├── orchestrator.py      # Main loop; moves data between STT -> LLM -> TTS
-│   │   ├── state_machine.py     # Tracks IDLE, LISTENING, THINKING, SPEAKING
-│   │   └── events.py            # Signals for "Interrupt" or "Speech Detected"
-│   │
-│   ├── stages/                  # Pipeline Steps (The "What")
-│   │   ├── stt_stage.py         # Takes audio buffer -> returns text
-│   │   ├── llm_stage.py         # Takes text + emotion -> returns Phi-3 response
-│   │   ├── tts_stage.py         # Takes text -> returns audio stream
-│   │   └── emotion_stage.py     # Analyzes text/audio for emotional metadata
-│   │
-│   ├── services/                # Model Wrappers (The "How")
-│   │   ├── phi3_client.py       # Specific implementation for Phi-3 inference
-│   │   ├── whisper_client.py    # Faster-Whisper or OpenAI Whisper setup
-│   │   └── voice_driver.py      # Low-level audio device management (PyAudio)
-│   │
-│   ├── context/                 # Memory & Formatting
-│   │   ├── memory_manager.py    # Handles conversation history (Short-term/Long-term)
-│   │   └── prompt_templates.py  # Stores system prompts and JSON schemas
-│   │
-│   ├── ui/                      # Visuals
-│   │   ├── avatar_controller.py # Sends blendshapes/visemes to the 3D model
-│   │   └── web_server.py        # FastAPI/WebSocket for the frontend dashboard
-│   │
-│   └── utils/                   # Helpers
-│       ├── logger.py            # Custom logging to console and file
-│       └── audio_tools.py       # VAD (Voice Activity Detection) and Chunking
-│
-├── configs/                     # System Settings
-│   ├── base.yaml                # Default parameters (Sample rates, etc.)
-│   └── models.yaml              # Paths to local .bin or .onnx files
-│
-├── models/                      # Weights (Git-ignored)
-│   ├── phi3/                    # Phi-3-3.8B files
-│   └── whisper/                 # Whisper weights
-│
-├── data/                        # Persistent Data
-│   ├── logs/                    # Runtime logs for debugging
-│   └── temp_audio/              # Cache for temporary .wav processing
-│
-├── .env                         # Environment variables (API keys)
-├── requirements.txt             # Python dependencies
-├── main.py                      # Application Entry Point
-└── README.md                    # Setup and usage guide
+models/
 
+src/
+    context/
+        memory_manager.py
+        prompt_template.py
 
----
+    core/
+        events.py
+        orchestrator.py
+        state_machine.py
 
-## ⚙️ Setup
+    services/
+        coqui_client.py
+        elevenlabs_client.py
+        phi3_client.py
+        tts_router.py
+        voice_driver.py
+        whisper_client.py
 
-1. Create Conda Environment
+    stages/
+        emotion_stage.py
+        llm_stage.py
+        stt_stage.py
+        tts_stage.py
+        motion_stage.py
 
-```bash
-conda env create -f environment.yml
-conda activate speechslm
+    utils/
+        logger.py
+        action_normalizer.py
 
-2. Install Ollama (for SLM)
-Download from:
+streaming/
+    audio_stream_buffer.py
+    interrupt_controller.py
+    token_streamer.py
 
-https://ollama.com
+main.py
+requirements.txt
+.gitignore
 
-Pull a model:
+Core Modules
 
-ollama pull phi3
-or:
+Context Management
+memory_manager.py
+Maintains conversation history and contextual memory for the assistant.
 
-ollama pull mistral
-3. Run
+prompt_template.py
+Constructs structured prompts used by the language model.
+
+Core Engine
+
+orchestrator.py
+Coordinates the execution of all pipeline stages.
+
+state_machine.py
+Controls the state transitions of the assistant.
+
+events.py
+Defines system-level events used for communication between modules.
+
+Services
+
+whisper_client.py
+Handles speech recognition using Whisper.
+
+phi3_client.py
+Interface for the Phi-3 language model.
+
+coqui_client.py
+Local text-to-speech generation using Coqui.
+
+elevenlabs_client.py
+Cloud-based text-to-speech generation using ElevenLabs.
+
+tts_router.py
+Selects which TTS engine to use.
+
+voice_driver.py
+Manages audio playback.
+
+Processing Stages
+
+stt_stage.py
+Processes incoming speech and converts it to text.
+
+emotion_stage.py
+Detects emotional context from input text.
+
+llm_stage.py
+Generates responses using the language model.
+
+tts_stage.py
+Converts text responses into speech.
+
+motion_stage.py
+Triggers motion or animation events.
+
+Streaming System
+
+token_streamer.py
+Streams tokens from the language model for real-time responses.
+
+audio_stream_buffer.py
+Buffers audio chunks for smooth playback.
+
+interrupt_controller.py
+Allows users to interrupt the assistant mid-response.
+
+Requirements
+
+Install dependencies:
+pip install -r requirements.txt
+
+Major libraries used include:
+PyTorch
+Faster-Whisper
+Transformers
+Coqui TTS
+ElevenLabs API
+Ollama
+
+Model Setup
+
+Install Ollama and download the Phi-3 model:
+ollama pull phi3:3.8b
+
+Whisper models will automatically download during first execution.
+
+Running the Assistant
+
+Run the main entry point:
 python main.py
-🧪 Example Output
-User (speech): I feel stressed today.
-Emotion: anxious (0.81)
 
-Model: I'm sorry you're feeling stressed. Want to talk about what's causing it?
+The assistant will:
+1. Capture microphone input
+2. Convert speech to text
+3. Generate an LLM response
+4. Convert the response to speech
+5. Trigger motion events
 
----
+Features
 
-## 📊 Project Goals
+Streaming responses
+Interruptible conversation
+Multiple TTS backends
+Modular pipeline architecture
+Emotion-aware responses
+Motion integration
 
-Demonstrate multimodal interaction
+Configuration
 
-Explore emotion-aware dialogue systems
+configs/base.yaml
+configs/models.yaml
 
-Compare SLM performance vs large LLMs
+These configuration files control model selection, streaming behavior,
+voice parameters, and system settings.
 
-Evaluate latency and accuracy
+Future Improvements
 
-Control avatar expressions
+Multilingual support
+Emotion-conditioned TTS
+Avatar motion synthesis
+GPU acceleration
+Long-term memory integration
 
---- 
-
-📄 License
-
-Educational use only.
-
-
----
