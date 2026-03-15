@@ -1,202 +1,130 @@
+import json
 import os
+import re
 import yaml
 from dotenv import load_dotenv
 
-# =========================
-# Clients
-# =========================
-from src.services.phi3_client import Phi3Client
-from src.services.whisper_client import WhisperClient
-from src.services.voice_driver import VoiceDriver
-from src.services.elevenlabs_client import ElevenLabsClient
 from src.services.coqui_client import CoquiClient
-from src.services.tts_router import TTSRouter
-
-# =========================
-# Core / Stages
-# =========================
-from src.context.memory_manager import MemoryManager
-from src.stages.llm_stage import LLMStage
-from src.stages.stt_stage import STTStage
-from src.stages.tts_stage import TTSStage
-from src.stages.emotion_stage import EmotionStage
-
-# =========================
-# Utils
-# =========================
-from src.utils.action_normalizer import normalize
-
-# =========================
-# Streaming / Control
-# =========================
-from streaming.audio_stream_buffer import AudioStreamBuffer
-from streaming.interrupt_controller import InterruptController
-from src.core.orchestrator import Orchestrator
+from src.services.voice_driver import VoiceDriver
 
 
+# =========================
+# Helpers
+# =========================
 def load_yaml(path):
     with open(path, "r") as f:
         return yaml.safe_load(f)
 
 
-def handle_action_response(response: dict):
-    """
-    Prints raw + normalized action output.
-    Used for testing before DART integration.
-    """
-    raw_action = response.get("action", {})
-    print("\n--- ACTION DETECTED ---")
-    print("Raw Action Output:", raw_action)
-
-    normalized = normalize(raw_action)
-    print("Normalized Action:", normalized)
-    print("-----------------------\n")
+def load_script(json_path):
+    with open(json_path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
+def extract_text_to_read(script: dict) -> str:
+    voice_prompt = script.get("voice_prompt", {})
+    text_blob = voice_prompt.get("text")
+
+    if not text_blob:
+        return ""
+
+    # Case 1 — already dict
+    if isinstance(text_blob, dict):
+        return text_blob.get("text_answer", "").strip()
+
+    # Case 2 — JSON string
+    if isinstance(text_blob, str):
+        try:
+            inner = json.loads(text_blob)
+            return inner.get("text_answer", "").strip()
+
+        except json.JSONDecodeError:
+            match = re.search(r'"text_answer"\s*:\s*"(.*)"', text_blob, re.DOTALL)
+            if match:
+                text = match.group(1)
+            else:
+                text = text_blob
+
+            return (
+                text.replace("\\n", "\n")
+                    .replace('\\"', '"')
+                    .strip()
+            )
+
+    return ""
+
+
+# =========================
+# Main
+# =========================
 if __name__ == "__main__":
 
-    # =========================
-    # Load environment variables
-    # =========================
     load_dotenv()
 
-    # =========================
-    # Load configs
-    # =========================
     base_config = load_yaml("configs/base.yaml")
     model_config = load_yaml("configs/models.yaml")
 
-    # =========================
-    # Initialize Core Clients
-    # =========================
-    phi3_client = Phi3Client(model_config["phi3"])
-    whisper_client = WhisperClient(model_config["whisper"])
+    # Init audio (kept in case you use recording later)
     voice_driver = VoiceDriver(base_config["audio"])
 
     # =========================
-    # Initialize TTS Clients
-    # =========================
-    eleven_client = ElevenLabsClient(
-        voice_id=model_config["tts"]["voice_id"]
-)
-
-    # =========================
-    # Select Coqui Speaker
+    # Init Coqui (temp for speaker list)
     # =========================
     temp_coqui = CoquiClient(model_config["coqui"])
-
-    print("\nAvailable Coqui Speakers:")
     speakers = temp_coqui.get_available_speakers()
 
-    for i, spk in enumerate(speakers):
-        print(f"{i}: {spk}")
+    # =========================
+    # Speaker Selection
+    # =========================
+    if speakers:
+        print("\nAvailable Speakers:")
+        for i, spk in enumerate(speakers):
+            print(f"{i}: {spk}")
 
-    while True:
-        try:
-            choice = int(input("Select speaker number: "))
-            if 0 <= choice < len(speakers):
-                selected_speaker = speakers[choice]
-                break
-            else:
+        while True:
+            try:
+                choice = int(input("Select speaker number: "))
+                if 0 <= choice < len(speakers):
+                    selected_speaker = speakers[choice]
+                    break
                 print("Invalid selection.")
-        except ValueError:
-            print("Enter a valid number.")
+            except ValueError:
+                print("Enter a valid number.")
+    else:
+        selected_speaker = None
 
-    print(f"Selected Speaker: {selected_speaker}\n")
+    print(f"\nSelected Speaker: {selected_speaker}")
 
+    # Recreate client with selected speaker
     coqui_config = model_config["coqui"]
     coqui_config["speaker"] = selected_speaker
     coqui_client = CoquiClient(coqui_config)
 
-    tts_router = TTSRouter(
-        eleven_client=eleven_client,
-        coqui_client=coqui_client
-    )
+    # =========================
+    # Load Script
+    # =========================
+    script = load_script("data/scripts.json")
+    text_to_read = extract_text_to_read(script)
+
+    if not text_to_read:
+        print("No readable text found in JSON.")
+        exit()
+
+    print("\n===== READING TEXT =====\n")
+    print(text_to_read)
+    print("\n========================\n")
 
     # =========================
-    # Memory + Stages
+    # TTS + Play (AUTO RUN)
     # =========================
-    memory = MemoryManager()
+    try:
+        audio_path = coqui_client.synthesize(text_to_read)
 
-    llm_stage = LLMStage(phi3_client, memory)
-    stt_stage = STTStage(whisper_client)
-    tts_stage = TTSStage(tts_router)
-    emotion_stage = EmotionStage()
-
-    # =========================
-    # Streaming + Control
-    # =========================
-    audio_buffer = AudioStreamBuffer()
-    interrupt_controller = InterruptController()
-
-    # =========================
-    # Orchestrator
-    # =========================
-    orchestrator = Orchestrator(
-        stt_stage=stt_stage,
-        emotion_stage=emotion_stage,
-        llm_stage=llm_stage,
-        tts_stage=tts_stage,
-        voice_driver=voice_driver,
-        audio_buffer=audio_buffer,
-        interrupt_controller=interrupt_controller,
-    )
-
-    print("Assistant Ready.")
-    print("Type 'voice' for microphone mode, 'text' for typing, 'exit' to quit.")
-
-    # =========================
-    # Main Loop
-    # =========================
-    while True:
-
-        mode = input("Mode: ").strip().lower()
-
-        if mode == "exit":
-            break
-
-        # =========================
-        # TEXT MODE
-        # =========================
-        elif mode == "text":
-
-            user_text = input("You: ")
-            response, audio_path = orchestrator.handle_text_input(user_text)
-
-            # If structured action output
-            if isinstance(response, dict) and response.get("intent") == "action":
-                handle_action_response(response)
-
-            else:
-                print("Assistant:", response)
-
-                if audio_path and os.path.exists(audio_path):
-                    os.system(f'start "" "{audio_path}"')
-
-        # =========================
-        # VOICE MODE
-        # =========================
-        elif mode == "voice":
-
-            print("Recording...")
-            recorded_path = voice_driver.record()
-
-            print("Transcribing...")
-            transcript = stt_stage.process(recorded_path)
-
-            print("You:", transcript)
-
-            print("Processing...")
-            response, audio_path = orchestrator.handle_text_input(transcript)
-
-            if isinstance(response, dict) and response.get("intent") == "action":
-                handle_action_response(response)
-
-            else:
-                print("Assistant:", response)
-
-                if audio_path and os.path.exists(audio_path):
-                    os.system(f'start "" "{audio_path}"')
-
+        if audio_path and os.path.exists(audio_path):
+            # Windows audio playback
+            os.system(f'start "" "{audio_path}"')
         else:
-            print("Invalid mode.")
+            print("Audio file not generated.")
+
+    except Exception as e:
+        print("TTS Error:", e)
