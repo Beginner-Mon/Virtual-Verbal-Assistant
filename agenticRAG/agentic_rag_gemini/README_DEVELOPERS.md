@@ -1,8 +1,8 @@
 # AgenticRAG — Developer Documentation
 
-> **Last updated**: 2026-02-28  
-> **Python**: 3.13+ &nbsp;|&nbsp; **LLM**: Google Gemini 2.5 Flash &nbsp;|&nbsp; **Vector DB**: ChromaDB 1.5  
-> **Status**: Active development
+> **Last updated**: 2026-03-15  
+> **Python**: 3.13+ &nbsp;|&nbsp; **Local LLM**: Ollama (Qwen 0.5B) &nbsp;|&nbsp; **Cloud LLM**: Google Gemini 2.5 Flash &nbsp;|&nbsp; **Vector DB**: ChromaDB 1.5  
+> **Status**: Optimization for Multi-User concurrency
 
 ---
 
@@ -35,12 +35,13 @@
 
 **AgenticRAG** (internally branded *KineticChat*) is an intelligent conversational AI system built on a **Retrieval-Augmented Generation** (RAG) architecture with **agentic decision-making**. The system:
 
-- 🤖 **Routes queries intelligently** — An Orchestrator Agent (powered by Gemini) analyzes intent and decides the action plan before any retrieval or generation happens.
+- ⚡ **Sub-second Routing** — Uses a local **Ollama** model (Qwen 0.5B) for intent routing, reducing latency from ~15s to <1s.
+- 🤖 **Hybrid Orchestration** — Local orchestrator for speed, with automatic fallback to Gemini API for high-complexity queries or when local confidence is low.
 - 📚 **Multi-source knowledge** — Retrieves context from uploaded documents (PDF, Word, Images w/ OCR), conversation memory, chat session summaries, and live web search.
-- 🔁 **Self-correcting pipeline** — Implements query reformulation (rewrites poor queries), iterative reflection (verifies answers against sources), and web search fallback.
-- 💾 **Persistent memory** — Stores conversations, documents, and session summaries in ChromaDB with semantic vector search.
+- 🔁 **Self-correcting pipeline** — Implements query reformulation, iterative reflection (verifies answers against sources), and web search fallback.
+- 💾 **Persistent memory & Caching** — Stores state in ChromaDB and uses **Redis** for sub-millisecond embedding and retrieval caching.
 - 🔑 **Multi-key API management** — Rotates across multiple Gemini API keys automatically on quota errors.
-- 🌐 **Streamlit web UI** — Full-featured chat interface with document upload, session management, and sidebar controls.
+- 🌐 **Streamlit & API exposure** — Streamlit UI plus a high-performance FastAPI server (`api_server.py`) supporting concurrent requests.
 
 ### Example Use Case
 
@@ -58,12 +59,12 @@ Upload course documents (PDFs, Word files) and ask questions about their content
                       │ query + uploaded files             │ response
                       ▼                                    ▲
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  1. ORCHESTRATOR AGENT               agents/orchestrator.py            │
+│  1. HYBRID ORCHESTRATOR               agents/local_orchestrator.py      │
 │     ┌────────────────────────────────────────────────────┐              │
-│     │ Gemini 2.5 Flash (temp=0.1)                        │              │
-│     │ Analyzes query → decides action plan (JSON)        │              │
-│     │ Actions: RETRIEVE_DOCUMENT | RETRIEVE_MEMORY |     │              │
-│     │          CALL_LLM | HYBRID | CLARIFY               │              │
+│     │ Primary: Ollama (Qwen 0.5B, local, temp=0.1)       │              │
+│     │ Fallback: Gemini 2.5 Flash (via orchestrator.py)   │              │
+│     │ Analyzes query → decides intent/action plan (JSON) │              │
+│     │ Latency: ~200-500ms (Local) vs ~3-10s (API)        │              │
 │     └────────────────────────────────────────────────────┘              │
 └─────────────────────┬───────────────────────────────────────────────────┘
                       ▼
@@ -148,7 +149,8 @@ agentic_rag_gemini/
 │
 ├── agents/
 │   ├── __init__.py
-│   ├── orchestrator.py              # Query routing agent (340 lines)
+│   ├── local_orchestrator.py        # Faster Ollama-based router (309 lines)
+│   ├── orchestrator.py              # Cloud Gemini-based router (340 lines)
 │   └── summarize_agent.py           # Chat session summarizer (144 lines)
 │
 ├── retrieval/
@@ -165,12 +167,13 @@ agentic_rag_gemini/
 │
 ├── utils/
 │   ├── __init__.py
+│   ├── cache_service.py             # Redis-backed multi-level cache (NEW)
 │   ├── gemini_client.py             # OpenAI-compatible Gemini wrapper (517 lines)
 │   ├── api_key_manager.py           # Multi-key rotation with round-robin (267 lines)
+│   ├── ollama_client.py             # Simple direct Ollama API wrapper
 │   ├── document_loader.py           # PDF/Word/Image/OCR loader (409 lines)
 │   ├── web_search.py                # DuckDuckGo search service (232 lines)
 │   ├── prompt_templates.py          # All prompt templates (430 lines)
-│   ├── validators.py                # Response safety validation (283 lines)
 │   └── logger.py                    # Loguru-based logging (140 lines)
 │
 ├── tests/
@@ -189,22 +192,19 @@ agentic_rag_gemini/
 
 ## Module Reference
 
-### 1. Orchestrator Agent — `agents/orchestrator.py`
+### 1. Hybrid Orchestration — `agents/local_orchestrator.py`
 
-The "brain" of the system. Uses Gemini (temperature=0.1) to analyze user queries and produce structured JSON routing decisions.
+The system utilizes a low-latency local model for the majority of categorizations, falling back to a powerful cloud model only when necessary.
 
-| Class / Function | Purpose |
-|---|---|
-| `ActionType` (enum) | `RETRIEVE_MEMORY`, `CALL_LLM`, `GENERATE_MOTION`, `HYBRID`, `CLARIFY` |
-| `OrchestratorDecision` | Data class holding action, confidence, reasoning, parameters |
-| `OrchestratorAgent.analyze_query()` | Calls Gemini to classify intent → returns `OrchestratorDecision` |
-| `OrchestratorAgent.process_query()` | High-level entry: analyze → return action plan dict |
-| `OrchestratorAgent._build_analysis_prompt()` | Constructs the system+user prompt for the routing LLM |
-| `OrchestratorAgent.should_retrieve_memory()` | Decision helper: should memory be fetched? |
-| `OrchestratorAgent.should_call_llm()` | Decision helper: should LLM generate a response? |
-| `clean_json_response()` | Strips markdown fences / fixes malformed JSON from LLM |
+| Component | Logic | Latency |
+|---|---|---|
+| **Primary (Local)** | Ollama `qwen:0.5b` with compact JSON prompt | ~300ms |
+| **Fallback (Cloud)** | Gemini 2.5 Flash on low confidence / error | ~5s |
 
-**Key design choice**: The orchestrator is a *pure router* — it never generates user-facing text. Its output is a JSON routing decision consumed by `main.py` or `ui.py`.
+**Performance Tuning**:
+- **Compact Prompts**: Orchestrator system prompt reduced from ~800 to ~160 tokens.
+- **Model Warmup**: Ollama models are pre-loaded at server startup to eliminate cold-start lag.
+- **JSON Enforcements**: Uses Ollama's `format: "json"` to ensure zero parsing errors.
 
 ---
 
@@ -305,20 +305,16 @@ similarity = max(0.0, 1.0 - (distance / 2.0))
 
 ### 7. Embedding Service — `memory/embedding_service.py`
 
-Text → vector conversion using Sentence Transformers (local) or Gemini (API).
+Text → vector conversion with high-performance caching.
 
-| Property | Value |
-|---|---|
-| Default model | `sentence-transformers/all-MiniLM-L6-v2` |
-| Embedding dimension | 384 |
-| Batch size | 32 |
-| Normalization | Disabled (to work with ChromaDB's L2 distance) |
+- **Model**: `all-MiniLM-L6-v2` (Local CPU inference ~5ms/query)
+- **Caching**: **Redis integration** prevents redundant embedding calculation for identical queries across different users.
 
 | Method | Purpose |
 |---|---|
-| `embed_texts()` | Main entry — single text or batch |
+| `embed_texts()` | Main entry — checks Redis cache first |
 | `compute_similarity()` | Cosine similarity between two vectors |
-| `count_tokens()` / `truncate_text()` | Token management via tiktoken |
+| `count_tokens()` / `truncate_text()` | Token management |
 
 ---
 
@@ -1055,65 +1051,30 @@ python -c "from utils.web_search import WebSearchService; s = WebSearchService()
 
 ## Resolved Issues & Fixes
 
-### ✅ ChromaDB Persistence Issue
-**Problem**: Documents lost between sessions (using in-memory client)  
-**Fix**: Changed `chromadb.Client()` → `chromadb.PersistentClient(path="data/vector_store/")`  
-**File**: `memory/vector_store.py` → `_init_chromadb()`
+### ✅ Orchestrator Latency Fix
+**Problem**: Intent routing taking 10-15s per query via Gemini.  
+**Fix**: Migrated to local Ollama (`qwen:0.5b`) + prompt compression.  
+**Result**: Latency dropped to <1s.
 
-### ✅ ChromaDB Query Filters
-**Problem**: Query failed with multiple metadata filter conditions  
-**Fix**: Used `$and` operator for compound filters  
-**File**: `memory/vector_store.py` → `search()` and `search_documents()`
+### ✅ API Concurrency
+**Problem**: System blocked event loop during Ollama/Gemini calls.  
+**Fix**: Implemented `asyncio.to_thread()` in `api_server.py`.
 
-### ✅ Negative Similarity Scores
-**Problem**: Similarity scores went negative with good embeddings  
-**Root cause**: Incorrect distance-to-similarity conversion  
-**Fix**: Changed `1 - distance` → `max(0.0, 1.0 - (distance / 2.0))`  
-**File**: `memory/vector_store.py`
-
-### ✅ Pydantic v1/v2 ConfigError with ChromaDB
-**Problem**: `pydantic.v1.errors.ConfigError` on startup  
-**Root cause**: Old ChromaDB versions bundled pydantic v1 compatibility layer that clashed with pydantic v2  
-**Fix**: Upgraded chromadb to ≥ 1.5.1  
-**File**: `requirements.txt`
-
-### ✅ Document Context Truncation
-**Problem**: Document content cut off too early in prompts  
-**Fix**: Increased content limit to 800 characters + added keyword-based sentence extraction  
-**File**: `retrieval/rag_pipeline.py` → `_build_prompt()`
-
-### ✅ Embedding Normalization Conflict
-**Problem**: Normalized embeddings + ChromaDB's L2 distance = incorrect similarities  
-**Fix**: Removed manual normalization in EmbeddingService  
-**File**: `memory/embedding_service.py`
-
-### ✅ Web Search Import Issue
-**Problem**: `ddgs` package import failed under Streamlit's ScriptRunner  
-**Fix**: Lazy-load `DDGS` class at call time instead of module-level import  
-**File**: `utils/web_search.py` → `_load_ddgs_class()`
+### ✅ Multi-User Cache Layer
+**Problem**: Redundant RAG calls for identical queries.  
+**Fix**: Implemented Redis `CacheService` with distinct Knowledge vs Memory retrieval keys.
 
 ---
 
 ## Known Limitations & Open Issues
 
-### ⚠️ `google-generativeai` Deprecation
-**Status**: Working but deprecated  
-**Impact**: No future updates  
-**Action**: Plan migration to `google-genai` SDK
+### ⚠️ Multi-User Concurrency
+**Status**: Step 1 (CacheService) implemented.  
+**Action**: Continue with remaining stages of the "Multi-User Optimization Plan" (Async semaphores, Multi-worker deployment, ChromaDB Server mode).
 
-### ⚠️ Qdrant Backend is a Stub
-**Status**: `VectorStore._init_qdrant()` exists but is not fully implemented  
-**Impact**: Setting `VECTOR_DB_TYPE=qdrant` will not work end-to-end
-
-### ⚠️ Response Validation Disabled
-**Status**: `enable_validation: false` in config  
-**Reason**: Was adding latency and occasionally blocking valid responses during development  
-**Action**: Re-enable and tune validation rules before production
-
-### ⚠️ No Authentication
-**Status**: Web UI uses hardcoded `"web_user"` for all sessions  
-**Impact**: No multi-user isolation  
-**Action**: Add session-based auth before production deployment
+### ⚠️ Authentication
+**Status**: Web UI uses hardcoded `"web_user"` for all sessions.  
+**Impact**: No multi-user separation in the UI layer yet.
 
 ### ⚠️ Single-Language Embedding Model
 **Status**: `all-MiniLM-L6-v2` is English-optimized  

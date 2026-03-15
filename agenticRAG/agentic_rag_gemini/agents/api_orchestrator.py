@@ -139,7 +139,7 @@ Respond with valid JSON only, no extra text:
 
 
 # Maps each ActionType to the set of tool names that should be invoked.
-# NOTE: tool selection is now also gated by intent via _select_tools().
+# NOTE: tool selection is also gated by intent via _select_tools().
 _ACTION_TOOL_MAP: Dict[ActionType, List[str]] = {
     ActionType.RETRIEVE_MEMORY: ["memory"],
     ActionType.CALL_LLM:        ["memory", "documents", "web_search"],
@@ -148,9 +148,15 @@ _ACTION_TOOL_MAP: Dict[ActionType, List[str]] = {
     ActionType.CLARIFY:         [],
 }
 
-# Intents that skip document/web search (they're fast-path or motion-only).
-_INTENT_SKIP_HEAVY_TOOLS: set = {
+# CONVERSATION needs NO tool retrieval — not even memory.
+# A greeting/follow-up has no benefit from a ChromaDB vector lookup.
+_INTENT_SKIP_ALL_TOOLS: set = {
     IntentType.CONVERSATION,
+}
+
+# VISUALIZE_MOTION skips doc/web retrieval but still benefits from memory
+# context (user history, preferences).
+_INTENT_SKIP_CONTENT_TOOLS: set = {
     IntentType.VISUALIZE_MOTION,
 }
 
@@ -505,8 +511,16 @@ class OrchestratorAgent:
         """
         candidates = _ACTION_TOOL_MAP.get(decision.action, [])
 
-        # Fast-path intents skip heavy retrieval tools
-        if intent in _INTENT_SKIP_HEAVY_TOOLS:
+        if intent in _INTENT_SKIP_ALL_TOOLS:
+            # Conversation/greeetings: skip ALL tools including memory.
+            # No ChromaDB lookup needed for a simple "Hello" — saves ~200ms.
+            logger.debug(
+                f"_select_tools: intent={intent.value if intent else 'None'} → "
+                "skipping ALL tools (fast-path conversation)"
+            )
+            return []
+        elif intent in _INTENT_SKIP_CONTENT_TOOLS:
+            # visualize_motion: skip doc/web search but keep memory context.
             candidates = [t for t in candidates if t == "memory"]
 
         available = {

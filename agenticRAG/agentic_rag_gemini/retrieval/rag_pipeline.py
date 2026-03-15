@@ -174,10 +174,9 @@ class RAGPipeline:
 
         # Rate limiter — protects Gemini API from burst calls across all LLM
         # methods (expansion, reformulation, generation, reflection).
-        # Default 20 rpm matches Gemini free-tier guidance.
-        self._rate_limiter = RateLimiter(
-            requests_per_minute=getattr(self.llm_config, 'requests_per_minute', 20)
-        )
+        # Use conservative rate to prevent 429 errors.
+        rate_limit = getattr(get_config().performance, 'rate_limit_rpm', 15)
+        self._rate_limiter = RateLimiter(requests_per_minute=rate_limit)
         self._last_error: Optional[Exception] = None  # Set by _generate_llm_response on failure
 
         logger.info("Initialized RAGPipeline with Gemini and hybrid retrieval")

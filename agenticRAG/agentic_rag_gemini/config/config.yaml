@@ -3,7 +3,7 @@
 orchestrator:
   model: "gemini-2.5-flash"  # Fast, efficient Gemini model
   temperature: 0.1  # Low temperature for consistent routing
-  max_tokens: 500
+  max_tokens: 1024  # Increased from 500 to prevent finish_reason=2 errors
   
   # Decision thresholds
   memory_retrieval_threshold: 0.6
@@ -35,7 +35,7 @@ orchestrator:
 llm:
   model: "gemini-2.5-flash"  # Fast, capable Gemini model for response generation
   temperature: 0.7
-  max_tokens: 1000  # Capped: 2000→1000 cuts generation time ~30–40%
+  max_tokens: 2048  # Increased from 1000 to prevent finish_reason=2 (MAX_TOKENS) errors
   
   # Safety settings
   enable_validation: false  # Disabled temporarily for debugging
@@ -137,7 +137,7 @@ rag:
   response_format: "conversational"
   
   # Query Reformulation
-  enable_query_reformulation: true
+  enable_query_reformulation: false  # Disabled to save 1 API call per query
   max_reformulation_attempts: 2        # Max query re-writes before falling back
   reformulation_quality_threshold: 0.3  # Min avg similarity to consider context "good enough"
 
@@ -215,6 +215,9 @@ performance:
   orchestrator_timeout: 5
   memory_retrieval_timeout: 3
   llm_timeout: 30
+  
+  # Rate limiting (requests per minute per API key)
+  rate_limit_rpm: 15  # Conservative: 15 requests/minute per key to prevent 429 errors
 
 features:
   # Feature flags
@@ -223,3 +226,17 @@ features:
   enable_conversation_summarization: true
   enable_query_expansion: true
   enable_performance_monitoring: true
+
+# Local Orchestrator Configuration
+local_orchestrator:
+  model: "qwen:0.5b"
+  temperature: 0.1  # Low for deterministic responses
+  max_tokens: 128   # Reduced from 256: routing JSON is < 100 tokens; 128 is a safe ceiling
+  timeout: 10       # 10s safety margin — real call takes 1-3s; was 5s (too tight) / 30s (too long)
+  fallback_to_api: true  # Use API orchestrator if local fails
+  confidence_threshold: 0.7  # Minimum confidence for routing
+
+# Ollama Service Configuration
+ollama:
+  base_url: "http://localhost:11434"
+  timeout: 10   # Matches local_orchestrator.timeout

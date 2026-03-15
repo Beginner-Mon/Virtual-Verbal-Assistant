@@ -8,6 +8,9 @@ import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
+# Import local orchestrator configs
+from .local_orchestrator_config import LocalOrchestratorConfig, OllamaConfig
+
 
 # Load environment variables
 load_dotenv()
@@ -15,9 +18,9 @@ load_dotenv()
 
 class OrchestratorConfig(BaseModel):
     """Orchestrator agent configuration."""
-    model: str = Field(default="gpt-3.5-turbo")
+    model: str = Field(default="gemini-2.5-flash")
     temperature: float = Field(default=0.1)
-    max_tokens: int = Field(default=500)
+    max_tokens: int = Field(default=1024)  # Updated from 500
     memory_retrieval_threshold: float = Field(default=0.6)
     llm_call_threshold: float = Field(default=0.7)
     motion_generation_threshold: float = Field(default=0.8)
@@ -26,11 +29,11 @@ class OrchestratorConfig(BaseModel):
 
 class LLMConfig(BaseModel):
     """LLM configuration for response generation."""
-    model: str = Field(default="gpt-4-turbo-preview")
+    model: str = Field(default="gemini-2.5-flash")
     temperature: float = Field(default=0.7)
-    max_tokens: int = Field(default=1000)
-    enable_validation: bool = Field(default=True)
-    max_retries: int = Field(default=3)
+    max_tokens: int = Field(default=2048)  # Updated from 1000
+    enable_validation: bool = Field(default=False)  # Updated from True
+    max_retries: int = Field(default=1)  # Updated from 3
     retry_delay: float = Field(default=1.0)
     system_prompt: str = Field(default="")
 
@@ -59,29 +62,40 @@ class MemoryConfig(BaseModel):
     summarization_interval: int = Field(default=5)
     summary_max_length: int = Field(default=500)
     max_chat_sessions: int = Field(default=5)  # Number of chat sessions to keep (1-10)
+    store_user_info: bool = Field(default=True)
+    store_preferences: bool = Field(default=True)
+    store_physical_context: bool = Field(default=True)
+    store_conversation_summaries: bool = Field(default=True)
 
 
 class RAGConfig(BaseModel):
     """RAG pipeline configuration."""
-    top_k_documents: int = Field(default=5)
-    similarity_threshold: float = Field(default=0.7)
-    enable_query_expansion: bool = Field(default=True)
+    top_k_documents: int = Field(default=8)  # Updated from 5
+    similarity_threshold: float = Field(default=0.1)  # Updated from 0.7
+    enable_query_expansion: bool = Field(default=False)  # Updated from True
     query_expansion_method: str = Field(default="llm")
     max_context_length: int = Field(default=2000)
     include_metadata: bool = Field(default=True)
     max_chunks_per_document: int = Field(default=3)
-    enable_query_reformulation: bool = Field(default=True)
+    enable_query_reformulation: bool = Field(default=False)  # Updated from True
     max_reformulation_attempts: int = Field(default=2)
     reformulation_quality_threshold: float = Field(default=0.3)
-    enable_iterative_reflection: bool = Field(default=True)
+    enable_iterative_reflection: bool = Field(default=False)  # Updated from True
     max_reflection_iterations: int = Field(default=1)
+    enable_citation: bool = Field(default=False)
+    response_format: str = Field(default="conversational")
+    enable_web_search: bool = Field(default=True)
+    web_search_quality_threshold: float = Field(default=0.65)
+    min_context_threshold: int = Field(default=2)
+    max_web_results: int = Field(default=3)
+    web_search_timeout: int = Field(default=5)
 
 
 class ChunkingConfig(BaseModel):
     """Document chunking configuration."""
     enable_chunking: bool = Field(default=True)
     chunk_size: int = Field(default=1500)
-    chunk_overlap: int = Field(default=150)
+    chunk_overlap: int = Field(default=300)  # Updated from 150 to 300 to match YAML
     min_chunk_size: int = Field(default=300)
     chunk_search_multiplier: int = Field(default=3)
 
@@ -115,6 +129,18 @@ class LoggingConfig(BaseModel):
     log_llm_calls: bool = Field(default=True)
 
 
+class PerformanceConfig(BaseModel):
+    """Performance and optimization configuration."""
+    enable_caching: bool = Field(default=True)
+    cache_ttl: int = Field(default=3600)
+    enable_batch_processing: bool = Field(default=False)
+    batch_size: int = Field(default=10)
+    orchestrator_timeout: int = Field(default=5)
+    memory_retrieval_timeout: int = Field(default=3)
+    llm_timeout: int = Field(default=30)
+    rate_limit_rpm: int = Field(default=15)
+
+
 class Config(BaseModel):
     """Main configuration class."""
     orchestrator: OrchestratorConfig
@@ -127,6 +153,9 @@ class Config(BaseModel):
     validation: ValidationConfig
     retry_fallback: RetryFallbackConfig
     logging: LoggingConfig
+    performance: PerformanceConfig = Field(default_factory=PerformanceConfig)
+    local_orchestrator: LocalOrchestratorConfig = Field(default_factory=LocalOrchestratorConfig)
+    ollama: OllamaConfig = Field(default_factory=OllamaConfig)
 
 
 def load_config(config_path: str = None) -> Config:

@@ -36,3 +36,10 @@ streamlit-chat>=0.1.0
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 httpx>=0.25.0
+
+# Local model support
+ollama>=0.1.7
+requests>=2.31.0
+
+# Fuzzy matching for exercise detection
+rapidfuzz>=3.0.0
