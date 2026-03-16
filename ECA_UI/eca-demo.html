@@ -7,6 +7,9 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body, #root { height: 100%; }
@@ -85,6 +88,28 @@
   @keyframes spin    { to { transform: rotate(360deg); } }
   @keyframes fadeUp  { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
   @keyframes pulse   { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+  /* ── ANIME 3D CHARACTER EFFECTS ── */
+  @keyframes float3d {
+    0%,100% { transform: perspective(520px) rotateY(-14deg) rotateX(2deg) translateY(0px); }
+    25%     { transform: perspective(520px) rotateY(-4deg)  rotateX(0deg) translateY(-2px); }
+    50%     { transform: perspective(520px) rotateY(14deg)  rotateX(-2deg) translateY(0px); }
+    75%     { transform: perspective(520px) rotateY(4deg)   rotateX(0deg) translateY(2px); }
+  }
+  @keyframes scanSweep {
+    0%   { top: -4px; opacity:1; }
+    90%  { opacity:1; }
+    100% { top: 110%; opacity:0; }
+  }
+  @keyframes orbPing {
+    0%,100% { opacity:0; transform:scale(0.6) translateX(0px); }
+    40%,60% { opacity:0.75; transform:scale(1.4) translateX(3px); }
+  }
+  @keyframes antennaPulse {
+    0%,100% { r:3.5; opacity:0.9; }
+    50%     { r:5;   opacity:1; }
+  }
+
   .session-row:hover { background: var(--session-hover) !important; }
   .send-btn:hover:not(:disabled) { opacity: 0.82 !important; }
   .suggestion:hover  { background: var(--chip-hover) !important; }
@@ -112,6 +137,10 @@ const MOTIONS = {
   stretch: { label: "Shoulder Stretch", color: "#FF3B30", frames: 40 },
 };
 
+// ── GLB model path ────────────────────────────────────────────────────────────
+// Place frame0.glb in the same folder as this HTML file.
+const GLB_SRC = "./animated.glb";
+
 const SESSIONS = [
   { id: 1, title: "Shoulder rehabilitation", time: "2m ago" },
   { id: 2, title: "Walking gait analysis",   time: "1h ago" },
@@ -133,131 +162,408 @@ const RESPONSES = {
   stretch: "This shoulder stretch targets the posterior capsule and rotator cuff. Hold each end position for 20–30 seconds.",
 };
 
-// ── STICK FIGURE ─────────────────────────────────────────────────────────────
+// ── ANIME CHARACTER ───────────────────────────────────────────────────────────
+// Fake-3D anime style: thick cel-shaded limbs, anime face, hologram glow.
+// The 3D illusion comes from the CSS float3d animation on the parent wrapper.
 
-function StickFigure({ motionKey, tick }) {
-  const m = MOTIONS[motionKey] || MOTIONS.idle;
-  const t = (tick % m.frames) / m.frames;
-  const PI = Math.PI;
-  const cx = 100;
+function AnimeCharacter({ motionKey, tick }) {
+  const m   = MOTIONS[motionKey] || MOTIONS.idle;
+  const color = m.color;
+  const PI  = Math.PI;
+  const toRad = d => d * PI / 180;
 
-  let lA = 18 * Math.sin(t * 2 * PI);
-  let rA = -18 * Math.sin(t * 2 * PI);
-  let lL = 14 * Math.sin(t * 2 * PI);
-  let rL = -14 * Math.sin(t * 2 * PI);
-  let bob = 1.5 * Math.sin(t * 4 * PI);
-  let squat = 0;
+  // Continuous time values
+  const phase     = tick * 0.042;   // ~1 cycle / 2.5 s at 40 ms ticks
+  const walkPhase = tick * 0.13;    // faster walk cycle
+  const breath    = Math.sin(phase);
 
-  if (motionKey === "raise") {
-    lA = -55 - 25 * Math.sin(t * 2 * PI);
-    rA =  55 + 25 * Math.sin(t * 2 * PI);
-    lL = rL = 0;
-  } else if (motionKey === "squat") {
-    squat = 18 * Math.abs(Math.sin(t * PI));
-    lL = 8 * Math.sin(t * 2 * PI);
-    rL = -8 * Math.sin(t * 2 * PI);
-  } else if (motionKey === "stretch") {
-    lA = -40 + 20 * Math.sin(t * 2 * PI);
-    rA =  40 - 20 * Math.sin(t * 2 * PI);
-    bob = 2.5 * Math.sin(t * 2 * PI);
+  // Per-motion pose (angles in degrees from straight-DOWN: 180=hang, 0/360=raised)
+  let lA, rA, lK, rK, dy, sqAmt;
+  switch (motionKey) {
+    case "walk":
+      lA = 180 + 38 * Math.sin(walkPhase);
+      rA = 180 - 38 * Math.sin(walkPhase);
+      lK = 180 + 32 * Math.sin(walkPhase);
+      rK = 180 - 32 * Math.sin(walkPhase);
+      dy = 3.5 * Math.abs(Math.sin(walkPhase));
+      sqAmt = 0; break;
+    case "raise":
+      lA = 10  + 14 * Math.sin(phase);
+      rA = 170 - 14 * Math.sin(phase);
+      lK = 182; rK = 178;
+      dy = 1.5 * breath; sqAmt = 0; break;
+    case "squat":
+      lA = 200; rA = 160;
+      lK = 185 + 8 * Math.sin(phase * 2);
+      rK = 175 - 8 * Math.sin(phase * 2);
+      dy = 0; sqAmt = 24 * Math.abs(Math.sin(phase)); break;
+    case "stretch":
+      lA = 42 + 22 * Math.sin(phase);
+      rA = 155 - 12 * Math.sin(phase);
+      lK = 182; rK = 178;
+      dy = 2.2 * breath; sqAmt = 0; break;
+    default: // idle
+      lA = 190 + 7 * Math.sin(phase * 0.8);
+      rA = 170 - 7 * Math.sin(phase * 0.8);
+      lK = 183; rK = 177;
+      dy = 2.8 * breath; sqAmt = 0;
   }
 
-  const by = bob + squat;
-  const hY = 32, sY = 56 + by, hipY = 96 + by;
-  const aLen = 27, lLen = 30;
+  // Geometry
+  const cx       = 100;
+  const headR    = 23;
+  const headCY   = 33 + dy;
+  const neckY    = headCY + headR;
+  const shoulderY= neckY + 9;
+  const hipY     = shoulderY + 44 + sqAmt;
+  const armPivLx = cx - 18;
+  const armPivRx = cx + 18;
+  const legPivLx = cx - 11;
+  const legPivRx = cx + 11;
+  const armLen   = 46;
+  const legLen   = 52;
 
-  const lax  = cx - aLen * Math.sin(lA * PI / 180);
-  const lay  = sY  + aLen * Math.cos(lA * PI / 180);
-  const rax  = cx + aLen * Math.sin(rA * PI / 180);
-  const ray  = sY  + aLen * Math.cos(rA * PI / 180);
-  const llkx = cx - lLen * 0.55 * Math.sin(lL * PI / 180);
-  const llky = hipY + lLen * 0.6;
-  const rrkx = cx + lLen * 0.55 * Math.sin(rL * PI / 180);
-  const rrky = hipY + lLen * 0.6;
+  // Endpoint from pivot + angle (angle=180 → straight down, angle=0 → straight up)
+  const ep = (px, py, ang, len) => ({
+    x: px + len * Math.sin(toRad(ang)),
+    y: py - len * Math.cos(toRad(ang)),
+  });
 
-  const s = m.color;
-  const joints = [
-    [cx, hY + by + 12], [cx - 17, sY], [cx + 17, sY],
-    [lax, lay], [rax, ray],
-    [cx - 12, hipY], [cx + 12, hipY],
-    [llkx, llky], [rrkx, rrky],
-  ];
+  const lAEnd = ep(armPivLx, shoulderY, lA, armLen);
+  const rAEnd = ep(armPivRx, shoulderY, rA, armLen);
+  const lLEnd = ep(legPivLx, hipY,      lK, legLen);
+  const rLEnd = ep(legPivRx, hipY,      rK, legLen);
+
+  const torsoH   = hipY - shoulderY;
+  const shadowSc = Math.max(0.5, 1 - sqAmt * 0.018 - Math.abs(dy) * 0.008);
+  const skinCol  = "#FFDCB4";
+  const hairCol  = "#1E2D4A";
 
   return (
-    <svg width="200" height="185" viewBox="0 0 200 185">
+    <svg viewBox="0 0 200 220" width="180" height="198"
+         style={{ filter:`drop-shadow(0 0 5px ${color}55) drop-shadow(0 0 14px ${color}28)`, overflow:"visible" }}>
       <defs>
-        <filter id="sf">
-          <feGaussianBlur stdDeviation="2" result="b"/>
-          <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-        </filter>
+        <radialGradient id={`hg${motionKey}`} cx="58%" cy="36%">
+          <stop offset="0%"   stopColor="#FFE8C8"/>
+          <stop offset="100%" stopColor="#E0966A"/>
+        </radialGradient>
+        <radialGradient id={`bg${motionKey}`} cx="72%" cy="22%">
+          <stop offset="0%"   stopColor={color} stopOpacity="1"/>
+          <stop offset="75%"  stopColor={color} stopOpacity="0.72"/>
+          <stop offset="100%" stopColor={color} stopOpacity="0.52"/>
+        </radialGradient>
       </defs>
-      <g filter="url(#sf)" strokeLinecap="round" strokeLinejoin="round">
-        <ellipse cx={cx} cy={178} rx={22} ry={4} fill={s} opacity={0.12}/>
-        <circle cx={cx} cy={hY+by} r={12} fill="none" stroke={s} strokeWidth="2.2"/>
-        <line x1={cx} y1={hY+by+12} x2={cx} y2={sY} stroke={s} strokeWidth="2.2"/>
-        <line x1={cx} y1={sY} x2={cx} y2={hipY} stroke={s} strokeWidth="2.2"/>
-        <line x1={cx-17} y1={sY} x2={cx+17} y2={sY} stroke={s} strokeWidth="1.8"/>
-        <line x1={cx-12} y1={hipY} x2={cx+12} y2={hipY} stroke={s} strokeWidth="1.8"/>
-        <line x1={cx-17} y1={sY} x2={lax} y2={lay} stroke={s} strokeWidth="2.2"/>
-        <line x1={cx+17} y1={sY} x2={rax} y2={ray} stroke={s} strokeWidth="2.2"/>
-        <line x1={cx-12} y1={hipY} x2={llkx} y2={llky} stroke={s} strokeWidth="2.2"/>
-        <line x1={llkx} y1={llky} x2={llkx-5} y2={llky+lLen*0.55} stroke={s} strokeWidth="2.2"/>
-        <line x1={cx+12} y1={hipY} x2={rrkx} y2={rrky} stroke={s} strokeWidth="2.2"/>
-        <line x1={rrkx} y1={rrky} x2={rrkx+5} y2={rrky+lLen*0.55} stroke={s} strokeWidth="2.2"/>
-        {joints.map(([x, y], i) => <circle key={i} cx={x} cy={y} r={2.8} fill={s} opacity={0.9}/>)}
-      </g>
+
+      {/* Ground shadow */}
+      <ellipse cx={cx} cy={212} rx={26*shadowSc} ry={4.5} fill={color} opacity={0.17}/>
+
+      {/* ── LEGS (behind body) ── */}
+      <line x1={legPivLx} y1={hipY} x2={lLEnd.x} y2={lLEnd.y}
+            stroke={color} strokeWidth={13} strokeLinecap="round"/>
+      <line x1={legPivLx-2.5} y1={hipY} x2={lLEnd.x-2.5} y2={lLEnd.y}
+            stroke="rgba(0,0,0,0.16)" strokeWidth={5} strokeLinecap="round"/>
+      <ellipse cx={lLEnd.x+(lK<180?4:-4)} cy={lLEnd.y+3} rx={9} ry={5.5} fill={color}/>
+
+      <line x1={legPivRx} y1={hipY} x2={rLEnd.x} y2={rLEnd.y}
+            stroke={color} strokeWidth={13} strokeLinecap="round"/>
+      <line x1={legPivRx-2.5} y1={hipY} x2={rLEnd.x-2.5} y2={rLEnd.y}
+            stroke="rgba(0,0,0,0.13)" strokeWidth={5} strokeLinecap="round"/>
+      <ellipse cx={rLEnd.x+(rK<180?-4:4)} cy={rLEnd.y+3} rx={9} ry={5.5} fill={color}/>
+
+      {/* ── TORSO ── */}
+      <rect x={cx-21} y={shoulderY} width={42} height={torsoH} rx={11}
+            fill={`url(#bg${motionKey})`}/>
+      {/* Cel-shade (dark left edge) */}
+      <rect x={cx-21} y={shoulderY} width={13} height={torsoH} rx={11}
+            fill="rgba(0,0,0,0.11)"/>
+      {/* Shoulder seam detail */}
+      <line x1={cx-21} y1={shoulderY+9} x2={cx+21} y2={shoulderY+9}
+            stroke={color} strokeWidth={1} opacity={0.28}/>
+
+      {/* ── ARMS ── */}
+      <line x1={armPivLx} y1={shoulderY+7} x2={lAEnd.x} y2={lAEnd.y}
+            stroke={color} strokeWidth={11} strokeLinecap="round"/>
+      <line x1={armPivLx-2} y1={shoulderY+7} x2={lAEnd.x-2} y2={lAEnd.y}
+            stroke="rgba(0,0,0,0.14)" strokeWidth={4} strokeLinecap="round"/>
+      <circle cx={lAEnd.x} cy={lAEnd.y} r={6.5} fill={skinCol}/>
+
+      <line x1={armPivRx} y1={shoulderY+7} x2={rAEnd.x} y2={rAEnd.y}
+            stroke={color} strokeWidth={11} strokeLinecap="round"/>
+      <line x1={armPivRx-2} y1={shoulderY+7} x2={rAEnd.x-2} y2={rAEnd.y}
+            stroke="rgba(0,0,0,0.12)" strokeWidth={4} strokeLinecap="round"/>
+      <circle cx={rAEnd.x} cy={rAEnd.y} r={6.5} fill={skinCol}/>
+
+      {/* ── NECK ── */}
+      <rect x={cx-5.5} y={neckY-1} width={11} height={shoulderY-neckY+4} rx={4} fill={skinCol}/>
+
+      {/* ── HEAD ── */}
+      <circle cx={cx} cy={headCY} r={headR} fill={`url(#hg${motionKey})`}/>
+      {/* Rim light */}
+      <circle cx={cx+9} cy={headCY-9} r={9} fill="rgba(255,255,255,0.26)"/>
+
+      {/* ── HAIR ── */}
+      <ellipse cx={cx} cy={headCY-13} rx={22} ry={13.5} fill={hairCol}/>
+      <rect x={cx-24} y={headCY-14} width={10} height={24} rx={5.5} fill={hairCol}/>
+      <rect x={cx+14} y={headCY-14} width={10} height={19} rx={5.5} fill={hairCol}/>
+      {/* Hair shine */}
+      <ellipse cx={cx-4} cy={headCY-21} rx={7} ry={3.5} fill="rgba(255,255,255,0.17)"
+               transform={`rotate(-22,${cx-4},${headCY-21})`}/>
+
+      {/* ── FACE ── */}
+      {/* Eyes */}
+      <ellipse cx={cx-8}  cy={headCY+3} rx={5.2} ry={6.2} fill={hairCol}/>
+      <ellipse cx={cx+8}  cy={headCY+3} rx={5.2} ry={6.2} fill={hairCol}/>
+      {/* Iris */}
+      <ellipse cx={cx-8}  cy={headCY+4.5} rx={3.6} ry={4.8} fill={color} opacity={0.82}/>
+      <ellipse cx={cx+8}  cy={headCY+4.5} rx={3.6} ry={4.8} fill={color} opacity={0.82}/>
+      {/* Highlights */}
+      <circle cx={cx-6.2} cy={headCY+1.5} r={1.9} fill="white"/>
+      <circle cx={cx+9.8} cy={headCY+1.5} r={1.9} fill="white"/>
+      <circle cx={cx-9.2} cy={headCY+5.5} r={1}   fill="rgba(255,255,255,0.5)"/>
+      <circle cx={cx+6.8} cy={headCY+5.5} r={1}   fill="rgba(255,255,255,0.5)"/>
+      {/* Blush */}
+      <ellipse cx={cx-15}  cy={headCY+9} rx={6}   ry={3}   fill="#FF8FAB" opacity={0.42}/>
+      <ellipse cx={cx+15}  cy={headCY+9} rx={6}   ry={3}   fill="#FF8FAB" opacity={0.42}/>
+      {/* Nose */}
+      <path d={`M ${cx-1.5} ${headCY+11} Q ${cx} ${headCY+13.5} ${cx+1.5} ${headCY+11}`}
+            stroke="#C98060" strokeWidth={1.3} fill="none"/>
+      {/* Mouth */}
+      <path d={`M ${cx-5} ${headCY+15} Q ${cx} ${headCY+18.5} ${cx+5} ${headCY+15}`}
+            stroke={hairCol} strokeWidth={1.6} fill="none" strokeLinecap="round"/>
+
+      {/* ── AI ANTENNA ── */}
+      <line x1={cx+5} y1={headCY-headR+1} x2={cx+5} y2={headCY-headR-11}
+            stroke={color} strokeWidth={1.6} strokeLinecap="round"/>
+      <circle cx={cx+5} cy={headCY-headR-13} r={3.5} fill={color} opacity={0.95}
+              style={{ animation:"pulse 1.6s ease-in-out infinite" }}/>
+      <circle cx={cx+5} cy={headCY-headR-13} r={6.5} fill={color} opacity={0.18}
+              style={{ animation:"pulse 1.6s ease-in-out 0.3s infinite" }}/>
+
+      {/* ── JOINT DOTS (tech detail) ── */}
+      {[[cx,shoulderY],[armPivLx,shoulderY+5],[armPivRx,shoulderY+5],
+        [legPivLx,hipY],[legPivRx,hipY]].map(([jx,jy],i) => (
+        <circle key={i} cx={jx} cy={jy} r={2.8} fill={color} opacity={0.5}/>
+      ))}
     </svg>
   );
 }
 
-// ── MOTION VIEWER ─────────────────────────────────────────────────────────────
+// ── MOTION VIEWER (Three.js GLB) ─────────────────────────────────────────────
 
 function MotionViewer({ motionKey, isGenerating }) {
-  const [tick, setTick] = useState(0);
+  const m     = MOTIONS[motionKey] || MOTIONS.idle;
+  const color = m.color;
+  const mountRef = useRef(null);
+  const rendererRef = useRef(null);
+  const sceneRef    = useRef(null);
+  const cameraRef   = useRef(null);
+  const mixerRef    = useRef(null);
+  const animFrameRef= useRef(null);
+  const clockRef    = useRef(new THREE.Clock());
+  const controlsRef = useRef(null);
+
   useEffect(() => {
-    const iv = setInterval(() => setTick(t => t + 1), 40);
-    return () => clearInterval(iv);
+    const el = mountRef.current;
+    if (!el) return;
+
+    // Scene
+    const scene = new THREE.Scene();
+    sceneRef.current = scene;
+
+    // Camera
+    const camera = new THREE.PerspectiveCamera(45, el.clientWidth / el.clientHeight, 0.01, 100);
+    camera.position.set(0, 1.2, 3.2);
+    cameraRef.current = camera;
+
+    // Renderer
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(el.clientWidth, el.clientHeight);
+    renderer.outputEncoding = THREE.sRGBEncoding;
+    renderer.shadowMap.enabled = true;
+    el.appendChild(renderer.domElement);
+    rendererRef.current = renderer;
+
+    // Orbit controls
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.minDistance = 1;
+    controls.maxDistance = 8;
+    controls.target.set(0, 0.9, 0);
+    controls.update();
+    controlsRef.current = controls;
+
+    // Lights
+    const ambient = new THREE.AmbientLight(0xffffff, 0.65);
+    scene.add(ambient);
+    const dir = new THREE.DirectionalLight(0xffffff, 1.1);
+    dir.position.set(3, 6, 4);
+    dir.castShadow = true;
+    scene.add(dir);
+    const fill = new THREE.DirectionalLight(0x88aaff, 0.35);
+    fill.position.set(-4, 2, -3);
+    scene.add(fill);
+    // Accent light matching motion color
+    const accent = new THREE.PointLight(parseInt(color.replace('#','0x')), 0.9, 6);
+    accent.position.set(0, 2, 2);
+    scene.add(accent);
+
+    // Grid floor
+    const grid = new THREE.GridHelper(4, 16, 0x333344, 0x222233);
+    grid.position.y = -0.01;
+    scene.add(grid);
+
+    // Load GLB
+    const loader = new THREE.GLTFLoader();
+    loader.load(
+      GLB_SRC,
+      (gltf) => {
+        const model = gltf.scene;
+        // Auto-center & scale
+        const box = new THREE.Box3().setFromObject(model);
+        const size = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z);
+        const scale = 2.0 / maxDim;
+        model.scale.setScalar(scale);
+        // SMPL-X is Z-up; rotate to Y-up so the figure stands upright
+        model.rotation.x = -Math.PI / 2;
+        // Recalculate box after rotation + scale for correct floor placement
+        const box2 = new THREE.Box3().setFromObject(model);
+        const center2 = box2.getCenter(new THREE.Vector3());
+        model.position.x = -center2.x;
+        model.position.z = -center2.z;
+        model.position.y = -box2.min.y + 0.01; // sit exactly on the grid
+        model.castShadow = true;
+        model.traverse(n => { if (n.isMesh) { n.castShadow = true; n.receiveShadow = true; } });
+        scene.add(model);
+
+        // Play first animation if any
+        if (gltf.animations && gltf.animations.length > 0) {
+          const mixer = new THREE.AnimationMixer(model);
+          mixerRef.current = mixer;
+          const action = mixer.clipAction(gltf.animations[0]);
+          action.setLoop(THREE.LoopRepeat, Infinity);
+          action.play();
+        }
+      },
+      undefined,
+      (err) => { console.warn("GLB load error:", err); }
+    );
+
+    // Animate
+    const animate = () => {
+      animFrameRef.current = requestAnimationFrame(animate);
+      const delta = clockRef.current.getDelta();
+      if (mixerRef.current) mixerRef.current.update(delta);
+      controls.update();
+      renderer.render(scene, camera);
+    };
+    animate();
+
+    // Resize
+    const onResize = () => {
+      if (!el || !renderer) return;
+      camera.aspect = el.clientWidth / el.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(el.clientWidth, el.clientHeight);
+    };
+    window.addEventListener("resize", onResize);
+
+    return () => {
+      window.removeEventListener("resize", onResize);
+      cancelAnimationFrame(animFrameRef.current);
+      renderer.dispose();
+      if (el.contains(renderer.domElement)) el.removeChild(renderer.domElement);
+    };
   }, []);
 
-  const m = MOTIONS[motionKey] || MOTIONS.idle;
+  // Update accent light color when motion changes
+  useEffect(() => {
+    if (!sceneRef.current) return;
+    sceneRef.current.children.forEach(child => {
+      if (child.isPointLight) {
+        child.color.set(color);
+      }
+    });
+  }, [color]);
+
+  const brackets = [
+    { style:{ top:10, left:10  }, d:"M 0 18 L 0 0 L 18 0" },
+    { style:{ top:10, right:10 }, d:"M 0 0 L 18 0 L 18 18" },
+    { style:{ bottom:30, left:10  }, d:"M 0 0 L 0 18 L 18 18" },
+    { style:{ bottom:30, right:10 }, d:"M 0 18 L 18 18 L 18 0" },
+  ];
 
   return (
-    <div style={{ width:"100%", height:"100%", background:"#F5F5F7", display:"flex",
-      flexDirection:"column", alignItems:"center", justifyContent:"center", position:"relative" }}>
+    <div style={{ width:"100%", height:"100%", position:"relative",
+      background:"#0A0A0F", overflow:"hidden" }}>
 
-      {/* Grid background */}
-      <svg style={{ position:"absolute", inset:0, width:"100%", height:"100%", opacity:0.45 }}>
-        <defs>
-          <pattern id="g" width="28" height="28" patternUnits="userSpaceOnUse">
-            <path d="M 28 0 L 0 0 0 28" fill="none" stroke="#D1D1D6" strokeWidth="0.5"/>
-          </pattern>
-        </defs>
-        <rect width="100%" height="100%" fill="url(#g)"/>
-      </svg>
+      {/* ── Three.js canvas ── */}
+      <div ref={mountRef} style={{ position:"absolute", inset:0, width:"100%", height:"100%" }}/>
 
-      {isGenerating ? (
-        <div style={{ textAlign:"center", zIndex:2 }}>
+      {/* ── Generating overlay ── */}
+      {isGenerating && (
+        <div style={{ position:"absolute", inset:0, display:"flex", flexDirection:"column",
+          alignItems:"center", justifyContent:"center", background:"rgba(10,10,15,0.82)", zIndex:10 }}>
           <div style={{ width:40, height:40, borderRadius:"50%",
-            border:"2.5px solid #E5E5EA", borderTopColor:"#007AFF",
-            animation:"spin 0.8s linear infinite", margin:"0 auto 12px" }}/>
+            border:`2.5px solid ${color}33`, borderTopColor:color,
+            animation:"spin 0.8s linear infinite", marginBottom:12 }}/>
           <p style={{ color:"#8E8E93", fontSize:13, fontWeight:500 }}>Generating motion…</p>
-        </div>
-      ) : (
-        <div style={{ zIndex:2, display:"flex", flexDirection:"column", alignItems:"center", gap:12 }}>
-          <div style={{ background:"#fff", borderRadius:20, padding:"18px 24px",
-            boxShadow:"0 2px 16px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.04)" }}>
-            <StickFigure motionKey={motionKey} tick={tick}/>
-          </div>
-          <div style={{ background:"#fff", borderRadius:20, padding:"5px 14px",
-            boxShadow:"0 1px 6px rgba(0,0,0,0.08)", display:"flex", alignItems:"center", gap:7 }}>
-            <div style={{ width:7, height:7, borderRadius:"50%", background:m.color }}/>
-            <span style={{ fontSize:12, fontWeight:600, color:"#1C1C1E", letterSpacing:-0.1 }}>{m.label}</span>
-          </div>
         </div>
       )}
 
-      <span style={{ position:"absolute", bottom:12, left:14, fontSize:10, color:"#C7C7CC", fontWeight:500 }}>22 joints · T×3</span>
-      <span style={{ position:"absolute", bottom:12, right:14, fontSize:10, color:"#C7C7CC", fontWeight:500 }}>25 FPS</span>
+      {/* ── HUD overlays (pointer-events:none so iframe stays interactive) ── */}
+
+      {/* Scanlines */}
+      <div style={{ position:"absolute", inset:0, pointerEvents:"none", zIndex:3,
+        background:"repeating-linear-gradient(0deg,transparent,transparent 3px,rgba(0,200,200,0.018) 3px,rgba(0,200,200,0.018) 4px)" }}/>
+
+      {/* Sweep line */}
+      <div style={{ position:"absolute", left:0, right:0, height:3, pointerEvents:"none",
+        background:`linear-gradient(transparent,${color}30,transparent)`,
+        animation:"scanSweep 4s linear infinite", zIndex:4 }}/>
+
+      {/* Corner brackets */}
+      {brackets.map(({style:pos, d}, i) => (
+        <svg key={i} width="22" height="22" style={{ position:"absolute", zIndex:5,
+          pointerEvents:"none", ...pos }}>
+          <path d={d} fill="none" stroke={color} strokeWidth="1.8" opacity="0.65"/>
+        </svg>
+      ))}
+
+      {/* Ambient orbs */}
+      {[0.18, 0.42, 0.64, 0.85].map((yf, i) => (
+        <div key={i} style={{
+          position:"absolute", top:`${yf*100}%`,
+          ...(i%2===0 ? {left:10} : {right:10}),
+          width:5, height:5, borderRadius:"50%", background:color,
+          animation:`orbPing ${1.5+i*0.45}s ease-in-out ${i*0.35}s infinite`,
+          pointerEvents:"none", zIndex:5, opacity:0,
+        }}/>
+      ))}
+
+      {/* Motion label pill — bottom-center, above Sketchfab attribution strip */}
+      <div style={{ position:"absolute", bottom:36, left:"50%",
+        transform:"translateX(-50%)", zIndex:6, pointerEvents:"none",
+        background:"rgba(10,10,15,0.78)", backdropFilter:"blur(10px)",
+        WebkitBackdropFilter:"blur(10px)", borderRadius:20,
+        padding:"5px 14px", border:`1px solid ${color}40`,
+        display:"flex", alignItems:"center", gap:7,
+        boxShadow:`0 0 18px ${color}22` }}>
+        <div style={{ width:7, height:7, borderRadius:"50%", background:color,
+          animation:"pulse 1.6s ease infinite", flexShrink:0 }}/>
+        <span style={{ fontSize:12, fontWeight:600, color:"#F2F2F7",
+          letterSpacing:-0.1, whiteSpace:"nowrap" }}>{m.label}</span>
+      </div>
+
+      {/* Technical metadata */}
+      <span style={{ position:"absolute", top:14, left:14, fontSize:10,
+        color:"rgba(255,255,255,0.35)", fontWeight:500,
+        pointerEvents:"none", zIndex:6 }}>22 joints · T×3</span>
+      <span style={{ position:"absolute", top:14, right:14, fontSize:10,
+        color:"rgba(255,255,255,0.35)", fontWeight:500,
+        pointerEvents:"none", zIndex:6 }}>25 FPS</span>
     </div>
   );
 }
@@ -556,7 +862,7 @@ function App() {
       </main>
 
       {/* ── MOTION PANEL ── */}
-      <aside style={{ width:280, display:"flex", flexDirection:"column",
+      <aside style={{ width:320, display:"flex", flexDirection:"column",
         borderLeft:"1px solid rgba(0,0,0,0.07)", flexShrink:0, background:"#fff" }}>
 
         <div style={{ flex:1, overflow:"hidden" }}>
