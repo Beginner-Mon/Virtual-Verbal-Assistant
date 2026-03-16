@@ -62,10 +62,12 @@ class CacheService:
         embedding_ttl: int = 21_600,   # 6 hours
         retrieval_ttl: int = 3_600,    # 1 hour
         memory_ttl: int = 1_800,       # 30 minutes
+        orchestrator_ttl: int = 3_600, # 1 hour
     ):
         self._embedding_ttl = embedding_ttl
         self._retrieval_ttl = retrieval_ttl
         self._memory_ttl = memory_ttl
+        self._orchestrator_ttl = orchestrator_ttl
         self._available = False
 
         if redis is None:
@@ -208,3 +210,33 @@ class CacheService:
             self._redis.setex(key, self._memory_ttl, pickle.dumps(results))
         except Exception as exc:
             logger.debug(f"Memory cache write error: {exc}")
+
+    # ------------------------------------------------------------------
+    # D) Orchestrator Decision Cache (per-user)
+    #    Cache key = f"{user_id}:{query.lower().strip()}" (as requested)
+    # ------------------------------------------------------------------
+
+    def get_orchestrator(self, user_id: str, query: str) -> Optional[Dict[str, Any]]:
+        """Look up cached orchestrator decision for a specific user."""
+        if not self._available:
+            return None
+        try:
+            # Using specific key format requested by user
+            clean_query = query.lower().strip()
+            key = f"orc:{user_id}:{clean_query}"
+            data = self._redis.get(key)
+            return pickle.loads(data) if data else None
+        except Exception as exc:
+            logger.debug(f"Orchestrator cache read error: {exc}")
+            return None
+
+    def set_orchestrator(self, user_id: str, query: str, decision: Dict[str, Any]) -> None:
+        """Store orchestrator decision in the cache."""
+        if not self._available:
+            return
+        try:
+            clean_query = query.lower().strip()
+            key = f"orc:{user_id}:{clean_query}"
+            self._redis.setex(key, self._orchestrator_ttl, pickle.dumps(decision))
+        except Exception as exc:
+            logger.debug(f"Orchestrator cache write error: {exc}")

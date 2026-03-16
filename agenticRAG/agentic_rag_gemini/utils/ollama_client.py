@@ -29,7 +29,7 @@ class OllamaClient:
         self.base_url = getattr(get_config().ollama, 'base_url', 'http://localhost:11434')
         self.timeout = getattr(get_config().ollama, 'timeout', 30)
         
-    def generate(self, prompt: str, format: str = None, temperature: float = None, max_tokens: int = None) -> str:
+    def generate(self, prompt: str, format: str = None, temperature: float = None, max_tokens: int = None, stream: bool = False) -> Any:
         """Generate response from local model.
         
         Args:
@@ -37,16 +37,19 @@ class OllamaClient:
             format: Response format (e.g., 'json')
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
+            stream: Whether to stream the response
             
         Returns:
-            Generated response text
+            Generated response text (str) if stream=False,
+            else a generator yielding chunks (Generator[str, None, None])
         """
         try:
             # Build request payload
             payload = {
                 "model": self.model_name,
                 "prompt": prompt,
-                "stream": False
+                "stream": stream,
+                "keep_alive": "10m"
             }
             
             # Add optional parameters
@@ -57,10 +60,11 @@ class OllamaClient:
             if max_tokens is not None:
                 payload["options"] = {"num_predict": max_tokens}
             
-            logger.info(f"[OllamaClient] Calling {self.base_url}/api/generate")
-            logger.debug(f"[OllamaClient] model={self.model_name}, timeout={self.timeout}s, format={format}, max_tokens={max_tokens}")
-            logger.debug(f"[OllamaClient] prompt length={len(prompt)} chars")
+            logger.info(f"[OllamaClient] Calling {self.base_url}/api/generate (stream={stream})")
             
+            if stream:
+                return self._stream_generate(payload)
+
             response = requests.post(
                 f"{self.base_url}/api/generate",
                 json=payload,
@@ -71,7 +75,6 @@ class OllamaClient:
             result = response.json()
             
             logger.info(f"[OllamaClient] ✓ Response received: {len(result.get('response', ''))} chars")
-            logger.debug(f"[OllamaClient] Response preview: {result.get('response', '')[:200]}")
             
             if "response" in result:
                 return result["response"]
@@ -79,22 +82,35 @@ class OllamaClient:
                 logger.error(f"[OllamaClient] ✗ Unexpected response format (missing 'response' key): {list(result.keys())}")
                 return self._get_fallback_response()
                 
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"[OllamaClient] ✗ Connection failed to {self.base_url}: {e}")
-            return self._get_fallback_response()
-        except requests.exceptions.Timeout as e:
-            logger.error(
-                f"[OllamaClient] ✗ Request timeout after {self.timeout}s "
-                f"(model may be loading or slow). Consider using API orchestrator."
-            )
-            return self._get_fallback_response()
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"[OllamaClient] ✗ HTTP error {response.status_code}: {e}")
-            logger.debug(f"Response text: {response.text}")
-            return self._get_fallback_response()
         except Exception as e:
-            logger.error(f"[OllamaClient] ✗ Unexpected error: {type(e).__name__}: {e}", exc_info=True)
+            logger.error(f"[OllamaClient] ✗ Error: {type(e).__name__}: {e}", exc_info=True)
+            if stream:
+                # Re-raise or yield error? Yielding is safer for generators.
+                def error_gen(): yield f"[ERROR] {str(e)}"
+                return error_gen()
             return self._get_fallback_response()
+
+    def _stream_generate(self, payload: Dict[str, Any]):
+        """Internal generator for streaming responses."""
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/generate",
+                json=payload,
+                timeout=self.timeout,
+                stream=True
+            )
+            response.raise_for_status()
+            
+            for line in response.iter_lines():
+                if line:
+                    chunk = json.loads(line)
+                    if "response" in chunk:
+                        yield chunk["response"]
+                    if chunk.get("done"):
+                        break
+        except Exception as e:
+            logger.error(f"[OllamaClient] ✗ Stream error: {e}")
+            yield f"\n[STREAM_ERROR] {str(e)}"
     
     def _get_fallback_response(self) -> str:
         """Return safe fallback response when model fails."""
