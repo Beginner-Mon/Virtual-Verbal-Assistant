@@ -1,9 +1,8 @@
 """
 REST API: Frontend → Coqui TTS → Audio File
-- Accepts raw text
+- Accepts text + language from request
 - Cleans formatting artifacts
-- Detects language
-- Returns audio + metadata
+- Uses language to select voice/model
 """
 
 import time
@@ -17,7 +16,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 import yaml
-from langdetect import detect
 
 from src.services.coqui_client import CoquiClient
 
@@ -41,6 +39,7 @@ app.add_middleware(
 # =========================
 class TTSRequest(BaseModel):
     text: str
+    language: str                 # ✅ Provided by pipeline
     user_id: Optional[str] = None
     emotion: Optional[str] = None
 
@@ -58,28 +57,12 @@ def clean_text_for_tts(text: str) -> str:
     Clean formatting artifacts while preserving meaning.
     Safe for multilingual text.
     """
-
-    # Replace newlines with natural spacing
     text = text.replace("\\n", " ")
     text = text.replace("\n", " ")
-
-    # Remove bullet symbols
     text = re.sub(r"[*•]+", "", text)
-
-    # Remove markdown-style bullet dashes
     text = re.sub(r"\s-\s", " ", text)
-
-    # Normalize whitespace
     text = re.sub(r"\s+", " ", text)
-
     return text.strip()
-
-
-def detect_language_safe(text: str) -> str:
-    try:
-        return detect(text)
-    except Exception:
-        return "unknown"
 
 
 # =========================
@@ -98,21 +81,21 @@ audio_dir.mkdir(parents=True, exist_ok=True)
 @app.post("/synthesize")
 async def synthesize(req: TTSRequest):
     """
-    Receive text → Clean → Detect language → TTS → Return metadata
+    Receive text → Clean → TTS → Return metadata
     """
     try:
         if not req.text.strip():
             raise HTTPException(400, "Text cannot be empty")
 
-        # Clean text
         clean_text = clean_text_for_tts(req.text)
-
-        # Detect language
-        language = detect_language_safe(clean_text)
 
         # Run TTS with timing
         start_time = time.time()
-        audio_path = coqui_client.synthesize(clean_text)
+        audio_path = coqui_client.synthesize(
+            text=clean_text,
+            language=req.language,   # ✅ pass language to TTS layer
+            emotion=req.emotion
+        )
         tts_time = time.time() - start_time
 
         filename = Path(audio_path).name
@@ -122,7 +105,7 @@ async def synthesize(req: TTSRequest):
             "audio_file": filename,
             "text_original": req.text,
             "text_spoken": clean_text,
-            "language": language,
+            "language": req.language,
             "tts_time_sec": round(tts_time, 3),
             "emotion": req.emotion,
             "request_id": req.user_id,
@@ -149,9 +132,6 @@ async def get_audio(filename: str):
 
 @app.get("/health")
 async def health():
-    """
-    Health check endpoint
-    """
     return {"status": "ok"}
 
 

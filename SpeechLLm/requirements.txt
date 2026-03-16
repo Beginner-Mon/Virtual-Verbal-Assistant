@@ -189,7 +189,6 @@ unidecode==1.4.0
 pysbd==0.3.4
 gruut==2.2.3
 gruut-ipa==0.13.0
-langdetect
 
 # ===== Language helpers (auto-installed but safer pinned) =====
 bangla==0.0.5
