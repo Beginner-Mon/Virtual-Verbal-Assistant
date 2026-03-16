@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Optional
+import re
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -42,6 +43,26 @@ def load_yaml(path):
         return yaml.safe_load(f)
 
 
+def clean_text_for_tts(text: str) -> str:
+    """
+    Make text sound natural when spoken
+    """
+    # Convert escaped newlines to pauses
+    text = text.replace("\\n", ". ")
+    text = text.replace("\n", ". ")
+
+    # Remove bullet symbols
+    text = re.sub(r"[*•]+", "", text)
+
+    # Remove markdown-style dashes used as bullets
+    text = re.sub(r"\s-\s", " ", text)
+
+    # Collapse whitespace
+    text = re.sub(r"\s+", " ", text)
+
+    return text.strip()
+
+
 # =========================
 # Services Init
 # =========================
@@ -61,13 +82,16 @@ async def synthesize(req: TTSRequest):
         if not req.text.strip():
             raise HTTPException(400, "Text cannot be empty")
 
-        audio_path = coqui_client.synthesize(req.text)
+        clean_text = clean_text_for_tts(req.text)
+
+        audio_path = coqui_client.synthesize(clean_text)
         filename = Path(audio_path).name
 
         return {
             "message": "Synthesis complete",
             "audio_file": filename,
-            "text": req.text,
+            "text_original": req.text,
+            "text_spoken": clean_text,
             "emotion": req.emotion,
             "request_id": req.user_id,
         }
