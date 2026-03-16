@@ -68,14 +68,23 @@ class MotionMetadata(BaseModel):
     text_prompt: str = Field(..., description="The prompt that was sent to DART")
 
 
+class TTSMetadata(BaseModel):
+    """TTS output metadata returned from SpeechLLM."""
+    audio_file: str = Field(..., description="Filename of the generated audio file")
+    audio_url: str = Field(..., description="URL to download the audio file")
+    text: str = Field(..., description="Text that was synthesized")
+    emotion: Optional[str] = Field(None, description="Emotion used for synthesis")
+
+
 class AnswerResponse(BaseModel):
-    """Combined response from AgenticRAG + DART."""
+    """Combined response from AgenticRAG + DART + TTS."""
 
     text_answer: str = Field(..., description="Text response from AgenticRAG")
     exercises: List[Dict[str, str]] = Field(
         default_factory=list, description="List of recommended exercises from AgenticRAG"
     )
     motion: Optional[MotionMetadata] = Field(None, description="Motion output from DART")
+    tts: Optional[TTSMetadata] = Field(None, description="Speech output from TTS/SpeechLLM")
     generation_time_ms: float = Field(..., description="Total wall-clock time in ms")
     errors: Optional[Dict[str, str]] = Field(None, description="Per-service errors if any")
 
@@ -130,11 +139,12 @@ app.add_middleware(
 # ===========================
 
 
-@app.post("/answer", response_model=AnswerResponse, summary="Get text answer + motion")
+
+@app.post("/answer", response_model=AnswerResponse, summary="Get text answer + motion + speech")
 async def get_answer(request: AnswerRequest) -> AnswerResponse:
     """
     Passes the query to AgenticRAG, which orchestrates text + motion generation,
-    then returns the merged results.
+    then calls TTS (SpeechLLM) to synthesize speech, and returns the merged results.
     """
     t_start = time.perf_counter()
 
@@ -145,10 +155,15 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
 
     errors: Dict[str, str] = {}
     rag_data: Optional[Dict[str, Any]] = None
+    tts_data: Optional[Dict[str, Any]] = None
 
     import asyncio
 
+    TTS_URL = "http://localhost:5000"  # SpeechLLM TTS API
+
+
     async with httpx.AsyncClient(timeout=DOWNSTREAM_TIMEOUT) as client:
+        # 1. Call AgenticRAG
         try:
             rag_data = await call_agenticrag(client, request.query, request.user_id, history)
             text_answer = rag_data.get("text_answer", "")
@@ -158,37 +173,85 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
             errors["agenticrag"] = str(e)
             text_answer = "[AgenticRAG unavailable — check that port 8000 is running]"
             exercises = []
+            rag_data = None
 
-    # ── Unpack DART result (returned inside AgenticRAG response) ─────────────
-    motion: Optional[MotionMetadata] = None
-    if rag_data and rag_data.get("motion"):
-        dart_data = rag_data["motion"]
-        motion_file = dart_data.get("motion_file", "")
-        # Construct full download URL if we have a motion file
-        motion_file_url = f"{DART_URL}/download/{motion_file}" if motion_file else ""
-        motion = MotionMetadata(
-            motion_file_url=motion_file_url,
-            num_frames=dart_data.get("frames", 0),
-            fps=dart_data.get("fps", 30),
-            duration_seconds=dart_data.get("duration", 0.0),
-            text_prompt=rag_data.get("exercise_motion_prompt", "unknown"),
-        )
+        # 2. Run TTS and motion (DART) concurrently if AgenticRAG succeeded
+        tts: Optional[TTSMetadata] = None
+        motion: Optional[MotionMetadata] = None
+        if rag_data:
+            # Prepare DART motion prompt and params
+            motion_prompt = rag_data.get("exercise_motion_prompt") or rag_data.get("motion_prompt") or "walk*5"
+            # Use defaults if not present
+            dart_body = {
+                "text_prompt": motion_prompt,
+                "guidance_scale": 5.0,
+                "num_steps": 50,
+                "gender": "female"
+            }
+            # Optionally add respacing/seed if present in rag_data
+            if "respacing" in rag_data:
+                dart_body["respacing"] = rag_data["respacing"]
+            if "seed" in rag_data:
+                dart_body["seed"] = rag_data["seed"]
+
+            async def get_motion():
+                try:
+                    resp = await client.post(f"{DART_URL}/generate", json=dart_body)
+                    resp.raise_for_status()
+                    dart_data = resp.json()
+                    motion_file_url = f"{DART_URL}{dart_data['motion_file_url']}" if dart_data.get("motion_file_url") else ""
+                    return MotionMetadata(
+                        motion_file_url=motion_file_url,
+                        num_frames=dart_data.get("num_frames", 0),
+                        fps=dart_data.get("fps", 30),
+                        duration_seconds=dart_data.get("duration_seconds", 0.0),
+                        text_prompt=dart_data.get("text_prompt", motion_prompt),
+                    )
+                except Exception as e:
+                    logger.error(f"[DART] failed: {e}")
+                    errors["dart"] = str(e)
+                    return None
+
+            async def get_tts():
+                try:
+                    tts_payload = {"text": text_answer, "user_id": request.user_id}
+                    tts_resp = await client.post(f"{TTS_URL}/synthesize", json=tts_payload)
+                    tts_resp.raise_for_status()
+                    tts_data = tts_resp.json()
+                    audio_file = tts_data.get("audio_file", "")
+                    audio_url = f"{TTS_URL}/audio/{audio_file}" if audio_file else ""
+                    return TTSMetadata(
+                        audio_file=audio_file,
+                        audio_url=audio_url,
+                        text=tts_data.get("text", text_answer),
+                        emotion=tts_data.get("emotion", None),
+                    )
+                except Exception as e:
+                    logger.error(f"[TTS] failed: {e}")
+                    errors["tts"] = str(e)
+                    return None
+
+            motion, tts = await asyncio.gather(get_motion(), get_tts())
+        else:
+            motion = None
+            tts = None
 
     generation_time_ms = (time.perf_counter() - t_start) * 1000
-    
+
     # Check if AgenticRAG reported internal errors for DART
     if rag_data and "dart" in rag_data.get("errors", {}):
         errors["dart"] = rag_data["errors"]["dart"]
 
     logger.info(
         f"[{request.user_id}] Completed in {generation_time_ms:.0f}ms  "
-        f"rag={'ok' if rag_data else 'ERROR'}  dart={'ok' if motion else 'none/ERROR'}"
+        f"rag={'ok' if rag_data else 'ERROR'}  dart={'ok' if motion else 'none/ERROR'}  tts={'ok' if tts else 'none/ERROR'}"
     )
 
     return AnswerResponse(
         text_answer=text_answer,
         exercises=exercises,
         motion=motion,
+        tts=tts,
         generation_time_ms=round(generation_time_ms, 1),
         errors=errors if errors else None,
     )
