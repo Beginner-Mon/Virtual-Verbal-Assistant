@@ -52,10 +52,10 @@ def clean_text_for_tts(text: str) -> str:
     text = text.replace("\n", ". ")
 
     # Remove bullet symbols
-    text = re.sub(r"[*•\-]+", "", text)
+    text = re.sub(r"[*•]+", "", text)
 
-    # Remove list numbers like "1."
-    text = re.sub(r"\b\d+\.\s*", "", text)
+    # Remove markdown-style dashes used as bullets
+    text = re.sub(r"\s-\s", " ", text)
 
     # Collapse whitespace
     text = re.sub(r"\s+", " ", text)
