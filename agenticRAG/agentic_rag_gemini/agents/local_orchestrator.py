@@ -30,6 +30,7 @@ from typing import Dict, Any, List, Optional
 from config import get_config
 from utils.logger import get_logger
 from utils.ollama_client import OllamaClient
+from utils.cache_service import CacheService, normalize_query
 from prompts.orchestrator_prompts import ORCHESTRATOR_PROMPT
 
 
@@ -47,6 +48,7 @@ class LocalOrchestrator:
         """
         self.model_name = model_name
         self.ollama_client = OllamaClient(model_name)
+        self.cache = CacheService()
         self.prompt_template = ORCHESTRATOR_PROMPT
         
         # Configuration
@@ -63,11 +65,12 @@ class LocalOrchestrator:
         if not self.ollama_client.check_connection():
             logger.warning("Ollama service is not available")
     
-    def analyze_query(self, query: str, conversation_history=None, detected_exercise=None) -> Dict[str, Any]:
+    def analyze_query(self, query: str, user_id: str = "default", conversation_history=None, detected_exercise=None) -> Dict[str, Any]:
         """Analyze query and return routing decision.
         
         Args:
             query: User query text
+            user_id: User identifier for caching
             conversation_history: Previous conversation turns
             detected_exercise: Exercise name detected by ExerciseDetector (optional)
             
@@ -75,12 +78,37 @@ class LocalOrchestrator:
             Routing decision dictionary with intent, exercise, agents, etc.
         """
         try:
-            # Build prompt with query and context
+            # 1. Greeting Fast-Path
+            # Normalize: lowercase + remove punctuation
+            clean_q = normalize_query(query)
+            words = clean_q.split()
+            greetings = {"hi", "hello", "yo", "hey", "sup"}
+            
+            if len(words) <= 2 and words and words[0] in greetings:
+                logger.info(f"[LocalOrchestrator] ⚡ Greeting Fast-Path triggered for: '{clean_q}'")
+                return {
+                    "intent": "greeting",
+                    "exercise": None,
+                    "agents": ["memory_agent"],
+                    "needs_motion": False,
+                    "needs_retrieval": False,
+                    "needs_web_search": False,
+                    "confidence": 1.0,
+                    "path": "greeting_fast_path"
+                }
+
+            # 2. Check Cache (per-user)
+            # cache_key = f"{user_id}:{query.lower().strip()}"
+            cached_decision = self.cache.get_orchestrator(user_id, query)
+            if cached_decision:
+                logger.info(f"[LocalOrchestrator] ⚡ Cache Hit for user={user_id}, query='{query[:20]}...'")
+                return cached_decision
+
+            # 3. Build prompt and call Ollama
             prompt = self._build_prompt(query, conversation_history, detected_exercise)
             logger.debug(f"[LocalOrchestrator] Prompt length: {len(prompt)} chars")
 
             # Use a smaller token budget when the previous intent was lightweight.
-            # For the first call (no prior intent) we fall back to self.max_tokens.
             prev_intent = getattr(self, "_last_intent", None)
             token_budget = _INTENT_TOKEN_BUDGETS.get(prev_intent, self.max_tokens)
 
@@ -101,6 +129,9 @@ class LocalOrchestrator:
             
             # Parse and validate JSON response
             decision = self._parse_response(response)
+            
+            # Store in Cache
+            self.cache.set_orchestrator(user_id, query, decision)
             
             # Validate confidence
             if decision['confidence'] < self.confidence_threshold:
@@ -271,7 +302,7 @@ class LocalOrchestrator:
         t0 = time.time()
         try:
             self.ollama_client.generate(
-                prompt="hi",
+                prompt="ping",
                 format=None,
                 temperature=0.0,
                 max_tokens=1,

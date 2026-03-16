@@ -6,7 +6,7 @@ This module provides a complete example of how to use the Agentic RAG system.
 import argparse
 from typing import Optional, List, Dict, Any
 
-from agents.orchestrator import OrchestratorAgent
+from agents.api_orchestrator import OrchestratorAgent
 from memory.memory_manager import MemoryManager
 from retrieval.rag_pipeline import RAGPipeline
 from config import get_config

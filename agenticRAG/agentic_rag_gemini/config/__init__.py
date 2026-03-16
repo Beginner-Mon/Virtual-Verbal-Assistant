@@ -141,6 +141,15 @@ class PerformanceConfig(BaseModel):
     rate_limit_rpm: int = Field(default=15)
 
 
+class IntentTokenLimitsConfig(BaseModel):
+    """Intent-based token limits for dynamic LLM response sizing."""
+    conversation: int = Field(default=512)           # Light replies with memory context
+    visualize_motion: int = Field(default=512)       # Exercise step-by-step instructions
+    knowledge_query: int = Field(default=2048)       # Full RAG with docs/web
+    exercise_recommendation: int = Field(default=2048)  # Structured JSON + exercises
+    fallback: int = Field(default=1024)              # Unknown intents use moderate limit
+
+
 class Config(BaseModel):
     """Main configuration class."""
     orchestrator: OrchestratorConfig
@@ -156,6 +165,7 @@ class Config(BaseModel):
     performance: PerformanceConfig = Field(default_factory=PerformanceConfig)
     local_orchestrator: LocalOrchestratorConfig = Field(default_factory=LocalOrchestratorConfig)
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
+    intent_token_limits: IntentTokenLimitsConfig = Field(default_factory=IntentTokenLimitsConfig)
 
 
 def load_config(config_path: str = None) -> Config:

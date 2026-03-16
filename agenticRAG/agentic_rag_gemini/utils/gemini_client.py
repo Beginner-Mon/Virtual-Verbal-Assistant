@@ -45,8 +45,7 @@ class GeminiClient:
     
     # Finish reasons that warrant rotating to another API key and retrying.
     # Gemini proto enum: STOP=1, MAX_TOKENS=2, SAFETY=3, RECITATION=4, OTHER=5
-    # MAX_TOKENS (2) is NOT retryable — a different key won't fix a token-length issue.
-    # SAFETY (3), RECITATION (4), OTHER (5) may succeed on a different key/session.
+    # Note: MAX_TOKENS (2) is intentionally excluded — truncated responses are usually usable
     _RETRYABLE_FINISH_REASONS = {3, 4, 5, "SAFETY", "RECITATION", "OTHER"}
 
     def chat_completion(
@@ -56,8 +55,9 @@ class GeminiClient:
         temperature: float = 0.7,
         max_tokens: int = 1000,
         response_format: Optional[Dict[str, str]] = None,
+        stream: bool = False,
         _retry_count: int = 0
-    ) -> str:
+    ) -> Any:
         """Generate chat completion using Gemini.
         
         Args:
@@ -66,10 +66,12 @@ class GeminiClient:
             temperature: Sampling temperature (0.0 to 2.0)
             max_tokens: Maximum tokens to generate
             response_format: Optional format spec, e.g. {"type": "json_object"}
+            stream: Whether to stream the response
             _retry_count: Internal counter to prevent infinite recursion
             
         Returns:
-            Generated text response
+            Generated text response (str) if stream=False,
+            else a generator yielding chunks (Generator[str, None, None])
         """
         try:
             # Convert messages to Gemini format
@@ -93,7 +95,8 @@ class GeminiClient:
                 )
                 response = model_instance.generate_content(
                     contents=gemini_contents,
-                    generation_config=config
+                    generation_config=config,
+                    stream=stream
                 )
             except (AttributeError, TypeError):
                 # Older API (0.3.x)
@@ -106,8 +109,12 @@ class GeminiClient:
                         max_output_tokens=max_tokens,
                         top_p=0.95,
                         top_k=40
-                    )
+                    ),
+                    stream=stream
                 )
+            
+            if stream:
+                return self._yield_stream(response)
             
             # Check if response was blocked or invalid
             if hasattr(response, 'prompt_feedback') and response.prompt_feedback:
@@ -134,11 +141,17 @@ class GeminiClient:
             # Check finish reason
             if hasattr(candidate, 'finish_reason'):
                 finish_reason = candidate.finish_reason
-                if finish_reason != 1 and finish_reason != "STOP":  # 1 or "STOP" = normal completion
+                # 1 and "STOP" are perfect. 
+                # 2 and "MAX_TOKENS" are truncated but often have usable content.
+                fr_str = str(finish_reason).upper()
+                is_complete = (finish_reason == 1 or "STOP" in fr_str)
+                is_truncated = (finish_reason == 2 or "MAX_TOKENS" in fr_str)
+                
+                if not is_complete and not is_truncated:
                     error_msg = f"Gemini response incomplete. Finish reason: {finish_reason}"
                     logger.warning(error_msg)
                     
-                    if finish_reason in self._RETRYABLE_FINISH_REASONS:
+                    if finish_reason in self._RETRYABLE_FINISH_REASONS or any(r in fr_str for r in ["SAFETY", "RECITATION", "OTHER", "MAX_TOKENS"]):
                         # Rotate to next key and retry
                         return self._rotate_and_retry(
                             error_msg=error_msg,
@@ -148,9 +161,12 @@ class GeminiClient:
                             retry_count=_retry_count
                         )
                     else:
-                        # Non-retryable (e.g. MAX_TOKENS=3) — raise immediately
+                        # Serious error — raise immediately
                         logger.error(error_msg)
                         raise RuntimeError(error_msg)
+                
+                if is_truncated:
+                    logger.warning(f"Gemini response truncated (MAX_TOKENS). Proceeding with partial content.")
             
             # Extract text
             if not hasattr(candidate, 'content') or not candidate.content:
@@ -198,6 +214,16 @@ class GeminiClient:
             
             logger.error(f"Error in Gemini chat completion: {type(e).__name__}: {str(e)}", exc_info=True)
             raise
+
+    def _yield_stream(self, response_it):
+        """Internal generator for streaming Gemini response."""
+        try:
+            for chunk in response_it:
+                if hasattr(chunk, 'text') and chunk.text:
+                    yield chunk.text
+        except Exception as e:
+            logger.error(f"Gemini stream error: {e}")
+            yield f"\n[STREAM_ERROR] {str(e)}"
 
     def _rotate_and_retry(
         self,
@@ -341,6 +367,34 @@ class GeminiClient:
             raise
 
 
+class GeminiMessage:
+    """Mock message object."""
+    
+    def __init__(self, text: str):
+        self.content = text
+
+
+class GeminiChoice:
+    """Mock choice object."""
+    
+    def __init__(self, text: str):
+        self.message = GeminiMessage(text)
+
+
+class GeminiResponse:
+    """Mock response object."""
+    
+    def __init__(self, text: str):
+        self.choices = [GeminiChoice(text)]
+
+
+class GeminiChunk:
+    """Mock chunk for streaming."""
+    
+    def __init__(self, text: str):
+        self.choices = [GeminiChoice(text)]
+
+
 class GeminiChatCompletion:
     """Mock class to mimic OpenAI's client.chat.completions structure."""
     
@@ -354,57 +408,28 @@ class GeminiChatCompletion:
         temperature: float = 0.7,
         max_tokens: int = 1000,
         response_format: Optional[Dict[str, str]] = None,
+        stream: bool = False,
         **kwargs
-    ) -> 'GeminiResponse':
+    ) -> Any:
         """Create chat completion (OpenAI-compatible interface).
         
         Returns:
-            GeminiResponse object with OpenAI-like structure
+            GeminiResponse object if stream=False,
+            else a generator yielding GeminiChunk objects
         """
-        response_text = self.gemini_client.chat_completion(
+        result = self.gemini_client.chat_completion(
             messages=messages,
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
-            response_format=response_format
+            response_format=response_format,
+            stream=stream
         )
         
-        return GeminiResponse(response_text)
-
-
-class GeminiResponse:
-    """Mock response object to mimic OpenAI's response structure."""
-    
-    def __init__(self, text: str):
-        try:
-            # Handle case where text might be None or not a string
-            if text is None:
-                text = ""
-            elif isinstance(text, dict):
-                # If it's a dict, convert to JSON string
-                text = json.dumps(text)
-            elif not isinstance(text, str):
-                text = str(text)
-            
-            self.choices = [GeminiChoice(text)]
-        except Exception as e:
-            logger.error(f"Error creating GeminiResponse: {type(e).__name__}: {str(e)}")
-            # Fall back to error message
-            self.choices = [GeminiChoice(f"[ERROR] Failed to parse response: {str(e)}")]
-
-
-class GeminiChoice:
-    """Mock choice object."""
-    
-    def __init__(self, text: str):
-        self.message = GeminiMessage(text)
-
-
-class GeminiMessage:
-    """Mock message object."""
-    
-    def __init__(self, text: str):
-        self.content = text
+        if stream:
+            return (GeminiChunk(chunk) for chunk in result)
+        
+        return GeminiResponse(result)
 
 
 class GeminiEmbeddings:

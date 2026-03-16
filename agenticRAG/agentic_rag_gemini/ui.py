@@ -17,7 +17,7 @@ from datetime import datetime
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
-from agents.orchestrator import OrchestratorAgent
+from agents.api_orchestrator import OrchestratorAgent
 from agents.summarize_agent import SummarizeAgent
 from memory.memory_manager import MemoryManager
 from memory.document_store import DocumentStore
@@ -262,10 +262,18 @@ def _summarize_current_session():
         logger.error(f"Session summarization failed: {exc}")
 
 
-def process_user_query(query: str) -> str:
-    """Process user query through the system."""
+def process_user_query(query: str, stream: bool = False):
+    """Process user query through the system.
+    
+    Args:
+        query: User's query string
+        stream: If True, returns a generator for streaming; if False, returns string
+        
+    Returns:
+        Generator of response chunks if stream=True, else complete response string
+    """
     try:
-        logger.info(f"Processing query: {query[:100]}...")
+        logger.info(f"Processing query: {query[:100]}... (stream={stream})")
         
         # Get conversation history
         history = [
@@ -277,41 +285,84 @@ def process_user_query(query: str) -> str:
         active_docs_count = len(st.session_state.active_documents)
         total_docs = len(st.session_state.loaded_documents)
         
-        # Process through orchestrator and RAG
-        result = st.session_state.rag_pipeline.generate_response(
-            query=query,
-            user_id=st.session_state.user_id,
-            conversation_history=history,
-            use_memory=True
-        )
-        
-        # Store interaction with active documents info
-        st.session_state.memory_manager.store_interaction(
-            user_id=st.session_state.user_id,
-            user_message=query,
-            assistant_response=result.get("response", ""),
-            metadata={
-                "source": "web_ui",
-                "active_documents": ", ".join(st.session_state.active_documents) if st.session_state.active_documents else "none",
-                "document_count": active_docs_count,
-                "total_documents": total_docs,
-                "retrieved_context": len(result.get("context", []))
-            }
-        )
-        
-        return result.get("response", "No response generated")
+        # Process through orchestrator and RAG with streaming
+        if stream:
+            # Return generator for streaming chunks
+            response_gen = st.session_state.rag_pipeline.generate_response(
+                query=query,
+                user_id=st.session_state.user_id,
+                conversation_history=history,
+                use_memory=True,
+                stream=True
+            )
+            
+            # Wrap generator to collect full response and store interaction
+            def stream_with_storage():
+                full_response = ""
+                for chunk in response_gen:
+                    full_response += chunk
+                    yield chunk
+                
+                # Store interaction after streaming complete
+                st.session_state.memory_manager.store_interaction(
+                    user_id=st.session_state.user_id,
+                    user_message=query,
+                    assistant_response=full_response,
+                    metadata={
+                        "source": "web_ui",
+                        "active_documents": ", ".join(st.session_state.active_documents) if st.session_state.active_documents else "none",
+                        "document_count": active_docs_count,
+                        "total_documents": total_docs,
+                        "streaming": True
+                    }
+                )
+            
+            return stream_with_storage()
+        else:
+            # Blocking call for non-streaming
+            result = st.session_state.rag_pipeline.generate_response(
+                query=query,
+                user_id=st.session_state.user_id,
+                conversation_history=history,
+                use_memory=True,
+                stream=False
+            )
+            
+            # Store interaction with active documents info
+            st.session_state.memory_manager.store_interaction(
+                user_id=st.session_state.user_id,
+                user_message=query,
+                assistant_response=result.get("response", ""),
+                metadata={
+                    "source": "web_ui",
+                    "active_documents": ", ".join(st.session_state.active_documents) if st.session_state.active_documents else "none",
+                    "document_count": active_docs_count,
+                    "total_documents": total_docs,
+                    "retrieved_context": len(result.get("context", []))
+                }
+            )
+            
+            return result.get("response", "No response generated")
         
     except Exception as e:
-        logger.error(f"Error processing query: {e}")
+        logger.error(f"Error processing query: {e}", exc_info=True)
         error_str = str(e).lower()
         
         # Check if this is a quota/rate limit error
         if "quota" in error_str or "rate" in error_str or "429" in error_str or "exhausted" in error_str:
             st.session_state.quota_error = True
             st.session_state.last_failed_message = query
-            return f"⚠️ API quota exceeded. Please click 'Try Again with Different Key' to retry."
+            error_msg = "⚠️ API quota exceeded. Please click 'Try Again with Different Key' to retry."
+        else:
+            error_msg = f"❌ Error: {str(e)}"
         
-        return f"❌ Error: {str(e)}"
+        # For streaming, yield error message; for non-streaming, return it
+        if stream:
+            def error_generator():
+                yield error_msg
+            return error_generator()
+        else:
+            return error_msg
 
 
 def load_document_file(file_path: str, context_type: str = "document", filename: str = ""):
@@ -504,7 +555,8 @@ with tab1:
             if msg["role"] == "user":
                 st_message(msg["content"], is_user=True, key=f"msg_user_{idx}")
             else:
-                st_message(msg["content"], is_user=False, key=f"msg_assistant_{idx}")
+                # Display assistant message as normal text (not in a chat bubble)
+                st.write(msg["content"])
     
     # (input handled below, outside tabs)
     
@@ -528,13 +580,35 @@ with tab1:
                     if key_manager.rotate_to_next_key():
                         st.session_state.quota_error = False
                         
-                        # Re-process last message
-                        with st.spinner("🔄 Retrying with different API key..."):
-                            response = process_user_query(st.session_state.last_failed_message)
+                        # Re-process last message with streaming
+                        try:
+                            logger.info(f"Retrying with different API key: {st.session_state.last_failed_message[:50]}...")
+                            
+                            with st.status("🔄 Retrying with different API key...", expanded=True) as status:
+                                status.update(label="🔍 Retrieving context...", state="running")
+                                status.update(label="⏳ Generating response...", state="running")
+                                
+                                response_stream = process_user_query(st.session_state.last_failed_message, stream=True)
+                                status.update(label="✅ Response generated", state="complete")
+                            
+                            st.write("---")
+                            response_placeholder = st.empty()
+                            full_response = ""
+                            
+                            for chunk in response_stream:
+                                if chunk:
+                                    full_response += chunk
+                                    response_placeholder.write(full_response)
                             
                             # Update last assistant message
                             if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
-                                st.session_state.messages[-1]["content"] = response
+                                st.session_state.messages[-1]["content"] = full_response
+                            else:
+                                add_message_to_chat("assistant", full_response)
+                            
+                        except Exception as e:
+                            logger.error(f"Error during retry: {e}", exc_info=True)
+                            st.error(f"Error during retry: {str(e)}")
                             
                         st.rerun()
                     else:
@@ -938,11 +1012,53 @@ with tab4:
 user_input = st.chat_input("Ask me anything...")
 
 if user_input:
-    with st.spinner("💭 Thinking..."):
-        add_message_to_chat("user", user_input)
-        response = process_user_query(user_input)
-        add_message_to_chat("assistant", response)
+    # Add user message to chat
+    add_message_to_chat("user", user_input)
+    
+    # Process with streaming enabled for real-time response display
+    try:
+        logger.info(f"Processing query: {user_input[:50]}...")
+        
+        # Show progress during retrieval phase
+        with st.status("🔄 Processing your query...", expanded=True) as status:
+            status.update(label="🔍 Retrieving context from memory...", state="running")
+            st.write("Searching through your documents and conversation history...")
+            
+            status.update(label="🔨 Building response...", state="running")
+            st.write("Preparing prompt with relevant context...")
+            
+            status.update(label="⏳ Generating response from model...", state="running")
+            st.write("Model is generating your response...")
+            
+            # Get streaming generator from process_user_query
+            logger.info(f"Starting streaming response for: {user_input[:50]}...")
+            response_stream = process_user_query(user_input, stream=True)
+            
+            status.update(label="✅ Response generated", state="complete")
+        
+        # Display response as it streams in - create a placeholder that updates in real-time
+        st.write("---")
+        response_placeholder = st.empty()
+        full_response = ""
+        
+        # Stream response chunks to user in real-time
+        for chunk in response_stream:
+            if chunk:
+                full_response += chunk
+                # Update placeholder immediately as each chunk arrives
+                response_placeholder.write(full_response)
+        
+        logger.info(f"Streaming complete. Response length: {len(full_response)} chars")
+        
+        # Store complete response in chat history
+        add_message_to_chat("assistant", full_response)
         st.rerun()
+        
+    except Exception as e:
+        logger.error(f"Error during streaming: {e}", exc_info=True)
+        error_msg = f"❌ Error: {str(e)}"
+        st.error(error_msg)
+        add_message_to_chat("assistant", error_msg)
 
 # =====================
 # FOOTER

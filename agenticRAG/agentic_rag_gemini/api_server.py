@@ -10,7 +10,8 @@ import logging
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from models import VoicePrompt, MotionPrompt  # shared models — single source of truth
@@ -31,6 +32,7 @@ from utils.web_search import get_web_search_service
 from utils.exercise_detector import get_exercise_detector
 from utils.gemini_client import GeminiClientWrapper
 from utils.prompt_templates import LLM_PROMPTS
+import asyncio
 from agents.response_templates import ResponseTemplateGenerator
 
 # Initialize logger
@@ -56,6 +58,7 @@ class QueryRequest(BaseModel):
     conversation_history: Optional[List[ConversationTurn]] = Field(
         None, description="Previous conversation turns"
     )
+    stream: bool = Field(False, description="Enable streaming response")
 
 
 class OrchestratorDecision(BaseModel):
@@ -245,6 +248,30 @@ class AgenticRAGAPI:
         "exercise_recommendation":  "exercise_recommendation",
     }
 
+    def _get_token_limit(self, intent: str) -> int:
+        """Get the max_tokens limit for a given intent.
+        
+        Args:
+            intent: Intent type (conversation, visualize_motion, knowledge_query, exercise_recommendation)
+            
+        Returns:
+            Token limit for this intent, or fallback if intent not found
+        """
+        config = get_config()
+        intent_limits = config.intent_token_limits
+        
+        # Try to get limit for this specific intent using getattr (fallback if not found)
+        limit = getattr(intent_limits, intent, None)
+        
+        if limit is not None:
+            logger.debug(f"Token limit for intent '{intent}': {limit}")
+            return limit
+        
+        # Fallback to default limit
+        fallback_limit = intent_limits.fallback
+        logger.debug(f"Intent '{intent}' not found in config, using fallback: {fallback_limit}")
+        return fallback_limit
+
     def _get_orchestrator_decision(
         self,
         query: str,
@@ -268,8 +295,8 @@ class AgenticRAGAPI:
         
         if isinstance(self.orchestrator, LocalOrchestrator):
             logger.info("USING LOCAL ORCHESTRATOR path")
-            logger.info(f"About to call LocalOrchestrator.analyze_query with: {query}, detected_exercise: {detected_exercise}")
-            decision = self.orchestrator.analyze_query(query, conversation_history, detected_exercise)
+            logger.info(f"About to call LocalOrchestrator.analyze_query with: {query}, user_id: {user_id}, detected_exercise: {detected_exercise}")
+            decision = self.orchestrator.analyze_query(query, user_id, conversation_history, detected_exercise)
             logger.info(f"Local orchestrator returned: {decision}")
 
             # ── Detect fallback response (Ollama timed out or JSON invalid) ──
@@ -331,12 +358,7 @@ class AgenticRAGAPI:
             # Note: API orchestrator doesn't support detected_exercise parameter yet
             return self.orchestrator.process_query(query, user_id, conversation_history)
 
-    def process_query(
-        self,
-        query: str,
-        user_id: str,
-        conversation_history: Optional[List[Dict[str, str]]] = None,
-    ) -> QueryResponse:
+    def process_query(self, query: str, user_id: str, conversation_history: Optional[List[Dict[str, str]]] = None, stream: bool = False) -> Any:
         """Process a user query through the intent-branched pipeline.
 
         Pipeline (down from 7 LLM calls to 2):
@@ -349,6 +371,8 @@ class AgenticRAGAPI:
              exercise_recommendation → RAGPipeline with expanded_query,
                                        skip_web_search=True, skip_reflection=True
         4. voice_prompt from text_answer  — no LLM (keyword matching only)
+        
+        If stream=True, returns a generator yielding text chunks.
         """
         import time
         start_time = time.time()
@@ -441,8 +465,11 @@ class AgenticRAGAPI:
                         {"role": "user",   "content": conv_prompt},
                     ],
                     temperature=0.7,
-                    max_tokens=512,
+                    max_tokens=self._get_token_limit("conversation"),
+                    stream=stream,
                 )
+                if stream:
+                    return (chunk.choices[0].message.content for chunk in _resp if chunk.choices[0].message.content)
                 text_answer = _resp.choices[0].message.content.strip()
 
             elif intent == "visualize_motion":
@@ -475,8 +502,11 @@ class AgenticRAGAPI:
                         {"role": "user",   "content": motion_desc_prompt},
                     ],
                     temperature=0.5,
-                    max_tokens=512,
+                    max_tokens=self._get_token_limit("visualize_motion"),
+                    stream=stream,
                 )
+                if stream:
+                    return (chunk.choices[0].message.content for chunk in _resp if chunk.choices[0].message.content)
                 text_answer = _resp.choices[0].message.content.strip()
 
             else:
@@ -498,10 +528,14 @@ class AgenticRAGAPI:
                     skip_web_search=True,
                     expanded_query=expanded_query,
                     skip_reflection=True,
-                    structured=True,     # returns JSON {text_answer, exercises}
+                    structured=not stream,     # cannot stream structured JSON easily
+                    stream=stream,
+                    max_tokens=self._get_token_limit(intent),
                 )
-                rag_time = time.time() - rag_start
-                perf["rag_ms"] = rag_time * 1000
+                if stream:
+                    return rag_result
+                
+                perf["rag_ms"] = (time.time() - rag_start) * 1000
                 
                 text_answer = rag_result["response"]
                 exercises   = rag_result.get("exercises", [])
@@ -675,15 +709,16 @@ app.add_middleware(
 # ===========================
 
 
-@app.post("/query", response_model=QueryResponse, summary="Process a query")
-async def process_query(request: QueryRequest) -> QueryResponse:
+@app.post("/query", summary="Process a query")
+async def process_query(request: QueryRequest):
     """Process a user query through the AgenticRAG pipeline.
-
+    
+    Returns:
+        - If streaming (request.stream=True): StreamingResponse with text chunks (text/plain)
+        - Otherwise: QueryResponse with full metadata (application/json)
+    
     Args:
         request: Query request with user query and optional history
-
-    Returns:
-        Query response with text answer, decisions, and downstream prompts
     """
     if api_instance is None:
         raise HTTPException(status_code=500, detail="API not initialized")
@@ -699,7 +734,22 @@ async def process_query(request: QueryRequest) -> QueryResponse:
     # making all concurrent requests stall until the blocking call completes.
     # asyncio.to_thread() offloads it to a worker thread so the event loop
     # stays responsive throughout.
-    import asyncio
+    
+    # If streaming is requested, return StreamingResponse with text chunks
+    if request.stream:
+        # For streaming, we run it in a thread and wrap the generator.
+        # Since the generator yielded by process_query is sync, 
+        # StreamingResponse can handle it directly.
+        # NOTE: Streaming returns plain text chunks, not JSON.
+        generator = api_instance.process_query(
+            request.query,
+            request.user_id,
+            history,
+            stream=True
+        )
+        return StreamingResponse(generator, media_type="text/plain")
+
+    # For non-streaming requests, return full QueryResponse with all metadata
     response = await asyncio.to_thread(
         api_instance.process_query,
         request.query,
