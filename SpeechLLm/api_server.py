@@ -39,7 +39,7 @@ app.add_middleware(
 # =========================
 class TTSRequest(BaseModel):
     text: str
-    language: str                 # ✅ Provided by pipeline
+    language: Optional[str] = "en"
     user_id: Optional[str] = None
     emotion: Optional[str] = None
 
