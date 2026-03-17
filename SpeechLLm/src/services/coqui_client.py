@@ -90,11 +90,16 @@ class CoquiClient:
         self,
         text: str,
         language: str = "en",
-        speaker: str = None
+        speaker: str = None,
+        emotion: str = None
     ) -> str:
 
         if not text or not text.strip():
             raise ValueError("Text for TTS cannot be empty.")
+
+        # NOTE: Coqui models used here don't expose an "emotion" control.
+        # We accept it to keep the API stable and ignore it for now.
+        _ = emotion
 
         tts = self._load_model_for_language(language)
 

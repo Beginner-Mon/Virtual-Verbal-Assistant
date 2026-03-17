@@ -10,7 +10,7 @@
 #   voice_id: EXAVITQu4vr4xnSDxMaL
 
 coqui:
-  use_gpu: true
+  use_gpu: false
   output_dir: data/temp_audio
   speaker: null
 
