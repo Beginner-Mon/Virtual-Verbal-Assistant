@@ -16,7 +16,7 @@ class CoquiClient:
     def __init__(self, config: dict):
 
         self.language_models = config.get("language_models", {
-            "en": "tts_models/en/ljspeech/tacotron2-DDC",
+            "en": "tts_models/en/vctk/vits",
         })
 
         self.output_dir = Path(config.get("output_dir", "data/temp_audio"))
@@ -50,7 +50,7 @@ class CoquiClient:
     # -----------------------------
     # Utilities
     # -----------------------------
-    def _smart_chunks(self, text: str, max_chars=400):
+    def _smart_chunks(self, text: str, max_chars=200):
         chunks = []
         while len(text) > max_chars:
             split = text.rfind(".", 0, max_chars)
