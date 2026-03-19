@@ -1,8 +1,9 @@
 """
-REST API: Frontend → Coqui TTS → Audio File
-- Accepts text + language from request
+REST API: LLM → Coqui TTS → Audio File
+- Accepts LLM voice_prompt JSON
 - Cleans formatting artifacts
 - Uses language to select voice/model
+- emotion=null → neutral
 """
 
 import time
@@ -37,11 +38,15 @@ app.add_middleware(
 # =========================
 # Request Schema
 # =========================
-class TTSRequest(BaseModel):
+class VoicePrompt(BaseModel):
     text: str
+    emotion: Optional[str] = None
+
+
+class TTSRequest(BaseModel):
+    voice_prompt: VoicePrompt
     language: Optional[str] = "en"
     user_id: Optional[str] = None
-    emotion: Optional[str] = None
 
 
 # =========================
@@ -81,20 +86,24 @@ audio_dir.mkdir(parents=True, exist_ok=True)
 @app.post("/synthesize")
 async def synthesize(req: TTSRequest):
     """
-    Receive text → Clean → TTS → Return metadata
+    Receive voice_prompt → Clean → TTS → Return audio metadata
     """
     try:
-        if not req.text.strip():
-            raise HTTPException(400, "Text cannot be empty")
+        text = req.voice_prompt.text.strip()
+        emotion = req.voice_prompt.emotion or "neutral"
+        language = req.language or "en"
 
-        clean_text = clean_text_for_tts(req.text)
+        if not text:
+            raise HTTPException(400, "Voice text cannot be empty")
+
+        clean_text = clean_text_for_tts(text)
 
         # Run TTS with timing
         start_time = time.time()
         audio_path = coqui_client.synthesize(
             text=clean_text,
-            language=req.language,   # ✅ pass language to TTS layer
-            emotion=req.emotion
+            language=language,
+            emotion=emotion
         )
         tts_time = time.time() - start_time
 
@@ -103,12 +112,10 @@ async def synthesize(req: TTSRequest):
         return {
             "message": "Synthesis complete",
             "audio_file": filename,
-            "text_original": req.text,
-            "text_spoken": clean_text,
-            "language": req.language,
+            "language": language,
+            "emotion": emotion,
             "tts_time_sec": round(tts_time, 3),
-            "emotion": req.emotion,
-            "request_id": req.user_id,
+            "request_id": req.user_id
         }
 
     except HTTPException:
