@@ -22,14 +22,20 @@ class CoquiClient:
         self.output_dir = Path(config.get("output_dir", "data/temp_audio"))
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+        # -----------------------------
+        # Safe Device Detection
+        # -----------------------------
         env_gpu = os.getenv("COQUI_USE_GPU")
 
         if env_gpu is not None:
             self.use_gpu = env_gpu.lower() == "true"
-        elif "use_gpu" in config:
-            self.use_gpu = config["use_gpu"]
         else:
             self.use_gpu = torch.cuda.is_available()
+
+        # Final safety check
+        if self.use_gpu and not torch.cuda.is_available():
+            print("[Coqui] CUDA requested but not available → Falling back to CPU")
+            self.use_gpu = False
 
         device_name = "GPU" if self.use_gpu else "CPU"
         print(f"[Coqui] Using device: {device_name}")
@@ -77,11 +83,7 @@ class CoquiClient:
         model_name = self.language_models[language]
         print(f"[Coqui] Loading model for '{language}': {model_name}")
 
-        tts = TTS(model_name=model_name)
-
-        if self.use_gpu:
-            tts = tts.to("cuda")
-            tts.synthesizer.model.half()
+        tts = TTS(model_name=model_name, gpu=self.use_gpu)
 
         self.loaded_models[language] = tts
 
