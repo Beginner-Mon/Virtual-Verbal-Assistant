@@ -1,10 +1,3 @@
-"""
-REST API: Frontend → Coqui TTS → Audio File
-- Accepts text + language from request
-- Cleans formatting artifacts
-- Uses language to select voice/model
-"""
-
 import time
 import re
 from pathlib import Path
@@ -27,7 +20,7 @@ app = FastAPI(title="SpeechLLM Coqui TTS API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # set frontend URL in production
+    allow_origins=["*"],  # ⚠️ set frontend URL in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -35,13 +28,23 @@ app.add_middleware(
 
 
 # =========================
-# Request Schema
+# Request Schemas
 # =========================
-class TTSRequest(BaseModel):
+class VoicePrompt(BaseModel):
     text: str
+    emotion: Optional[str] = None
+
+
+class TTSRequest(BaseModel):
+    # Simple mode (dashboard)
+    text: Optional[str] = None
+    emotion: Optional[str] = None
+
+    # LLM mode (pipeline)
+    voice_prompt: Optional[VoicePrompt] = None
+
     language: Optional[str] = "en"
     user_id: Optional[str] = None
-    emotion: Optional[str] = None
 
 
 # =========================
@@ -81,40 +84,53 @@ audio_dir.mkdir(parents=True, exist_ok=True)
 @app.post("/synthesize")
 async def synthesize(req: TTSRequest):
     """
-    Receive text → Clean → TTS → Return metadata
+    Receive request → Extract text → Clean → TTS → Return metadata
     """
     try:
-        if not req.text.strip():
-            raise HTTPException(400, "Text cannot be empty")
+        # -----------------------------
+        # Extract text + emotion
+        # -----------------------------
+        if req.voice_prompt:
+            text = req.voice_prompt.text.strip()
+            emotion = req.voice_prompt.emotion
+        else:
+            text = (req.text or "").strip()
+            emotion = req.emotion
 
-        clean_text = clean_text_for_tts(req.text)
+        emotion = emotion or "neutral"
+        language = req.language or "en"
 
+        if not text:
+            raise HTTPException(status_code=400, detail="Voice text cannot be empty")
+
+        clean_text = clean_text_for_tts(text)
+
+        # -----------------------------
         # Run TTS with timing
+        # -----------------------------
         start_time = time.time()
+
         audio_path = coqui_client.synthesize(
             text=clean_text,
-            language=req.language,   # ✅ pass language to TTS layer
-            emotion=req.emotion
+            language=language
         )
-        tts_time = time.time() - start_time
 
+        tts_time = time.time() - start_time
         filename = Path(audio_path).name
 
         return {
             "message": "Synthesis complete",
             "audio_file": filename,
-            "text_original": req.text,
-            "text_spoken": clean_text,
-            "language": req.language,
+            "language": language,
+            "emotion": emotion,
             "tts_time_sec": round(tts_time, 3),
-            "emotion": req.emotion,
             "request_id": req.user_id,
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"TTS failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"TTS failed: {str(e)}")
 
 
 @app.get("/audio/{filename}")
@@ -125,7 +141,7 @@ async def get_audio(filename: str):
     path = audio_dir / filename
 
     if not path.exists():
-        raise HTTPException(404, "Audio file not found")
+        raise HTTPException(status_code=404, detail="Audio file not found")
 
     return FileResponse(path, media_type="audio/wav")
 

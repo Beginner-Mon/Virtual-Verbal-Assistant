@@ -15,6 +15,6 @@ coqui:
   speaker: null
 
   language_models:
-    en: tts_models/en/ljspeech/tacotron2-DDC
-    vi: tts_models/multilingual/multi-dataset/xtts_v2
-    ja: tts_models/ja/kokoro/tacotron2-DDC
+    en: tts_models/en/vctk/vits
+    vi: tts_models/vi/vivos/vits
+    ja: tts_models/ja/kokoro/vits
