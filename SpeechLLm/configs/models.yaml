@@ -10,7 +10,11 @@
 #   voice_id: EXAVITQu4vr4xnSDxMaL
 
 coqui:
-  model_name: tts_models/en/vctk/vits
-  output_dir: data/temp_audio
   use_gpu: false
+  output_dir: data/temp_audio
   speaker: null
+
+  language_models:
+    en: tts_models/en/vctk/vits
+    vi: tts_models/vi/vivos/vits
+    ja: tts_models/ja/kokoro/vits

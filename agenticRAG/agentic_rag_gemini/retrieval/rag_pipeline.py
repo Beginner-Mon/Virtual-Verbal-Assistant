@@ -201,7 +201,9 @@ class RAGPipeline:
         expanded_query: Optional[str] = None,    # skip _process_query() LLM expansion
         skip_reflection: bool = False,           # skip self-correction loop
         structured: bool = False,                # return JSON with text_answer + exercises
-    ) -> Dict[str, Any]:
+        stream: bool = False,                    # return a generator yielding tokens
+        max_tokens: Optional[int] = None,        # intent-based token limit (intent_token_limits override)
+    ) -> Any:
         """Generate a response using RAG pipeline.
 
         Pipeline steps:
@@ -225,11 +227,22 @@ class RAGPipeline:
                                   When supplied, merged into retrieved_context directly.
             web_context:          Pre-fetched web search string from WebSearchTool.
                                   When supplied, skips speculative web search.
+            skip_web_search:      If True, skip web search fallback (used when orchestrator already retrieves)
+            expanded_query:       Pre-processed query from orchestrator (skips query expansion LLM call)
+            skip_reflection:      If True, skip iterative reflection (self-correction)
+            structured:           If True, return JSON with text_answer + exercises list
+            stream:               If True, return a generator yielding response tokens
+            max_tokens:           Intent-based token limit for LLM response generation.
+                                  If None, uses self.llm_config.max_tokens
 
         Returns:
             Dictionary with response and metadata
         """
         logger.info(f"Generating response for query: {query[:100]}...")
+
+        # Determine effective max_tokens (intent-based override or config default)
+        effective_max_tokens = max_tokens or self.llm_config.max_tokens
+        logger.debug(f"Token limit for this response: {effective_max_tokens} (passed={max_tokens}, default={self.llm_config.max_tokens})")
 
         # Step 1: Process / expand query.
         # If the orchestrator already provided an expanded query, skip the LLM
@@ -393,7 +406,11 @@ class RAGPipeline:
         )
 
         # Step 4: Generate response
-        response_text = self._generate_llm_response(prompt, structured=structured)
+        if stream:
+            logger.info("Streaming response enabled — skipping reflection/validation")
+            return self._generate_llm_response(prompt, structured=False, stream=True, max_tokens=effective_max_tokens)
+
+        response_text = self._generate_llm_response(prompt, structured=structured, stream=False, max_tokens=effective_max_tokens)
 
         # Step 4a: Iterative reflection — self-correct against retrieved facts.
         # Skipped when skip_reflection=True (orchestrator-driven fast path)
@@ -842,20 +859,22 @@ class RAGPipeline:
                 for turn in conversation_history[-5:]
             )
             prompt_parts.append(f"\n=== CONVERSATION HISTORY ===\n{history_text}")
-
+        
         prompt_parts.append(f"\n=== CURRENT QUESTION ===\n{query}")
         return "\n".join(prompt_parts)
 
-    def _generate_llm_response(self, prompt: str, structured: bool = False) -> str:
+    def _generate_llm_response(self, prompt: str, structured: bool = False, stream: bool = False, max_tokens: Optional[int] = None) -> Any:
         """Generate response using LLM.
-
+        
         Args:
             prompt:     Complete prompt with context
-            structured: When True, uses system_structured prompt and
-                        response_format=json_object to guarantee valid JSON output.
-
+            structured: When True, uses system_structured prompt.
+            stream:     Whether to stream the response.
+            max_tokens: Intent-based token limit. If None, uses self.llm_config.max_tokens.
+            
         Returns:
-            Generated response text (plain string or JSON string when structured=True)
+            Generated response text (str) if stream=False,
+            else a generator yielding chunks (Generator[str, None, None])
         """
         try:
             self._rate_limiter.acquire()
@@ -865,6 +884,10 @@ class RAGPipeline:
                 sys_prompt = _LP.get("system_structured", self.llm_config.system_prompt)
             else:
                 sys_prompt = self.llm_config.system_prompt
+
+            # Determine effective max_tokens (passed parameter or config default)
+            effective_mt = max_tokens or self.llm_config.max_tokens
+            logger.debug(f"LLM response generation: max_tokens={effective_mt} (passed={max_tokens}, config={self.llm_config.max_tokens})")
 
             # NOTE: We intentionally do NOT pass response_format=json_object here.
             # Large context prompts (RAG with retrieved docs) cause Gemini to fail
@@ -878,8 +901,17 @@ class RAGPipeline:
                     {"role": "user",   "content": prompt},
                 ],
                 temperature=self.llm_config.temperature,
-                max_tokens=self.llm_config.max_tokens,
+                max_tokens=effective_mt,
+                stream=stream,
             )
+            
+            if stream:
+                def gen():
+                    for chunk in response:
+                        if content := chunk.choices[0].message.content:
+                            yield content
+                return gen()
+
             response_text = response.choices[0].message.content.strip()
             logger.debug(f"Generated response: {response_text[:100]}...")
             return response_text

@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import yaml
 from dotenv import load_dotenv
 
@@ -21,37 +20,12 @@ def load_script(json_path):
         return json.load(f)
 
 
-def extract_text_to_read(script: dict) -> str:
+def extract_voice_fields(script: dict):
     voice_prompt = script.get("voice_prompt", {})
-    text_blob = voice_prompt.get("text")
-
-    if not text_blob:
-        return ""
-
-    # Case 1 — already dict
-    if isinstance(text_blob, dict):
-        return text_blob.get("text_answer", "").strip()
-
-    # Case 2 — JSON string
-    if isinstance(text_blob, str):
-        try:
-            inner = json.loads(text_blob)
-            return inner.get("text_answer", "").strip()
-
-        except json.JSONDecodeError:
-            match = re.search(r'"text_answer"\s*:\s*"(.*)"', text_blob, re.DOTALL)
-            if match:
-                text = match.group(1)
-            else:
-                text = text_blob
-
-            return (
-                text.replace("\\n", "\n")
-                    .replace('\\"', '"')
-                    .strip()
-            )
-
-    return ""
+    text = voice_prompt.get("text", "").strip()
+    emotion = voice_prompt.get("emotion") or "neutral"
+    language = script.get("language", "en")
+    return text, emotion, language
 
 
 # =========================
@@ -64,7 +38,7 @@ if __name__ == "__main__":
     base_config = load_yaml("configs/base.yaml")
     model_config = load_yaml("configs/models.yaml")
 
-    # Init audio (kept in case you use recording later)
+    # Init audio driver
     voice_driver = VoiceDriver(base_config["audio"])
 
     # =========================
@@ -104,7 +78,7 @@ if __name__ == "__main__":
     # Load Script
     # =========================
     script = load_script("data/scripts.json")
-    text_to_read = extract_text_to_read(script)
+    text_to_read, emotion, language = extract_voice_fields(script)
 
     if not text_to_read:
         print("No readable text found in JSON.")
@@ -112,17 +86,22 @@ if __name__ == "__main__":
 
     print("\n===== READING TEXT =====\n")
     print(text_to_read)
+    print(f"\nLanguage: {language}")
+    print(f"Emotion: {emotion}")
     print("\n========================\n")
 
     # =========================
     # TTS + Play (AUTO RUN)
     # =========================
     try:
-        audio_path = coqui_client.synthesize(text_to_read)
+        audio_path = coqui_client.synthesize(
+            text=text_to_read,
+            language=language,
+            emotion=emotion
+        )
 
         if audio_path and os.path.exists(audio_path):
-            # Windows audio playback
-            os.system(f'start "" "{audio_path}"')
+            os.system(f'start "" "{audio_path}"')  # Windows playback
         else:
             print("Audio file not generated.")
 

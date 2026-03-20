@@ -35,7 +35,7 @@ orchestrator:
 llm:
   model: "gemini-2.5-flash"  # Fast, capable Gemini model for response generation
   temperature: 0.7
-  max_tokens: 2048  # Increased from 1000 to prevent finish_reason=2 (MAX_TOKENS) errors
+  max_tokens: 4096  # Generous limit to prevent truncation (finish_reason=2) issues
   
   # Safety settings
   enable_validation: false  # Disabled temporarily for debugging
@@ -235,6 +235,14 @@ local_orchestrator:
   timeout: 10       # 10s safety margin — real call takes 1-3s; was 5s (too tight) / 30s (too long)
   fallback_to_api: true  # Use API orchestrator if local fails
   confidence_threshold: 0.7  # Minimum confidence for routing
+
+# Intent-based Token Limits (dynamic max_tokens per intent type)
+intent_token_limits:
+  conversation: 512           # Light conversation, minimal context needed
+  visualize_motion: 512       # Exercise descriptions (3-6 steps)
+  knowledge_query: 2048       # Full RAG with docs/web (balanced)
+  exercise_recommendation: 2048  # Structured JSON + exercises
+  fallback: 1024              # Unknown intents use moderate limit
 
 # Ollama Service Configuration
 ollama:
