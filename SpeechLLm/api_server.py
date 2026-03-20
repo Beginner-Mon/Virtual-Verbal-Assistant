@@ -2,6 +2,7 @@ import time
 import re
 from pathlib import Path
 from typing import Optional
+import asyncio
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -10,13 +11,13 @@ from pydantic import BaseModel
 import uvicorn
 import yaml
 
-from src.services.coqui_client import CoquiClient
+from src.services.elevenlabs_client import ElevenLabsClient
 
 
 # =========================
 # App Init
 # =========================
-app = FastAPI(title="SpeechLLM Coqui TTS API")
+app = FastAPI(title="SpeechLLM ElevenLabs TTS API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -72,9 +73,9 @@ def clean_text_for_tts(text: str) -> str:
 # Services Init
 # =========================
 model_config = load_yaml("configs/models.yaml")
-coqui_client = CoquiClient(model_config["coqui"])
+elevenlabs_client = ElevenLabsClient(**model_config["elevenlabs"])
 
-audio_dir = Path(model_config["coqui"].get("output_dir", "data/temp_audio"))
+audio_dir = Path(model_config["elevenlabs"].get("output_dir", "data/temp_audio"))
 audio_dir.mkdir(parents=True, exist_ok=True)
 
 
@@ -106,13 +107,15 @@ async def synthesize(req: TTSRequest):
         clean_text = clean_text_for_tts(text)
 
         # -----------------------------
-        # Run TTS with timing
+        # Run TTS with timing (async-safe)
         # -----------------------------
         start_time = time.time()
 
-        audio_path = coqui_client.synthesize(
-            text=clean_text,
-            language=language
+        # Run in executor to prevent blocking the event loop
+        audio_path = await asyncio.get_event_loop().run_in_executor(
+            None,
+            elevenlabs_client.synthesize,
+            clean_text
         )
 
         tts_time = time.time() - start_time
@@ -136,14 +139,16 @@ async def synthesize(req: TTSRequest):
 @app.get("/audio/{filename}")
 async def get_audio(filename: str):
     """
-    Serve generated WAV file
+    Serve generated audio file (MP3 for ElevenLabs, WAV for Coqui)
     """
     path = audio_dir / filename
 
     if not path.exists():
         raise HTTPException(status_code=404, detail="Audio file not found")
 
-    return FileResponse(path, media_type="audio/wav")
+    # Detect media type from file extension
+    media_type = "audio/mpeg" if filename.endswith(".mp3") else "audio/wav"
+    return FileResponse(path, media_type=media_type)
 
 
 @app.get("/health")

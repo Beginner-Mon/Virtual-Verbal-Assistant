@@ -18,3 +18,12 @@ coqui:
     en: tts_models/en/vctk/vits
     vi: tts_models/vi/vivos/vits
     ja: tts_models/ja/kokoro/vits
+
+elevenlabs:
+  voice_id: "EXAVITQu4vr4xnSDxMaL"
+  model_id: "eleven_multilingual_v2"
+  timeout: 20
+  output_dir: "data/temp_audio"
+  stability: 0.6
+  similarity_boost: 0.7
+  use_speaker_boost: true
