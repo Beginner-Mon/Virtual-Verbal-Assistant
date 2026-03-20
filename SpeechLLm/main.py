@@ -3,7 +3,7 @@ import os
 import yaml
 from dotenv import load_dotenv
 
-from src.services.coqui_client import CoquiClient
+from src.services.elevenlabs_client import ElevenLabsClient
 from src.services.voice_driver import VoiceDriver
 
 
@@ -42,37 +42,9 @@ if __name__ == "__main__":
     voice_driver = VoiceDriver(base_config["audio"])
 
     # =========================
-    # Init Coqui (temp for speaker list)
+    # Init ElevenLabs TTS Client
     # =========================
-    temp_coqui = CoquiClient(model_config["coqui"])
-    speakers = temp_coqui.get_available_speakers()
-
-    # =========================
-    # Speaker Selection
-    # =========================
-    if speakers:
-        print("\nAvailable Speakers:")
-        for i, spk in enumerate(speakers):
-            print(f"{i}: {spk}")
-
-        while True:
-            try:
-                choice = int(input("Select speaker number: "))
-                if 0 <= choice < len(speakers):
-                    selected_speaker = speakers[choice]
-                    break
-                print("Invalid selection.")
-            except ValueError:
-                print("Enter a valid number.")
-    else:
-        selected_speaker = None
-
-    print(f"\nSelected Speaker: {selected_speaker}")
-
-    # Recreate client with selected speaker
-    coqui_config = model_config["coqui"]
-    coqui_config["speaker"] = selected_speaker
-    coqui_client = CoquiClient(coqui_config)
+    elevenlabs_client = ElevenLabsClient(**model_config["elevenlabs"])
 
     # =========================
     # Load Script
@@ -106,4 +78,5 @@ if __name__ == "__main__":
             print("Audio file not generated.")
 
     except Exception as e:
-        print("TTS Error:", e)
+        print("TTS Error:", e)elevenlabs_client.synthesize(
+            text=text_to_read
