@@ -12,7 +12,7 @@ NOTE: Motion generation is now handled by AgenticRAG based on extracted exercise
 
 import time
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -53,6 +53,10 @@ class AnswerRequest(BaseModel):
 
     query: str = Field(..., description="User query")
     user_id: str = Field(default="default", description="User identifier")
+    motion_format: Literal["glb", "npz"] = Field(
+        default="glb",
+        description="Requested motion output format: 'glb' or 'npz'",
+    )
     conversation_history: Optional[List[ConversationTurn]] = Field(
         None, description="Previous conversation turns"
     )
@@ -61,7 +65,7 @@ class AnswerRequest(BaseModel):
 class MotionMetadata(BaseModel):
     """Motion output metadata returned from DART."""
 
-    motion_file_url: str = Field(..., description="URL to download the .npz motion file")
+    motion_file_url: str = Field(..., description="URL to download the generated motion file (.glb or .npz)")
     num_frames: int = Field(..., description="Total number of motion frames")
     fps: int = Field(..., description="Frames per second (always 30 for DART)")
     duration_seconds: float = Field(..., description="Total clip duration in seconds")
@@ -160,6 +164,9 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
     import asyncio
 
     TTS_URL = "http://localhost:5000"  # SpeechLLM TTS API
+    requested_motion_format = (request.motion_format or "glb").lower().strip()
+    if requested_motion_format not in {"glb", "npz"}:
+        raise HTTPException(status_code=400, detail="motion_format must be 'glb' or 'npz'")
 
 
     async with httpx.AsyncClient(timeout=DOWNSTREAM_TIMEOUT) as client:
@@ -186,7 +193,8 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
                 "text_prompt": motion_prompt,
                 "guidance_scale": 5.0,
                 "num_steps": 50,
-                "gender": "female"
+                "gender": "female",
+                "output_format": requested_motion_format,
             }
             # Optionally add respacing/seed if present in rag_data
             if "respacing" in rag_data:
@@ -200,6 +208,7 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
                     resp.raise_for_status()
                     dart_data = resp.json()
                     motion_file_url = f"{DART_URL}{dart_data['motion_file_url']}" if dart_data.get("motion_file_url") else ""
+                    logger.info(f"[DART] output_format={requested_motion_format} motion_file_url={motion_file_url}")
                     return MotionMetadata(
                         motion_file_url=motion_file_url,
                         num_frames=dart_data.get("num_frames", 0),

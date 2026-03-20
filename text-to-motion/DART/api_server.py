@@ -10,6 +10,10 @@ import os
 import uuid
 import random
 import copy
+import sys
+import time
+import asyncio
+import subprocess
 from typing import Optional, Literal
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -58,6 +62,10 @@ class MotionGenerationRequest(BaseModel):
     gender: Literal["female", "male"] = Field(
         "female",
         description="Body gender for SMPL-X motion generation."
+    )
+    output_format: Literal["glb", "npz"] = Field(
+        "glb",
+        description="Output file format to return. Default is glb."
     )
 
 
@@ -353,16 +361,77 @@ app.add_middleware(
 generator: Optional[MotionGenerator] = None
 OUTPUT_DIR = Path("outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
+cleanup_task: Optional[asyncio.Task] = None
+
+
+def convert_npz_to_glb(npz_path: Path, glb_path: Path, gender: Literal["female", "male"]) -> None:
+    script_path = Path(__file__).with_name("to_glb.py")
+    model_path = Path(__file__).resolve().parent / "data" / "smplx_lockedhead_20230207" / "models_lockedhead"
+
+    if not script_path.exists():
+        raise RuntimeError(f"GLB converter script not found: {script_path}")
+
+    cmd = [
+        sys.executable,
+        str(script_path),
+        "--npz_path",
+        str(npz_path),
+        "--out_path",
+        str(glb_path),
+        "--gender",
+        gender,
+    ]
+
+    if model_path.exists():
+        cmd.extend(["--model_path", str(model_path)])
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"NPZ→GLB conversion failed (exit={result.returncode}): {result.stderr.strip() or result.stdout.strip()}"
+        )
+
+
+def remove_expired_artifacts(ttl_seconds: int) -> None:
+    now = time.time()
+    for path in OUTPUT_DIR.glob("motion_*"):
+        if path.suffix not in {".npz", ".glb"}:
+            continue
+        try:
+            age_seconds = now - path.stat().st_mtime
+            if age_seconds > ttl_seconds:
+                path.unlink(missing_ok=True)
+                logger.info(f"Deleted expired artifact: {path.name} (age={int(age_seconds)}s)")
+        except Exception as exc:
+            logger.warning(f"Failed to cleanup artifact {path}: {exc}")
+
+
+async def cleanup_loop(ttl_seconds: int) -> None:
+    while True:
+        remove_expired_artifacts(ttl_seconds)
+        await asyncio.sleep(30)
 
 
 @app.on_event("startup")
 async def startup_event():
-    global generator
+    global generator, cleanup_task
     generator = MotionGenerator()
     generator.load_models(
         denoiser_ckpt=args.denoiser_checkpoint,
         standing_seed_path=args.standing_seed,
     )
+    cleanup_task = asyncio.create_task(cleanup_loop(args.artifact_ttl_seconds))
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    global cleanup_task
+    if cleanup_task:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
 
 
 @app.post("/generate", response_model=MotionGenerationResponse)
@@ -379,9 +448,28 @@ async def generate_motion(req: MotionGenerationRequest):
         gender=req.gender,
     )
 
+    npz_file_name = Path(result["motion_file"]).name
+    selected_file_name = npz_file_name
+
+    if req.output_format == "glb":
+        npz_path = OUTPUT_DIR / npz_file_name
+        glb_file_name = f"{Path(npz_file_name).stem}.glb"
+        glb_path = OUTPUT_DIR / glb_file_name
+        try:
+            convert_npz_to_glb(npz_path=npz_path, glb_path=glb_path, gender=req.gender)
+            selected_file_name = glb_file_name
+            logger.info(f"Generated GLB artifact: {glb_file_name} from {npz_file_name}")
+        except Exception as exc:
+            logger.error(f"Failed to generate GLB for request {result['request_id']}: {exc}")
+            raise HTTPException(500, f"GLB conversion failed: {exc}")
+
+    logger.info(
+        f"Motion request {result['request_id']} output_format={req.output_format} file={selected_file_name}"
+    )
+
     response = MotionGenerationResponse(
         request_id=result["request_id"],
-        motion_file_url=f"/download/{Path(result['motion_file']).name}",
+        motion_file_url=f"/download/{selected_file_name}",
         num_frames=result["num_frames"],
         fps=30,
         duration_seconds=result["duration_seconds"],
@@ -411,6 +499,7 @@ class ServerArgs:
     standing_seed: str = "./data/stand.pkl"
     host: str = "0.0.0.0"
     port: int = 5001
+    artifact_ttl_seconds: int = 600
 
 
 # Module-level default (so startup can see it before __main__ block runs)
