@@ -12,6 +12,8 @@ import uvicorn
 import yaml
 
 from src.services.elevenlabs_client import ElevenLabsClient
+from src.services.coqui_client import CoquiClient
+from src.services.tts_router import TTSRouter
 
 
 # =========================
@@ -74,6 +76,8 @@ def clean_text_for_tts(text: str) -> str:
 # =========================
 model_config = load_yaml("configs/models.yaml")
 elevenlabs_client = ElevenLabsClient(**model_config["elevenlabs"])
+coqui_client = CoquiClient(model_config["coqui"])
+tts_router = TTSRouter(eleven_client=elevenlabs_client, coqui_client=coqui_client)
 
 audio_dir = Path(model_config["elevenlabs"].get("output_dir", "data/temp_audio"))
 audio_dir.mkdir(parents=True, exist_ok=True)
@@ -114,8 +118,9 @@ async def synthesize(req: TTSRequest):
         # Run in executor to prevent blocking the event loop
         audio_path = await asyncio.get_event_loop().run_in_executor(
             None,
-            elevenlabs_client.synthesize,
-            clean_text
+            tts_router.synthesize,
+            clean_text,
+            language,
         )
 
         tts_time = time.time() - start_time
@@ -127,6 +132,7 @@ async def synthesize(req: TTSRequest):
             "language": language,
             "emotion": emotion,
             "tts_time_sec": round(tts_time, 3),
+            "tts_provider": tts_router.last_provider,
             "request_id": req.user_id,
         }
 
