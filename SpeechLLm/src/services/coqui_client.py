@@ -108,7 +108,7 @@ class CoquiClient:
 
         # NOTE: Coqui models used here don't expose an "emotion" control.
         # We accept it to keep the API stable and ignore it for now.
-        _ = emotion
+        # _ = emotion
 
         tts = self._load_model_for_language(language)
 
