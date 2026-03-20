@@ -7,6 +7,10 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script src="./api-client.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body, #root { height: 100%; }
@@ -212,12 +216,161 @@ function StickFigure({ motionKey, tick }) {
 
 // ── MOTION VIEWER ─────────────────────────────────────────────────────────────
 
-function MotionViewer({ motionKey, isGenerating }) {
+function MotionViewer({ motionKey, isGenerating, modelUrl, motionMeta, motionError }) {
   const [tick, setTick] = useState(0);
+  const mountRef = useRef(null);
+  const rendererRef = useRef(null);
+  const sceneRef = useRef(null);
+  const cameraRef = useRef(null);
+  const controlsRef = useRef(null);
+  const mixerRef = useRef(null);
+  const modelRef = useRef(null);
+  const frameRef = useRef(null);
+  const clockRef = useRef(new THREE.Clock());
+  const frameMeshesRef = useRef([]);
+  const framePlaybackRef = useRef({ elapsed: 0, index: 0 });
+
   useEffect(() => {
     const iv = setInterval(() => setTick(t => t + 1), 40);
     return () => clearInterval(iv);
   }, []);
+
+  useEffect(() => {
+    const el = mountRef.current;
+    if (!el || !window.THREE) return;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xf5f5f7);
+    scene.up.set(0, 0, 1);
+    sceneRef.current = scene;
+
+    const camera = new THREE.PerspectiveCamera(45, el.clientWidth / Math.max(el.clientHeight, 1), 0.01, 100);
+    camera.up.set(0, 0, 1);
+    camera.position.set(2.2, -2.4, 1.4);
+    cameraRef.current = camera;
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(window.devicePixelRatio || 1);
+    renderer.setSize(el.clientWidth, el.clientHeight);
+    renderer.outputEncoding = THREE.sRGBEncoding;
+    el.appendChild(renderer.domElement);
+    rendererRef.current = renderer;
+
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.target.set(0, 0, 0.9);
+    controls.update();
+    controlsRef.current = controls;
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+    const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+    dir.position.set(3, 4, 2);
+    scene.add(dir);
+    const grid = new THREE.GridHelper(4, 16, 0xcccccc, 0xe8e8e8);
+    grid.rotation.x = Math.PI / 2;
+    scene.add(grid);
+
+    const animate = () => {
+      frameRef.current = requestAnimationFrame(animate);
+      const delta = clockRef.current.getDelta();
+      if (mixerRef.current) {
+        mixerRef.current.update(delta);
+      } else if (frameMeshesRef.current.length > 0) {
+        const fps = Math.max(1, Number(motionMeta?.fps || 30));
+        framePlaybackRef.current.elapsed += delta;
+        if (framePlaybackRef.current.elapsed >= 1 / fps) {
+          framePlaybackRef.current.elapsed = 0;
+          framePlaybackRef.current.index = (framePlaybackRef.current.index + 1) % frameMeshesRef.current.length;
+          frameMeshesRef.current.forEach((node, i) => {
+            node.visible = i === framePlaybackRef.current.index;
+          });
+        }
+      }
+      if (controlsRef.current) controlsRef.current.update();
+      renderer.render(scene, camera);
+    };
+    animate();
+
+    const onResize = () => {
+      if (!mountRef.current || !rendererRef.current || !cameraRef.current) return;
+      const w = mountRef.current.clientWidth;
+      const h = mountRef.current.clientHeight;
+      cameraRef.current.aspect = w / Math.max(h, 1);
+      cameraRef.current.updateProjectionMatrix();
+      rendererRef.current.setSize(w, h);
+    };
+    window.addEventListener("resize", onResize);
+
+    return () => {
+      window.removeEventListener("resize", onResize);
+      cancelAnimationFrame(frameRef.current);
+      if (rendererRef.current) rendererRef.current.dispose();
+      if (el.contains(renderer.domElement)) el.removeChild(renderer.domElement);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!sceneRef.current || !modelUrl || !window.THREE || !window.THREE.GLTFLoader) return;
+
+    if (modelRef.current) {
+      sceneRef.current.remove(modelRef.current);
+      modelRef.current = null;
+    }
+    mixerRef.current = null;
+    frameMeshesRef.current = [];
+    framePlaybackRef.current = { elapsed: 0, index: 0 };
+
+    const loader = new THREE.GLTFLoader();
+    loader.load(
+      modelUrl,
+      (gltf) => {
+        const model = gltf.scene;
+        const box = new THREE.Box3().setFromObject(model);
+        const size = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z) || 1;
+        model.scale.setScalar(1.8 / maxDim);
+
+        const centered = new THREE.Box3().setFromObject(model);
+        const center = centered.getCenter(new THREE.Vector3());
+        model.position.x = -center.x;
+        model.position.y = -center.y;
+        model.position.z = -centered.min.z;
+
+        const frameNodes = [];
+        model.traverse((node) => {
+          if (node && typeof node.name === "string" && /^frame_\d+$/i.test(node.name)) {
+            frameNodes.push(node);
+          }
+        });
+        frameNodes.sort((a, b) => {
+          const aIdx = Number((a.name.match(/\d+/) || ["0"])[0]);
+          const bIdx = Number((b.name.match(/\d+/) || ["0"])[0]);
+          return aIdx - bIdx;
+        });
+
+        sceneRef.current.add(model);
+        modelRef.current = model;
+
+        if (gltf.animations && gltf.animations.length) {
+          const mixer = new THREE.AnimationMixer(model);
+          const action = mixer.clipAction(gltf.animations[0]);
+          action.play();
+          mixerRef.current = mixer;
+        } else if (frameNodes.length > 0) {
+          frameMeshesRef.current = frameNodes;
+          framePlaybackRef.current = { elapsed: 0, index: 0 };
+          frameMeshesRef.current.forEach((node, i) => {
+            node.visible = i === 0;
+          });
+        }
+      },
+      undefined,
+      (err) => {
+        console.warn("GLB load error:", err);
+      }
+    );
+  }, [modelUrl]);
 
   const m = MOTIONS[motionKey] || MOTIONS.idle;
 
@@ -225,24 +378,18 @@ function MotionViewer({ motionKey, isGenerating }) {
     <div style={{ width:"100%", height:"100%", background:"#F5F5F7", display:"flex",
       flexDirection:"column", alignItems:"center", justifyContent:"center", position:"relative" }}>
 
-      {/* Grid background */}
-      <svg style={{ position:"absolute", inset:0, width:"100%", height:"100%", opacity:0.45 }}>
-        <defs>
-          <pattern id="g" width="28" height="28" patternUnits="userSpaceOnUse">
-            <path d="M 28 0 L 0 0 0 28" fill="none" stroke="#D1D1D6" strokeWidth="0.5"/>
-          </pattern>
-        </defs>
-        <rect width="100%" height="100%" fill="url(#g)"/>
-      </svg>
+      <div ref={mountRef} style={{ position:"absolute", inset:0 }} />
 
-      {isGenerating ? (
+      {isGenerating && (
         <div style={{ textAlign:"center", zIndex:2 }}>
           <div style={{ width:40, height:40, borderRadius:"50%",
             border:"2.5px solid #E5E5EA", borderTopColor:"#007AFF",
             animation:"spin 0.8s linear infinite", margin:"0 auto 12px" }}/>
           <p style={{ color:"#8E8E93", fontSize:13, fontWeight:500 }}>Generating motion…</p>
         </div>
-      ) : (
+      )}
+
+      {!isGenerating && !modelUrl && (
         <div style={{ zIndex:2, display:"flex", flexDirection:"column", alignItems:"center", gap:12 }}>
           <div style={{ background:"#fff", borderRadius:20, padding:"18px 24px",
             boxShadow:"0 2px 16px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.04)" }}>
@@ -256,8 +403,17 @@ function MotionViewer({ motionKey, isGenerating }) {
         </div>
       )}
 
-      <span style={{ position:"absolute", bottom:12, left:14, fontSize:10, color:"#C7C7CC", fontWeight:500 }}>22 joints · T×3</span>
-      <span style={{ position:"absolute", bottom:12, right:14, fontSize:10, color:"#C7C7CC", fontWeight:500 }}>25 FPS</span>
+      <span style={{ position:"absolute", bottom:12, left:14, fontSize:10, color:"#C7C7CC", fontWeight:500 }}>
+        {motionMeta ? `${motionMeta.num_frames} frames` : "22 joints · T×3"}
+      </span>
+      <span style={{ position:"absolute", bottom:12, right:14, fontSize:10, color:"#C7C7CC", fontWeight:500 }}>
+        {motionMeta ? `${motionMeta.fps} FPS` : "25 FPS"}
+      </span>
+      {motionError && (
+        <span style={{ position:"absolute", top:12, left:12, right:12, fontSize:11, color:"#FF3B30", textAlign:"center", zIndex:2 }}>
+          {motionError}
+        </span>
+      )}
     </div>
   );
 }
@@ -308,11 +464,18 @@ function App() {
   const [thinking, setThinking]           = useState(false);
   const [generatingMotion, setGenerating] = useState(false);
   const [motionKey, setMotionKey]         = useState("idle");
+  const [motionUrl, setMotionUrl]         = useState("");
+  const [motionMeta, setMotionMeta]       = useState(null);
+  const [motionError, setMotionError]     = useState("");
+  const [audioUrl, setAudioUrl]           = useState("");
+  const [audioError, setAudioError]       = useState("");
+  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [activeSession, setActiveSession] = useState(1);
   const [micActive, setMicActive]         = useState(false);
   const [dark, setDark]                   = useState(false);
   const bottomRef = useRef(null);
   const textRef   = useRef(null);
+  const audioRef  = useRef(null);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
@@ -327,36 +490,116 @@ function App() {
     return null;
   };
 
+  const normalizeUrl = (url) => {
+    if (!url) return "";
+    if (/^https?:\/\//i.test(url)) return url;
+    return `http://localhost:8080${url.startsWith("/") ? "" : "/"}${url}`;
+  };
+
+  const toggleAudio = async () => {
+    if (!audioRef.current || !audioUrl) return;
+    try {
+      if (isAudioPlaying) {
+        audioRef.current.pause();
+        setIsAudioPlaying(false);
+      } else {
+        await audioRef.current.play();
+        setIsAudioPlaying(true);
+        setAudioError("");
+      }
+    } catch (err) {
+      setAudioError("Unable to play audio.");
+      setIsAudioPlaying(false);
+    }
+  };
+
   const send = async (text) => {
     if (!text.trim()) return;
     const now = new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" });
-    setMessages(m => [...m, { id:Date.now(), role:"user", text, motion:null, time:now }]);
+    const userMsg = { id:Date.now(), role:"user", text, motion:null, time:now };
+    setMessages(m => [...m, userMsg]);
     setInput("");
     if (textRef.current) textRef.current.style.height = "auto";
 
     setThinking(true);
-    await new Promise(r => setTimeout(r, 700));
+    setGenerating(true);
+    setMotionError("");
 
-    const detected = detectMotion(text);
-    if (detected) {
-      setGenerating(true);
-      await new Promise(r => setTimeout(r, 1100));
+    const historyPayload = [...messages, userMsg].map((m) => ({ role: m.role, content: m.text }));
+
+    try {
+      const response = await window.EcaApi.askAnswer({
+        query: text,
+        userId: "eca-demo",
+        history: historyPayload,
+        motionFormat: "glb",
+      });
+
+      const reply = response.text_answer || "No answer returned.";
+      const motionPrompt = response.motion?.text_prompt || reply;
+      const detected = detectMotion(motionPrompt);
+      if (detected) setMotionKey(detected);
+
+      if (response.motion?.motion_file_url) {
+        setMotionUrl(normalizeUrl(response.motion.motion_file_url));
+        setMotionMeta(response.motion);
+      } else {
+        setMotionUrl("");
+        setMotionMeta(null);
+      }
+
+      if (response.tts?.audio_url) {
+        const url = normalizeUrl(response.tts.audio_url);
+        setAudioUrl(url);
+        setAudioError("");
+        if (audioRef.current) {
+          audioRef.current.pause();
+          audioRef.current.currentTime = 0;
+        }
+        setIsAudioPlaying(false);
+      } else {
+        setAudioUrl("");
+      }
+
+      if (response.errors?.dart) {
+        setMotionError("Motion service unavailable for this response.");
+      }
+
+      setMessages(m => [...m, {
+        id: Date.now() + 1,
+        role:"assistant",
+        text: reply,
+        motion: detected,
+        time: new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }),
+      }]);
+    } catch (err) {
+      const message = err?.message || "Request failed.";
+      setMotionError("Could not load motion from API.");
+      setMessages(m => [...m, {
+        id: Date.now() + 1,
+        role: "assistant",
+        text: `Error: ${message}`,
+        motion: null,
+        time: new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }),
+      }]);
+    } finally {
+      setThinking(false);
       setGenerating(false);
-      setMotionKey(detected);
     }
-
-    await new Promise(r => setTimeout(r, 300));
-    setThinking(false);
-
-    const reply = detected
-      ? RESPONSES[detected]
-      : "I can demonstrate any physical movement or exercise in 3D. Try describing a motion like \"raise your arms\" or \"show a squat pattern.\"";
-
-    setMessages(m => [...m, {
-      id: Date.now() + 1, role:"assistant", text:reply, motion:detected,
-      time: new Date().toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" }),
-    }]);
   };
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const onEnded = () => setIsAudioPlaying(false);
+    const onPause = () => setIsAudioPlaying(false);
+    audio.addEventListener("ended", onEnded);
+    audio.addEventListener("pause", onPause);
+    return () => {
+      audio.removeEventListener("ended", onEnded);
+      audio.removeEventListener("pause", onPause);
+    };
+  }, []);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior:"smooth" }); }, [messages, thinking]);
 
@@ -560,7 +803,13 @@ function App() {
         borderLeft:"1px solid rgba(0,0,0,0.07)", flexShrink:0, background:"#fff" }}>
 
         <div style={{ flex:1, overflow:"hidden" }}>
-          <MotionViewer motionKey={motionKey} isGenerating={generatingMotion}/>
+          <MotionViewer
+            motionKey={motionKey}
+            isGenerating={generatingMotion}
+            modelUrl={motionUrl}
+            motionMeta={motionMeta}
+            motionError={motionError}
+          />
         </div>
 
         <div style={{ padding:"14px 14px 20px", borderTop:"1px solid rgba(0,0,0,0.06)" }}>
@@ -586,12 +835,34 @@ function App() {
           <div style={{ marginTop:12, background:"#F2F2F7", borderRadius:10, padding:"10px 12px" }}>
             <p style={{ fontSize:11, fontWeight:600, color:"#8E8E93", letterSpacing:0.4,
               marginBottom:6, textTransform:"uppercase" }}>Output</p>
-            {[["Format","T × 22 × 3"],["Dataset","HumanML3D"],["Model","MDM / DART"]].map(([k,v]) => (
+            {[["Format", motionUrl ? "GLB" : "—"],["Frames", motionMeta ? String(motionMeta.num_frames) : "—"],["Model","MDM / DART"]].map(([k,v]) => (
               <div key={k} style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
                 <span style={{ fontSize:12, color:"#8E8E93", fontWeight:500 }}>{k}</span>
                 <span style={{ fontSize:12, color:"#1C1C1E", fontWeight:600 }}>{v}</span>
               </div>
             ))}
+
+            <div style={{ marginTop:8, display:"flex", gap:8, alignItems:"center" }}>
+              <button
+                onClick={toggleAudio}
+                disabled={!audioUrl}
+                style={{
+                  padding:"6px 10px",
+                  borderRadius:8,
+                  background: audioUrl ? "#007AFF" : "#D1D1D6",
+                  color:"#fff",
+                  fontSize:12,
+                  fontWeight:600,
+                  opacity: audioUrl ? 1 : 0.8,
+                }}
+              >
+                {isAudioPlaying ? "Pause WAV" : "Play WAV"}
+              </button>
+              <span style={{ fontSize:11, color:"#8E8E93" }}>
+                {audioError ? audioError : (audioUrl ? "TTS ready" : "No audio")}
+              </span>
+            </div>
+            <audio ref={audioRef} src={audioUrl || ""} preload="none" />
           </div>
         </div>
       </aside>
