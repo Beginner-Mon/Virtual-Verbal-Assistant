@@ -7,6 +7,9 @@ responses including motion and voice prompts.
 """
 
 import logging
+import os
+import time
+import re
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 
@@ -38,6 +41,51 @@ from agents.response_templates import ResponseTemplateGenerator
 # Initialize logger
 logger = get_logger(__name__)
 
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r; using default %d", name, value, default)
+        return default
+
+
+def _detect_query_language(query: str) -> str:
+    """Detect query language with lightweight heuristics.
+
+    Returns one of: en, vi, jp, other.
+    """
+    text = (query or "").strip()
+    if not text:
+        return "other"
+
+    # Japanese scripts (hiragana, katakana, kanji)
+    if re.search(r"[\u3040-\u30ff\u31f0-\u31ff\u4e00-\u9fff]", text):
+        return "jp"
+
+    # Vietnamese diacritics and common words
+    vi_chars_pattern = r"[ăâđêôơưĂÂĐÊÔƠƯáàảãạắằẳẵặấầẩẫậéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]"
+    if re.search(vi_chars_pattern, text):
+        return "vi"
+
+    lowered = f" {text.lower()} "
+    vi_keywords = (
+        " bạn ", " tôi ", " chúng tôi ", " xin chào ", " cảm ơn ", " bài tập ",
+        " đau ", " không ", " giúp ", " như thế nào ", " thế nào ",
+    )
+    if any(k in lowered for k in vi_keywords):
+        return "vi"
+
+    # Default latin-script queries to English unless another non-latin script appears.
+    if re.search(r"[a-zA-Z]", text):
+        if not re.search(r"[\u0400-\u04FF\u0600-\u06FF\u0590-\u05FF\u0900-\u097F\u0E00-\u0E7F]", text):
+            return "en"
+
+    return "other"
+
 # ===========================
 # Request/Response Models
 # ===========================
@@ -67,6 +115,7 @@ class OrchestratorDecision(BaseModel):
     action: str = Field(..., description="Action type: retrieve_memory, call_llm, generate_motion, hybrid, clarify")
     intent: Optional[str] = Field(None, description="Intent detected: conversation, knowledge_query, exercise_recommendation, visualize_motion, etc")
     confidence: float = Field(..., description="Confidence score 0.0-1.0")
+    language: str = Field("other", description="Detected language code: en | vi | jp | other")
     reasoning: str = Field(..., description="Reasoning for decision")
     parameters: Dict[str, Any] = Field(default_factory=dict, description="Action parameters")
     tools_selected: List[str] = Field(
@@ -105,6 +154,7 @@ class QueryResponse(BaseModel):
 
     query: str = Field(..., description="Original query")
     user_id: str = Field(..., description="User ID")
+    language: str = Field("other", description="Detected language code: en | vi | jp | other")
     text_answer: str = Field(..., description="Generated text answer")
     exercises: List[Dict[str, str]] = Field(
         default_factory=list,
@@ -226,10 +276,32 @@ class AgenticRAGAPI:
             self.exercise_detector = get_exercise_detector()
             logger.info(f"ExerciseDetector initialized with {self.exercise_detector.get_exercise_count()} exercises")
 
+            # Lightweight in-memory cache for orchestrator routing decisions.
+            self._orchestrator_cache: Dict[str, Dict[str, Any]] = {}
+            self._orchestrator_cache_ttl_sec = _env_int("ORCHESTRATOR_CACHE_TTL_SEC", 120)
+
             logger.info("AgenticRAG API initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize AgenticRAG API: {e}")
             raise
+
+    def _orchestrator_cache_key(self, user_id: str, query: str) -> str:
+        return f"{user_id}::{query.strip().lower()}"
+
+    def _looks_like_conversation_query(self, query: str) -> bool:
+        q = query.strip().lower()
+        if not q:
+            return True
+        conversation_markers = {
+            "hi", "hello", "hey", "thanks", "thank you", "ok", "okay",
+            "how are you", "good morning", "good afternoon", "good evening",
+        }
+        if q in conversation_markers:
+            return True
+        if len(q) <= 20 and any(marker in q for marker in conversation_markers):
+            return True
+        motion_markers = ("exercise", "stretch", "workout", "pain", "show", "visualize", "demonstrate")
+        return len(q.split()) <= 5 and not any(m in q for m in motion_markers)
 
     # Maps LocalOrchestrator-specific intent strings to the canonical set
     # used in process_query() branching.  Without this, 'greeting' falls
@@ -272,6 +344,21 @@ class AgenticRAGAPI:
         logger.debug(f"Intent '{intent}' not found in config, using fallback: {fallback_limit}")
         return fallback_limit
 
+    def _is_multi_activity_request(self, query: str) -> bool:
+        """Heuristic: detect requests asking for a list of multiple exercises."""
+        q = (query or "").lower()
+        multi_markers = (
+            "exercises", "exercise list", "list", "suggest", "recommend",
+            "top ", "best ", "routine", "workout plan",
+        )
+        explicit_count_markers = (
+            " 2 ", " 3 ", " 4 ", " 5 ", " 6 ", " 7 ", " 8 ", " 9 ", " 10 ",
+            "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        )
+        asks_multiple = any(m in q for m in multi_markers)
+        asks_count = any(m in f" {q} " for m in explicit_count_markers)
+        return asks_multiple or asks_count
+
     def _get_orchestrator_decision(
         self,
         query: str,
@@ -283,10 +370,26 @@ class AgenticRAGAPI:
         Returns standardized decision format for both local and API orchestrators.
         """
         logger.info(f"_get_orchestrator_decision called with orchestrator type: {type(self.orchestrator).__name__}")
+
+        # Cache only when there is no conversation history context attached.
+        use_cache = not conversation_history
+        cache_key = self._orchestrator_cache_key(user_id, query)
+        if use_cache:
+            cached = self._orchestrator_cache.get(cache_key)
+            if cached:
+                age = time.time() - cached["ts"]
+                if age <= self._orchestrator_cache_ttl_sec:
+                    logger.info(f"Orchestrator cache hit (age={age:.1f}s)")
+                    return cached["decision"]
+                self._orchestrator_cache.pop(cache_key, None)
         
         # Step 1: Detect exercise using ExerciseDetector (Hybrid Entity Extraction)
-        logger.info(f"Detecting exercise in query: {query}")
-        detected_exercise = self.exercise_detector.detect_exercise(query)
+        detected_exercise = None
+        if self._looks_like_conversation_query(query):
+            logger.info("Skipping exercise detection for conversation-like query")
+        else:
+            logger.info(f"Detecting exercise in query: {query}")
+            detected_exercise = self.exercise_detector.detect_exercise(query)
         
         if detected_exercise:
             logger.info(f"Exercise detected: '{detected_exercise}'")
@@ -322,7 +425,10 @@ class AgenticRAGAPI:
                     document_tool=getattr(self, "_document_tool_ref", None),
                     web_search_tool=getattr(self, "_web_search_tool_ref", None),
                 )
-                return _api_orch.process_query(query, user_id, conversation_history)
+                api_result = _api_orch.process_query(query, user_id, conversation_history)
+                if use_cache:
+                    self._orchestrator_cache[cache_key] = {"ts": time.time(), "decision": api_result}
+                return api_result
 
             # Normalize LocalOrchestrator-specific intent strings so that
             # process_query() branching works correctly for greetings/follow-ups.
@@ -351,12 +457,17 @@ class AgenticRAGAPI:
                 "confidence": decision["confidence"]
             }
             logger.info(f"Converted result for API compatibility: {result}")
+            if use_cache:
+                self._orchestrator_cache[cache_key] = {"ts": time.time(), "decision": result}
             return result
         else:
             logger.info("USING API ORCHESTRATOR path")
             # API orchestrator returns the existing format
             # Note: API orchestrator doesn't support detected_exercise parameter yet
-            return self.orchestrator.process_query(query, user_id, conversation_history)
+            api_result = self.orchestrator.process_query(query, user_id, conversation_history)
+            if use_cache:
+                self._orchestrator_cache[cache_key] = {"ts": time.time(), "decision": api_result}
+            return api_result
 
     def process_query(self, query: str, user_id: str, conversation_history: Optional[List[Dict[str, str]]] = None, stream: bool = False) -> Any:
         """Process a user query through the intent-branched pipeline.
@@ -407,6 +518,7 @@ class AgenticRAGAPI:
             orch_start = time.time()
             logger.info(f"Using orchestrator: {type(self.orchestrator).__name__}")
             trace["orchestrator_type"] = type(self.orchestrator).__name__
+            query_language = _detect_query_language(query)
             
             action_plan = self._get_orchestrator_decision(
                 query=query,
@@ -549,10 +661,16 @@ class AgenticRAGAPI:
                     "animation", "animate", "how to do", "how do i",
                 )
                 _q_lower = query.lower()
-                if exercises and any(kw in _q_lower for kw in _VIZ_KEYWORDS):
+                is_multi_activity = self._is_multi_activity_request(query)
+                if exercises and any(kw in _q_lower for kw in _VIZ_KEYWORDS) and not is_multi_activity:
                     exercise_motion_prompt = exercises[0]["name"].lower()
                     logger.info(
                         f"Visualization query detected → exercise_motion_prompt={exercise_motion_prompt!r}"
+                    )
+                elif exercises and any(kw in _q_lower for kw in _VIZ_KEYWORDS) and is_multi_activity:
+                    logger.info(
+                        "Visualization keyword found, but query is multi-activity/list request; "
+                        "returning exercise list without auto-generating motion."
                     )
 
             # ── Step 2b: Call MotionGenerationTool if motion was requested ────
@@ -619,6 +737,7 @@ class AgenticRAGAPI:
                 action=action_plan.get("action", "unknown"),
                 intent=intent,
                 confidence=action_plan.get("confidence", 0.5),
+                language=query_language,
                 reasoning=action_plan.get("reasoning", "Orchestrator decision"),
                 parameters=action_plan.get("parameters", {}),
                 tools_selected=trace["tools_selected"],
@@ -638,6 +757,7 @@ class AgenticRAGAPI:
             response = QueryResponse(
                 query=query,
                 user_id=user_id,
+                language=query_language,
                 text_answer=text_answer,
                 exercises=exercises,
                 exercise_motion_prompt=exercise_motion_prompt,
@@ -794,10 +914,13 @@ async def get_info() -> Dict[str, Any]:
 # ===========================
 
 if __name__ == "__main__":
+    host = os.getenv("AGENTICRAG_HOST", "0.0.0.0")
+    port = _env_int("AGENTICRAG_PORT", 8000)
     logger.info("Starting AgenticRAG REST API server...")
+    logger.info(f"Host: {host}  Port: {port}")
     uvicorn.run(
         app,
-        host="0.0.0.0",
-        port=8000,
+        host=host,
+        port=port,
         log_level="info",
     )

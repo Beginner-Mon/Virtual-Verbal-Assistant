@@ -89,6 +89,9 @@ class ClassifierFreeWrapper(nn.Module):
         return out_uncond + (y['scale'] * (out - out_uncond))
 
 def load_mld(denoiser_checkpoint, device):
+    if device.type == 'cpu':
+        torch.set_default_dtype(torch.float32)
+
     # load denoiser
     denoiser_dir = Path(denoiser_checkpoint).parent
     with open(denoiser_dir / "args.yaml", "r") as f:
@@ -99,11 +102,16 @@ def load_mld(denoiser_checkpoint, device):
     denoiser_class = DenoiserMLP if isinstance(denoiser_args.model_args, DenoiserMLPArgs) else DenoiserTransformer
     denoiser_model = denoiser_class(
         **asdict(denoiser_args.model_args),
-    ).to(device)
+    )
+    if device.type == 'cpu':
+        denoiser_model = denoiser_model.float()
+    denoiser_model = denoiser_model.to(device)
     checkpoint = torch.load(denoiser_checkpoint, map_location=device)
     model_state_dict = checkpoint['model_state_dict']
     print(f"Loading denoiser checkpoint from {denoiser_checkpoint}")
     denoiser_model.load_state_dict(model_state_dict)
+    if device.type == 'cpu':
+        denoiser_model = denoiser_model.float()
     for param in denoiser_model.parameters():
         param.requires_grad = False
     denoiser_model.eval()
@@ -118,7 +126,10 @@ def load_mld(denoiser_checkpoint, device):
     print('vae model args:', asdict(vae_args.model_args))
     vae_model = AutoMldVae(
         **asdict(vae_args.model_args),
-    ).to(device)
+    )
+    if device.type == 'cpu':
+        vae_model = vae_model.float()
+    vae_model = vae_model.to(device)
     checkpoint = torch.load(denoiser_args.mvae_path, map_location=device)
     model_state_dict = checkpoint['model_state_dict']
     if 'latent_mean' not in model_state_dict:
@@ -126,6 +137,8 @@ def load_mld(denoiser_checkpoint, device):
     if 'latent_std' not in model_state_dict:
         model_state_dict['latent_std'] = torch.tensor(1)
     vae_model.load_state_dict(model_state_dict)
+    if device.type == 'cpu':
+        vae_model = vae_model.float()
     vae_model.latent_mean = model_state_dict[
         'latent_mean']  # register buffer seems to be not loaded by load_state_dict
     vae_model.latent_std = model_state_dict['latent_std']

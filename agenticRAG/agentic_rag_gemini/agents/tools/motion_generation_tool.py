@@ -6,11 +6,12 @@ knowing the HTTP details.
 
 API contract:
     POST http://localhost:5001/generate
-    Body:  {"text_prompt": "<exercise name>", "guidance_scale": 5.0, "num_steps": 50}
+    Body:  {"text_prompt": "<exercise name>", "duration_seconds": 10, "guidance_scale": 5.0, "num_steps": 50}
     200:   {"request_id": "abc123", "motion_file_url": "/download/motion_abc123.npz", "num_frames": 160, "fps": 30, "duration_seconds": 5.33, "text_prompt": "..."}
 """
 
 from typing import Any, Dict
+import os
 
 import requests
 
@@ -21,6 +22,15 @@ logger = get_logger(__name__)
 # Defaults — can be overridden at construction time
 _DEFAULT_ENDPOINT = "http://localhost:5001/generate"
 _DEFAULT_TIMEOUT  = 30   # seconds
+_DEFAULT_DURATION_SECONDS = float(os.getenv("MOTION_DEFAULT_DURATION_SECONDS", "12"))
+
+
+def _normalize_motion_prompt(prompt: str) -> str:
+    """Normalize motion description text without adding repetition syntax."""
+    normalized = prompt.strip()
+    if not normalized:
+        return normalized
+    return normalized
 
 
 class MotionGenerationTool:
@@ -81,7 +91,7 @@ class MotionGenerationTool:
         if not prompt or not prompt.strip():
             raise ValueError("[MotionGenerationTool] prompt must be a non-empty string")
 
-        prompt = prompt.strip()
+        prompt = _normalize_motion_prompt(prompt)
         logger.info(f"[MotionGenerationTool] generate_motion prompt='{prompt}'")
 
         try:
@@ -89,9 +99,9 @@ class MotionGenerationTool:
                 self._endpoint,
                 json={
                     "text_prompt": prompt,
+                    "duration_seconds": _DEFAULT_DURATION_SECONDS,
                     "guidance_scale": 5.0,
-                    "num_steps": 50,
-                    "respacing": "ddim50"
+                    "num_steps": 50
                 },
                 timeout=self._timeout,
             )
@@ -112,9 +122,14 @@ class MotionGenerationTool:
             return {"error": msg, "motion_file": None, "frames": 0, "fps": 0}
 
         except requests.exceptions.HTTPError as exc:
+            response_body = ""
+            try:
+                response_body = exc.response.text
+            except Exception:
+                response_body = ""
             msg = (
                 f"[MotionGenerationTool] DART returned HTTP {exc.response.status_code} "
-                f"for prompt='{prompt}': {exc}"
+                f"for prompt='{prompt}': {exc}. Response: {response_body}"
             )
             logger.error(msg)
             return {"error": msg, "motion_file": None, "frames": 0, "fps": 0}

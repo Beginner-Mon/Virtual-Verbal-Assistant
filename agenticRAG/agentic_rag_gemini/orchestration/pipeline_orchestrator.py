@@ -294,17 +294,20 @@ class PipelineOrchestrator:
             Response dictionary or None on error
         """
         try:
-            url = f"{self.config['dart_url']}/generate_motion"
+            url = f"{self.config['dart_url']}/generate"
 
-            # Parse primitive sequence to extract num_primitives
-            primitive_seq = motion_prompt.get("primitive_sequence", "walk*20")
-            num_primitives = motion_prompt.get("num_frames", 160) // 8
+            # Prefer explicit duration in seconds.
+            duration_seconds = float(
+                motion_prompt.get("duration_seconds")
+                or motion_prompt.get("duration_estimate_seconds")
+                or max(2.0, float(motion_prompt.get("num_frames", 160)) / 30.0)
+            )
 
             payload = {
                 "text_prompt": motion_prompt.get("description", "walk"),
-                "num_primitives": num_primitives,
+                "duration_seconds": duration_seconds,
                 "guidance_scale": 5.0,
-                "num_steps": 10,
+                "num_steps": 50,
             }
 
             logger.debug(f"Calling DART: POST {url}")

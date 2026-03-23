@@ -331,8 +331,7 @@ def load_and_freeze_clip(clip_version):
     import clip
     clip_model, clip_preprocess = clip.load(clip_version, device='cpu',
                                             jit=False)  # Must set jit=False for training
-    clip.model.convert_weights(
-        clip_model)  # Actually this line is unnecessary since clip by default already on float16
+    clip_model = clip_model.float()
 
     # Freeze CLIP weights
     clip_model.eval()

@@ -20,9 +20,13 @@ class MotionPrompt(BaseModel):
     """Motion generation prompt."""
 
     description: str = Field(..., description="Natural language motion description")
-    primitive_sequence: str = Field(
-        ...,
-        description='Primitive action sequence (e.g., "walk*20,turn_left*10")',
+    primitive_sequence: Optional[str] = Field(
+        None,
+        description='Legacy primitive sequence (e.g., "walk*20,turn_left*10"). Optional.',
+    )
+    duration_seconds: Optional[float] = Field(
+        None,
+        description="Preferred target duration in seconds for motion generation.",
     )
     num_frames: int = Field(160, description="Number of frames to generate")
     fps: int = Field(30, description="Frames per second")

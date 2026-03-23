@@ -94,21 +94,19 @@ class ResponseTemplateGenerator:
                 logger.info("No motion type detected in query")
                 return None
 
-            # Get primitive sequence
-            primitive_sequence = self._generate_primitive_sequence(motion_type, query)
-
-            # Calculate frame count: 8 frames per primitive at 30 fps
-            num_primitives = len(primitive_sequence.split(","))
-            num_frames = num_primitives * 8
+            # Estimate duration from primitive metadata while keeping a plain prompt.
+            primitive_count = self.MOTION_PRIMITIVES.get(motion_type, {}).get("num_primitives", 12)
+            duration_seconds = max(2.0, (primitive_count * 8.0) / 30.0)
+            num_frames = int(round(duration_seconds * 30.0))
 
             motion_prompt = {
                 "description": f"Motion for: {query}",
-                "primitive_sequence": primitive_sequence,
+                "duration_seconds": duration_seconds,
                 "num_frames": num_frames,
                 "fps": 30,
             }
 
-            logger.info(f"Generated motion prompt: {primitive_sequence}")
+            logger.info(f"Generated motion prompt with duration_seconds={duration_seconds:.2f}")
             return motion_prompt
 
         except Exception as e:
@@ -174,48 +172,45 @@ class ResponseTemplateGenerator:
         return None
 
     def _generate_primitive_sequence(self, motion_type: str, query: str) -> str:
-        """Generate a primitive sequence string for DART motion generation.
-
-        Format: "action1*num1,action2*num2,..."
+        """Generate a plain action sequence string (no repetition syntax).
 
         Args:
             motion_type: Primary motion type
             query: Original query for context
 
         Returns:
-            Primitive sequence string
+            Comma-separated action sequence string
         """
         sequence = []
         query_lower = query.lower()
 
         # Handle basic motion types
         if motion_type in self.MOTION_PRIMITIVES:
-            base_primitives = self.MOTION_PRIMITIVES[motion_type]["num_primitives"]
-            sequence.append(f"{motion_type}*{base_primitives}")
+            sequence.append(motion_type)
 
         # Handle composite motions
         elif motion_type == "walk_turn":
-            sequence.append("walk*15")
-            sequence.append("turn_left*8")
-            sequence.append("walk*15")
+            sequence.append("walk")
+            sequence.append("turn left")
+            sequence.append("walk")
 
         elif motion_type == "walk_run":
-            sequence.append("walk*10")
-            sequence.append("run*12")
+            sequence.append("walk")
+            sequence.append("run")
 
         else:
             # Default to walk if motion type not recognized
-            sequence.append("walk*20")
+            sequence.append("walk")
 
         # Add secondary actions if detected in query
         if "turn" in query_lower and "turn" not in motion_type:
-            sequence.append("turn_left*5")
+            sequence.append("turn left")
 
         if "wave" in query_lower and "wave" not in motion_type:
-            sequence.append("wave*4")
+            sequence.append("wave")
 
         if "jump" in query_lower and "jump" not in motion_type:
-            sequence.append("jump*3")
+            sequence.append("jump")
 
         return ",".join(sequence)
 

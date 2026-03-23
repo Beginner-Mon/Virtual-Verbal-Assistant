@@ -236,7 +236,8 @@ class LocalOrchestrator:
             # Validate intent
             valid_intents = [
                 "ask_exercise_info", "visualize_motion", "greeting", 
-                "followup_question", "resume_conversation", "general_fitness_question", "unknown"
+                "followup_question", "resume_conversation", "general_fitness_question",
+                "exercise_recommendation", "conversation", "knowledge_query", "unknown"
             ]
             
             if parsed["intent"] not in valid_intents:

@@ -9,9 +9,11 @@ from pathlib import Path
 import tempfile
 import os
 import time
+import re
 from typing import List, Dict, Any
 import json
 from datetime import datetime
+import httpx
 
 # Add parent to path
 import sys
@@ -32,6 +34,134 @@ from utils.gemini_client import GeminiClientWrapper
 from config import get_config
 
 logger = get_logger(__name__)
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning(f"Invalid integer for {name}={value!r}; using default {default}")
+        return default
+
+
+AGENTICRAG_API_URL = os.getenv("AGENTICRAG_API_URL", "http://localhost:8000")
+DART_BASE_URL = os.getenv("DART_URL", "http://localhost:5001")
+UI_BACKEND_TIMEOUT = float(_env_int("UI_BACKEND_TIMEOUT", 90))
+UI_DART_TIMEOUT = float(_env_int("UI_DART_TIMEOUT", 45))
+UI_MOTION_DEFAULT_DURATION_SECONDS = float(os.getenv("MOTION_DEFAULT_DURATION_SECONDS", "12"))
+
+
+def _normalize_motion_prompt(prompt: str) -> str:
+    normalized = (prompt or "").strip()
+    if not normalized:
+        return normalized
+    # Do not synthesize repetition syntax here; DART now receives explicit duration_seconds.
+    return normalized
+
+
+def _try_generate_motion_from_dart(prompt: str) -> Dict[str, Any]:
+    """Best-effort DART call when /query returns motion intent but no metadata."""
+    if not prompt or not prompt.strip():
+        return {}
+    normalized_prompt = _normalize_motion_prompt(prompt)
+    body = {
+        "text_prompt": normalized_prompt,
+        "duration_seconds": UI_MOTION_DEFAULT_DURATION_SECONDS,
+        "guidance_scale": 5.0,
+        "num_steps": 50,
+        "gender": "female",
+    }
+    try:
+        with httpx.Client(timeout=UI_DART_TIMEOUT) as client:
+            resp = client.post(f"{DART_BASE_URL}/generate", json=body)
+            resp.raise_for_status()
+            data = resp.json()
+        return {
+            "motion_file_url": f"{DART_BASE_URL}{data['motion_file_url']}" if data.get("motion_file_url") else "",
+            "num_frames": int(data.get("num_frames", 0) or 0),
+            "fps": int(data.get("fps", 30) or 30),
+            "duration_seconds": float(data.get("duration_seconds", 0.0) or 0.0),
+            "text_prompt": data.get("text_prompt", normalized_prompt),
+        }
+    except Exception as exc:
+        logger.warning(f"UI DART fallback motion generation failed: {exc}")
+        return {"error": str(exc)}
+
+
+def _normalize_exercises(exercises: Any) -> List[Dict[str, str]]:
+    """Normalize exercises payload to a list of {name: ...} dicts."""
+    normalized: List[Dict[str, str]] = []
+    seen = set()
+
+    if not isinstance(exercises, list):
+        return normalized
+
+    for item in exercises:
+        name = ""
+        if isinstance(item, dict):
+            name = str(item.get("name") or item.get("title") or "").strip()
+        elif isinstance(item, str):
+            name = item.strip()
+
+        if not name:
+            continue
+
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append({"name": name})
+
+    return normalized
+
+
+def _extract_exercises_from_text(answer: str, limit: int = 8) -> List[Dict[str, str]]:
+    """Best-effort parser for numbered/bulleted exercise lists in plain text answers."""
+    if not answer:
+        return []
+
+    # Prefer numbered list items: "1. Walking: ...", "2) Yoga - ..."
+    candidate_lines = re.findall(r"(?mi)^\s*(?:\d+[\.)]|[-*])\s+(.+)$", answer)
+    if not candidate_lines:
+        return []
+
+    found: List[Dict[str, str]] = []
+    seen = set()
+
+    for raw in candidate_lines:
+        line = raw.strip()
+        if not line:
+            continue
+
+        # Remove markdown links and bare URLs from noisy web-style answers.
+        line = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", line)
+        line = re.sub(r"https?://\S+", "", line)
+
+        # Most exercise responses start with "Exercise Name: ...".
+        first_segment = re.split(r"\s*(?::|\-|—)\s*", line, maxsplit=1)[0].strip()
+        first_segment = re.sub(r"\(.*?\)", "", first_segment).strip()
+        first_segment = re.sub(r"[^A-Za-z0-9\s/+]+", "", first_segment).strip()
+
+        # Avoid capturing source/link noise as "exercise names".
+        low = first_segment.lower()
+        if not first_segment or low.startswith("source") or "http" in low or "www" in low:
+            continue
+        if len(first_segment) > 60:
+            continue
+
+        key = low
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append({"name": first_segment})
+
+        if len(found) >= limit:
+            break
+
+    return found
 
 # Page config
 st.set_page_config(
@@ -160,6 +290,19 @@ def init_session_state():
         # Quota error state for retry functionality
         st.session_state.quota_error = False
         st.session_state.last_failed_message = ""
+        
+        # Exercise selection state for UI
+        st.session_state.selected_exercise = None
+        st.session_state.pending_exercise_query = None
+        
+        # Store latest response and exercises across reruns
+        st.session_state.last_response_answer = None
+        st.session_state.last_response_exercises = []
+        st.session_state.last_response_needs_motion = False
+        st.session_state.last_response_motion = None
+        st.session_state.last_response_motion_prompt = None
+        st.session_state.last_response_errors = {}
+        st.session_state.last_response_source = "local"
 
         st.session_state.initialized = True
 
@@ -262,18 +405,10 @@ def _summarize_current_session():
         logger.error(f"Session summarization failed: {exc}")
 
 
-def process_user_query(query: str, stream: bool = False):
-    """Process user query through the system.
-    
-    Args:
-        query: User's query string
-        stream: If True, returns a generator for streaming; if False, returns string
-        
-    Returns:
-        Generator of response chunks if stream=True, else complete response string
-    """
+def _process_user_query_local(query: str):
+    """Legacy local processing path (fallback when backend API is unavailable)."""
     try:
-        logger.info(f"Processing query: {query[:100]}... (stream={stream})")
+        logger.info(f"Processing query: {query[:100]}...")
         
         # Get conversation history
         history = [
@@ -285,64 +420,89 @@ def process_user_query(query: str, stream: bool = False):
         active_docs_count = len(st.session_state.active_documents)
         total_docs = len(st.session_state.loaded_documents)
         
-        # Process through orchestrator and RAG with streaming
-        if stream:
-            # Return generator for streaming chunks
-            response_gen = st.session_state.rag_pipeline.generate_response(
-                query=query,
-                user_id=st.session_state.user_id,
-                conversation_history=history,
-                use_memory=True,
-                stream=True
-            )
-            
-            # Wrap generator to collect full response and store interaction
-            def stream_with_storage():
-                full_response = ""
-                for chunk in response_gen:
-                    full_response += chunk
-                    yield chunk
-                
-                # Store interaction after streaming complete
-                st.session_state.memory_manager.store_interaction(
-                    user_id=st.session_state.user_id,
-                    user_message=query,
-                    assistant_response=full_response,
-                    metadata={
-                        "source": "web_ui",
-                        "active_documents": ", ".join(st.session_state.active_documents) if st.session_state.active_documents else "none",
-                        "document_count": active_docs_count,
-                        "total_documents": total_docs,
-                        "streaming": True
-                    }
-                )
-            
-            return stream_with_storage()
-        else:
-            # Blocking call for non-streaming
-            result = st.session_state.rag_pipeline.generate_response(
-                query=query,
-                user_id=st.session_state.user_id,
-                conversation_history=history,
-                use_memory=True,
-                stream=False
-            )
-            
-            # Store interaction with active documents info
-            st.session_state.memory_manager.store_interaction(
-                user_id=st.session_state.user_id,
-                user_message=query,
-                assistant_response=result.get("response", ""),
-                metadata={
-                    "source": "web_ui",
-                    "active_documents": ", ".join(st.session_state.active_documents) if st.session_state.active_documents else "none",
-                    "document_count": active_docs_count,
-                    "total_documents": total_docs,
-                    "retrieved_context": len(result.get("context", []))
-                }
-            )
-            
-            return result.get("response", "No response generated")
+        # === PHASE 1: Call Orchestrator (like API server does) ===
+        logger.info("Calling orchestrator to classify intent and fetch tools...")
+        action_plan = st.session_state.orchestrator.process_query(
+            query=query,
+            user_id=st.session_state.user_id,
+            conversation_history=history
+        )
+        
+        intent = action_plan.get("intent", "unknown")
+        tool_results = action_plan.get("tool_results", {})
+        expanded_query = action_plan.get("expanded_query", query)
+        needs_motion = action_plan.get("actions", {}).get("generate_motion", False)
+        
+        logger.info(f"Orchestrator decision: intent={intent}, needs_motion={needs_motion}, expansion={len(expanded_query)} chars")
+        
+        # === CASE 1: Direct motion visualization request ===
+        if intent == "visualize_motion" or needs_motion:
+            logger.info("Motion visualization requested → returning motion prompt")
+            # For now, just return the text answer without exercises
+            # The UI will handle motion generation separately
+            text_answer = f"Generating motion for: {query}"
+            return {
+                "answer": text_answer,
+                "exercises": [],
+                "intent": intent,
+                "needs_motion": True,
+                "motion": None,
+                "motion_prompt": query,
+                "errors": {},
+                "source": "local",
+            }
+        
+        # === CASE 2: Exercise recommendation → use structured response ===
+        logger.info(f"Calling RAG pipeline with structured=True for exercise extraction")
+        rag_result = st.session_state.rag_pipeline.generate_response(
+            query=query,
+            user_id=st.session_state.user_id,
+            conversation_history=history,
+            # Pre-fetched tool results from orchestrator
+            memory_context=tool_results.get("memory"),
+            document_context=tool_results.get("documents"),
+            web_context=tool_results.get("web_search"),
+            # Skip redundant retrieval
+            skip_web_search=True,
+            expanded_query=expanded_query,
+            skip_reflection=True,
+            # Request structured response with exercises
+            structured=True,
+            stream=False,
+            use_memory=True
+        )
+        
+        # === PHASE 3: Extract text and exercises ===
+        text_answer = rag_result.get("response", "No response generated")
+        exercises = rag_result.get("exercises", [])
+        
+        logger.info(f"Generated response: {len(text_answer)} chars, {len(exercises)} exercises")
+        
+        # Store interaction in memory
+        st.session_state.memory_manager.store_interaction(
+            user_id=st.session_state.user_id,
+            user_message=query,
+            assistant_response=text_answer,
+            metadata={
+                "source": "web_ui",
+                "intent": intent,
+                "active_documents": ", ".join(st.session_state.active_documents) if st.session_state.active_documents else "none",
+                "document_count": active_docs_count,
+                "total_documents": total_docs,
+                "exercises_count": len(exercises)
+            }
+        )
+        
+        return {
+            "answer": text_answer,
+            "exercises": exercises,
+            "intent": intent,
+            "needs_motion": False,
+            "motion": None,
+            "motion_prompt": None,
+            "errors": {},
+            "source": "local",
+        }
         
     except Exception as e:
         logger.error(f"Error processing query: {e}", exc_info=True)
@@ -356,13 +516,139 @@ def process_user_query(query: str, stream: bool = False):
         else:
             error_msg = f"❌ Error: {str(e)}"
         
-        # For streaming, yield error message; for non-streaming, return it
-        if stream:
-            def error_generator():
-                yield error_msg
-            return error_generator()
-        else:
-            return error_msg
+        logger.error(error_msg)
+        return {
+            "answer": error_msg,
+            "exercises": [],
+            "intent": "unknown",
+            "needs_motion": False,
+            "motion": None,
+            "motion_prompt": None,
+            "errors": {"ui": error_msg},
+            "source": "local",
+        }
+
+
+def process_user_query(query: str):
+    """Process query via AgenticRAG backend API for consistent UI/API behavior.
+
+    Falls back to local processing if backend API is unavailable.
+    """
+    history = [
+        {"role": m["role"], "content": m["content"]}
+        for m in st.session_state.messages[-6:]
+    ]
+    payload = {
+        "query": query,
+        "user_id": st.session_state.user_id,
+        "conversation_history": history,
+        "stream": False,
+    }
+
+    try:
+        logger.info(f"Calling backend API: {AGENTICRAG_API_URL}/query")
+        with httpx.Client(timeout=UI_BACKEND_TIMEOUT) as client:
+            resp = client.post(f"{AGENTICRAG_API_URL}/query", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+
+        answer = data.get("text_answer", "No response generated")
+        exercises = _normalize_exercises(data.get("exercises", []))
+        intent = (data.get("orchestrator_decision") or {}).get("intent", "unknown")
+        motion = data.get("motion")
+        exercise_motion_prompt = data.get("exercise_motion_prompt")
+
+        # UI fallback: recover exercise names from the text answer when backend
+        # returns an empty or malformed exercises field.
+        if not exercises:
+            inferred = _extract_exercises_from_text(answer)
+            if inferred:
+                logger.info(f"Inferred {len(inferred)} exercises from text_answer for UI rendering")
+                exercises = inferred
+
+        # Build download URL for motion when backend returns only filename.
+        if motion and motion.get("motion_file") and not motion.get("motion_file_url"):
+            motion = {
+                **motion,
+                "motion_file_url": f"{DART_BASE_URL}/download/{motion['motion_file']}"
+            }
+
+        errors = data.get("errors", {}) if isinstance(data.get("errors", {}), dict) else {}
+
+        # Fallback: if backend signaled motion intent but no metadata, try DART directly.
+        if not motion and exercise_motion_prompt:
+            fallback_motion = _try_generate_motion_from_dart(exercise_motion_prompt)
+            if fallback_motion and not fallback_motion.get("error"):
+                motion = fallback_motion
+            else:
+                if fallback_motion.get("error"):
+                    errors["dart"] = fallback_motion["error"]
+
+        needs_motion = bool(motion) or bool(exercise_motion_prompt)
+
+        return {
+            "answer": answer,
+            "exercises": exercises,
+            "intent": intent,
+            "needs_motion": needs_motion,
+            "motion": motion,
+            "motion_prompt": exercise_motion_prompt,
+            "errors": errors,
+            "source": "api",
+        }
+    except Exception as exc:
+        logger.warning(f"Backend API unavailable, falling back to local path: {exc}")
+        local_result = _process_user_query_local(query)
+        local_result["exercises"] = _normalize_exercises(local_result.get("exercises", [])) or _extract_exercises_from_text(local_result.get("answer", ""))
+        local_result["errors"] = {
+            **(local_result.get("errors") or {}),
+            "backend_api": f"Fallback to local processing: {exc}",
+        }
+        return local_result
+
+
+def _execute_query(query_text: str):
+    """Execute a query and persist user/assistant turns in chat history."""
+    add_message_to_chat("user", query_text)
+
+    try:
+        logger.info(f"Processing query: {query_text[:50]}...")
+
+        with st.status("🔄 Processing your query...", expanded=True) as status:
+            status.update(label="🔍 Classifying intent and retrieving context...", state="running")
+            status.update(label="🔨 Building response...", state="running")
+            status.update(label="⏳ Generating response from model...", state="running")
+
+            result = process_user_query(query_text)
+
+            status.update(label="✅ Response generated", state="complete")
+
+        answer = result.get("answer", "")
+        exercises = result.get("exercises", [])
+        intent = result.get("intent", "unknown")
+        needs_motion = result.get("needs_motion", False)
+        logger.info(
+            f"Processed query. Response length: {len(answer)} chars, "
+            f"exercises: {len(exercises)}, intent: {intent}, "
+            f"needs_motion: {needs_motion}, source={result.get('source')}"
+        )
+
+        add_message_to_chat("assistant", answer)
+
+        st.session_state.last_response_answer = answer
+        st.session_state.last_response_exercises = exercises
+        st.session_state.last_response_needs_motion = needs_motion
+        st.session_state.last_response_motion = result.get("motion")
+        st.session_state.last_response_motion_prompt = result.get("motion_prompt")
+        st.session_state.last_response_errors = result.get("errors", {})
+        st.session_state.last_response_source = result.get("source", "local")
+        st.rerun()
+
+    except Exception as e:
+        logger.error(f"Error processing query: {e}", exc_info=True)
+        error_msg = f"❌ Error: {str(e)}"
+        st.error(error_msg)
+        add_message_to_chat("assistant", error_msg)
 
 
 def load_document_file(file_path: str, context_type: str = "document", filename: str = ""):
@@ -558,6 +844,75 @@ with tab1:
                 # Display assistant message as normal text (not in a chat bubble)
                 st.write(msg["content"])
     
+    # Display last response with exercises (if processing just completed)
+    if st.session_state.get("last_response_answer"):
+        st.divider()
+
+        if st.session_state.get("last_response_source") == "local":
+            st.warning("Using local fallback path (backend /query unavailable). Output may differ from API server.")
+        
+        # === CASE 1: Motion visualization request ===
+        if st.session_state.get("last_response_needs_motion"):
+            st.subheader("🎬 Motion Visualization")
+
+            motion = st.session_state.get("last_response_motion") or {}
+            if motion:
+                frames = motion.get("frames", motion.get("num_frames", 0))
+                fps = motion.get("fps", 30)
+                duration = motion.get("duration_seconds")
+                if duration is None and frames and fps:
+                    duration = round(float(frames) / float(fps), 2)
+
+                st.success(f"Generated motion: {frames} frames @ {fps} fps" + (f" ({duration}s)" if duration is not None else ""))
+                motion_url = motion.get("motion_file_url")
+                if motion_url:
+                    st.link_button("⬇️ Download Motion NPZ", motion_url, use_container_width=False)
+            else:
+                last_errors = st.session_state.get("last_response_errors") or {}
+                dart_err = last_errors.get("dart")
+                if dart_err:
+                    st.error(f"Motion generation failed: {dart_err}")
+                else:
+                    st.warning("Motion generation was requested but no motion data was returned.")
+
+                motion_prompt = st.session_state.get("last_response_motion_prompt")
+                if motion_prompt and st.button("🔁 Retry Motion Generation", key="retry_motion_generation"):
+                    retry_motion = _try_generate_motion_from_dart(motion_prompt)
+                    if retry_motion and not retry_motion.get("error"):
+                        st.session_state.last_response_motion = retry_motion
+                        st.session_state.last_response_errors = {
+                            k: v for k, v in (st.session_state.get("last_response_errors") or {}).items() if k != "dart"
+                        }
+                        st.success("Motion generated successfully.")
+                        st.rerun()
+                    else:
+                        st.session_state.last_response_errors = {
+                            **(st.session_state.get("last_response_errors") or {}),
+                            "dart": retry_motion.get("error", "Unknown motion generation error"),
+                        }
+                        st.rerun()
+        
+        # === CASE 2: Exercise recommendations ===
+        elif st.session_state.get("last_response_exercises"):
+            exercises = st.session_state.last_response_exercises
+            st.subheader("📘 Available Exercises")
+            
+            # Create columns for exercise buttons (max 3 per row)
+            cols = st.columns(len(exercises)) if len(exercises) <= 3 else st.columns(3)
+            for idx, exercise in enumerate(exercises):
+                col_idx = idx % 3 if len(exercises) > 3 else idx
+                with cols[col_idx]:
+                    exercise_name = exercise.get("name", exercise.get("title", f"Exercise {idx+1}"))
+                    
+                    if st.button(
+                        f"📘 {exercise_name}",
+                        key=f"exercise_{idx}_{hash(exercise_name)}",
+                        use_container_width=True
+                    ):
+                        # Treat exercise selection as a new user query.
+                        st.session_state.pending_exercise_query = f"Show me {exercise_name}"
+                        st.rerun()
+    
     # (input handled below, outside tabs)
     
     # Quota error retry button
@@ -580,7 +935,7 @@ with tab1:
                     if key_manager.rotate_to_next_key():
                         st.session_state.quota_error = False
                         
-                        # Re-process last message with streaming
+                        # Re-process last message with structured response
                         try:
                             logger.info(f"Retrying with different API key: {st.session_state.last_failed_message[:50]}...")
                             
@@ -588,23 +943,45 @@ with tab1:
                                 status.update(label="🔍 Retrieving context...", state="running")
                                 status.update(label="⏳ Generating response...", state="running")
                                 
-                                response_stream = process_user_query(st.session_state.last_failed_message, stream=True)
+                                result = process_user_query(st.session_state.last_failed_message)
                                 status.update(label="✅ Response generated", state="complete")
                             
                             st.write("---")
-                            response_placeholder = st.empty()
-                            full_response = ""
-                            
-                            for chunk in response_stream:
-                                if chunk:
-                                    full_response += chunk
-                                    response_placeholder.write(full_response)
+                            answer = result.get("answer", "")
+                            exercises = result.get("exercises", [])
+                            if answer:
+                                st.write(answer)
+                                
+                                # Display exercises if present
+                                if exercises:
+                                    st.divider()
+                                    st.subheader("📘 Available Exercises")
+                                    cols = st.columns(len(exercises)) if len(exercises) <= 3 else st.columns(3)
+                                    for idx, exercise in enumerate(exercises):
+                                        col_idx = idx % 3 if len(exercises) > 3 else idx
+                                        with cols[col_idx]:
+                                            exercise_name = exercise.get("name", exercise.get("title", f"Exercise {idx+1}"))
+                                            if st.button(
+                                                f"📘 {exercise_name}",
+                                                key=f"retry_exercise_{idx}_{hash(exercise_name)}",
+                                                use_container_width=True
+                                            ):
+                                                st.session_state.pending_exercise_query = f"Show me {exercise_name}"
+                                                st.rerun()
                             
                             # Update last assistant message
                             if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
-                                st.session_state.messages[-1]["content"] = full_response
+                                st.session_state.messages[-1]["content"] = answer
                             else:
-                                add_message_to_chat("assistant", full_response)
+                                add_message_to_chat("assistant", answer)
+
+                            st.session_state.last_response_answer = answer
+                            st.session_state.last_response_exercises = exercises
+                            st.session_state.last_response_needs_motion = result.get("needs_motion", False)
+                            st.session_state.last_response_motion = result.get("motion")
+                            st.session_state.last_response_motion_prompt = result.get("motion_prompt")
+                            st.session_state.last_response_errors = result.get("errors", {})
+                            st.session_state.last_response_source = result.get("source", "local")
                             
                         except Exception as e:
                             logger.error(f"Error during retry: {e}", exc_info=True)
@@ -1011,54 +1388,13 @@ with tab4:
 
 user_input = st.chat_input("Ask me anything...")
 
+pending_query = st.session_state.get("pending_exercise_query")
+if pending_query:
+    st.session_state.pending_exercise_query = None
+    _execute_query(pending_query)
+
 if user_input:
-    # Add user message to chat
-    add_message_to_chat("user", user_input)
-    
-    # Process with streaming enabled for real-time response display
-    try:
-        logger.info(f"Processing query: {user_input[:50]}...")
-        
-        # Show progress during retrieval phase
-        with st.status("🔄 Processing your query...", expanded=True) as status:
-            status.update(label="🔍 Retrieving context from memory...", state="running")
-            st.write("Searching through your documents and conversation history...")
-            
-            status.update(label="🔨 Building response...", state="running")
-            st.write("Preparing prompt with relevant context...")
-            
-            status.update(label="⏳ Generating response from model...", state="running")
-            st.write("Model is generating your response...")
-            
-            # Get streaming generator from process_user_query
-            logger.info(f"Starting streaming response for: {user_input[:50]}...")
-            response_stream = process_user_query(user_input, stream=True)
-            
-            status.update(label="✅ Response generated", state="complete")
-        
-        # Display response as it streams in - create a placeholder that updates in real-time
-        st.write("---")
-        response_placeholder = st.empty()
-        full_response = ""
-        
-        # Stream response chunks to user in real-time
-        for chunk in response_stream:
-            if chunk:
-                full_response += chunk
-                # Update placeholder immediately as each chunk arrives
-                response_placeholder.write(full_response)
-        
-        logger.info(f"Streaming complete. Response length: {len(full_response)} chars")
-        
-        # Store complete response in chat history
-        add_message_to_chat("assistant", full_response)
-        st.rerun()
-        
-    except Exception as e:
-        logger.error(f"Error during streaming: {e}", exc_info=True)
-        error_msg = f"❌ Error: {str(e)}"
-        st.error(error_msg)
-        add_message_to_chat("assistant", error_msg)
+    _execute_query(user_input)
 
 # =====================
 # FOOTER
