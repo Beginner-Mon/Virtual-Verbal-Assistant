@@ -1,12 +1,15 @@
-// ==============================
-// Configuration
-// ==============================
+// Detect base URL: use current origin when served through Ngrok or any reverse proxy.
+// If served locally on a different port (e.g. 8081), default back to the real API port 8000.
+const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+const API_BASE = (window.location.protocol.startsWith('http') && !isLocalhost)
+    ? window.location.origin
+    : 'http://localhost:8000';
 
 const SERVICES = {
     rag: {
         name: 'AgenticRAG',
-        baseUrl: 'http://localhost:8000',
-        healthUrl: 'http://localhost:8000/health',
+        baseUrl: API_BASE,
+        healthUrl: `${API_BASE}/health`,
     },
     dart: {
         name: 'DART Motion',
@@ -106,7 +109,7 @@ async function testAgenticRAG() {
     updateTimer(timer, start);
 
     try {
-        const response = await fetch('http://localhost:8000/query', {
+        const response = await fetch(`${API_BASE}/query`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query, user_id: userId, conversation_history: [] }),
@@ -207,7 +210,7 @@ async function testPipeline() {
 
     try {
         // main_api.py fans out to AgenticRAG + DART simultaneously
-        const response = await fetch('http://localhost:8080/answer', {
+        const response = await fetch(`${API_BASE}/query`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query, user_id: userId, conversation_history: [] }),
@@ -340,7 +343,7 @@ function showRagResult(container, data, elapsed, status) {
 
 /** Render DART /generate response with download link. */
 function showDartResult(container, data, elapsed, status) {
-    const fileUrl = data.motion_file_url ? `http://localhost:5001${data.motion_file_url}` : null;
+    const fileUrl = data.motion_file_url ? `${SERVICES.dart.baseUrl}${data.motion_file_url}` : null;
 
     container.className = 'result-container result-success';
     container.innerHTML = `
@@ -386,7 +389,7 @@ function showPipelineResult(container, data, elapsed, status) {
     const motion = data.motion;
     const errors = data.errors;
     const fileUrl = motion?.motion_file_url
-        ? `http://localhost:5001${motion.motion_file_url}`
+        ? `${SERVICES.dart.baseUrl}${motion.motion_file_url}`
         : null;
 
     const errBanner = errors

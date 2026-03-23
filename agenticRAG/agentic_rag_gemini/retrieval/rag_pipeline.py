@@ -9,7 +9,7 @@ Changes vs original:
   - _retrieve_context: error-isolated per-source retrieval (no single failure kills all)
   - _retry_generation: iterative loop instead of recursion (stack-safe)
   - Removed duplicate `from config import get_config` inside _retrieve_context
-  - generate_response: retrieval + speculative web search run in parallel (ThreadPoolExecutor)
+    - generate_response: gated speculative web search + parallel retrieval
 """
 
 import re
@@ -104,6 +104,71 @@ def clean_json_response(response_text: str) -> str:
 
     return response_text
 
+
+def extract_text_answer_from_json_string(response_text: str) -> Optional[str]:
+    """Attempt to extract text_answer field value from malformed JSON using regex.
+    
+    When JSON parsing fails but the response contains "text_answer": "...",
+    extract the value directly using regex patterns.
+    
+    Args:
+        response_text: Response that may contain embedded JSON
+        
+    Returns:
+        Extracted text_answer value, or None if not found
+    """
+    # Try to find "text_answer": "..." or "text_answer": '...'
+    # Handles escaped quotes and newlines within the string
+    patterns = [
+        r'"text_answer"\s*:\s*"((?:[^"\\]|\\.)*)"',  # Double-quoted with escapes
+        r'"text_answer"\s*:\s*\'((?:[^\'\\]|\\.)*?)\'', # Single-quoted
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, response_text, re.DOTALL)
+        if match:
+            value = match.group(1)
+            # Unescape common JSON escapes
+            value = value.replace('\\"', '"').replace('\\n', '\n').replace('\\\\', '\\')
+            return value
+    
+    return None
+
+
+def extract_exercises_from_plain_text(text: str) -> List[Dict[str, str]]:
+    """Fallback parser to extract exercises from numbered lists.
+    
+    When LLM returns plain text instead of JSON, try to parse exercise names
+    from numbering patterns like "1. Exercise Name:", "2) Another Exercise", etc.
+    
+    Args:
+        text: Plain text response that may contain numbered exercises
+        
+    Returns:
+        List of exercise dicts with "name" key
+    """
+    exercises = []
+    
+    # Try to match patterns like:
+    # 1. Exercise Name:
+    # 2) Another Exercise
+    # 3. Third Exercise — description
+    patterns = [
+        r'^\d+[\.\)]\s+([^:\n\—]+)',  # "1. Name:" or "1) Name" or "1. Name —"
+    ]
+    
+    for line in text.split('\n'):
+        for pattern in patterns:
+            match = re.match(pattern, line.strip())
+            if match:
+                exercise_name = match.group(1).strip()
+                # Remove trailing punctuation and descriptors
+                exercise_name = re.sub(r'[\—\–\-].+$', '', exercise_name).strip()
+                if exercise_name and len(exercise_name) > 2:  # Filter very short names
+                    exercises.append({"name": exercise_name})
+                    break
+    
+    return exercises
 
 # ---------------------------------------------------------------------------
 # Source-type weights for context quality scoring
@@ -299,19 +364,30 @@ class RAGPipeline:
             logger.debug("Injected pre-fetched web search context")
 
         # Step 3: Retrieve remaining context internally (with query reformulation loop).
-        # Simultaneously launch a speculative web search in the background so
-        # that its network I/O overlaps with local retrieval (both are I/O-bound
-        # and share no mutable state, so ThreadPoolExecutor is safe here).
-        # --- Speculative web search future (started immediately, used only if pre-fetch was not done) ---
+        # Launch speculative web search only when current context appears weak.
+        # This avoids unnecessary network work on high-quality document/memory hits.
         _web_future: Optional[concurrent.futures.Future] = None
         _executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         if self.enable_web_search and self.web_search.is_available() \
                 and not _pre_fetched_web and not skip_web_search:
-            _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-            _web_future = _executor.submit(
-                self.web_search.search_and_summarize, current_query
-            )
-            logger.debug("Speculative web search started in background")
+            initial_quality = self._assess_context_quality(retrieved_context)
+            initial_too_few = len(retrieved_context) < self.min_context_threshold
+            initial_too_poor = bool(retrieved_context) and initial_quality < ws_quality_threshold
+
+            if initial_too_few or initial_too_poor:
+                _executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                _web_future = _executor.submit(
+                    self.web_search.search_and_summarize, current_query
+                )
+                logger.debug(
+                    "Speculative web search started (initial quality insufficient: "
+                    f"count={len(retrieved_context)}, quality={initial_quality:.2f})"
+                )
+            else:
+                logger.debug(
+                    "Skipping speculative web search (initial context sufficient: "
+                    f"count={len(retrieved_context)}, quality={initial_quality:.2f})"
+                )
 
         try:
             if use_memory:
@@ -393,6 +469,33 @@ class RAGPipeline:
                     _web_future.cancel()
                     logger.debug("Context sufficient — web search result discarded")
 
+            # If no speculative search was launched but context is still weak,
+            # run web search on-demand now.
+            elif self.enable_web_search and self.web_search.is_available() and not _pre_fetched_web and not skip_web_search:
+                context_quality = self._assess_context_quality(retrieved_context)
+                too_few = len(retrieved_context) < self.min_context_threshold
+                too_poor = context_quality < ws_quality_threshold and len(retrieved_context) > 0
+                if too_few or too_poor:
+                    logger.info(
+                        "Context insufficient after retrieval — running on-demand web search "
+                        f"(count={len(retrieved_context)}, quality={context_quality:.2f})"
+                    )
+                    try:
+                        web_context = self.web_search.search_and_summarize(current_query)
+                    except Exception as exc:
+                        logger.warning(f"On-demand web search failed: {exc}")
+                        web_context = ""
+
+                    if web_context:
+                        retrieved_context.append({
+                            "document": web_context,
+                            "source_type": "web_search",
+                            "similarity": 0.7,
+                            "metadata": {"source": "DuckDuckGo"},
+                        })
+                        web_search_used = True
+                        logger.info("Added on-demand web search results to context")
+
         finally:
             # Always shut down the executor to free the background thread.
             if _executor is not None:
@@ -469,17 +572,44 @@ class RAGPipeline:
         # Use clean_json_response() to strip any markdown fences Gemini may add
         # (e.g. ```json ... ```) when json_object mode is not enforced at API level.
         if structured:
+            extracted_successfully = False
+            
+            # Try #1: Standard JSON parsing
             try:
                 import json as _json
                 cleaned  = clean_json_response(response_text)
                 parsed   = _json.loads(cleaned)
                 result["response"]  = parsed.get("text_answer", response_text)
                 result["exercises"] = parsed.get("exercises", [])
+                logger.info(f"Structured JSON parsed successfully: {len(result['exercises'])} exercises")
+                extracted_successfully = True
             except Exception as _exc:
-                logger.warning(
-                    f"Structured JSON parse failed ({_exc}); treating response as plain text"
-                )
-                # Keep response_text as-is, exercises stays []
+                logger.debug(f"JSON parsing failed ({_exc}); trying regex extraction")
+                
+                # Try #2: Regex-based field extraction (handles malformed JSON)
+                text_answer = extract_text_answer_from_json_string(response_text)
+                if text_answer:
+                    result["response"] = text_answer
+                    logger.info("Extracted text_answer using regex; now extracting exercises...")
+                    
+                    # Extract exercises from the response (which may or may not have JSON wrapper)
+                    extracted_exercises = extract_exercises_from_plain_text(response_text)
+                    result["exercises"] = extracted_exercises
+                    
+                    if extracted_exercises:
+                        logger.info(f"Fallback regex extraction found {len(extracted_exercises)} exercises")
+                    extracted_successfully = True
+                
+                # Try #3: Full fallback to plain text parsing
+                if not extracted_successfully:
+                    logger.warning(
+                        f"Structured parsing failed completely; treating as plain text"
+                    )
+                    result["response"] = response_text
+                    extracted_exercises = extract_exercises_from_plain_text(response_text)
+                    result["exercises"] = extracted_exercises
+                    if extracted_exercises:
+                        logger.info(f"Plain text fallback found {len(extracted_exercises)} exercises")
 
         # NOTE: Interaction storage is handled by the UI layer (process_user_query)
         # which stores with richer metadata (active documents, source info).
@@ -548,49 +678,60 @@ class RAGPipeline:
             List of relevant context items sorted by weighted similarity
         """
         all_results: List[Dict[str, Any]] = []
+        max_chunks_per_doc = getattr(self._rag_config, 'max_chunks_per_document', 3)
 
-        # --- Conversation memory ---
-        try:
-            memory_results = self.memory_manager.retrieve_relevant_memory(
+        def _fetch_conversation() -> List[Dict[str, Any]]:
+            results = self.memory_manager.retrieve_relevant_memory(
                 user_id=user_id,
                 query=query,
                 top_k=self.config.top_k_documents,
             )
-            for r in memory_results:
+            for r in results:
                 r["source_type"] = "conversation"
-            all_results.extend(memory_results)
-        except Exception as exc:
-            logger.warning(f"Conversation memory retrieval skipped: {exc}")
+            return results
 
-        # --- Document store ---
-        try:
-            max_chunks_per_doc = getattr(self._rag_config, 'max_chunks_per_document', 3)
-            document_results = self.document_store.search_documents(
+        def _fetch_documents() -> List[Dict[str, Any]]:
+            results = self.document_store.search_documents(
                 query=query,
                 user_id=user_id,
                 top_k=self.config.top_k_documents,
                 max_chunks_per_document=max_chunks_per_doc,
             )
-            for r in document_results:
+            for r in results:
                 r["source_type"] = "document"
                 if "metadata" in r:
                     r["filename"] = r["metadata"].get("filename", "unknown")
-            all_results.extend(document_results)
-        except Exception as exc:
-            logger.warning(f"Document store retrieval skipped: {exc}")
+            return results
 
-        # --- Session summaries ---
-        try:
-            session_results = self.memory_manager.retrieve_session_context(
+        def _fetch_session_summaries() -> List[Dict[str, Any]]:
+            results = self.memory_manager.retrieve_session_context(
                 user_id=user_id,
                 query=query,
                 top_k=3,
             )
-            for r in session_results:
+            for r in results:
                 r["source_type"] = "session_summary"
-            all_results.extend(session_results)
-        except Exception as exc:
-            logger.warning(f"Session summary retrieval skipped: {exc}")
+            return results
+
+        fetch_jobs = {
+            "conversation": _fetch_conversation,
+            "document": _fetch_documents,
+            "session_summary": _fetch_session_summaries,
+        }
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            future_to_source = {
+                pool.submit(fetch_fn): source
+                for source, fetch_fn in fetch_jobs.items()
+            }
+
+            for future in concurrent.futures.as_completed(future_to_source):
+                source = future_to_source[future]
+                try:
+                    results = future.result()
+                    all_results.extend(results)
+                except Exception as exc:
+                    logger.warning(f"{source} retrieval skipped: {exc}")
 
         # Filter by similarity threshold
         filtered = [

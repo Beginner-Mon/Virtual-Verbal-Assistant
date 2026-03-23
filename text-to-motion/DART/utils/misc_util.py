@@ -16,8 +16,11 @@ def get_overlap(seg1, seg2):
 def load_and_freeze_clip(clip_version, device='cpu'):
     clip_model, clip_preprocess = clip.load(clip_version, device=device,
                                             jit=False)  # Must set jit=False for training
-    clip.model.convert_weights(
-        clip_model)  # Actually this line is unnecessary since clip by default already on float16
+    # Keep CLIP in float32 on CPU to avoid Half matmul errors in attention.
+    if torch.device(device).type == 'cuda':
+        clip.model.convert_weights(clip_model)
+    else:
+        clip_model = clip_model.float()
 
     # Freeze CLIP weights
     clip_model.eval()

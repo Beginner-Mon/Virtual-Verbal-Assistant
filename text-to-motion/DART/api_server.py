@@ -10,10 +10,10 @@ import os
 import uuid
 import random
 import copy
-import sys
-import time
-import asyncio
-import subprocess
+import socket
+import json
+from urllib.request import urlopen
+from urllib.error import URLError
 from typing import Optional, Literal
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -42,6 +42,38 @@ from mld.rollout_mld import load_mld
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r; using default %d", name, value, default)
+        return default
+
+
+def _is_port_in_use(host: str, port: int) -> bool:
+    probe_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        return sock.connect_ex((probe_host, port)) == 0
+
+
+def _is_healthy_dart_running(host: str, port: int) -> bool:
+    probe_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    url = f"http://{probe_host}:{port}/health"
+    try:
+        with urlopen(url, timeout=1.0) as resp:
+            if resp.status != 200:
+                return False
+            payload = resp.read().decode("utf-8", errors="ignore")
+            data = json.loads(payload)
+            return data.get("status") == "ok"
+    except (URLError, TimeoutError, ValueError, OSError):
+        return False
+
 # ── Request / Response Models ────────────────────────────────────────────────
 
 class MotionGenerationRequest(BaseModel):
@@ -49,8 +81,15 @@ class MotionGenerationRequest(BaseModel):
         ...,
         description=(
             "Text prompt. Supports MLD-style syntax: "
-            "'walk forward*12' or 'wave hands*10,walk forward*5,cartwheel*8,...'"
+            "'walk forward' with duration_seconds, or legacy '*count' syntax like "
+            "'walk forward*12'"
         )
+    )
+    duration_seconds: Optional[float] = Field(
+        None,
+        ge=1.0,
+        le=120.0,
+        description="Desired clip duration in seconds. Preferred over '*count' syntax.",
     )
    
     guidance_scale: float = Field(5.0, ge=1.0, le=12.0)
@@ -81,8 +120,17 @@ class MotionGenerationResponse(BaseModel):
 # ── Model & Diffusion Manager ────────────────────────────────────────────────
 
 class MotionGenerator:
-    def __init__(self, device: str = "cuda"):
+    def __init__(self, device: str = None):
+        # Auto-detect device: use CUDA if available, otherwise fall back to CPU
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(device)
+        
+        # Ensure float32 for all operations on CPU (CPU doesn't support efficient float16)
+        if self.device.type == 'cpu':
+            torch.set_default_dtype(torch.float32)
+            logger.info("Setting default dtype to float32 for CPU")
+        
         self.denoiser_args = None
         self.vae_args = None
         self.denoiser = None
@@ -92,6 +140,10 @@ class MotionGenerator:
         self.standing_seed_path = None
 
         logger.info(f"Initializing motion generator on {device}")
+        if device == "cuda" and not torch.cuda.is_available():
+            logger.warning("CUDA requested but not available. Falling back to CPU.")
+            self.device = torch.device("cpu")
+            torch.set_default_dtype(torch.float32)
         self.output_dir = Path("outputs")
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -123,6 +175,7 @@ class MotionGenerator:
     def generate(
         self,
         text_prompt: str,
+        duration_seconds: Optional[float],
         guidance_scale: float,
         num_steps: int,          # unused (respacing controls steps)
         seed: Optional[int] = None,
@@ -150,9 +203,11 @@ class MotionGenerator:
         history_length = self.dataset.history_length
         primitive_length = history_length + future_length
 
-        # ── Parse multi-action prompt like rollout_mld.py ────────────────────────
+        # ── Parse text prompt into primitives ────────────────────────────────────
         texts = []
         total_primitives = 0
+        parsed_actions = []
+        explicit_count_used = False
 
         # Split by comma for sequence of actions
         segments = [s.strip() for s in text_prompt.split(',') if s.strip()]
@@ -164,14 +219,43 @@ class MotionGenerator:
                     count = int(count_str.strip())
                 except ValueError:
                     raise HTTPException(400, f"Invalid count in '{segment}': must be integer after *")
+                explicit_count_used = True
             else:
                 action_part = segment
                 count = 1
 
             # Clean and compose the action text (handles "and" like in rollout)
             action = compose_texts_with_and(action_part.split(' and '))
-            texts.extend([action] * count)
-            total_primitives += count
+            parsed_actions.append((action, count, '*' in segment))
+
+        if duration_seconds is not None and not explicit_count_used:
+            # Convert desired duration to primitive count using model future length.
+            target_total = max(1, int(round((duration_seconds * 30.0) / float(future_length))))
+
+            # Distribute target primitives across comma-separated actions.
+            num_actions = len(parsed_actions)
+            base = target_total // num_actions
+            remainder = target_total % num_actions
+            distributed = []
+            for idx, (action, _, _) in enumerate(parsed_actions):
+                c = base + (1 if idx < remainder else 0)
+                distributed.append((action, max(1, c)))
+
+            for action, count in distributed:
+                texts.extend([action] * count)
+                total_primitives += count
+            logger.info(
+                "duration_seconds=%.2f mapped to %d primitives (future_length=%d)",
+                duration_seconds,
+                total_primitives,
+                future_length,
+            )
+        else:
+            if duration_seconds is not None and explicit_count_used:
+                logger.info("duration_seconds provided, but explicit '*count' syntax detected; using explicit counts")
+            for action, count, _ in parsed_actions:
+                texts.extend([action] * count)
+                total_primitives += count
 
         if total_primitives == 0:
             raise HTTPException(400, "No valid motion primitives found in text_prompt")
@@ -441,6 +525,7 @@ async def generate_motion(req: MotionGenerationRequest):
 
     result = generator.generate(
         text_prompt=req.text_prompt,
+        duration_seconds=req.duration_seconds,
         guidance_scale=req.guidance_scale,
         num_steps=req.num_steps,
         seed=req.seed,
@@ -497,9 +582,8 @@ async def health():
 class ServerArgs:
     denoiser_checkpoint: str = "mld_denoiser/mld_fps_clip_repeat_euler/checkpoint_300000.pt"
     standing_seed: str = "./data/stand.pkl"
-    host: str = "0.0.0.0"
-    port: int = 5001
-    artifact_ttl_seconds: int = 600
+    host: str = os.getenv("DART_HOST", "0.0.0.0")
+    port: int = _env_int("DART_PORT", 5001)
 
 
 # Module-level default (so startup can see it before __main__ block runs)
@@ -508,4 +592,21 @@ args: ServerArgs = ServerArgs()
 
 if __name__ == "__main__":
     args = tyro.cli(ServerArgs)
+
+    # Single-instance guard: avoid bind crash when DART is already running.
+    if _is_port_in_use(args.host, args.port):
+        if _is_healthy_dart_running(args.host, args.port):
+            logger.info(
+                "DART server already running at http://%s:%d (health=ok). Exiting.",
+                "127.0.0.1" if args.host in ("0.0.0.0", "::") else args.host,
+                args.port,
+            )
+            raise SystemExit(0)
+        logger.error(
+            "Port %d is already in use and not serving DART /health. "
+            "Set DART_PORT to a free port or stop the conflicting process.",
+            args.port,
+        )
+        raise SystemExit(1)
+
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

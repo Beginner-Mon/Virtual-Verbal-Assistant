@@ -745,7 +745,8 @@ All prompts are centralized in `utils/prompt_templates.py`. The system uses 7 pr
 ```
 
 ### Language Adaptation
-The system prompt instructs the LLM to respond in the same language as the user's query (supports Vietnamese and English natively).
+The system prompt instructs the LLM to respond in the same language as the user's query.
+API responses also include a normalized language code in the top-level payload: `en`, `vi`, `jp`, or `other`.
 
 ---
 

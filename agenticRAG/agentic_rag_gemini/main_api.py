@@ -12,7 +12,11 @@ NOTE: Motion generation is now handled by AgenticRAG based on extracted exercise
 
 import time
 import logging
-from typing import Optional, List, Dict, Any, Literal
+import os
+import asyncio
+import uuid
+import re
+from typing import Optional, List, Dict, Any
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -24,12 +28,99 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning(f"Invalid integer for {name}={value!r}; using default {default}")
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        logger.warning(f"Invalid float for {name}={value!r}; using default {default}")
+        return default
+
 # ===========================
 # Service URLs
 # ===========================
 
-AGENTIC_RAG_URL = "http://localhost:8000"
-DART_URL = "http://localhost:5001"
+AGENTIC_RAG_HOST = os.getenv("AGENTIC_RAG_HOST", "localhost")
+AGENTIC_RAG_PORT = _env_int("AGENTIC_RAG_PORT", 8000)
+DART_HOST = os.getenv("DART_HOST", "localhost")
+DART_PORT = _env_int("DART_PORT", 5001)
+TTS_HOST = os.getenv("TTS_HOST", "localhost")
+TTS_PORT = _env_int("TTS_PORT", 5000)
+
+AGENTIC_RAG_URL = os.getenv("AGENTIC_RAG_URL", f"http://{AGENTIC_RAG_HOST}:{AGENTIC_RAG_PORT}")
+DART_URL = os.getenv("DART_URL", f"http://{DART_HOST}:{DART_PORT}")
+TTS_URL = os.getenv("TTS_URL", f"http://{TTS_HOST}:{TTS_PORT}")
+
+MAIN_API_HOST = os.getenv("MAIN_API_HOST", "0.0.0.0")
+MAIN_API_PORT = _env_int("MAIN_API_PORT", 8080)
+MAIN_API_ASYNC_ENRICHMENT = os.getenv("MAIN_API_ASYNC_ENRICHMENT", "true").lower() in {"1", "true", "yes", "on"}
+MOTION_DEFAULT_DURATION_SECONDS = _env_float("MOTION_DEFAULT_DURATION_SECONDS", 12.0)
+
+
+def _normalize_motion_description(prompt: str) -> str:
+    normalized = (prompt or "").strip()
+    if not normalized:
+        return normalized
+
+    # Legacy cleanup: convert "squat*12" or multi-action "a*5,b*3" into plain text.
+    cleaned = re.sub(r"\*\s*\d+", "", normalized)
+    cleaned = re.sub(r"\s*,\s*", ", ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,")
+    return cleaned
+
+
+def _resolve_motion_duration_seconds(rag_data: Dict[str, Any]) -> float:
+    raw = rag_data.get("duration_seconds")
+    if raw is None and isinstance(rag_data.get("motion_prompt"), dict):
+        mp = rag_data.get("motion_prompt") or {}
+        raw = mp.get("duration_seconds") or mp.get("duration_estimate_seconds")
+    try:
+        value = float(raw) if raw is not None else MOTION_DEFAULT_DURATION_SECONDS
+    except (TypeError, ValueError):
+        value = MOTION_DEFAULT_DURATION_SECONDS
+    return max(1.0, min(value, 120.0))
+
+
+def _detect_query_language(query: str) -> str:
+    """Detect query language and map to en | vi | jp | other."""
+    text = (query or "").strip()
+    if not text:
+        return "other"
+
+    if re.search(r"[\u3040-\u30ff\u31f0-\u31ff\u4e00-\u9fff]", text):
+        return "jp"
+
+    vi_chars_pattern = r"[ăâđêôơưĂÂĐÊÔƠƯáàảãạắằẳẵặấầẩẫậéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]"
+    if re.search(vi_chars_pattern, text):
+        return "vi"
+
+    lowered = f" {text.lower()} "
+    vi_keywords = (
+        " bạn ", " tôi ", " chúng tôi ", " xin chào ", " cảm ơn ", " bài tập ",
+        " đau ", " không ", " giúp ", " như thế nào ", " thế nào ",
+    )
+    if any(k in lowered for k in vi_keywords):
+        return "vi"
+
+    if re.search(r"[a-zA-Z]", text):
+        if not re.search(r"[\u0400-\u04FF\u0600-\u06FF\u0590-\u05FF\u0900-\u097F\u0E00-\u0E7F]", text):
+            return "en"
+
+    return "other"
 
 # HTTP timeout (seconds) for downstream service calls.
 # AgenticRAG LLM calls can take 15-30s — must be well above that.
@@ -83,6 +174,11 @@ class TTSMetadata(BaseModel):
 class AnswerResponse(BaseModel):
     """Combined response from AgenticRAG + DART + TTS."""
 
+    request_id: str = Field(..., description="Request identifier for status polling")
+    status: str = Field(..., description="processing or completed")
+    pending_services: List[str] = Field(default_factory=list, description="Background services still running")
+    language: str = Field("other", description="Detected language code: en | vi | jp | other")
+
     text_answer: str = Field(..., description="Text response from AgenticRAG")
     exercises: List[Dict[str, str]] = Field(
         default_factory=list, description="List of recommended exercises from AgenticRAG"
@@ -118,6 +214,132 @@ async def call_agenticrag(
     data = resp.json()
     logger.info(f"[AgenticRAG] ← {resp.status_code} OK")
     return data
+
+
+def _build_motion_from_agenticrag(rag_data: Dict[str, Any]) -> Optional[MotionMetadata]:
+    """Map AgenticRAG motion payload to unified MotionMetadata when available."""
+    motion = rag_data.get("motion")
+    if not isinstance(motion, dict):
+        return None
+
+    motion_file = motion.get("motion_file")
+    if not motion_file:
+        return None
+
+    frames = int(motion.get("frames", 0) or 0)
+    fps = int(motion.get("fps", 30) or 30)
+    duration_seconds = round(frames / fps, 2) if frames > 0 and fps > 0 else 0.0
+    text_prompt = rag_data.get("exercise_motion_prompt") or rag_data.get("query") or ""
+
+    return MotionMetadata(
+        motion_file_url=f"{DART_URL}/download/{motion_file}",
+        num_frames=frames,
+        fps=fps,
+        duration_seconds=duration_seconds,
+        text_prompt=text_prompt,
+    )
+
+
+async def _generate_motion_from_dart(
+    client: httpx.AsyncClient,
+    motion_prompt: str,
+    duration_seconds: float,
+    rag_data: Dict[str, Any],
+) -> MotionMetadata:
+    """Generate motion by calling DART API directly."""
+    normalized_prompt = _normalize_motion_description(motion_prompt)
+    dart_body: Dict[str, Any] = {
+        "text_prompt": normalized_prompt,
+        "duration_seconds": duration_seconds,
+        "guidance_scale": 5.0,
+        "num_steps": 50,
+        "gender": "female",
+    }
+    if "respacing" in rag_data:
+        dart_body["respacing"] = rag_data["respacing"]
+    if "seed" in rag_data:
+        dart_body["seed"] = rag_data["seed"]
+
+    resp = await client.post(f"{DART_URL}/generate", json=dart_body)
+    resp.raise_for_status()
+    dart_data = resp.json()
+    motion_file_url = f"{DART_URL}{dart_data['motion_file_url']}" if dart_data.get("motion_file_url") else ""
+    return MotionMetadata(
+        motion_file_url=motion_file_url,
+        num_frames=dart_data.get("num_frames", 0),
+        fps=dart_data.get("fps", 30),
+        duration_seconds=dart_data.get("duration_seconds", 0.0),
+        text_prompt=dart_data.get("text_prompt", normalized_prompt),
+    )
+
+
+async def _generate_tts(
+    client: httpx.AsyncClient,
+    text_answer: str,
+    user_id: str,
+) -> TTSMetadata:
+    """Generate TTS from SpeechLLM."""
+    tts_payload = {"text": text_answer, "user_id": user_id}
+    tts_resp = await client.post(f"{TTS_URL}/synthesize", json=tts_payload)
+    tts_resp.raise_for_status()
+    tts_data = tts_resp.json()
+    audio_file = tts_data.get("audio_file", "")
+    audio_url = f"{TTS_URL}/audio/{audio_file}" if audio_file else ""
+    return TTSMetadata(
+        audio_file=audio_file,
+        audio_url=audio_url,
+        text=tts_data.get("text", text_answer),
+        emotion=tts_data.get("emotion", None),
+    )
+
+
+ANSWER_JOBS: Dict[str, Dict[str, Any]] = {}
+ANSWER_JOBS_LOCK = asyncio.Lock()
+
+
+async def _run_async_enrichment(
+    request_id: str,
+    text_answer: str,
+    user_id: str,
+    motion_prompt: Optional[str],
+    motion_duration_seconds: float,
+    rag_data: Dict[str, Any],
+) -> None:
+    """Run motion/TTS asynchronously and persist results in in-memory job store."""
+    errors: Dict[str, str] = {}
+    motion: Optional[MotionMetadata] = None
+    tts: Optional[TTSMetadata] = None
+
+    async with httpx.AsyncClient(timeout=DOWNSTREAM_TIMEOUT) as client:
+        async def maybe_motion() -> Optional[MotionMetadata]:
+            if not motion_prompt:
+                return None
+            try:
+                return await _generate_motion_from_dart(client, motion_prompt, motion_duration_seconds, rag_data)
+            except Exception as exc:
+                logger.error(f"[DART] async failed: {exc}")
+                errors["dart"] = str(exc)
+                return None
+
+        async def maybe_tts() -> Optional[TTSMetadata]:
+            try:
+                return await _generate_tts(client, text_answer, user_id)
+            except Exception as exc:
+                logger.error(f"[TTS] async failed: {exc}")
+                errors["tts"] = str(exc)
+                return None
+
+        motion, tts = await asyncio.gather(maybe_motion(), maybe_tts())
+
+    async with ANSWER_JOBS_LOCK:
+        job = ANSWER_JOBS.get(request_id)
+        if not job:
+            return
+        job["motion"] = motion
+        job["tts"] = tts
+        job["errors"] = errors if errors else None
+        job["pending_services"] = []
+        job["status"] = "completed"
 
 # ===========================
 # FastAPI Application
@@ -157,106 +379,101 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
     if request.conversation_history:
         history = [{"role": t.role, "content": t.content} for t in request.conversation_history]
 
+    request_id = str(uuid.uuid4())[:12]
     errors: Dict[str, str] = {}
     rag_data: Optional[Dict[str, Any]] = None
-    tts_data: Optional[Dict[str, Any]] = None
-
-    import asyncio
-
-    TTS_URL = "http://localhost:5000"  # SpeechLLM TTS API
-    requested_motion_format = (request.motion_format or "glb").lower().strip()
-    if requested_motion_format not in {"glb", "npz"}:
-        raise HTTPException(status_code=400, detail="motion_format must be 'glb' or 'npz'")
-
+    language = _detect_query_language(request.query)
+    text_answer = ""
+    exercises: List[Dict[str, str]] = []
+    motion: Optional[MotionMetadata] = None
+    tts: Optional[TTSMetadata] = None
 
     async with httpx.AsyncClient(timeout=DOWNSTREAM_TIMEOUT) as client:
         # 1. Call AgenticRAG
         try:
             rag_data = await call_agenticrag(client, request.query, request.user_id, history)
+            language = rag_data.get("language", language)
             text_answer = rag_data.get("text_answer", "")
-            exercises   = rag_data.get("exercises", [])
+            exercises = rag_data.get("exercises", [])
+            motion = _build_motion_from_agenticrag(rag_data)
         except Exception as e:
             logger.error(f"[AgenticRAG] failed: {e}")
             errors["agenticrag"] = str(e)
-            text_answer = "[AgenticRAG unavailable — check that port 8000 is running]"
+            text_answer = f"[AgenticRAG unavailable — check that {AGENTIC_RAG_URL} is running]"
             exercises = []
             rag_data = None
 
-        # 2. Run TTS and motion (DART) concurrently if AgenticRAG succeeded
-        tts: Optional[TTSMetadata] = None
-        motion: Optional[MotionMetadata] = None
+        # 2. Resolve motion prompt from AgenticRAG response.
+        motion_prompt: Optional[str] = None
         if rag_data:
-            # Prepare DART motion prompt and params
-            motion_prompt = rag_data.get("exercise_motion_prompt") or rag_data.get("motion_prompt") or "walk*5"
-            # Use defaults if not present
-            dart_body = {
-                "text_prompt": motion_prompt,
-                "guidance_scale": 5.0,
-                "num_steps": 50,
-                "gender": "female",
-                "output_format": requested_motion_format,
-            }
-            # Optionally add respacing/seed if present in rag_data
-            if "respacing" in rag_data:
-                dart_body["respacing"] = rag_data["respacing"]
-            if "seed" in rag_data:
-                dart_body["seed"] = rag_data["seed"]
+            motion_prompt = rag_data.get("exercise_motion_prompt")
+            if not motion_prompt:
+                motion_prompt_obj = rag_data.get("motion_prompt")
+                if isinstance(motion_prompt_obj, dict):
+                    motion_prompt = motion_prompt_obj.get("description") or motion_prompt_obj.get("primitive_sequence")
+        motion_duration_seconds = _resolve_motion_duration_seconds(rag_data or {})
 
-            async def get_motion():
+        # 3. If no motion came from AgenticRAG and async mode is disabled, run sync enrichment.
+        if rag_data and not MAIN_API_ASYNC_ENRICHMENT:
+            if motion is None and motion_prompt:
                 try:
-                    resp = await client.post(f"{DART_URL}/generate", json=dart_body)
-                    resp.raise_for_status()
-                    dart_data = resp.json()
-                    motion_file_url = f"{DART_URL}{dart_data['motion_file_url']}" if dart_data.get("motion_file_url") else ""
-                    logger.info(f"[DART] output_format={requested_motion_format} motion_file_url={motion_file_url}")
-                    return MotionMetadata(
-                        motion_file_url=motion_file_url,
-                        num_frames=dart_data.get("num_frames", 0),
-                        fps=dart_data.get("fps", 30),
-                        duration_seconds=dart_data.get("duration_seconds", 0.0),
-                        text_prompt=dart_data.get("text_prompt", motion_prompt),
-                    )
-                except Exception as e:
-                    logger.error(f"[DART] failed: {e}")
-                    errors["dart"] = str(e)
-                    return None
+                    motion = await _generate_motion_from_dart(client, motion_prompt, motion_duration_seconds, rag_data)
+                except Exception as exc:
+                    logger.error(f"[DART] sync failed: {exc}")
+                    errors["dart"] = str(exc)
+            try:
+                tts = await _generate_tts(client, text_answer, request.user_id)
+            except Exception as exc:
+                logger.error(f"[TTS] sync failed: {exc}")
+                errors["tts"] = str(exc)
 
-            async def get_tts():
-                try:
-                    tts_payload = {"text": text_answer, "user_id": request.user_id}
-                    tts_resp = await client.post(f"{TTS_URL}/synthesize", json=tts_payload)
-                    tts_resp.raise_for_status()
-                    tts_data = tts_resp.json()
-                    audio_file = tts_data.get("audio_file", "")
-                    audio_url = f"{TTS_URL}/audio/{audio_file}" if audio_file else ""
-                    return TTSMetadata(
-                        audio_file=audio_file,
-                        audio_url=audio_url,
-                        text=tts_data.get("text", text_answer),
-                        emotion=tts_data.get("emotion", None),
+        # 4. Async mode: return text quickly and finish services in background.
+        pending_services: List[str] = []
+        status = "completed"
+        if rag_data and MAIN_API_ASYNC_ENRICHMENT:
+            if motion is None and motion_prompt:
+                pending_services.append("dart")
+            pending_services.append("tts")
+            if pending_services:
+                status = "processing"
+                async with ANSWER_JOBS_LOCK:
+                    ANSWER_JOBS[request_id] = {
+                        "request_id": request_id,
+                        "status": status,
+                        "pending_services": pending_services.copy(),
+                        "language": language,
+                        "text_answer": text_answer,
+                        "exercises": exercises,
+                        "motion": motion,
+                        "tts": tts,
+                        "errors": errors if errors else None,
+                        "started_at": time.time(),
+                    }
+                asyncio.create_task(
+                    _run_async_enrichment(
+                        request_id=request_id,
+                        text_answer=text_answer,
+                        user_id=request.user_id,
+                        motion_prompt=motion_prompt if motion is None else None,
+                        motion_duration_seconds=motion_duration_seconds,
+                        rag_data=rag_data,
                     )
-                except Exception as e:
-                    logger.error(f"[TTS] failed: {e}")
-                    errors["tts"] = str(e)
-                    return None
-
-            motion, tts = await asyncio.gather(get_motion(), get_tts())
-        else:
-            motion = None
-            tts = None
+                )
 
     generation_time_ms = (time.perf_counter() - t_start) * 1000
 
-    # Check if AgenticRAG reported internal errors for DART
-    if rag_data and "dart" in rag_data.get("errors", {}):
-        errors["dart"] = rag_data["errors"]["dart"]
-
     logger.info(
         f"[{request.user_id}] Completed in {generation_time_ms:.0f}ms  "
-        f"rag={'ok' if rag_data else 'ERROR'}  dart={'ok' if motion else 'none/ERROR'}  tts={'ok' if tts else 'none/ERROR'}"
+        f"rag={'ok' if rag_data else 'ERROR'}  dart={'ok' if motion else 'pending/none'}  "
+        f"tts={'ok' if tts else ('pending' if MAIN_API_ASYNC_ENRICHMENT and rag_data else 'none/ERROR')} "
+        f"status={status if rag_data else 'completed'}"
     )
 
     return AnswerResponse(
+        request_id=request_id,
+        status=status if rag_data else "completed",
+        pending_services=pending_services if rag_data else [],
+        language=language,
         text_answer=text_answer,
         exercises=exercises,
         motion=motion,
@@ -266,18 +483,45 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
     )
 
 
+@app.get("/answer/status/{request_id}", response_model=AnswerResponse, summary="Get async enrichment status")
+async def get_answer_status(request_id: str) -> AnswerResponse:
+    """Fetch latest state for an async /answer request."""
+    async with ANSWER_JOBS_LOCK:
+        job = ANSWER_JOBS.get(request_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Unknown request_id: {request_id}")
+
+    return AnswerResponse(
+        request_id=job["request_id"],
+        status=job.get("status", "processing"),
+        pending_services=job.get("pending_services", []),
+        language=job.get("language", "other"),
+        text_answer=job.get("text_answer", ""),
+        exercises=job.get("exercises", []),
+        motion=job.get("motion"),
+        tts=job.get("tts"),
+        generation_time_ms=round((time.time() - job.get("started_at", time.time())) * 1000, 1),
+        errors=job.get("errors"),
+    )
+
+
 @app.get("/health", summary="Health check")
 async def health_check() -> Dict[str, Any]:
-    """Ping both downstream services and report their status."""
+    """Ping both downstream services and report their status concurrently."""
     statuses: Dict[str, str] = {}
 
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        for name, base_url in [("agenticrag", AGENTIC_RAG_URL), ("dart", DART_URL)]:
+    async def check_service(name: str, base_url: str):
+        async with httpx.AsyncClient(timeout=5.0) as client:
             try:
                 r = await client.get(f"{base_url}/health")
                 statuses[name] = "ok" if r.status_code == 200 else f"http_{r.status_code}"
             except Exception as exc:
                 statuses[name] = f"unreachable ({type(exc).__name__})"
+
+    await asyncio.gather(
+        check_service("agenticrag", AGENTIC_RAG_URL),
+        check_service("dart", DART_URL)
+    )
 
     overall = "healthy" if all(v == "ok" for v in statuses.values()) else "degraded"
     return {"status": overall, "services": statuses}
@@ -289,11 +533,15 @@ async def get_info() -> Dict[str, Any]:
     return {
         "service": "Unified Multi-Service Pipeline",
         "version": "2.0.0",
+        "async_enrichment": MAIN_API_ASYNC_ENRICHMENT,
         "upstream_services": {
             "agenticrag": f"{AGENTIC_RAG_URL}/query",
+            "dart": f"{DART_URL}/generate",
+            "tts": f"{TTS_URL}/synthesize",
         },
         "endpoints": {
-            "POST /answer": "Proxy to AgenticRAG and return merged text+motion response",
+            "POST /answer": "Fast text-first response, optional async motion/TTS enrichment",
+            "GET /answer/status/{request_id}": "Poll async enrichment status/results",
             "GET /health": "Ping downstream services",
             "GET /info": "This document",
         },
@@ -305,17 +553,19 @@ async def get_info() -> Dict[str, Any]:
 # ===========================
 
 if __name__ == "__main__":
-    logger.info("Starting Unified Pipeline API on port 8080...")
+    logger.info(f"Starting Unified Pipeline API on {MAIN_API_HOST}:{MAIN_API_PORT}...")
     logger.info("")
     logger.info("Requires these services to be running:")
     logger.info(f"  AgenticRAG : {AGENTIC_RAG_URL}  (Windows, firstconda env)")
+    logger.info(f"  DART       : {DART_URL}  (WSL/Linux, DART env)")
+    logger.info(f"  SpeechLLM  : {TTS_URL}")
     logger.info("")
-    logger.info("Frontend: POST http://localhost:8080/answer")
+    logger.info(f"Frontend: POST http://localhost:{MAIN_API_PORT}/answer")
     logger.info("")
 
     uvicorn.run(
         app,
-        host="0.0.0.0",
-        port=8080,
+        host=MAIN_API_HOST,
+        port=MAIN_API_PORT,
         log_level="info",
     )

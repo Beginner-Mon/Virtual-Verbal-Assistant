@@ -138,7 +138,8 @@ class WebSearchService:
         """Search and return formatted context string for RAG.
         
         This method formats search results into a context string suitable
-        for injection into the RAG prompt.
+        for injection into the RAG prompt.  Output is capped at ~1500 chars
+        to prevent bloating the LLM context window.
         
         Args:
             query: Search query
@@ -153,12 +154,16 @@ class WebSearchService:
             return ""
         
         # Format results as context
+        MAX_SNIPPET_CHARS = 150
+        MAX_TOTAL_CHARS = 1500
         context_parts = ["### Web Search Results\n"]
         
         for i, r in enumerate(results, 1):
             title = r.get("title", "Untitled")
             url = r.get("url", "")
             snippet = r.get("snippet", "")
+            if len(snippet) > MAX_SNIPPET_CHARS:
+                snippet = snippet[:MAX_SNIPPET_CHARS] + "…"
             
             context_parts.append(f"**{i}. {title}**")
             if snippet:
@@ -167,7 +172,10 @@ class WebSearchService:
                 context_parts.append(f"   Source: {url}")
             context_parts.append("")
         
-        return "\n".join(context_parts)
+        output = "\n".join(context_parts)
+        if len(output) > MAX_TOTAL_CHARS:
+            output = output[:MAX_TOTAL_CHARS] + "\n[truncated]"
+        return output
     
     def search_health_topics(
         self, 

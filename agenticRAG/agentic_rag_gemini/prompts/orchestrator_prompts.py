@@ -7,10 +7,24 @@
 ORCHESTRATOR_PROMPT = """\
 Route the user query. Return ONLY JSON, no other text.
 
-INTENTS (pick one):
-greeting|followup_question|resume_conversation → needs_retrieval=false, agents=["memory_agent"]
-ask_exercise_info|general_fitness_question → needs_retrieval=true, agents=["retrieval_agent"]
-visualize_motion → needs_motion=true, needs_retrieval=true, agents=["retrieval_agent","motion_agent"]
+INTENT CLASSIFICATION:
+
+greeting|followup_question|resume_conversation 
+→ needs_retrieval=false, agents=["memory_agent"]
+
+ask_exercise_info|general_fitness_question 
+→ needs_retrieval=true, agents=["retrieval_agent"]
+
+exercise_recommendation 
+(User asks: "give me exercises for X" / "suggest exercises for Y")
+→ needs_retrieval=true, needs_motion=false, agents=["retrieval_agent"]
+→ Response: List of exercise recommendations
+
+visualize_motion 
+(User asks: "show me how to do X" / "visualize X" / "demonstrate X exercise")
+→ needs_motion=true, needs_retrieval=true, agents=["retrieval_agent", "motion_agent"]
+→ Response: Direct motion generation for specific exercise
+
 unknown → agents=["retrieval_agent"]
 
 JSON schema:
@@ -18,5 +32,19 @@ JSON schema:
 
 exercise: name string if user mentions an exercise, else null.
 needs_web_search: always false (no web access).
-confidence: 0.0-1.0."""
+confidence: 0.0-1.0.
+
+KEY DISTINCTION:
+- "exercises for neck pain" → exercise_recommendation (needs_motion=false)
+- "how to do a chin tuck" → visualize_motion (needs_motion=true)
+- "show me the squat" → visualize_motion (needs_motion=true)
+- "show me how to stretch" → visualize_motion (needs_motion=true)
+- "how to do a push up" → visualize_motion (needs_motion=true)
+- "show me 5 exercises for fat loss" → exercise_recommendation (needs_motion=false)
+- "show me some exercises for back pain" → exercise_recommendation (needs_motion=false)
+- "what exercises help with stress" → exercise_recommendation (needs_motion=false)
+
+RULE: "show me how to [VERB/SINGLE EXERCISE]" → visualize_motion.
+      "show me [NUMBER/PLURAL] exercises for [CONDITION]" → exercise_recommendation.
+"""
 
