@@ -106,7 +106,8 @@ class DocumentStore:
             documents=[document_content],
             embeddings=[embedding],
             metadata=[document_metadata],
-            collection_type="documents"
+            collection_type="documents",
+            user_id=user_id,
         )
         
         logger.info(f"Stored single document '{filename}' for user {user_id}")
@@ -172,7 +173,8 @@ class DocumentStore:
             documents=documents,
             embeddings=chunk_embeddings,
             metadata=metadatas,
-            collection_type="documents"
+            collection_type="documents",
+            user_id=user_id,
         )
         
         logger.info(f"Stored {len(valid_chunks)} chunks for document '{filename}' for user {user_id}")
@@ -210,7 +212,8 @@ class DocumentStore:
             results = self.vector_store.search_documents(
                 query_embedding=query_embedding,
                 top_k=search_limit,
-                filter_metadata=filter_metadata
+                filter_metadata=filter_metadata,
+                user_id=user_id,
             )
             
             # Group chunks by document and select best ones
@@ -287,7 +290,7 @@ class DocumentStore:
         """
         try:
             # Query documents collection for user's documents
-            documents_collection = self.vector_store.get_documents_collection()
+            documents_collection = self.vector_store.get_documents_collection(user_id=user_id)
             if documents_collection is None:
                 logger.warning("Documents collection not available")
                 return []
@@ -314,7 +317,7 @@ class DocumentStore:
             logger.error(f"Failed to get user documents: {e}")
             return []
     
-    def delete_document(self, document_id: str) -> bool:
+    def delete_document(self, document_id: str, user_id: Optional[str] = None) -> bool:
         """Delete a document.
         
         Args:
@@ -324,7 +327,7 @@ class DocumentStore:
             True if successful
         """
         try:
-            documents_collection = self.vector_store.get_documents_collection()
+            documents_collection = self.vector_store.get_documents_collection(user_id=user_id)
             if documents_collection is None:
                 logger.warning("Documents collection not available")
                 return False
@@ -347,7 +350,7 @@ class DocumentStore:
         """
         try:
             # Get all user's documents
-            documents_collection = self.vector_store.get_documents_collection()
+            documents_collection = self.vector_store.get_documents_collection(user_id=user_id)
             if documents_collection is None:
                 logger.warning("Documents collection not available")
                 return 0
@@ -380,7 +383,7 @@ class DocumentStore:
             Number of documents
         """
         try:
-            documents_collection = self.vector_store.get_documents_collection()
+            documents_collection = self.vector_store.get_documents_collection(user_id=user_id)
             if documents_collection is None:
                 logger.warning("Documents collection not available")
                 return 0

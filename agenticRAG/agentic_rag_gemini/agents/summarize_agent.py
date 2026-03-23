@@ -98,10 +98,11 @@ class SummarizeAgent:
             }
 
             ids = self.vector_store.add_chat_summary(
-                document=summary,
+                summary=summary,
                 embedding=embedding,
                 metadata=metadata,
                 id=f"summary_{session_id}",
+                user_id=user_id,
             )
             logger.info(f"Stored summary for session {session_id}")
             return ids

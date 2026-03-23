@@ -1023,7 +1023,7 @@ text_embedding = encode_text(dataset.clip_model, 'person is walking forward').to
 # Generate motion via rollout
 from mld.rollout_mld import rollout
 motion = rollout(
-    text_prompt='walk*20',  # Format: action*num_primitives
+    text_prompt='walk forward',  # API integration prefers plain text + duration_seconds
     denoiser_args=denoiser_args,
     denoiser_model=denoiser_model,
     vae_args=vae_args,
@@ -1093,21 +1093,21 @@ class MotionGenerator:
         self.guided_denoiser = ClassifierFreeWrapper(self.denoiser)
         self.device = device
     
-    def generate(self, text_prompt: str, duration_sec: float = 5.0,
+    def generate(self, text_prompt: str, duration_seconds: float = 5.0,
                  guidance_scale: float = 5.0) -> torch.Tensor:
         """
         Generate motion from text
         
         Args:
             text_prompt: Description of desired motion
-            duration_sec: Duration in seconds (30fps default)
+            duration_seconds: Duration in seconds (30fps default)
             guidance_scale: Strength of text conditioning
         
         Returns:
             Motion tensor [1, num_frames, motion_dim]
         """
         text_emb = encode_text(text_prompt)
-        num_primitives = int(duration_sec * 30 / 8)  # 8 frames per primitive
+        num_primitives = int(duration_seconds * 30 / 8)  # 8 frames per primitive
         
         return self.guided_denoiser.rollout(
             text_embedding=text_emb,
@@ -1138,26 +1138,29 @@ app = FastAPI()
 generator = MotionGenerator('./checkpoint.ckpt')
 
 class MotionRequest(BaseModel):
-    text: str
-    duration: float = 5.0
+    text_prompt: str
+    duration_seconds: float = 5.0
     guidance_scale: float = 5.0
 
-@app.post("/generate-motion")
+@app.post("/generate")
 async def generate_motion(request: MotionRequest):
     try:
         motion = generator.generate(
-            request.text,
-            request.duration,
+            request.text_prompt,
+            request.duration_seconds,
             request.guidance_scale
         )
         return {
             "motion": motion.cpu().numpy().tolist(),
             "shape": motion.shape,
-            "duration_sec": request.duration
+            "duration_seconds": request.duration_seconds
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 ```
+
+> Integration note: this repository's current app path sends `text_prompt` + `duration_seconds`.
+> Legacy `action*N` prompt strings are still accepted by DART for backward compatibility.
 
 #### 2. Pipeline Integration
 

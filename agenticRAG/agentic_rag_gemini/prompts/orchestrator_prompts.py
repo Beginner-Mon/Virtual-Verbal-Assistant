@@ -38,8 +38,13 @@ KEY DISTINCTION:
 - "exercises for neck pain" → exercise_recommendation (needs_motion=false)
 - "how to do a chin tuck" → visualize_motion (needs_motion=true)
 - "show me the squat" → visualize_motion (needs_motion=true)
+- "show me how to stretch" → visualize_motion (needs_motion=true)
+- "how to do a push up" → visualize_motion (needs_motion=true)
 - "show me 5 exercises for fat loss" → exercise_recommendation (needs_motion=false)
 - "show me some exercises for back pain" → exercise_recommendation (needs_motion=false)
 - "what exercises help with stress" → exercise_recommendation (needs_motion=false)
+
+RULE: "show me how to [VERB/SINGLE EXERCISE]" → visualize_motion.
+      "show me [NUMBER/PLURAL] exercises for [CONDITION]" → exercise_recommendation.
 """
 

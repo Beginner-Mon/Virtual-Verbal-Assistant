@@ -88,7 +88,8 @@ class MemoryManager:
         ids = self.vector_store.add_documents(
             documents=[interaction_text],
             embeddings=[embedding],
-            metadata=[interaction_metadata]
+            metadata=[interaction_metadata],
+            user_id=user_id,
         )
         
         # Update conversation count
@@ -139,7 +140,8 @@ class MemoryManager:
         ids = self.vector_store.add_documents(
             documents=[content],
             embeddings=[embedding],
-            metadata=[context_metadata]
+            metadata=[context_metadata],
+            user_id=user_id,
         )
         
         logger.info(f"Stored {context_type} for user {user_id}")
@@ -176,7 +178,8 @@ class MemoryManager:
         results = self.vector_store.search(
             query_embedding=query_embedding,
             top_k=top_k * 2,  # Get more results for filtering
-            filter_metadata=filter_metadata
+            filter_metadata=filter_metadata,
+            user_id=user_id,
         )
         
         # Filter by memory types if specified
@@ -227,7 +230,8 @@ class MemoryManager:
         results = self.vector_store.search(
             query_embedding=dummy_embedding,
             top_k=limit,
-            filter_metadata=filter_metadata
+            filter_metadata=filter_metadata,
+            user_id=user_id,
         )
         
         # Sort by timestamp (most recent first)
@@ -299,7 +303,8 @@ class MemoryManager:
             results = self.vector_store.search(
                 query_embedding=dummy_embedding,
                 top_k=10,
-                filter_metadata={"user_id": user_id, "type": context_type}
+                filter_metadata={"user_id": user_id, "type": context_type},
+                user_id=user_id,
             )
             
             profile[f"{context_type}s"] = [
@@ -507,7 +512,8 @@ class MemoryManager:
             results = self.vector_store.search_chat_summaries(
                 query_embedding=query_embedding,
                 top_k=top_k,
-                filter_metadata={"user_id": user_id}
+                filter_metadata={"user_id": user_id},
+                user_id=user_id,
             )
 
             # Filter by similarity threshold

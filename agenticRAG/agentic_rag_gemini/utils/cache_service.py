@@ -63,11 +63,13 @@ class CacheService:
         retrieval_ttl: int = 3_600,    # 1 hour
         memory_ttl: int = 1_800,       # 30 minutes
         orchestrator_ttl: int = 3_600, # 1 hour
+        motion_prompt_ttl: int = 604_800,  # 7 days — HumanML3D vocabulary is static
     ):
         self._embedding_ttl = embedding_ttl
         self._retrieval_ttl = retrieval_ttl
         self._memory_ttl = memory_ttl
         self._orchestrator_ttl = orchestrator_ttl
+        self._motion_prompt_ttl = motion_prompt_ttl
         self._available = False
 
         if redis is None:
@@ -240,3 +242,75 @@ class CacheService:
             self._redis.setex(key, self._orchestrator_ttl, pickle.dumps(decision))
         except Exception as exc:
             logger.debug(f"Orchestrator cache write error: {exc}")
+
+    # ------------------------------------------------------------------
+    # E) Motion Prompt Cache (Semantic Bridge)
+    #    NOT user-specific: the HumanML3D vocabulary mapping is identical
+    #    for all users, so we cache by query text only.
+    #    TTL: 7 days (the knowledge base is static).
+    # ------------------------------------------------------------------
+
+    def get_motion_prompt(self, query: str) -> Optional[str]:
+        """Look up a cached Semantic Bridge rewritten prompt.
+
+        Returns None on cache miss or if Redis is unavailable.
+        """
+        if not self._available:
+            return None
+        try:
+            nq = normalize_query(query)
+            key = f"mpt:{self._hash(nq)}"
+            data = self._redis.get(key)
+            if data:
+                logger.debug(f"Motion prompt cache HIT for: '{query[:40]}'")
+                return data.decode("utf-8")
+            return None
+        except Exception as exc:
+            logger.debug(f"Motion prompt cache read error: {exc}")
+            return None
+
+    def set_motion_prompt(self, query: str, rewritten: str) -> None:
+        """Store a Semantic Bridge rewritten prompt in the cache."""
+        if not self._available:
+            return
+        try:
+            nq = normalize_query(query)
+            key = f"mpt:{self._hash(nq)}"
+            self._redis.setex(key, self._motion_prompt_ttl, rewritten.encode("utf-8"))
+            logger.debug(f"Motion prompt cached: '{query[:40]}' → '{rewritten[:40]}'")
+        except Exception as exc:
+            logger.debug(f"Motion prompt cache write error: {exc}")
+
+    # ------------------------------------------------------------------
+    # F) Motion Generation Result Cache
+    #    Cache key = f"{prompt}|{duration}|{num_steps}"
+    #    Stores the final relative video url (e.g. "/static/videos/...")
+    # ------------------------------------------------------------------
+
+    def get_motion_result(self, prompt: str, duration: float, num_steps: int) -> Optional[str]:
+        """Look up a ready-to-use motion video URL by its generation parameters."""
+        if not self._available:
+            return None
+        try:
+            key_str = f"{prompt}|{duration}|{num_steps}"
+            key = f"mres:{self._hash(key_str)}"
+            data = self._redis.get(key)
+            if data:
+                logger.debug(f"Motion result Cache HIT for: '{prompt[:40]}'")
+                return data.decode("utf-8")
+            return None
+        except Exception as exc:
+            logger.debug(f"Motion result cache read error: {exc}")
+            return None
+
+    def set_motion_result(self, prompt: str, duration: float, num_steps: int, video_url: str) -> None:
+        """Store a generated motion video URL."""
+        if not self._available:
+            return
+        try:
+            key_str = f"{prompt}|{duration}|{num_steps}"
+            key = f"mres:{self._hash(key_str)}"
+            self._redis.setex(key, self._motion_prompt_ttl, video_url.encode("utf-8"))
+            logger.debug(f"Motion result cached: '{prompt[:40]}' → {video_url}")
+        except Exception as exc:
+            logger.debug(f"Motion result cache write error: {exc}")

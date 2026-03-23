@@ -13,9 +13,10 @@ import re
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from models import VoicePrompt, MotionPrompt  # shared models — single source of truth
 import uvicorn
@@ -35,6 +36,7 @@ from utils.web_search import get_web_search_service
 from utils.exercise_detector import get_exercise_detector
 from utils.gemini_client import GeminiClientWrapper
 from utils.prompt_templates import LLM_PROMPTS
+from motion_jobs import MotionJobManager
 import asyncio
 from agents.response_templates import ResponseTemplateGenerator
 
@@ -50,6 +52,17 @@ def _env_int(name: str, default: int) -> int:
         return int(value)
     except ValueError:
         logger.warning("Invalid integer for %s=%r; using default %d", name, value, default)
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        logger.warning("Invalid float for %s=%r; using default %.2f", name, value, default)
         return default
 
 
@@ -102,7 +115,7 @@ class QueryRequest(BaseModel):
     """Request to process a query."""
 
     query: str = Field(..., description="User's query")
-    user_id: str = Field(..., description="User identifier")
+    user_id: str = Field("guest", description="User identifier (optional, defaults to guest)")
     conversation_history: Optional[List[ConversationTurn]] = Field(
         None, description="Previous conversation turns"
     )
@@ -149,6 +162,15 @@ class MotionMetadata(BaseModel):
     fps:         int = Field(..., description="Frames per second")
 
 
+class MotionJobStatus(BaseModel):
+    """Async motion job status payload."""
+
+    job_id: str = Field(..., description="Celery job identifier")
+    status: str = Field(..., description="queued | processing | completed | failed")
+    video_url: Optional[str] = Field(None, description="Rendered video or artifact URL when completed")
+    error: Optional[str] = Field(None, description="Error details for failed jobs")
+
+
 class QueryResponse(BaseModel):
     """Response from query processing."""
 
@@ -170,6 +192,10 @@ class QueryResponse(BaseModel):
     )
     motion: Optional[MotionMetadata] = Field(
         None, description="Motion generation result from DART (set when exercise_motion_prompt is not null)"
+    )
+    motion_job: Optional[MotionJobStatus] = Field(
+        None,
+        description="Async motion job handle when motion queue mode is enabled",
     )
     orchestrator_decision: OrchestratorDecision = Field(
         ..., description="Orchestrator decision and reasoning"
@@ -242,6 +268,11 @@ class AgenticRAGAPI:
             # MotionGenerationTool — calls DART server; instantiated here so it
             # can be called later in process_query() without repeated construction.
             self.motion_tool = MotionGenerationTool()  # defaults: localhost:5001, 30s timeout
+            self.motion_job_manager = MotionJobManager()
+            self.motion_async_enabled = os.getenv("MOTION_ASYNC_ENABLED", "false").lower() in {
+                "1", "true", "yes", "on"
+            }
+            self.motion_default_duration_seconds = _env_float("MOTION_DEFAULT_DURATION_SECONDS", 12.0)
 
             # Orchestrator — try local first, fallback to API
             logger.info("Attempting to initialize LocalOrchestrator...")
@@ -284,6 +315,10 @@ class AgenticRAGAPI:
         except Exception as e:
             logger.error(f"Failed to initialize AgenticRAG API: {e}")
             raise
+
+    def get_motion_job_status(self, job_id: str) -> Dict[str, Any]:
+        """Get async motion job status by job_id."""
+        return self.motion_job_manager.get_status(job_id)
 
     def _orchestrator_cache_key(self, user_id: str, query: str) -> str:
         return f"{user_id}::{query.strip().lower()}"
@@ -439,7 +474,26 @@ class AgenticRAGAPI:
                     f"Intent normalized: '{raw_intent}' → '{canonical_intent}'"
                 )
             decision["intent"] = canonical_intent
-            
+
+            # ── Fix B: Low-confidence visualization override ────────────────
+            # If Qwen is unsure (confidence < 0.6) AND the user uses explicit
+            # visualization verbs, force intent to visualize_motion so DART
+            # generates the motion instead of RAG returning a text-only answer.
+            _VIZ_KEYWORDS = ("show me how", "how to do", "visualize", "demonstrate")
+            _q = query.lower()
+            if (
+                decision.get("confidence", 1.0) < 0.6
+                and decision["intent"] != "visualize_motion"
+                and any(kw in _q for kw in _VIZ_KEYWORDS)
+                and not self._is_multi_activity_request(query)
+            ):
+                logger.info(
+                    f"Low-confidence override: intent='{decision['intent']}' "
+                    f"(conf={decision.get('confidence')}) → visualize_motion"
+                )
+                decision["intent"] = "visualize_motion"
+                decision["needs_motion"] = True
+
             # Convert to format expected by existing code
             result = {
                 "intent": decision["intent"],
@@ -487,6 +541,8 @@ class AgenticRAGAPI:
         """
         import time
         start_time = time.time()
+
+        user_id = (user_id or "guest").strip() or "guest"
         
         logger.info(f"Processing query for user {user_id}: {query[:100]}...")
 
@@ -675,38 +731,60 @@ class AgenticRAGAPI:
 
             # ── Step 2b: Call MotionGenerationTool if motion was requested ────
             motion_metadata: Optional[MotionMetadata] = None
+            motion_job: Optional[MotionJobStatus] = None
             if exercise_motion_prompt:
-                logger.info(
-                    f"Calling MotionGenerationTool for prompt={exercise_motion_prompt!r}"
-                )
                 motion_start = time.time()
-                try:
-                    raw_motion = self.motion_tool.generate_motion(exercise_motion_prompt)
-                    motion_time = time.time() - motion_start
-                    perf["motion_ms"] = motion_time * 1000
-                    
-                    if "error" not in raw_motion and raw_motion.get("motion_file"):
-                        motion_metadata = MotionMetadata(
-                            motion_file=raw_motion["motion_file"],
-                            frames=raw_motion["frames"],
-                            fps=raw_motion["fps"],
+                if self.motion_async_enabled:
+                    try:
+                        job_id = self.motion_job_manager.enqueue(
+                            user_query=query,
+                            motion_prompt=exercise_motion_prompt,
+                            user_id=user_id,
+                            duration_seconds=self.motion_default_duration_seconds,
                         )
-                        logger.info(
-                            f"Motion generated: {motion_metadata.motion_file} "
-                            f"({motion_metadata.frames} frames @ {motion_metadata.fps} fps)"
+                        motion_job = MotionJobStatus(
+                            job_id=job_id,
+                            status="queued",
+                            video_url=None,
+                            error=None,
                         )
-                    else:
-                        logger.warning(
-                            f"MotionGenerationTool returned error or missing fields: {raw_motion}"
+                        perf["motion_ms"] = (time.time() - motion_start) * 1000
+                        logger.info("Async motion job queued: %s", job_id)
+                    except Exception as _qe:
+                        logger.error("Async queue failed, falling back sync motion: %s", _qe)
+                        trace["errors"].append(f"Motion queue error: {str(_qe)}")
+
+                if not self.motion_async_enabled or (self.motion_async_enabled and motion_job is None):
+                    logger.info(
+                        f"Calling MotionGenerationTool for prompt={exercise_motion_prompt!r}"
+                    )
+                    try:
+                        raw_motion = self.motion_tool.generate_motion(exercise_motion_prompt)
+                        motion_time = time.time() - motion_start
+                        perf["motion_ms"] = motion_time * 1000
+
+                        if "error" not in raw_motion and raw_motion.get("motion_file"):
+                            motion_metadata = MotionMetadata(
+                                motion_file=raw_motion["motion_file"],
+                                frames=raw_motion["frames"],
+                                fps=raw_motion["fps"],
+                            )
+                            logger.info(
+                                f"Motion generated: {motion_metadata.motion_file} "
+                                f"({motion_metadata.frames} frames @ {motion_metadata.fps} fps)"
+                            )
+                        else:
+                            logger.warning(
+                                f"MotionGenerationTool returned error or missing fields: {raw_motion}"
+                            )
+                            trace["tools_failed"].append("motion_generation_tool")
+                    except Exception as _me:
+                        logger.error(
+                            f"MotionGenerationTool failed for {exercise_motion_prompt!r}: {_me}"
                         )
                         trace["tools_failed"].append("motion_generation_tool")
-                except Exception as _me:
-                    logger.error(
-                        f"MotionGenerationTool failed for {exercise_motion_prompt!r}: {_me}"
-                    )
-                    trace["tools_failed"].append("motion_generation_tool")
-                    trace["errors"].append(f"Motion generation error: {str(_me)}")
-                    # Motion failure is non-fatal — continue with text-only response
+                        trace["errors"].append(f"Motion generation error: {str(_me)}")
+                        # Motion failure is non-fatal — continue with text-only response
 
             # ── Step 3: Motion prompt (if needed) ────────────────────────────
             motion_prompt = None
@@ -762,6 +840,7 @@ class AgenticRAGAPI:
                 exercises=exercises,
                 exercise_motion_prompt=exercise_motion_prompt,
                 motion=motion_metadata,
+                motion_job=motion_job,
                 orchestrator_decision=orch_decision,
                 motion_prompt=MotionPrompt(**motion_prompt) if motion_prompt else None,
                 voice_prompt=VoicePrompt(**voice_prompt) if voice_prompt else None,
@@ -814,7 +893,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Enable CORS for test UI
+# CORS: allow local dev + Ngrok tunnel domains
+_CORS_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+_allowed_origins = (
+    [o.strip() for o in _CORS_ORIGINS.split(",") if o.strip()]
+    if _CORS_ORIGINS else []
+)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -822,6 +907,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Expose local static video directory for async worker artifacts.
+os.makedirs("./static/videos", exist_ok=True)
+app.mount("/static", StaticFiles(directory="./static"), name="static")
+
+# Serve test-ui frontend at /ui/ so it's accessible through Ngrok
+_ui_dir = os.path.join(os.path.dirname(__file__), "..", "..", "test-ui")
+if os.path.isdir(_ui_dir):
+    app.mount("/ui", StaticFiles(directory=_ui_dir, html=True), name="test-ui")
 
 
 # ===========================
@@ -856,6 +950,8 @@ async def process_query(request: QueryRequest):
     # stays responsive throughout.
     
     # If streaming is requested, return StreamingResponse with text chunks
+    request_user_id = (request.user_id or "guest").strip() or "guest"
+
     if request.stream:
         # For streaming, we run it in a thread and wrap the generator.
         # Since the generator yielded by process_query is sync, 
@@ -863,7 +959,7 @@ async def process_query(request: QueryRequest):
         # NOTE: Streaming returns plain text chunks, not JSON.
         generator = api_instance.process_query(
             request.query,
-            request.user_id,
+            request_user_id,
             history,
             stream=True
         )
@@ -873,21 +969,109 @@ async def process_query(request: QueryRequest):
     response = await asyncio.to_thread(
         api_instance.process_query,
         request.query,
-        request.user_id,
+        request_user_id,
         history,
     )
 
     return response
 
 
-@app.get("/health", summary="Health check")
-async def health_check() -> Dict[str, str]:
-    """Health check endpoint.
+@app.get("/job-status/{job_id}", response_model=MotionJobStatus, summary="Get async motion job status")
+async def get_job_status(job_id: str, request: Request):
+    """Return queue status for a motion job."""
+    if api_instance is None:
+        raise HTTPException(status_code=500, detail="API not initialized")
 
-    Returns:
-        Status dictionary
+    status = api_instance.get_motion_job_status(job_id)
+
+    # Rewrite video_url to use the public base URL from the incoming request
+    # so that URLs are correct when accessed through Ngrok or other reverse proxies.
+    if status.get("video_url"):
+        base = str(request.base_url).rstrip("/")
+        relative = status["video_url"]
+        # Strip any existing localhost base to get the relative path
+        for prefix in ("http://localhost:8000", "http://127.0.0.1:8000"):
+            if relative.startswith(prefix):
+                relative = relative[len(prefix):]
+                break
+        status["video_url"] = f"{base}{relative}"
+
+    return status
+
+
+@app.get("/health", summary="Health check with infrastructure status")
+async def health_check() -> Dict[str, Any]:
+    """Check connectivity of all infrastructure dependencies through Port 8000.
+
+    Probes: Redis, ChromaDB, Celery workers, DART (5001), Orchestrator (8080).
     """
-    return {"status": "healthy", "service": "agenticrag"}
+    import socket as _socket
+
+    checks: Dict[str, Any] = {}
+
+    # 1. Redis
+    try:
+        import redis as _redis
+        r = _redis.Redis(
+            host=os.getenv("REDIS_HOST", "localhost"),
+            port=int(os.getenv("REDIS_PORT", "6379")),
+            socket_connect_timeout=2,
+        )
+        r.ping()
+        checks["redis"] = {"status": "ok"}
+    except Exception as exc:
+        checks["redis"] = {"status": "unreachable", "error": str(exc)}
+
+    # 2. ChromaDB
+    try:
+        import chromadb
+        client = chromadb.HttpClient(
+            host=os.getenv("CHROMA_HOST", "localhost"),
+            port=int(os.getenv("CHROMA_PORT", "8100")),
+        )
+        client.heartbeat()
+        checks["chromadb"] = {"status": "ok"}
+    except Exception:
+        # ChromaDB may be running in-process (PersistentClient) which is fine
+        if api_instance and hasattr(api_instance, "rag_pipeline"):
+            checks["chromadb"] = {"status": "ok (in-process)"}
+        else:
+            checks["chromadb"] = {"status": "unreachable"}
+
+    # 3. Celery Worker
+    try:
+        from celery_app import celery_app as _celery
+        if _celery is not None:
+            inspector = _celery.control.inspect(timeout=0.2)
+            active = inspector.active_queues()
+            checks["celery"] = {
+                "status": "ok" if active else "no_workers",
+                "workers": len(active) if active else 0,
+            }
+        else:
+            checks["celery"] = {"status": "disabled"}
+    except Exception as exc:
+        checks["celery"] = {"status": "unreachable", "error": str(exc)}
+
+    # 4. Internal services via TCP probe
+    for name, host, port in [
+        ("dart", "127.0.0.1", 5001),
+        ("orchestrator", "127.0.0.1", 8080),
+    ]:
+        try:
+            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
+                s.settimeout(1.0)
+                s.connect((host, port))
+            checks[name] = {"status": "ok"}
+        except Exception:
+            checks[name] = {"status": "unreachable"}
+
+    overall = "healthy" if all(
+        c.get("status") in ("ok", "ok (in-process)", "disabled")
+        for c in checks.values()
+    ) else "degraded"
+
+    return {"status": overall, "service": "agenticrag", "checks": checks}
 
 
 @app.get("/info", summary="Get service info")

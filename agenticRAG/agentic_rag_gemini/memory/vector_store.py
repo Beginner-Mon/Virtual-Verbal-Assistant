@@ -18,6 +18,10 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+PUBLIC_COLLECTION_NAME = "humanml3d_library"
+DEFAULT_GUEST_USER_ID = "guest"
+
+
 class VectorStore:
     """Vector database wrapper for memory storage and retrieval.
     
@@ -46,40 +50,103 @@ class VectorStore:
     def _init_chromadb(self):
         """Initialize ChromaDB client and collections."""
         chroma_config = self.config.chromadb
-        
-        self.client = chromadb.PersistentClient(
-            path=chroma_config["persist_directory"],
-            settings=Settings(
-                anonymized_telemetry=False,
-                allow_reset=False
+        mode = str(chroma_config.get("mode", "http")).strip().lower()
+
+        settings = Settings(
+            anonymized_telemetry=False,
+            allow_reset=False
+        )
+
+        if mode == "http":
+            host = chroma_config.get("host", "localhost")
+            port = int(chroma_config.get("port", 8100))
+            self.client = chromadb.HttpClient(
+                host=host,
+                port=port,
+                ssl=bool(chroma_config.get("ssl", False)),
+                headers=chroma_config.get("headers") or {},
+                settings=settings,
             )
-        )
+            self._chroma_endpoint = f"{host}:{port}"
+            logger.info(
+                "Using ChromaDB HttpClient mode host=%s port=%s",
+                host,
+                port,
+            )
+        else:
+            persist_directory = chroma_config.get("persist_directory", "./data/vector_store")
+            self.client = chromadb.PersistentClient(
+                path=persist_directory,
+                settings=settings,
+            )
+            self._chroma_endpoint = persist_directory
+            logger.info(
+                "Using ChromaDB PersistentClient mode path=%s",
+                persist_directory,
+            )
         
-        # Get or create conversations collection with cosine distance
-        conversations_collection_name = chroma_config["collection_name"]
-        self.collection = self.client.get_or_create_collection(
-            name=conversations_collection_name,
-            metadata={"description": "KineticChat conversation history and summaries"},
-            embedding_function=None  # Use custom embeddings
+        try:
+            self.client.heartbeat()
+        except Exception as exc:
+            raise RuntimeError(
+                "Cannot connect to ChromaDB server at "
+                f"{self._chroma_endpoint}. Ensure ChromaDB is running "
+                "(docker compose up -d chromadb)."
+            ) from exc
+
+        bootstrap_user = self._resolve_user_id(None)
+        self.collection = self._get_chroma_collection("conversations", bootstrap_user, create_if_missing=True)
+        self.documents_collection = self._get_chroma_collection("documents", bootstrap_user, create_if_missing=True)
+        self.chat_summaries_collection = self._get_chroma_collection("chat_summaries", bootstrap_user, create_if_missing=True)
+        self.public_collection = self._get_public_collection(create_if_missing=True)
+
+        logger.info(
+            "ChromaDB tenant bootstrap completed for user=%s with public collection=%s",
+            bootstrap_user,
+            PUBLIC_COLLECTION_NAME,
         )
-        
-        # Get or create documents collection with cosine distance (separate storage for uploaded documents)
-        documents_collection_name = f"{conversations_collection_name}_documents"
-        self.documents_collection = self.client.get_or_create_collection(
-            name=documents_collection_name,
-            metadata={"description": "KineticChat uploaded documents and knowledge base"},
-            embedding_function=None  # Use custom embeddings
-        )
-        
-        # Get or create chat summaries collection (session memory for chat history)
-        summaries_collection_name = f"{conversations_collection_name}_chat_summaries"
-        self.chat_summaries_collection = self.client.get_or_create_collection(
-            name=summaries_collection_name,
-            metadata={"description": "KineticChat chat session summaries for memory recall"},
-            embedding_function=None  # Use custom embeddings
-        )
-        
-        logger.info(f"ChromaDB collections: {conversations_collection_name}, {documents_collection_name}, {summaries_collection_name}")
+
+    def _resolve_user_id(self, user_id: Optional[str]) -> str:
+        value = str(user_id or DEFAULT_GUEST_USER_ID).strip()
+        return value or DEFAULT_GUEST_USER_ID
+
+    def _sanitize_user_id(self, user_id: str) -> str:
+        return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in user_id)
+
+    def _base_collection_name(self, user_id: str) -> str:
+        return f"user_{self._sanitize_user_id(user_id)}_collection"
+
+    def _collection_name(self, collection_type: str, user_id: str) -> str:
+        base = self._base_collection_name(user_id)
+        if collection_type == "documents":
+            return f"{base}_documents"
+        if collection_type == "chat_summaries":
+            return f"{base}_chat_summaries"
+        return base
+
+    def _get_chroma_collection(self, collection_type: str, user_id: str, create_if_missing: bool = True):
+        name = self._collection_name(collection_type, user_id)
+        metadata_map = {
+            "conversations": {"description": f"Conversation memory for user {user_id}"},
+            "documents": {"description": f"Uploaded document knowledge for user {user_id}"},
+            "chat_summaries": {"description": f"Chat summaries for user {user_id}"},
+        }
+        if create_if_missing:
+            return self.client.get_or_create_collection(
+                name=name,
+                metadata=metadata_map.get(collection_type, {"description": f"Collection for user {user_id}"}),
+                embedding_function=None,
+            )
+        return self.client.get_collection(name=name, embedding_function=None)
+
+    def _get_public_collection(self, create_if_missing: bool = True):
+        if create_if_missing:
+            return self.client.get_or_create_collection(
+                name=PUBLIC_COLLECTION_NAME,
+                metadata={"description": "Shared read-only HumanML3D knowledge library"},
+                embedding_function=None,
+            )
+        return self.client.get_collection(name=PUBLIC_COLLECTION_NAME, embedding_function=None)
     
     def _init_qdrant(self):
         """Initialize Qdrant client and collection."""
@@ -112,7 +179,8 @@ class VectorStore:
         embeddings: List[List[float]],
         metadata: Optional[List[Dict[str, Any]]] = None,
         ids: Optional[List[str]] = None,
-        collection_type: str = "conversations"
+        collection_type: str = "conversations",
+        user_id: Optional[str] = None,
     ) -> List[str]:
         """Add documents to vector store.
         
@@ -131,15 +199,19 @@ class VectorStore:
         
         if metadata is None:
             metadata = [{} for _ in documents]
+        else:
+            metadata = [m or {} for m in metadata]
         
         # Add timestamp to metadata
         for meta in metadata:
             if "timestamp" not in meta:
                 meta["timestamp"] = datetime.now().isoformat()
         
+        resolved_user_id = self._resolve_user_id(user_id or metadata[0].get("user_id"))
+
         # Select collection based on type
         if self.db_type == "chromadb":
-            collection = self.documents_collection if collection_type == "documents" else self.collection
+            collection = self._get_chroma_collection(collection_type, resolved_user_id, create_if_missing=True)
             collection.add(
                 documents=documents,
                 embeddings=embeddings,
@@ -163,14 +235,20 @@ class VectorStore:
                 points=points
             )
         
-        logger.info(f"Added {len(documents)} documents to vector store")
+        logger.info(
+            "Added %d documents to vector store (collection_type=%s user_id=%s)",
+            len(documents),
+            collection_type,
+            resolved_user_id,
+        )
         return ids
     
     def search(
         self,
         query_embedding: List[float],
         top_k: int = 5,
-        filter_metadata: Optional[Dict[str, Any]] = None
+        filter_metadata: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Search for similar documents in vector store.
         
@@ -183,12 +261,19 @@ class VectorStore:
             List of documents with similarity scores and metadata
         """
         if self.db_type == "chromadb":
+            user_from_filter = (filter_metadata or {}).get("user_id")
+            resolved_user_id = self._resolve_user_id(user_id or user_from_filter)
+            collection = self._get_chroma_collection("conversations", resolved_user_id, create_if_missing=True)
+
             # Handle multiple filter conditions with $and operator
-            where_clause = filter_metadata
+            where_clause = dict(filter_metadata or {})
+            where_clause.pop("user_id", None)
+            if not where_clause:
+                where_clause = None
             if filter_metadata and len(filter_metadata) > 1:
-                where_clause = {"$and": [{k: v} for k, v in filter_metadata.items()]}
+                where_clause = {"$and": [{k: v} for k, v in where_clause.items()]}
             
-            results = self.collection.query(
+            results = collection.query(
                 query_embeddings=[query_embedding],
                 n_results=top_k,
                 where=where_clause
@@ -269,12 +354,40 @@ class VectorStore:
             collection_type="documents"
         )
         return ids[0]
+
+    def add_public_documents(
+        self,
+        documents: List[str],
+        embeddings: List[List[float]],
+        metadata: Optional[List[Dict[str, Any]]] = None,
+        ids: Optional[List[str]] = None,
+    ) -> List[str]:
+        """Add shared read-only library entries to the public collection."""
+        if self.db_type != "chromadb":
+            raise ValueError("Public collection helper is only supported for ChromaDB backend")
+
+        if ids is None:
+            ids = [str(uuid.uuid4()) for _ in documents]
+        if metadata is None:
+            metadata = [{} for _ in documents]
+
+        collection = self._get_public_collection(create_if_missing=True)
+        collection.add(
+            documents=documents,
+            embeddings=embeddings,
+            metadatas=metadata,
+            ids=ids,
+        )
+        logger.info("Added %d entries to public collection %s", len(documents), PUBLIC_COLLECTION_NAME)
+        return ids
     
     def search_documents(
         self,
         query_embedding: List[float],
         top_k: int = 5,
-        filter_metadata: Optional[Dict[str, Any]] = None
+        filter_metadata: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        include_public: bool = False,
     ) -> List[Dict[str, Any]]:
         """Search documents collection specifically.
         
@@ -287,12 +400,19 @@ class VectorStore:
             List of documents with scores
         """
         if self.db_type == "chromadb":
+            user_from_filter = (filter_metadata or {}).get("user_id")
+            resolved_user_id = self._resolve_user_id(user_id or user_from_filter)
+            documents_collection = self._get_chroma_collection("documents", resolved_user_id, create_if_missing=True)
+
             # Handle multiple filter conditions with $and operator
-            where_clause = filter_metadata
+            where_clause = dict(filter_metadata or {})
+            where_clause.pop("user_id", None)
+            if not where_clause:
+                where_clause = None
             if filter_metadata and len(filter_metadata) > 1:
-                where_clause = {"$and": [{k: v} for k, v in filter_metadata.items()]}
+                where_clause = {"$and": [{k: v} for k, v in where_clause.items()]}
             
-            results = self.documents_collection.query(
+            results = documents_collection.query(
                 query_embeddings=[query_embedding],
                 n_results=top_k,
                 where=where_clause
@@ -309,6 +429,26 @@ class VectorStore:
                     "similarity": max(0.0, 1.0 - (results["distances"][0][i] / 2.0)) if "distances" in results else None
                 })
             
+            if include_public:
+                public_collection = self._get_public_collection(create_if_missing=True)
+                public_results = public_collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=top_k,
+                )
+                for i in range(len(public_results["ids"][0])):
+                    formatted_results.append({
+                        "id": public_results["ids"][0][i],
+                        "document": public_results["documents"][0][i],
+                        "metadata": {
+                            **(public_results["metadatas"][0][i] or {}),
+                            "library_scope": "public",
+                        },
+                        "distance": public_results["distances"][0][i] if "distances" in public_results else None,
+                        "similarity": max(0.0, 1.0 - (public_results["distances"][0][i] / 2.0)) if "distances" in public_results else None,
+                    })
+                formatted_results.sort(key=lambda item: item.get("similarity") or 0.0, reverse=True)
+                return formatted_results[:top_k]
+
             return formatted_results
         
         # Similar Qdrant logic would go here...
@@ -319,7 +459,8 @@ class VectorStore:
         summary: str,
         embedding: List[float],
         metadata: Optional[Dict[str, Any]] = None,
-        id: Optional[str] = None
+        id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> str:
         """Add a single chat summary to the chat summaries collection.
         
@@ -340,9 +481,12 @@ class VectorStore:
         
         if "timestamp" not in metadata:
             metadata["timestamp"] = datetime.now().isoformat()
+
+        resolved_user_id = self._resolve_user_id(user_id or metadata.get("user_id"))
         
         if self.db_type == "chromadb":
-            self.chat_summaries_collection.add(
+            chat_collection = self._get_chroma_collection("chat_summaries", resolved_user_id, create_if_missing=True)
+            chat_collection.add(
                 documents=[summary],
                 embeddings=[embedding],
                 metadatas=[metadata],
@@ -369,7 +513,8 @@ class VectorStore:
         self,
         query_embedding: List[float],
         top_k: int = 5,
-        filter_metadata: Optional[Dict[str, Any]] = None
+        filter_metadata: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Search chat summaries collection specifically.
         
@@ -382,11 +527,18 @@ class VectorStore:
             List of summaries with scores
         """
         if self.db_type == "chromadb":
-            where_clause = filter_metadata
+            user_from_filter = (filter_metadata or {}).get("user_id")
+            resolved_user_id = self._resolve_user_id(user_id or user_from_filter)
+            summaries_collection = self._get_chroma_collection("chat_summaries", resolved_user_id, create_if_missing=True)
+
+            where_clause = dict(filter_metadata or {})
+            where_clause.pop("user_id", None)
+            if not where_clause:
+                where_clause = None
             if filter_metadata and len(filter_metadata) > 1:
-                where_clause = {"$and": [{k: v} for k, v in filter_metadata.items()]}
+                where_clause = {"$and": [{k: v} for k, v in where_clause.items()]}
             
-            results = self.chat_summaries_collection.query(
+            results = summaries_collection.query(
                 query_embeddings=[query_embedding],
                 n_results=top_k,
                 where=where_clause
@@ -436,27 +588,27 @@ class VectorStore:
         
         return []
     
-    def get_documents_collection(self):
+    def get_documents_collection(self, user_id: Optional[str] = None):
         """Get the documents collection object.
         
         Returns:
             Documents collection
         """
         if self.db_type == "chromadb":
-            return self.documents_collection
+            return self._get_chroma_collection("documents", self._resolve_user_id(user_id), create_if_missing=True)
         return None
     
-    def get_conversations_collection(self):
+    def get_conversations_collection(self, user_id: Optional[str] = None):
         """Get the conversations collection object.
         
         Returns:
             Conversations collection
         """
         if self.db_type == "chromadb":
-            return self.collection
+            return self._get_chroma_collection("conversations", self._resolve_user_id(user_id), create_if_missing=True)
         return None
 
-    def delete_documents(self, ids: List[str]) -> bool:
+    def delete_documents(self, ids: List[str], user_id: Optional[str] = None, collection_type: str = "conversations") -> bool:
         """Delete documents from vector store.
         
         Args:
@@ -466,7 +618,8 @@ class VectorStore:
             True if successful
         """
         if self.db_type == "chromadb":
-            self.collection.delete(ids=ids)
+            collection = self._get_chroma_collection(collection_type, self._resolve_user_id(user_id), create_if_missing=True)
+            collection.delete(ids=ids)
         elif self.db_type == "qdrant":
             self.client.delete(
                 collection_name=self.collection_name,
@@ -654,7 +807,7 @@ class VectorStore:
             logger.error(f"Failed to reset collections: {e}")
             return False
     
-    def update_metadata(self, id: str, metadata: Dict[str, Any]) -> bool:
+    def update_metadata(self, id: str, metadata: Dict[str, Any], user_id: Optional[str] = None) -> bool:
         """Update metadata for a document.
         
         Args:
@@ -665,7 +818,8 @@ class VectorStore:
             True if successful
         """
         if self.db_type == "chromadb":
-            self.collection.update(
+            collection = self._get_chroma_collection("conversations", self._resolve_user_id(user_id), create_if_missing=True)
+            collection.update(
                 ids=[id],
                 metadatas=[metadata]
             )

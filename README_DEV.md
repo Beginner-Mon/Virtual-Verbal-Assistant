@@ -55,7 +55,10 @@ The **Virtual Verbal Assistant** is a multi-service pipeline that takes natural 
 
 ## 2. How the Pipeline Works
 
-A user sends a query to the Orchestrator at port 8080. The Orchestrator fans the request out to both AgenticRAG and DART **simultaneously** using `asyncio.gather`, then merges the results.
+A user sends a query to the Orchestrator at port 8080. The Orchestrator now follows a **text-first async enrichment** pattern:
+- Calls AgenticRAG first for intent, answer, exercises, and optional motion hint.
+- Returns text quickly.
+- Runs DART and TTS enrichment in the background (or synchronously when async mode is disabled).
 
 User Query: "Show me exercises for neck pain"
     │
@@ -64,24 +67,28 @@ Orchestrator (POST /answer)  ← main_api.py
     ├──────► AgenticRAG (POST /query)
     │           │  1. OrchestratorAgent (classify intent + analyze)
     │           │  2. RAGPipeline (generate text + extract exercises)
-    │           └── returns: { text_answer, exercises, exercise_motion_prompt }
+    │           └── returns: { language, text_answer, exercises, exercise_motion_prompt }
     │
-    ├──────► (If exercise_motion_prompt is set)
-    │        MotionGenerationTool calls DART (POST /generate)
-    │           │  prompt: exercise name (e.g. "chin tuck")
-    │           └── returns: { motion_file, frames, fps }
+    ├──────► (If motion is needed)
+    │        main_api.py calls DART (POST /generate)
+    │           │  prompt: normalized text + duration_seconds
+    │           └── returns: { motion_file_url, num_frames, fps, duration_seconds }
     │
     ▼
 Combined Response to Frontend:
 {
+  "request_id": "abc123def456",
+  "status": "processing",
+  "pending_services": ["dart", "tts"],
+  "language": "en",
   "text_answer": "Neck pain can often be alleviated...",
   "exercises": [
     {"name": "Chin tuck"},
     {"name": "Shoulder roll"}
   ],
   "motion": {
-    "motion_file": "motion_abc123.npz",
-    "frames": 160,
+    "motion_file_url": "http://localhost:5001/download/motion_abc123.npz",
+    "num_frames": 160,
     "fps": 30
   },
   "generation_time_ms": 11353.4,
@@ -109,7 +116,8 @@ AgenticRAG is an intelligent conversational system powered by Google Gemini that
 - Routes user queries to the right action (memory retrieval vs. document search vs. plain LLM).
 - Maintains persistent per-user conversation memory with semantic search via ChromaDB.
 - Retrieves context from uploaded documents (PDF, Word, Images with OCR).
-- Returns both a `text_answer` and a `motion_prompt` for downstream DART use.
+- Returns `text_answer`, extracted `exercises`, and optional motion metadata.
+- Detects query language and returns normalized language code: `en`, `vi`, `jp`, or `other`.
 
 ### 3.2 Internal Architecture
 
@@ -269,6 +277,7 @@ agentic_rag_gemini/
 ```json
 {
   "query": "Show me exercises for neck pain",
+  "language": "en",
   "text_answer": "Neck pain can often be alleviated...",
   "exercises": [
     {"name": "Chin tuck"},
@@ -277,6 +286,7 @@ agentic_rag_gemini/
   "exercise_motion_prompt": "chin tuck",
   "orchestrator_decision": {
     "action": "call_llm",
+    "language": "en",
     "confidence": 0.9,
     "reasoning": "Standard health request",
     "parameters": { ... }
@@ -318,7 +328,7 @@ DART (Diffusion-based Autoregressive Real-time Text-driven motion control) conve
 | Feature | Description |
 |---------|-------------|
 | Text-to-Motion | Generate motion from text prompts: `"walk"`, `"turn left"` |
-| Motion Composition | Chain actions: `"walk_in_circles*20,turn_left*10,walk*15"` |
+| Motion Duration Control | Prefer explicit `duration_seconds` in API request |
 | Motion In-betweening | Smooth transitions between keyframes |
 | Constrained Synthesis | Floor contact, collision avoidance, contact points |
 | Real-time Control | RL policy for goal-reaching at >300 FPS |
@@ -484,15 +494,17 @@ def rollout(text_prompt, num_primitives=20):
 **POST `/generate` — Request:**
 ```json
 {
-  "text_prompt": "jump*20",
+  "text_prompt": "jump",
+  "duration_seconds": 12,
   "guidance_scale": 5.0,
   "num_steps": 50,
-  "respacing": "ddim50",
+  "respacing": "",
   "seed": null
 }
 ```
 
-> **Prompt syntax:** `"action*N"` repeats the action for N primitives. Comma-separated for sequences: `"walk*10,jump*5,wave*8"`
+> **Duration rule:** New integration path uses `duration_seconds` as the primary length control.
+> Legacy `"action*N"` syntax is still accepted by DART for backward compatibility.
 
 **POST `/generate` — Response:**
 ```json
@@ -502,7 +514,7 @@ def rollout(text_prompt, num_primitives=20):
   "num_frames": 480,
   "fps": 30,
   "duration_seconds": 16.0,
-  "text_prompt": "jump*20"
+  "text_prompt": "jump"
 }
 ```
 
@@ -624,11 +636,11 @@ Text-to-Speech + Avatar control
 
 The Orchestrator at port 8080 is the **single entry point** for frontends. It:
 1. Receives `POST /answer` from frontend
-2. Starts **both** downstream calls concurrently using `asyncio.gather`:
-   - Calls AgenticRAG `/query` → gets `text_answer`
-   - Calls DART `/generate` with the hardcoded prompt `"jump*20"`
-3. Merges results; either service failing is isolated in `errors`
-4. Returns unified `AnswerResponse`
+2. Calls AgenticRAG `/query` first and returns text quickly
+3. Resolves motion prompt from AgenticRAG output (`exercise_motion_prompt` or `motion_prompt`)
+4. Calls DART `/generate` with normalized `text_prompt` + `duration_seconds` when needed
+5. Optionally runs DART/TTS in background and exposes polling via `GET /answer/status/{request_id}`
+6. Returns unified `AnswerResponse` with per-service errors isolated in `errors`
 
 The `/health` endpoint pings both downstream services and reports their individual status.
 
@@ -641,13 +653,17 @@ Orchestrator → AgenticRAG:
   POST /query   { query, user_id, conversation_history }
 
 AgenticRAG → Orchestrator:
-  { text_answer, exercises, exercise_motion_prompt, ... }
+  { language, text_answer, exercises, exercise_motion_prompt, ... }
 
 Orchestrator → Frontend:
   {
+    request_id: "...",
+    status: "processing|completed",
+    pending_services: ["dart", "tts"],
+    language: "en|vi|jp|other",
     text_answer: "...",
     exercises: [{name: "..."}],
-    motion: { motion_file, frames, fps } | null,
+    motion: { motion_file_url, num_frames, fps, duration_seconds } | null,
     generation_time_ms: 11353.4,
     errors: null   // or { "agenticrag": "...", "dart": "..." }
   }
@@ -655,9 +671,9 @@ Orchestrator → Frontend:
 
 ### 6.3 Motion Prompt Convention
 
-Motion prompts follow **DART-compatible format**:
-- Simple: `"walk forward"`, `"turn left"`, `"stand"`
-- Composed: `"walk_in_circles*20,turn_left*10,walk*15"` (action*num_primitives)
+Motion requests now follow **duration-first format**:
+- Primary: plain description + explicit duration (e.g., `"text_prompt": "walk forward", "duration_seconds": 12`)
+- Legacy-compatible: `"action*N"` strings are accepted by DART but not required by current integration.
 
 > **Current state:** The frontend natively loops through the `exercises` JSON array returned by AgenticRAG and draws a "Visualize" action button mapped to each one.
 > Clicking the button sends the deterministic query `"Visualize [ExerciseName]"` to the pipeline `POST /answer` endpoint, which the Orchestrator safely maps to the `visualize_motion` intent.
@@ -674,6 +690,13 @@ Motion prompts follow **DART-compatible format**:
   - `DART` (WSL) — for DART
 - `GEMINI_API_KEY` set in `agenticRAG/agentic_rag_gemini/.env`
 - DART model checkpoints downloaded (see `text-to-motion/DART/README.md`)
+- Local toolchain for async motion stack:
+  - `redis-server` available (or Redis already running on `127.0.0.1:6379`)
+  - `ffmpeg` installed and available in `PATH`
+
+Quick install notes (Windows):
+- Redis: use Docker (`docker run -p 6379:6379 redis`) or install Redis for Windows-compatible environment.
+- FFmpeg: install via winget (`winget install Gyan.FFmpeg`) or Chocolatey (`choco install ffmpeg`) and reopen terminal.
 
 ### 7.2 Start Order
 
@@ -701,7 +724,32 @@ python main_api.py
 # Serves on http://localhost:8080
 ```
 
-### 7.3 Health Checks
+### 7.3 One-Command Stack Startup (Async Motion)
+
+Use the root script to launch Redis (if needed), Celery Worker, Celery Beat, and FastAPI (`api_server.py`):
+
+```powershell
+cd <repo_root>
+conda activate firstconda
+.\run_stack.ps1
+```
+
+What `run_stack.ps1` does:
+- Checks prerequisites (`python`, `ffmpeg`, Python deps, Redis availability)
+- Starts Redis if not already running
+- Starts:
+  - `python -m celery -A celery_app worker --loglevel=info -P solo`
+  - `python -m celery -A celery_app beat --loglevel=info`
+  - `python api_server.py`
+- Cleans up managed child processes when script exits
+
+Optional flags:
+
+```powershell
+.\run_stack.ps1 -ApiHost 127.0.0.1 -ApiPort 8000 -SkipRedisStart
+```
+
+### 7.4 Health Checks
 
 ```powershell
 # AgenticRAG
@@ -714,7 +762,24 @@ Invoke-WebRequest -Uri "http://localhost:5001/health" -UseBasicParsing | Select-
 Invoke-WebRequest -Uri "http://localhost:8080/health" -UseBasicParsing | Select-Object -ExpandProperty Content
 ```
 
-### 7.4 Quick Test via Orchestrator
+### 7.5 Motion E2E Test Gate (Async Polling)
+
+Run automated pipeline validation:
+
+```powershell
+cd <repo_root>
+conda activate firstconda
+.\test_motion_pipeline.ps1 -BaseUrl "http://127.0.0.1:8000"
+```
+
+Script flow:
+1. `POST /query` with motion request
+2. Extract `motion_job.job_id`
+3. Poll `GET /job-status/{job_id}` every 2s until `completed|failed`
+4. On `completed`, validate `video_url` via `HEAD` request (expect HTTP 200)
+5. On `failed`, print worker error detail
+
+### 7.6 Quick Test via Orchestrator
 
 ```powershell
 $body = '{"query":"How do I walk forward?","user_id":"test","conversation_history":[]}'
@@ -723,14 +788,14 @@ Invoke-WebRequest -Uri "http://localhost:8080/answer" -Method POST `
   | Select-Object -ExpandProperty Content
 ```
 
-### 7.5 Test UI
+### 7.7 Test UI
 
 Open `test-ui/index.html` in a browser for a visual test interface.
 
 **Tabs:**
 - **AgenticRAG** — calls `POST :8000/query` directly, shows text answer + decision
 - **DART Motion** — calls `POST :5001/generate` directly, shows frame count + NPZ download link
-- **Full Pipeline** — calls `POST :8080/answer`, shows combined AgenticRAG + DART result with motion chips; includes note about hardcoded `jump*20` prompt
+- **Full Pipeline** — calls `POST :8080/answer`, shows combined AgenticRAG + DART result with async status and motion chips
 - **NPZ Runner** — frame-by-frame playback from a running NPZ viewer service (port 8090)
 
 ---
@@ -835,6 +900,7 @@ python -c "import torch; print(torch.cuda.is_available())"  # Must be True
 | Problem | Cause | Solution |
 |---------|-------|----------|
 | DART conda env not found | Env is in WSL, not Windows | Always run via `wsl -e bash -ic "conda activate DART && ..."` |
+| `DART server already running ... Exiting.` | Single-instance guard detected healthy process on 5001 | Restart by killing existing Linux PID on 5001 (`fuser -k 5001/tcp`) then relaunch DART |
 | CLIP placeholder warning | `transformers` not installed | `conda activate DART && pip install transformers` |
 | CUDA not available | Wrong PyTorch build | `conda install pytorch torchvision pytorch-cuda=12.1 -c pytorch -c nvidia` |
 | Checkpoint not found | Wrong file path/format | Checkpoints are `.pt` (not `.ckpt`). Verify path in `api_server.py` |
@@ -862,8 +928,15 @@ taskkill /PID <PID> /F
 
 ## Changelog
 
+### 2026-03-19 — Language + Duration Contract Update
+- **Language Detection:** Added query language classification with normalized codes: `en`, `vi`, `jp`, `other`.
+- **API Contract Update:** `POST /query` and `POST /answer` now include a top-level `language` field.
+- **Orchestrator Metadata:** `orchestrator_decision` now carries `language`.
+- **Motion Length Control:** Main integration now uses `duration_seconds` for DART generation.
+- **Compatibility:** Legacy `*N` prompt syntax remains supported inside DART, but is no longer required by main integration.
+
 ### 2026-03-09 — Pipeline Rewiring & DART Integration
-- **DART Integration:** `api_server.py` now directly calls `MotionGenerationTool` instead of `main_api.py` parallelizing a hardcoded string. 
+- **DART Integration:** `api_server.py` now directly calls `MotionGenerationTool` instead of relying on static test prompts in `main_api.py`.
 - **Structured RAG Outputs:** The LLM now enforces a JSON structure `{text_answer, exercises: [{name}]}`.
 - **Latency Optimization:** Removed separate RAG query expansion step and merged intent routing with query analysis in the orchestrator. Total LLM calls reduced from 7 down to 2 in worst case.
 - **Bug Fix:** Prevented API Key exhaustion by correctly handling Gemini `MAX_TOKENS` finish reason in `gemini_client.py`.

@@ -1,3 +1,22 @@
 .vscode/
 RUN_SERVERS.md
 INTEGRATION_SETUP.md
+
+# Python cache artifacts
+__pycache__/
+*.py[cod]
+
+# Runtime logs and temp outputs
+*.log
+logs/
+
+# Celery runtime state
+agenticRAG/agentic_rag_gemini/celerybeat-schedule.bak
+agenticRAG/agentic_rag_gemini/celerybeat-schedule.dat
+agenticRAG/agentic_rag_gemini/celerybeat-schedule.dir
+
+# Generated media outputs
+agenticRAG/agentic_rag_gemini/static/videos/
+
+# Local Chroma volume data
+chroma_data/

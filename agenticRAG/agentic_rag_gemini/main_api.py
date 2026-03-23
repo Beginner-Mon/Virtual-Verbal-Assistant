@@ -503,16 +503,21 @@ async def get_answer_status(request_id: str) -> AnswerResponse:
 
 @app.get("/health", summary="Health check")
 async def health_check() -> Dict[str, Any]:
-    """Ping both downstream services and report their status."""
+    """Ping both downstream services and report their status concurrently."""
     statuses: Dict[str, str] = {}
 
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        for name, base_url in [("agenticrag", AGENTIC_RAG_URL), ("dart", DART_URL)]:
+    async def check_service(name: str, base_url: str):
+        async with httpx.AsyncClient(timeout=5.0) as client:
             try:
                 r = await client.get(f"{base_url}/health")
                 statuses[name] = "ok" if r.status_code == 200 else f"http_{r.status_code}"
             except Exception as exc:
                 statuses[name] = f"unreachable ({type(exc).__name__})"
+
+    await asyncio.gather(
+        check_service("agenticrag", AGENTIC_RAG_URL),
+        check_service("dart", DART_URL)
+    )
 
     overall = "healthy" if all(v == "ok" for v in statuses.values()) else "degraded"
     return {"status": overall, "services": statuses}

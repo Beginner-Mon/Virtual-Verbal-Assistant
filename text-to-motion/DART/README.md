@@ -160,6 +160,9 @@ where:
 - **`action_x`**: A text description of the action (e.g., "walk forward," "turn left").  
 - **`num_x`**: The duration of the action, measured in **motion primitives** (each primitive corresponds to 8 frames).  
 
+For API integration in this repository, prefer passing plain `text_prompt` plus explicit `duration_seconds` to the DART server (`POST /generate`).
+The `action*num_primitives` syntax remains supported for backward compatibility and CLI demo workflows.
+
 You can run the following command to generate example motions of walking in circles:
 ```
 source ./demos/rollout.sh
