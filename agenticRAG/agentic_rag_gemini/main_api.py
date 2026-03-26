@@ -139,6 +139,21 @@ class ConversationTurn(BaseModel):
     content: str = Field(..., description="Message content")
 
 
+class QueryRequestCompat(BaseModel):
+    """Compatibility request so 8080 can accept 8000-style payloads."""
+
+    query: str = Field(..., description="User query")
+    user_id: str = Field(default="default", description="User identifier")
+    conversation_history: Optional[List[ConversationTurn]] = Field(
+        None, description="Previous conversation turns"
+    )
+    motion_duration_seconds: Optional[float] = Field(
+        None,
+        description="Compatibility field. Main API infers duration from downstream metadata.",
+    )
+    stream: bool = Field(False, description="Compatibility field. Streaming is not supported on 8080.")
+
+
 class AnswerRequest(BaseModel):
     """Request for a complete answer."""
 
@@ -189,6 +204,20 @@ class AnswerResponse(BaseModel):
     tts: Optional[TTSMetadata] = Field(None, description="Speech output from TTS/SpeechLLM")
     generation_time_ms: float = Field(..., description="Total wall-clock time in ms")
     errors: Optional[Dict[str, str]] = Field(None, description="Per-service errors if any")
+
+
+class UnifiedTaskResponseCompat(BaseModel):
+    """Task envelope compatible with AgenticRAG /process_query polling contract."""
+
+    task_id: str = Field(..., description="Unique task identifier")
+    status: str = Field(..., description="processing | completed | failed")
+    progress_stage: str = Field(..., description="queued | text_ready | motion_generation | completed | failed")
+    result: Optional[Dict[str, Any]] = Field(None, description="Normalized result payload")
+    error: Optional[str] = Field(None, description="Error text when task fails")
+
+
+TASK_CONTEXT: Dict[str, Dict[str, Any]] = {}
+TASK_CONTEXT_LOCK = asyncio.Lock()
 
 
 # ===========================
@@ -293,6 +322,118 @@ async def _generate_tts(
         audio_url=audio_url,
         text=tts_data.get("text", text_answer),
         emotion=tts_data.get("emotion", None),
+    )
+
+
+def _model_to_dict(value: Any) -> Dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()
+    return dict(value)
+
+
+def _extract_motion_file_name(motion_file_url: Optional[str]) -> Optional[str]:
+    if not motion_file_url:
+        return None
+    base = motion_file_url.split("?", 1)[0].rstrip("/")
+    if not base:
+        return None
+    return base.split("/")[-1] or None
+
+
+def _to_progress_stage(stage: Optional[str], status: str) -> str:
+    stage_value = (stage or "").strip().lower()
+    status_value = (status or "").strip().lower()
+    if status_value == "failed":
+        return "failed"
+    if status_value == "completed":
+        return "completed"
+    if stage_value in {"queued", "text_ready", "motion_generation", "completed", "failed"}:
+        return stage_value
+    if stage_value in {"rag_processing", "voice_synthesis"}:
+        return "text_ready"
+    return "queued"
+
+
+def _answer_to_query_payload(answer: AnswerResponse, query: str, user_id: str) -> Dict[str, Any]:
+    motion_payload = None
+    if answer.motion:
+        motion_file_url = answer.motion.motion_file_url
+        motion_payload = {
+            "motion_file": _extract_motion_file_name(motion_file_url),
+            "motion_file_url": motion_file_url,
+            "frames": answer.motion.num_frames,
+            "fps": answer.motion.fps,
+            "duration_seconds": answer.motion.duration_seconds,
+            "text_prompt": answer.motion.text_prompt,
+        }
+
+    motion_job_payload = None
+    if answer.status == "processing":
+        motion_job_payload = {
+            "job_id": answer.request_id,
+            "status": "queued" if answer.progress_stage != "completed" else "completed",
+            "motion_file_url": motion_payload.get("motion_file_url") if motion_payload else None,
+            "video_url": None,
+            "error": None,
+        }
+
+    error_text = None
+    if answer.errors:
+        error_text = "; ".join(f"{k}: {v}" for k, v in answer.errors.items())
+
+    return {
+        "query": query,
+        "user_id": user_id,
+        "language": answer.language,
+        "text_answer": answer.text_answer,
+        "exercises": answer.exercises,
+        "exercise_motion_prompt": answer.motion.text_prompt if answer.motion else None,
+        "motion": motion_payload,
+        "motion_job": motion_job_payload,
+        "orchestrator_decision": {
+            "action": "full_pipeline",
+            "intent": answer.selected_strategy,
+            "confidence": 1.0,
+            "language": answer.language,
+            "reasoning": "Main API orchestrated downstream services",
+            "parameters": {"progress_stage": answer.progress_stage, "request_id": answer.request_id},
+        },
+        "motion_prompt": {
+            "description": answer.motion.text_prompt,
+            "duration_seconds": answer.motion.duration_seconds,
+        } if answer.motion else None,
+        "voice_prompt": None,
+        "metadata": {
+            "request_id": answer.request_id,
+            "status": answer.status,
+            "pending_services": answer.pending_services,
+            "progress_stage": answer.progress_stage,
+            "tts": _model_to_dict(answer.tts) if answer.tts else None,
+        },
+        "pipeline_trace": {"path": "main_api_full_pipeline", "errors": answer.errors or {}},
+        "performance": {"total_ms": answer.generation_time_ms},
+        "errors": answer.errors,
+        "error": error_text,
+    }
+
+
+def _query_to_task_payload(task_id: str, answer: AnswerResponse, query: str, user_id: str) -> UnifiedTaskResponseCompat:
+    status_value = "failed" if answer.errors and not answer.text_answer else answer.status
+    progress_stage = _to_progress_stage(answer.progress_stage, status_value)
+    result = _answer_to_query_payload(answer, query, user_id)
+    error_text = result.get("error")
+    return UnifiedTaskResponseCompat(
+        task_id=task_id,
+        status=status_value,
+        progress_stage=progress_stage,
+        result=result,
+        error=error_text,
     )
 
 
@@ -522,6 +663,75 @@ async def get_answer_status(request_id: str) -> AnswerResponse:
     )
 
 
+@app.post("/query", summary="Compatibility endpoint for AgenticRAG-style clients")
+async def query_compat(request: QueryRequestCompat) -> Dict[str, Any]:
+    """Expose /query on 8080 by routing through the full /answer pipeline."""
+    answer = await get_answer(
+        AnswerRequest(
+            query=request.query,
+            user_id=request.user_id,
+            conversation_history=request.conversation_history,
+            motion_format="glb",
+        )
+    )
+    return _answer_to_query_payload(answer, request.query, request.user_id)
+
+
+@app.post("/process_query", response_model=UnifiedTaskResponseCompat, summary="Submit async query task")
+async def process_query_compat(request: QueryRequestCompat) -> UnifiedTaskResponseCompat:
+    """Expose /process_query on 8080 with task envelope compatible with port 8000."""
+    answer = await get_answer(
+        AnswerRequest(
+            query=request.query,
+            user_id=request.user_id,
+            conversation_history=request.conversation_history,
+            motion_format="glb",
+        )
+    )
+    task_id = answer.request_id
+    async with TASK_CONTEXT_LOCK:
+        TASK_CONTEXT[task_id] = {
+            "query": request.query,
+            "user_id": request.user_id,
+            "final_answer": _model_to_dict(answer) if answer.status == "completed" else None,
+        }
+    return _query_to_task_payload(task_id, answer, request.query, request.user_id)
+
+
+@app.get("/tasks/{task_id}", response_model=UnifiedTaskResponseCompat, summary="Get async query task status")
+async def get_task_compat(task_id: str) -> UnifiedTaskResponseCompat:
+    """Expose /tasks polling contract on 8080 for clients expecting AgenticRAG style."""
+    async with TASK_CONTEXT_LOCK:
+        context = TASK_CONTEXT.get(task_id)
+
+    if context is None:
+        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+
+    query = context.get("query", "")
+    user_id = context.get("user_id", "default")
+
+    final_answer = context.get("final_answer")
+    if final_answer:
+        answer_obj = AnswerResponse(**final_answer)
+        return _query_to_task_payload(task_id, answer_obj, query, user_id)
+
+    try:
+        answer_obj = await get_answer_status(task_id)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+        raise
+
+    payload = _query_to_task_payload(task_id, answer_obj, query, user_id)
+
+    if payload.status == "completed":
+        async with TASK_CONTEXT_LOCK:
+            if task_id in TASK_CONTEXT:
+                TASK_CONTEXT[task_id]["final_answer"] = _model_to_dict(answer_obj)
+
+    return payload
+
+
 @app.get("/health", summary="Health check")
 async def health_check() -> Dict[str, Any]:
     """Ping both downstream services and report their status concurrently."""
@@ -559,6 +769,9 @@ async def get_info() -> Dict[str, Any]:
         "endpoints": {
             "POST /answer": "Fast text-first response, optional async motion/TTS enrichment",
             "GET /answer/status/{request_id}": "Poll async enrichment status/results",
+            "POST /query": "Compatibility alias for 8000-style query clients",
+            "POST /process_query": "Compatibility task submission endpoint",
+            "GET /tasks/{task_id}": "Compatibility task polling endpoint",
             "GET /health": "Ping downstream services",
             "GET /info": "This document",
         },

@@ -18,7 +18,7 @@ from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse, Response, RedirectResponse
+from fastapi.responses import StreamingResponse, Response, RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -77,6 +77,10 @@ def _env_float(name: str, default: float) -> float:
     except ValueError:
         logger.warning("Invalid float for %s=%r; using default %.2f", name, value, default)
         return default
+
+
+MAIN_API_PROXY_BASE_URL = os.getenv("MAIN_API_PROXY_BASE_URL", "http://127.0.0.1:8080").rstrip("/")
+MAIN_API_PROXY_TIMEOUT_SECONDS = _env_float("MAIN_API_PROXY_TIMEOUT_SECONDS", 120.0)
 
 
 _DURATION_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b", re.IGNORECASE)
@@ -1290,6 +1294,40 @@ def _to_dart_download_url(motion_ref: Optional[str], request: Request) -> Option
     return f"{base}{path}"
 
 
+async def _proxy_main_api_request(
+    method: str,
+    path: str,
+    *,
+    json_body: Optional[Dict[str, Any]] = None,
+) -> Response:
+    """Forward request to the orchestrator API running on port 8080."""
+    upstream_url = f"{MAIN_API_PROXY_BASE_URL}{path}"
+    timeout_seconds = max(0.1, float(MAIN_API_PROXY_TIMEOUT_SECONDS))
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout_seconds, connect=min(timeout_seconds, 10.0))
+        ) as client:
+            upstream = await client.request(method, upstream_url, json=json_body)
+    except Exception as exc:
+        logger.error("Main API proxy failed for %s %s: %s", method, path, exc)
+        raise HTTPException(status_code=502, detail="Unable to reach orchestrator API on port 8080")
+
+    content_type = upstream.headers.get("content-type", "")
+    if "application/json" in content_type.lower():
+        try:
+            payload = upstream.json()
+        except Exception:
+            payload = {"detail": upstream.text or "Invalid JSON response from orchestrator"}
+        return JSONResponse(status_code=upstream.status_code, content=payload)
+
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        media_type=content_type or "application/octet-stream",
+    )
+
+
 def _build_unified_result(query_payload: Dict[str, Any], request: Request) -> Dict[str, Any]:
     """Project QueryResponse into the stable result payload used by Official UI."""
     orchestrator = query_payload.get("orchestrator_decision") or {}
@@ -1790,6 +1828,26 @@ async def proxy_dart_download(filename: str) -> Response:
     return Response(content=upstream.content, media_type=media_type, headers=forward_headers)
 
 
+@app.post("/answer", summary="Proxy full-pipeline answer endpoint to orchestrator")
+async def proxy_answer(request: Request) -> Response:
+    """Accept /answer on port 8000 and forward to orchestrator /answer on 8080."""
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+
+    return await _proxy_main_api_request("POST", "/answer", json_body=payload)
+
+
+@app.get("/answer/status/{request_id}", summary="Proxy full-pipeline status endpoint to orchestrator")
+async def proxy_answer_status(request_id: str) -> Response:
+    """Accept /answer/status on port 8000 and forward to orchestrator on 8080."""
+    return await _proxy_main_api_request("GET", f"/answer/status/{request_id}")
+
+
 @app.get("/job-status/{job_id}", response_model=MotionJobStatus, summary="Get async motion job status")
 async def get_job_status(job_id: str, request: Request):
     """Return queue status for a motion job."""
@@ -1906,6 +1964,8 @@ async def get_info() -> Dict[str, Any]:
             "POST /query": "Process a user query",
             "POST /process_query": "Submit async query task and return task envelope",
             "GET /tasks/{task_id}": "Poll unified task state",
+            "POST /answer": "Proxy to orchestrator /answer on port 8080",
+            "GET /answer/status/{request_id}": "Proxy to orchestrator async status on port 8080",
             "GET /health": "Health check",
             "GET /info": "Service information",
         },
