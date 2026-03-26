@@ -12,6 +12,10 @@ import random
 import copy
 import socket
 import json
+import asyncio
+import time
+import subprocess
+import sys
 from urllib.request import urlopen
 from urllib.error import URLError
 from typing import Optional, Literal
@@ -584,6 +588,7 @@ class ServerArgs:
     standing_seed: str = "./data/stand.pkl"
     host: str = os.getenv("DART_HOST", "0.0.0.0")
     port: int = _env_int("DART_PORT", 5001)
+    artifact_ttl_seconds: int = _env_int("DART_ARTIFACT_TTL_SECONDS", 1800)
 
 
 # Module-level default (so startup can see it before __main__ block runs)

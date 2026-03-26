@@ -17,6 +17,7 @@ import asyncio
 import uuid
 import re
 from typing import Optional, List, Dict, Any
+from typing import Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -244,6 +245,7 @@ async def _generate_motion_from_dart(
     client: httpx.AsyncClient,
     motion_prompt: str,
     duration_seconds: float,
+    motion_format: Literal["glb", "npz"],
     rag_data: Dict[str, Any],
 ) -> MotionMetadata:
     """Generate motion by calling DART API directly."""
@@ -251,6 +253,7 @@ async def _generate_motion_from_dart(
     dart_body: Dict[str, Any] = {
         "text_prompt": normalized_prompt,
         "duration_seconds": duration_seconds,
+        "output_format": motion_format,
         "guidance_scale": 5.0,
         "num_steps": 50,
         "gender": "female",
@@ -303,6 +306,7 @@ async def _run_async_enrichment(
     user_id: str,
     motion_prompt: Optional[str],
     motion_duration_seconds: float,
+    motion_format: Literal["glb", "npz"],
     rag_data: Dict[str, Any],
 ) -> None:
     """Run motion/TTS asynchronously and persist results in in-memory job store."""
@@ -315,7 +319,13 @@ async def _run_async_enrichment(
             if not motion_prompt:
                 return None
             try:
-                return await _generate_motion_from_dart(client, motion_prompt, motion_duration_seconds, rag_data)
+                return await _generate_motion_from_dart(
+                    client,
+                    motion_prompt,
+                    motion_duration_seconds,
+                    motion_format,
+                    rag_data,
+                )
             except Exception as exc:
                 logger.error(f"[DART] async failed: {exc}")
                 errors["dart"] = str(exc)
@@ -417,7 +427,13 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
         if rag_data and not MAIN_API_ASYNC_ENRICHMENT:
             if motion is None and motion_prompt:
                 try:
-                    motion = await _generate_motion_from_dart(client, motion_prompt, motion_duration_seconds, rag_data)
+                    motion = await _generate_motion_from_dart(
+                        client,
+                        motion_prompt,
+                        motion_duration_seconds,
+                        request.motion_format,
+                        rag_data,
+                    )
                 except Exception as exc:
                     logger.error(f"[DART] sync failed: {exc}")
                     errors["dart"] = str(exc)
@@ -456,6 +472,7 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
                         user_id=request.user_id,
                         motion_prompt=motion_prompt if motion is None else None,
                         motion_duration_seconds=motion_duration_seconds,
+                        motion_format=request.motion_format,
                         rag_data=rag_data,
                     )
                 )
