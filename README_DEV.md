@@ -31,14 +31,15 @@ The **Virtual Verbal Assistant** is a multi-service pipeline that takes natural 
 │  ┌─────────────────────┐   ┌──────────────────────────────┐ │
 │  │    AgenticRAG        │   │  Text-to-Motion (DART)       │ │
 │  │    Port 8000         │   │  Port 5001                   │ │
-│  │    Windows            │   │  WSL / Linux                 │ │
-│  │    Env: firstconda   │   │  Env: DART                   │ │
-│  └─────────────────────┘   └──────────────────────────────┘ │
+│  │   (Double-RAG)       │   │   (Motion RAG)               │ │
+│  └──────────┬──────────┘   └───────────────▲──────────────┘ │
+│             │                              │                │
+│             └──────[Constraints]───────────┘                │
 └─────────────────────────────────────────────────────────────┘
           ↑                              ↑
-   Handles: text Q&A,           Handles: motion generation
-   RAG, memory, document        from text prompt → NPZ file
-   retrieval via Gemini          via diffusion model
+   Handles: Clinical RAG,       Handles: Motion RAG
+   Constraint Extraction,       HyDE-based retrieval,
+   HyDE Transformation          3D Sequence Synthesis
 ```
 
 **Three running services required:**
@@ -55,10 +56,20 @@ The **Virtual Verbal Assistant** is a multi-service pipeline that takes natural 
 
 ## 2. How the Pipeline Works
 
-A user sends a query to the Orchestrator at port 8080. The Orchestrator now follows a **text-first async enrichment** pattern:
-- Calls AgenticRAG first for intent, answer, exercises, and optional motion hint.
-- Returns text quickly.
-- Runs DART and TTS enrichment in the background (or synchronously when async mode is disabled).
+A user sends a query from the Official UI (port 3000) to the unified gateway at port 8000. The gateway follows a **text-first async enrichment** pattern:
+- Calls AgenticRAG (Phase 3: Double-RAG) first:
+  - **Clinical Dispatch**: Searches knowledge for safety constraints and anatomical rules.
+  - **Transformation Engine**: Generates **HyDE** (Hypothetical Document) for motion retrieval.
+  - **Constraint Mapping**: Maps clinical rules (e.g., "gentle movements") to motion search filters.
+- Returns text quickly to the **ECA UI** via **Axios**.
+- Runs DART and TTS enrichment in the background with **Polling Support** (`/tasks/{task_id}`).
+
+### Unified Gateway Contract (Port 8000)
+
+- `POST /process_query` -> submit async task
+- `GET /tasks/{task_id}` -> poll status + `progress_stage`
+- `GET /download/{file}` -> proxy DART artifact through gateway (no direct 5001 URLs in UI)
+- `GET /history/{user_id}` -> file-backed chat history for Official UI parity
 
 User Query: "Show me exercises for neck pain"
     │
@@ -96,12 +107,12 @@ Combined Response to Frontend:
 }
 ```
 
-> **Integration State:** `MotionGenerationTool` is fully integrated and functional.
-> 1. The orchestrator correctly identifies `visualize_motion` intent and extracts exercise names
-> 2. Extracted exercise names are properly routed to DART via MotionGenerationTool  
-> 3. The system generates both step-by-step instructions and motion animations
-> 4. Frontend receives complete response with text, exercises, and motion metadata
-> 5. Test with queries like "Visualize chin tuck" to verify end-to-end functionality
+> **Integration State:** `Double-RAG` & `ECA UI 2.0` are fully integrated.
+> 1. **Clinical Integration**: Safety constraints are extracted from the `clinical_knowledge` collection.
+> 2. **Motion Conditioning**: Extracted constraints are fused with HyDE documents to condition the `humanml3d_library` search.
+> 3. **Axios Client**: The frontend (`ECA_UI/`) uses a standardized `api.js` client for all communication.
+> 4. **Polling Support**: The UI polls the orchestration service for `progress_stage` (e.g., `motion_generation`).
+> 5. **End-to-End**: Test with queries like "My neck is stiff from coding all day" to see safe clinical advice followed by a corresponding visualization.
 
 ---
 

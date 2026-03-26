@@ -10,19 +10,26 @@ import logging
 import os
 import time
 import re
+import uuid
+import json
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from enum import Enum
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from models import VoicePrompt, MotionPrompt  # shared models — single source of truth
 import uvicorn
+import httpx
 
 from agents.api_orchestrator import OrchestratorAgent
 from agents.local_orchestrator import LocalOrchestrator
+from agents.safety_filter import SafetyFilter
+from agents.query_transform import QueryTransformer
 from agents.tools import MemoryTool, DocumentRetrievalTool, WebSearchTool
 from agents.tools.motion_generation_tool import MotionGenerationTool
 from memory.memory_manager import MemoryManager
@@ -42,6 +49,12 @@ from agents.response_templates import ResponseTemplateGenerator
 
 # Initialize logger
 logger = get_logger(__name__)
+
+# In-memory task store for unified /process_query -> /tasks/{id} polling flow.
+TASK_STORE: Dict[str, Dict[str, Any]] = {}
+TASK_STORE_LOCK = asyncio.Lock()
+CHAT_HISTORY_DIR = os.getenv("CHAT_HISTORY_DIR", "./memory/chat_history")
+CHAT_HISTORY_LOCK = asyncio.Lock()
 
 
 def _env_int(name: str, default: int) -> int:
@@ -64,6 +77,35 @@ def _env_float(name: str, default: float) -> float:
     except ValueError:
         logger.warning("Invalid float for %s=%r; using default %.2f", name, value, default)
         return default
+
+
+_DURATION_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b", re.IGNORECASE)
+
+
+def _coerce_duration_seconds(raw: Any, min_seconds: float, max_seconds: float) -> Optional[float]:
+    """Convert a duration-like value to a bounded float in seconds."""
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return max(min_seconds, min(value, max_seconds))
+
+
+def _extract_duration_seconds_from_text(text: str) -> Optional[float]:
+    """Extract an explicit duration value from free text such as '3.2s' or '5 seconds'."""
+    if not text:
+        return None
+    match = _DURATION_PATTERN.search(text)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except (TypeError, ValueError):
+        return None
 
 
 def _detect_query_language(query: str) -> str:
@@ -119,6 +161,10 @@ class QueryRequest(BaseModel):
     conversation_history: Optional[List[ConversationTurn]] = Field(
         None, description="Previous conversation turns"
     )
+    motion_duration_seconds: Optional[float] = Field(
+        None,
+        description="Requested motion clip duration in seconds for strict duration mode",
+    )
     stream: bool = Field(False, description="Enable streaming response")
 
 
@@ -167,6 +213,7 @@ class MotionJobStatus(BaseModel):
 
     job_id: str = Field(..., description="Celery job identifier")
     status: str = Field(..., description="queued | processing | completed | failed")
+    motion_file_url: Optional[str] = Field(None, description="Absolute GLB URL when completed")
     video_url: Optional[str] = Field(None, description="Rendered video or artifact URL when completed")
     error: Optional[str] = Field(None, description="Error details for failed jobs")
 
@@ -223,6 +270,28 @@ class QueryResponse(BaseModel):
     )
 
 
+class UnifiedTaskResponse(BaseModel):
+    """Strict response contract for ECA UI 2.0 polling flow."""
+
+    task_id: str = Field(..., description="Unique task identifier")
+    status: str = Field(..., description="processing | completed | failed")
+    progress_stage: str = Field(
+        ..., description="queued | text_ready | motion_generation | completed | failed"
+    )
+    result: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Task result payload including absolute motion_file_url when available",
+    )
+    error: Optional[str] = Field(None, description="Error details when task fails")
+
+
+class ChatHistoryResponse(BaseModel):
+    """File-backed chat history contract used by Official UI."""
+
+    user_id: str
+    messages: List[Dict[str, Any]] = Field(default_factory=list)
+
+
 # ===========================
 # API Initialization
 # ===========================
@@ -259,8 +328,7 @@ class AgenticRAGAPI:
             document_tool   = DocumentRetrievalTool(document_store)
             web_search_tool = WebSearchTool(web_service)
 
-            # Save tool references so that _get_orchestrator_decision() can
-            # build a temporary OrchestratorAgent when LocalOrchestrator times out.
+            # Save tool references for orchestrator integrations and future extensions.
             self._memory_tool_ref     = memory_tool
             self._document_tool_ref   = document_tool
             self._web_search_tool_ref = web_search_tool
@@ -273,6 +341,20 @@ class AgenticRAGAPI:
                 "1", "true", "yes", "on"
             }
             self.motion_default_duration_seconds = _env_float("MOTION_DEFAULT_DURATION_SECONDS", 12.0)
+            self.motion_min_duration_seconds = _env_float("MOTION_MIN_DURATION_SECONDS", 1.0)
+            self.motion_max_duration_seconds = _env_float("MOTION_MAX_DURATION_SECONDS", 120.0)
+            if self.motion_max_duration_seconds < self.motion_min_duration_seconds:
+                self.motion_min_duration_seconds, self.motion_max_duration_seconds = (
+                    self.motion_max_duration_seconds,
+                    self.motion_min_duration_seconds,
+                )
+            self.motion_duration_policy = os.getenv("MOTION_DURATION_POLICY", "strict").strip().lower() or "strict"
+
+            # Safety Filter (Red Flag Screening via SLM)
+            self.safety_filter = SafetyFilter()
+            
+            # Query Transformation Engine (Double-RAG Semantic Router)
+            self.query_transformer = QueryTransformer(use_cache=True)
 
             # Orchestrator — try local first, fallback to API
             logger.info("Attempting to initialize LocalOrchestrator...")
@@ -310,15 +392,31 @@ class AgenticRAGAPI:
             # Lightweight in-memory cache for orchestrator routing decisions.
             self._orchestrator_cache: Dict[str, Dict[str, Any]] = {}
             self._orchestrator_cache_ttl_sec = _env_int("ORCHESTRATOR_CACHE_TTL_SEC", 120)
+            self.orchestrator_decision_timeout_seconds = max(
+                0.1,
+                _env_float("ORCHESTRATOR_DECISION_TIMEOUT_SECONDS", 2.0),
+            )
+            self.enable_fast_motion_bypass = os.getenv(
+                "ORCHESTRATOR_FAST_MOTION_BYPASS", "true"
+            ).lower() in {"1", "true", "yes", "on"}
+            fast_markers_raw = os.getenv(
+                "ORCHESTRATOR_FAST_MOTION_MARKERS",
+                "show me how,show me,demonstrate,visualize,visualise,animate,how to do",
+            )
+            self.fast_motion_markers = tuple(
+                marker.strip().lower()
+                for marker in fast_markers_raw.split(",")
+                if marker.strip()
+            )
 
             logger.info("AgenticRAG API initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize AgenticRAG API: {e}")
             raise
 
-    def get_motion_job_status(self, job_id: str) -> Dict[str, Any]:
+    def get_motion_job_status(self, job_id: str, request_base_url: Optional[str] = None) -> Dict[str, Any]:
         """Get async motion job status by job_id."""
-        return self.motion_job_manager.get_status(job_id)
+        return self.motion_job_manager.get_status(job_id, request_base_url=request_base_url)
 
     def _orchestrator_cache_key(self, user_id: str, query: str) -> str:
         return f"{user_id}::{query.strip().lower()}"
@@ -337,6 +435,48 @@ class AgenticRAGAPI:
             return True
         motion_markers = ("exercise", "stretch", "workout", "pain", "show", "visualize", "demonstrate")
         return len(q.split()) <= 5 and not any(m in q for m in motion_markers)
+
+    def _resolve_motion_duration_seconds(
+        self,
+        query: str,
+        action_plan: Dict[str, Any],
+        request_duration_seconds: Optional[float] = None,
+    ) -> float:
+        """Resolve motion duration with strict precedence and bounded clamping."""
+        min_s = self.motion_min_duration_seconds
+        max_s = self.motion_max_duration_seconds
+
+        candidates: List[Any] = []
+        if request_duration_seconds is not None:
+            candidates.append(request_duration_seconds)
+
+        if isinstance(action_plan, dict):
+            parameters = action_plan.get("parameters")
+            double_rag_meta = action_plan.get("double_rag_meta")
+            motion_prompt = action_plan.get("motion_prompt")
+
+            candidates.append(action_plan.get("duration_seconds"))
+            if isinstance(parameters, dict):
+                candidates.append(parameters.get("duration_seconds"))
+            if isinstance(double_rag_meta, dict):
+                candidates.append(double_rag_meta.get("duration_seconds"))
+                constraints = double_rag_meta.get("constraints")
+                if constraints:
+                    candidates.append(_extract_duration_seconds_from_text(str(constraints)))
+            if isinstance(motion_prompt, dict):
+                candidates.append(motion_prompt.get("duration_seconds"))
+                candidates.append(motion_prompt.get("duration_estimate_seconds"))
+
+        # In strict policy, explicit duration mentions in query should be honored.
+        if self.motion_duration_policy == "strict":
+            candidates.append(_extract_duration_seconds_from_text(query))
+
+        for raw in candidates:
+            resolved = _coerce_duration_seconds(raw, min_s, max_s)
+            if resolved is not None:
+                return resolved
+
+        return _coerce_duration_seconds(self.motion_default_duration_seconds, min_s, max_s) or self.motion_default_duration_seconds
 
     # Maps LocalOrchestrator-specific intent strings to the canonical set
     # used in process_query() branching.  Without this, 'greeting' falls
@@ -394,6 +534,90 @@ class AgenticRAGAPI:
         asks_count = any(m in f" {q} " for m in explicit_count_markers)
         return asks_multiple or asks_count
 
+    def _is_direct_motion_command(self, query: str) -> bool:
+        """Detect direct motion-demo commands that should bypass slow routing."""
+        q = (query or "").strip().lower()
+        if not q:
+            return False
+        if self._is_multi_activity_request(q):
+            return False
+        markers = self.fast_motion_markers
+        if not markers:
+            return False
+        return any(q.startswith(marker) or f" {marker} " in f" {q} " for marker in markers)
+
+    def _build_fast_fallback_action_plan(
+        self,
+        query: str,
+        detected_exercise: Optional[str],
+        reason: str,
+    ) -> Dict[str, Any]:
+        """Build a deterministic action plan when orchestrator calls time out/fail."""
+        direct_motion = self._is_direct_motion_command(query)
+        is_conversation = self._looks_like_conversation_query(query)
+
+        if direct_motion:
+            intent = "visualize_motion"
+            generate_motion = True
+            needs_rag = False
+            agents = ["memory_agent"]
+        elif is_conversation:
+            intent = "conversation"
+            generate_motion = False
+            needs_rag = False
+            agents = ["memory_agent"]
+        else:
+            intent = "knowledge_query"
+            generate_motion = False
+            needs_rag = True
+            agents = ["memory_agent", "retrieval_agent"]
+
+        return {
+            "intent": intent,
+            "actions": {
+                "generate_motion": generate_motion,
+                "use_memory": True,
+                "use_documents": needs_rag,
+                "use_web_search": False,
+            },
+            "tool_results": {},
+            "expanded_query": query,
+            "needs_rag": needs_rag,
+            "exercise": detected_exercise,
+            "exercise_name": detected_exercise,
+            "agents": agents,
+            "confidence": 0.4,
+            "fallback_reason": reason,
+        }
+
+    def _run_with_timeout(
+        self,
+        call,
+        timeout_seconds: float,
+        label: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Run a blocking call with a hard timeout and return None on timeout/error."""
+        if timeout_seconds <= 0:
+            try:
+                return call()
+            except Exception as exc:
+                logger.warning("%s failed: %s", label, exc)
+                return None
+
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="orchestrator-timebox")
+        future = executor.submit(call)
+        try:
+            return future.result(timeout=timeout_seconds)
+        except FuturesTimeoutError:
+            future.cancel()
+            logger.warning("%s timed out after %.2fs", label, timeout_seconds)
+            return None
+        except Exception as exc:
+            logger.warning("%s failed: %s", label, exc)
+            return None
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+
     def _get_orchestrator_decision(
         self,
         query: str,
@@ -430,19 +654,42 @@ class AgenticRAGAPI:
             logger.info(f"Exercise detected: '{detected_exercise}'")
         else:
             logger.info("No exercise detected in query")
+
+        if self.enable_fast_motion_bypass and self._is_direct_motion_command(query):
+            logger.info("Fast motion bypass hit; skipping orchestrator model call")
+            fast_result = self._build_fast_fallback_action_plan(
+                query=query,
+                detected_exercise=detected_exercise,
+                reason="fast_motion_bypass",
+            )
+            if use_cache:
+                self._orchestrator_cache[cache_key] = {"ts": time.time(), "decision": fast_result}
+            return fast_result
         
         if isinstance(self.orchestrator, LocalOrchestrator):
             logger.info("USING LOCAL ORCHESTRATOR path")
             logger.info(f"About to call LocalOrchestrator.analyze_query with: {query}, user_id: {user_id}, detected_exercise: {detected_exercise}")
-            decision = self.orchestrator.analyze_query(query, user_id, conversation_history, detected_exercise)
+            decision = self._run_with_timeout(
+                lambda: self.orchestrator.analyze_query(query, user_id, conversation_history, detected_exercise),
+                timeout_seconds=self.orchestrator_decision_timeout_seconds,
+                label="LocalOrchestrator.analyze_query",
+            )
+            if not isinstance(decision, dict):
+                timeout_result = self._build_fast_fallback_action_plan(
+                    query=query,
+                    detected_exercise=detected_exercise,
+                    reason="local_orchestrator_timeout_or_error",
+                )
+                if use_cache:
+                    self._orchestrator_cache[cache_key] = {"ts": time.time(), "decision": timeout_result}
+                return timeout_result
             logger.info(f"Local orchestrator returned: {decision}")
 
             # ── Detect fallback response (Ollama timed out or JSON invalid) ──
             # The fallback always has confidence=0.1 and intent="unknown".
             # When this happens, LocalOrchestrator is not useful for this request;
-            # immediately fall back to the Gemini API orchestrator so the user
-            # gets a fast, correct routing decision instead of waiting 30s for
-            # a wrong "knowledge_query" classification.
+            # immediately use deterministic fallback routing so the user gets
+            # a fast, bounded decision instead of stalling.
             _is_fallback = (
                 decision.get("confidence", 1.0) <= 0.1
                 and decision.get("intent") == "unknown"
@@ -450,20 +697,16 @@ class AgenticRAGAPI:
             if _is_fallback:
                 logger.warning(
                     "[LocalOrchestrator] Fallback response detected (confidence=0.1, intent=unknown). "
-                    "Ollama likely timed out — routing this request through Gemini API orchestrator."
+                    "Using fast deterministic fallback action plan."
                 )
-                # Build a temporary API orchestrator and use it for this one request.
-                # (We keep self.orchestrator as LocalOrchestrator for future requests
-                # so that warm subsequent calls benefit from the local model.)
-                _api_orch = OrchestratorAgent(
-                    memory_tool=getattr(self, "_memory_tool_ref", None),
-                    document_tool=getattr(self, "_document_tool_ref", None),
-                    web_search_tool=getattr(self, "_web_search_tool_ref", None),
+                fallback_result = self._build_fast_fallback_action_plan(
+                    query=query,
+                    detected_exercise=detected_exercise,
+                    reason="local_orchestrator_returned_fallback",
                 )
-                api_result = _api_orch.process_query(query, user_id, conversation_history)
                 if use_cache:
-                    self._orchestrator_cache[cache_key] = {"ts": time.time(), "decision": api_result}
-                return api_result
+                    self._orchestrator_cache[cache_key] = {"ts": time.time(), "decision": fallback_result}
+                return fallback_result
 
             # Normalize LocalOrchestrator-specific intent strings so that
             # process_query() branching works correctly for greetings/follow-ups.
@@ -518,12 +761,29 @@ class AgenticRAGAPI:
             logger.info("USING API ORCHESTRATOR path")
             # API orchestrator returns the existing format
             # Note: API orchestrator doesn't support detected_exercise parameter yet
-            api_result = self.orchestrator.process_query(query, user_id, conversation_history)
+            api_result = self._run_with_timeout(
+                lambda: self.orchestrator.process_query(query, user_id, conversation_history),
+                timeout_seconds=self.orchestrator_decision_timeout_seconds,
+                label="APIOrchestrator.process_query",
+            )
+            if not isinstance(api_result, dict):
+                api_result = self._build_fast_fallback_action_plan(
+                    query=query,
+                    detected_exercise=detected_exercise,
+                    reason="api_orchestrator_timeout_or_error",
+                )
             if use_cache:
                 self._orchestrator_cache[cache_key] = {"ts": time.time(), "decision": api_result}
             return api_result
 
-    def process_query(self, query: str, user_id: str, conversation_history: Optional[List[Dict[str, str]]] = None, stream: bool = False) -> Any:
+    def process_query(
+        self,
+        query: str,
+        user_id: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        stream: bool = False,
+        motion_duration_seconds: Optional[float] = None,
+    ) -> Any:
         """Process a user query through the intent-branched pipeline.
 
         Pipeline (down from 7 LLM calls to 2):
@@ -570,6 +830,37 @@ class AgenticRAGAPI:
         }
 
         try:
+            # ── Step 0: Red Flag Safety Screening (First Gate) ───────────────
+            safety_start = time.time()
+            safety_result = self.safety_filter.check_query_safety(query)
+            if not safety_result["is_safe"]:
+                safety_ms = (time.time() - safety_start) * 1000
+                logger.warning(f"Query rejected by SafetyFilter: {safety_result['reason']}")
+                # Fast return rejecting the unsafe query
+                return {
+                    "query": query,
+                    "user_id": user_id,
+                    "language": _detect_query_language(query),
+                    "text_answer": f"⚠️ Safety Alert: {safety_result['reason']}",
+                    "exercises": [],
+                    "exercise_motion_prompt": None,
+                    "motion": None,
+                    "motion_job": None,
+                    "orchestrator_decision": OrchestratorDecision(
+                        action="clarify",
+                        intent="unknown",
+                        confidence=1.0,
+                        language="en",
+                        reasoning="Safety filter rejection",
+                        parameters={"reason": safety_result["reason"]}
+                    ),
+                    "motion_prompt": None,
+                    "voice_prompt": None,
+                    "metadata": {"safety_rejected": True},
+                    "pipeline_trace": {"errors": [safety_result["reason"]]},
+                    "performance": {"safety_ms": safety_ms, "total_ms": safety_ms}
+                }
+
             # ── Step 1: Get orchestrator decision (local or API) ─────────────
             orch_start = time.time()
             logger.info(f"Using orchestrator: {type(self.orchestrator).__name__}")
@@ -585,11 +876,14 @@ class AgenticRAGAPI:
             perf["orchestrator_ms"] = orch_time * 1000
             logger.info(f"Orchestrator decision type: {type(action_plan)}")
 
-            intent         = action_plan["intent"]           # str value
-            generate_motion = action_plan["actions"]["generate_motion"]
-            tool_results    = action_plan.get("tool_results", {})
+            actions = action_plan.get("actions") or {}
+            intent = action_plan.get("intent", "knowledge_query")
+            if isinstance(intent, Enum):
+                intent = intent.value
+            generate_motion = bool(actions.get("generate_motion", False))
+            tool_results = action_plan.get("tool_results") or {}
             expanded_query  = action_plan.get("expanded_query") or query
-            needs_rag       = action_plan.get("needs_rag", True)
+            needs_rag = bool(action_plan.get("needs_rag", True))
             
             trace["intent"] = intent
             trace["tools_selected"] = action_plan.get("agents", [])
@@ -607,6 +901,23 @@ class AgenticRAGAPI:
                 f"docs={trace['documents_results_count']}, "
                 f"web={trace['web_results_count']}"
             )
+
+            resolved_motion_duration_seconds = self._resolve_motion_duration_seconds(
+                query=query,
+                action_plan=action_plan,
+                request_duration_seconds=motion_duration_seconds,
+            )
+
+            # ── Step 1.5: Query Transformation results (from Double-RAG Engine) ──
+            hyde_document = action_plan.get("hyde_document", query)
+            logger.info(f"Using Double-RAG engine results. HyDE length: {len(hyde_document)}")
+            
+            # The orchestrator already executed Phase 1 & 2 logic internally and 
+            # mapped constraints if this was a motion intent.
+            double_rag_meta = action_plan.get("double_rag_meta", {})
+            constraints = double_rag_meta.get("constraints", "")
+            if constraints:
+                logger.info(f"Clinical Constraints extracted by orchestrator: {constraints}")
 
             # ── Step 2: Branch by intent ─────────────────────────────────────
             text_answer = ""
@@ -649,8 +960,10 @@ class AgenticRAGAPI:
                 
                 exercise = action_plan.get("exercise_name") or query
                 
-                # Normalize the extraction for DART (e.g., "chin tuck exercise" -> "chin tuck")
-                exercise_motion_prompt = exercise.lower().replace(" exercise", "").strip()
+                # Double-RAG flow guarantees hyde_document is the technical motion caption
+                exercise_motion_prompt = hyde_document
+                if constraints:
+                    logger.info("Applying clinical constraints to visualize_motion path.")
                 
                 memory_ctx = tool_results.get("memory") or []
                 mem_text   = "\n".join(
@@ -719,7 +1032,8 @@ class AgenticRAGAPI:
                 _q_lower = query.lower()
                 is_multi_activity = self._is_multi_activity_request(query)
                 if exercises and any(kw in _q_lower for kw in _VIZ_KEYWORDS) and not is_multi_activity:
-                    exercise_motion_prompt = exercises[0]["name"].lower()
+                    # Double-RAG engine provides the exact motion prompt via hyde_document
+                    exercise_motion_prompt = hyde_document
                     logger.info(
                         f"Visualization query detected → exercise_motion_prompt={exercise_motion_prompt!r}"
                     )
@@ -740,7 +1054,7 @@ class AgenticRAGAPI:
                             user_query=query,
                             motion_prompt=exercise_motion_prompt,
                             user_id=user_id,
-                            duration_seconds=self.motion_default_duration_seconds,
+                            duration_seconds=resolved_motion_duration_seconds,
                         )
                         motion_job = MotionJobStatus(
                             job_id=job_id,
@@ -755,11 +1069,16 @@ class AgenticRAGAPI:
                         trace["errors"].append(f"Motion queue error: {str(_qe)}")
 
                 if not self.motion_async_enabled or (self.motion_async_enabled and motion_job is None):
+                    # For kinematic motion search, we now pass the hyde_document instead of a vague prompt string
+                    motion_target = hyde_document if intent != "conversation" else exercise_motion_prompt
+                    if constraints:
+                        motion_target = f"{motion_target}. Clinical constraints: {constraints}"
+
                     logger.info(
-                        f"Calling MotionGenerationTool for prompt={exercise_motion_prompt!r}"
+                        f"Calling MotionGenerationTool for motion_target (HyDE)= {motion_target[:50]}..."
                     )
                     try:
-                        raw_motion = self.motion_tool.generate_motion(exercise_motion_prompt)
+                        raw_motion = self.motion_tool.generate_motion(motion_target)
                         motion_time = time.time() - motion_start
                         perf["motion_ms"] = motion_time * 1000
 
@@ -811,9 +1130,16 @@ class AgenticRAGAPI:
             perf["total_ms"] = total_time * 1000
             
             # Create enhanced orchestrator decision with debug info
+            action_value = action_plan.get("action", "unknown")
+            intent_value = intent
+            if isinstance(action_value, Enum):
+                action_value = action_value.value
+            if isinstance(intent_value, Enum):
+                intent_value = intent_value.value
+
             orch_decision = OrchestratorDecision(
-                action=action_plan.get("action", "unknown"),
-                intent=intent,
+                action=str(action_value),
+                intent=str(intent_value),
                 confidence=action_plan.get("confidence", 0.5),
                 language=query_language,
                 reasoning=action_plan.get("reasoning", "Orchestrator decision"),
@@ -848,6 +1174,10 @@ class AgenticRAGAPI:
                 pipeline_trace=trace,
                 performance=perf,
             )
+
+            response.metadata = dict(response.metadata or {})
+            response.metadata["motion_duration_seconds"] = resolved_motion_duration_seconds
+            response.metadata["motion_duration_policy"] = self.motion_duration_policy
 
             logger.info(
                 f"✓ Query processed successfully | "
@@ -893,16 +1223,195 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS: allow local dev + Ngrok tunnel domains
-_CORS_ORIGINS = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
-_allowed_origins = (
-    [o.strip() for o in _CORS_ORIGINS.split(",") if o.strip()]
-    if _CORS_ORIGINS else []
-)
+def _normalize_enums(value: Any) -> Any:
+    """Recursively convert Enum values to .value to guarantee JSON-safe strings."""
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {str(k): _normalize_enums(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_normalize_enums(v) for v in value]
+    return value
+
+
+def _model_to_dict(value: Any) -> Dict[str, Any]:
+    """Convert pydantic model (v1/v2) or mapping payload to a dict."""
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()
+    return dict(value)
+
+
+def _get_request_base_url(request: Request) -> str:
+    """Build base URL using reverse-proxy headers so Ngrok URLs remain valid."""
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+    if not host:
+        return str(request.base_url).rstrip("/")
+    return f"{proto}://{host}".rstrip("/")
+
+
+def _to_absolute_url(url_or_path: Optional[str], request: Request) -> Optional[str]:
+    if not url_or_path:
+        return None
+    if url_or_path.startswith("http://") or url_or_path.startswith("https://"):
+        return url_or_path
+    base = _get_request_base_url(request)
+    path = url_or_path if url_or_path.startswith("/") else f"/{url_or_path}"
+    return f"{base}{path}"
+
+
+def _to_dart_download_url(motion_ref: Optional[str], request: Request) -> Optional[str]:
+    """Build absolute DART download URLs for sync motion payloads."""
+    if not motion_ref:
+        return None
+
+    if motion_ref.startswith("http://") or motion_ref.startswith("https://"):
+        return motion_ref
+
+    # Force all motion artifact URLs through the 8000 gateway.
+    base = _get_request_base_url(request)
+
+    if motion_ref.startswith("/static/"):
+        path = motion_ref
+    elif motion_ref.startswith("/"):
+        path = motion_ref
+    elif motion_ref.startswith("download/"):
+        path = f"/{motion_ref}"
+    else:
+        # Legacy payloads only include the artifact filename.
+        path = f"/download/{motion_ref}"
+
+    return f"{base}{path}"
+
+
+def _build_unified_result(query_payload: Dict[str, Any], request: Request) -> Dict[str, Any]:
+    """Project QueryResponse into the stable result payload used by Official UI."""
+    orchestrator = query_payload.get("orchestrator_decision") or {}
+    motion = query_payload.get("motion") or {}
+    motion_job = query_payload.get("motion_job") or {}
+
+    motion_file_url = None
+
+    if isinstance(motion, dict):
+        motion_file_url = motion.get("motion_file_url")
+
+    if not motion_file_url and isinstance(motion_job, dict):
+        motion_file_url = motion_job.get("motion_file_url") or motion_job.get("video_url")
+
+    if isinstance(motion, dict) and motion_file_url:
+        motion_file_url = _to_dart_download_url(motion_file_url, request)
+
+    if not motion_file_url and isinstance(motion, dict):
+        # Legacy best-effort path where only motion_file exists.
+        motion_file = motion.get("motion_file")
+        motion_file_url = _to_dart_download_url(motion_file, request)
+
+    return {
+        "query": query_payload.get("query", ""),
+        "user_id": query_payload.get("user_id", "guest"),
+        "language": query_payload.get("language", "other"),
+        "text_answer": query_payload.get("text_answer", ""),
+        "exercises": query_payload.get("exercises", []),
+        "exercise_motion_prompt": query_payload.get("exercise_motion_prompt"),
+        "motion_duration_seconds": (
+            (query_payload.get("metadata") or {}).get("motion_duration_seconds")
+            if isinstance(query_payload.get("metadata"), dict)
+            else None
+        ),
+        "orchestrator": {
+            "action": orchestrator.get("action", "unknown"),
+            "intent": orchestrator.get("intent", "unknown"),
+            "confidence": orchestrator.get("confidence", 0.0),
+        },
+        "motion_file_url": _to_absolute_url(motion_file_url, request),
+        "motion": motion,
+        "motion_job": motion_job,
+    }
+
+
+def _history_file_path(user_id: str) -> str:
+    safe_user = re.sub(r"[^a-zA-Z0-9._-]", "_", (user_id or "guest")).strip("._-") or "guest"
+    os.makedirs(CHAT_HISTORY_DIR, exist_ok=True)
+    return os.path.join(CHAT_HISTORY_DIR, f"{safe_user}.json")
+
+
+async def _read_chat_history(user_id: str) -> List[Dict[str, Any]]:
+    file_path = _history_file_path(user_id)
+    if not os.path.exists(file_path):
+        return []
+
+    async with CHAT_HISTORY_LOCK:
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            if isinstance(payload, list):
+                return payload
+        except Exception as exc:
+            logger.warning("Failed to read chat history %s: %s", file_path, exc)
+    return []
+
+
+async def _append_chat_history(user_id: str, entries: List[Dict[str, Any]]) -> None:
+    if not entries:
+        return
+
+    file_path = _history_file_path(user_id)
+    async with CHAT_HISTORY_LOCK:
+        history: List[Dict[str, Any]] = []
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+                if isinstance(payload, list):
+                    history = payload
+            except Exception:
+                history = []
+
+        history.extend(entries)
+        # Keep file size bounded for UI load performance.
+        history = history[-200:]
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+
+
+def _allowed_cors_origins() -> List[str]:
+    """Build explicit CORS allowlist for localhost UI and active ngrok origin."""
+    origins = {
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8501",
+        "http://127.0.0.1:8501",
+        # file:// pages send Origin: null in browsers.
+        "null",
+    }
+
+    configured = os.getenv("CORS_ALLOWED_ORIGINS", "")
+    if configured:
+        for item in configured.split(","):
+            origin = item.strip()
+            if origin:
+                origins.add(origin)
+
+    ngrok_origin = os.getenv("NGROK_ORIGIN", "").strip()
+    if ngrok_origin:
+        origins.add(ngrok_origin)
+
+    return sorted(origins)
+
+
+_allowed_origins = _allowed_cors_origins()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
+    allow_origin_regex=r"^https://[a-z0-9-]+\.ngrok(?:-free)?\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -916,6 +1425,11 @@ app.mount("/static", StaticFiles(directory="./static"), name="static")
 _ui_dir = os.path.join(os.path.dirname(__file__), "..", "..", "test-ui")
 if os.path.isdir(_ui_dir):
     app.mount("/ui", StaticFiles(directory=_ui_dir, html=True), name="test-ui")
+
+# Serve Official ECA UI at /eca/ so one port-8000 tunnel can host UI + API.
+_eca_ui_dir = os.path.join(os.path.dirname(__file__), "..", "..", "ECA_UI")
+if os.path.isdir(_eca_ui_dir):
+    app.mount("/eca", StaticFiles(directory=_eca_ui_dir, html=True), name="eca-ui")
 
 
 # ===========================
@@ -961,7 +1475,8 @@ async def process_query(request: QueryRequest):
             request.query,
             request_user_id,
             history,
-            stream=True
+            stream=True,
+            motion_duration_seconds=request.motion_duration_seconds,
         )
         return StreamingResponse(generator, media_type="text/plain")
 
@@ -971,9 +1486,308 @@ async def process_query(request: QueryRequest):
         request.query,
         request_user_id,
         history,
+        False,
+        request.motion_duration_seconds,
     )
 
-    return response
+    return _normalize_enums(_model_to_dict(response))
+
+
+async def _run_query_task(task_id: str, request_payload: QueryRequest, request: Request) -> None:
+    """Background worker for unified task flow."""
+    if api_instance is None:
+        async with TASK_STORE_LOCK:
+            TASK_STORE[task_id] = {
+                "task_id": task_id,
+                "status": "failed",
+                "progress_stage": "failed",
+                "result": None,
+                "error": "API not initialized",
+            }
+        return
+
+    history = None
+    if request_payload.conversation_history:
+        history = [turn.dict() for turn in request_payload.conversation_history]
+
+    request_user_id = (request_payload.user_id or "guest").strip() or "guest"
+
+    try:
+        request_base = _get_request_base_url(request)
+        async with TASK_STORE_LOCK:
+            state = TASK_STORE.get(task_id) or {}
+            state["status"] = "processing"
+            state["progress_stage"] = "queued"
+            state["error"] = None
+            TASK_STORE[task_id] = state
+
+        raw_response = await asyncio.to_thread(
+            api_instance.process_query,
+            request_payload.query,
+            request_user_id,
+            history,
+            False,
+            request_payload.motion_duration_seconds,
+        )
+
+        response_payload = _normalize_enums(_model_to_dict(raw_response))
+        unified_result = _build_unified_result(response_payload, request)
+
+        async with TASK_STORE_LOCK:
+            TASK_STORE[task_id] = {
+                "task_id": task_id,
+                "status": "processing",
+                "progress_stage": "text_ready",
+                "result": unified_result,
+                "error": None,
+            }
+
+        motion_job = unified_result.get("motion_job") or {}
+        motion_job_id = motion_job.get("job_id") if isinstance(motion_job, dict) else None
+
+        # Force async enrichment for unified UI polling even when /query path returned sync motion.
+        if not motion_job_id and api_instance is not None:
+            exercise_motion_prompt = response_payload.get("exercise_motion_prompt")
+            orchestrator_intent = (
+                ((response_payload.get("orchestrator_decision") or {}).get("intent"))
+                if isinstance(response_payload.get("orchestrator_decision"), dict)
+                else None
+            )
+            should_enqueue_motion = bool(exercise_motion_prompt) or orchestrator_intent == "visualize_motion"
+
+            if should_enqueue_motion:
+                try:
+                    resolved_duration = _coerce_duration_seconds(
+                        (unified_result.get("motion_duration_seconds") or request_payload.motion_duration_seconds),
+                        api_instance.motion_min_duration_seconds,
+                        api_instance.motion_max_duration_seconds,
+                    ) or api_instance.motion_default_duration_seconds
+
+                    queued_job_id = api_instance.motion_job_manager.enqueue(
+                        user_query=request_payload.query,
+                        motion_prompt=exercise_motion_prompt or request_payload.query,
+                        user_id=request_user_id,
+                        duration_seconds=resolved_duration,
+                    )
+                    motion_job_id = queued_job_id
+                    unified_result["motion_job"] = {
+                        "job_id": queued_job_id,
+                        "status": "queued",
+                        "motion_file_url": None,
+                        "video_url": None,
+                        "error": None,
+                    }
+
+                    async with TASK_STORE_LOCK:
+                        TASK_STORE[task_id] = {
+                            "task_id": task_id,
+                            "status": "processing",
+                            "progress_stage": "motion_generation",
+                            "result": unified_result,
+                            "error": None,
+                        }
+                except Exception as queue_exc:
+                    logger.error(
+                        "Unified async motion enqueue failed for task %s: %s",
+                        task_id,
+                        queue_exc,
+                    )
+
+        final_status = "completed"
+        final_stage = "completed"
+        final_error = None
+
+        if motion_job_id and api_instance is not None:
+            # Keep task open while async motion artifact is being generated.
+            while True:
+                motion_state = api_instance.get_motion_job_status(
+                    motion_job_id,
+                    request_base_url=request_base,
+                )
+                motion_status = (motion_state.get("status") or "processing").lower()
+                motion_stage = motion_state.get("stage") or "motion_generation"
+                normalized_stage = motion_stage
+                if motion_status in {"queued", "processing"}:
+                    normalized_stage = "motion_generation"
+                elif motion_status == "completed":
+                    normalized_stage = "completed"
+                elif motion_status == "failed":
+                    normalized_stage = "failed"
+
+                unified_result["motion_job"] = motion_state
+                if motion_state.get("motion_file_url"):
+                    unified_result["motion_file_url"] = motion_state.get("motion_file_url")
+                if motion_state.get("video_url"):
+                    unified_result["video_url"] = motion_state.get("video_url")
+
+                async with TASK_STORE_LOCK:
+                    next_status = "processing"
+                    if motion_status == "failed":
+                        next_status = "failed"
+                    elif motion_status == "completed":
+                        next_status = "completed"
+
+                    TASK_STORE[task_id] = {
+                        "task_id": task_id,
+                        "status": next_status,
+                        "progress_stage": normalized_stage,
+                        "result": unified_result,
+                        "error": motion_state.get("error"),
+                    }
+
+                if motion_status in {"completed", "failed"}:
+                    final_status = "failed" if motion_status == "failed" else "completed"
+                    final_stage = "failed" if motion_status == "failed" else "completed"
+                    final_error = motion_state.get("error")
+                    break
+
+                await asyncio.sleep(1.5)
+
+            final_motion_error = (unified_result.get("motion_job") or {}).get("error")
+            if final_motion_error:
+                logger.warning("Motion job %s completed with error: %s", motion_job_id, final_motion_error)
+
+        if not motion_job_id:
+            final_status = "completed"
+            final_stage = "completed"
+
+        async with TASK_STORE_LOCK:
+            TASK_STORE[task_id] = {
+                "task_id": task_id,
+                "status": final_status,
+                "progress_stage": final_stage,
+                "result": unified_result,
+                "error": final_error,
+            }
+
+        if final_status == "completed":
+            motion_payload = unified_result.get("motion") or {}
+            motion_prompt = unified_result.get("exercise_motion_prompt")
+            motion_url = unified_result.get("motion_file_url")
+            now_label = time.strftime("%H:%M")
+
+            await _append_chat_history(
+                request_user_id,
+                [
+                    {
+                        "id": int(time.time() * 1000),
+                        "role": "user",
+                        "text": request_payload.query,
+                        "motion": None,
+                        "time": now_label,
+                    },
+                    {
+                        "id": int(time.time() * 1000) + 1,
+                        "role": "assistant",
+                        "text": unified_result.get("text_answer", ""),
+                        "motion": {
+                            "label": motion_prompt or "Motion generated",
+                            "motion_file_url": motion_url,
+                            "prompt": motion_prompt,
+                            "frames": motion_payload.get("frames"),
+                            "fps": motion_payload.get("fps"),
+                        }
+                        if motion_url
+                        else None,
+                        "time": now_label,
+                    },
+                ],
+            )
+    except Exception as exc:
+        logger.error("Unified task failed: %s", exc, exc_info=True)
+        async with TASK_STORE_LOCK:
+            TASK_STORE[task_id] = {
+                "task_id": task_id,
+                "status": "failed",
+                "progress_stage": "failed",
+                "result": None,
+                "error": str(exc),
+            }
+
+
+@app.post("/process_query", response_model=UnifiedTaskResponse, summary="Submit unified query task")
+async def process_query_unified(request_payload: QueryRequest, request: Request) -> UnifiedTaskResponse:
+    """Create a query task and return the unified polling envelope."""
+    task_id = str(uuid.uuid4())
+
+    async with TASK_STORE_LOCK:
+        TASK_STORE[task_id] = {
+            "task_id": task_id,
+            "status": "processing",
+            "progress_stage": "queued",
+            "result": None,
+            "error": None,
+        }
+
+    asyncio.create_task(_run_query_task(task_id, request_payload, request))
+
+    return UnifiedTaskResponse(
+        task_id=task_id,
+        status="processing",
+        progress_stage="queued",
+        result=None,
+        error=None,
+    )
+
+
+@app.get("/tasks/{task_id}", response_model=UnifiedTaskResponse, summary="Get unified task status")
+async def get_task_status(task_id: str, request: Request) -> UnifiedTaskResponse:
+    """Poll unified task status with 2-3 defensive retries before 404."""
+    state: Optional[Dict[str, Any]] = None
+    for _ in range(3):
+        async with TASK_STORE_LOCK:
+            state = TASK_STORE.get(task_id)
+        if state is not None:
+            break
+        await asyncio.sleep(0.2)
+
+    if state is None:
+        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+
+    result = _normalize_enums(state.get("result")) if state.get("result") else None
+    if isinstance(result, dict):
+        result["motion_file_url"] = _to_absolute_url(result.get("motion_file_url"), request)
+
+    return UnifiedTaskResponse(
+        task_id=state.get("task_id", task_id),
+        status=state.get("status", "processing"),
+        progress_stage=state.get("progress_stage", "processing"),
+        result=result,
+        error=state.get("error"),
+    )
+
+
+@app.get("/history/{user_id}", response_model=ChatHistoryResponse, summary="Get file-backed chat history")
+async def get_chat_history(user_id: str) -> ChatHistoryResponse:
+    messages = await _read_chat_history(user_id)
+    return ChatHistoryResponse(user_id=user_id, messages=messages)
+
+
+@app.get("/download/{filename:path}", summary="Proxy DART artifacts through port 8000")
+async def proxy_dart_download(filename: str) -> Response:
+    dart_base = os.getenv("DART_PROXY_BASE_URL", "http://127.0.0.1:5001").rstrip("/")
+    upstream_url = f"{dart_base}/download/{filename}"
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0)) as client:
+            upstream = await client.get(upstream_url)
+    except Exception as exc:
+        logger.error("DART download proxy failed for %s: %s", filename, exc)
+        raise HTTPException(status_code=502, detail="Unable to reach DART download service")
+
+    if upstream.status_code == 404:
+        raise HTTPException(status_code=404, detail=f"Artifact not found: {filename}")
+    if upstream.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"DART returned {upstream.status_code}")
+
+    forward_headers: Dict[str, str] = {}
+    for key in ("content-disposition", "cache-control", "etag", "last-modified"):
+        value = upstream.headers.get(key)
+        if value:
+            forward_headers[key] = value
+
+    media_type = upstream.headers.get("content-type", "application/octet-stream")
+    return Response(content=upstream.content, media_type=media_type, headers=forward_headers)
 
 
 @app.get("/job-status/{job_id}", response_model=MotionJobStatus, summary="Get async motion job status")
@@ -982,12 +1796,12 @@ async def get_job_status(job_id: str, request: Request):
     if api_instance is None:
         raise HTTPException(status_code=500, detail="API not initialized")
 
-    status = api_instance.get_motion_job_status(job_id)
+    status = api_instance.get_motion_job_status(job_id, _get_request_base_url(request))
 
     # Rewrite video_url to use the public base URL from the incoming request
     # so that URLs are correct when accessed through Ngrok or other reverse proxies.
     if status.get("video_url"):
-        base = str(request.base_url).rstrip("/")
+        base = _get_request_base_url(request)
         relative = status["video_url"]
         # Strip any existing localhost base to get the relative path
         for prefix in ("http://localhost:8000", "http://127.0.0.1:8000"):
@@ -995,6 +1809,9 @@ async def get_job_status(job_id: str, request: Request):
                 relative = relative[len(prefix):]
                 break
         status["video_url"] = f"{base}{relative}"
+
+    if status.get("motion_file_url"):
+        status["motion_file_url"] = _to_absolute_url(status.get("motion_file_url"), request)
 
     return status
 
@@ -1087,10 +1904,20 @@ async def get_info() -> Dict[str, Any]:
         "description": "REST API for Agentic Retrieval-Augmented Generation",
         "endpoints": {
             "POST /query": "Process a user query",
+            "POST /process_query": "Submit async query task and return task envelope",
+            "GET /tasks/{task_id}": "Poll unified task state",
             "GET /health": "Health check",
             "GET /info": "Service information",
         },
+        "cors_allowed_origins": _allowed_origins,
     }
+
+
+@app.get("/", include_in_schema=False)
+async def root_redirect() -> RedirectResponse:
+    """Open Official UI by default when available."""
+    target = "/eca/" if os.path.isdir(_eca_ui_dir) else "/info"
+    return RedirectResponse(url=target, status_code=307)
 
 
 # ===========================

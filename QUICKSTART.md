@@ -15,11 +15,23 @@
 | Service | Port | Binding |
 |---------|:----:|---------|
 | **AgenticRAG API** | 8000 | `0.0.0.0` (public gateway) |
+| **ECA Official UI 2.0** | 3000 | `0.0.0.0` (default frontend) |
 | **Streamlit Chat UI** | 8501 | `0.0.0.0` |
 | Orchestrator | 8080 | `127.0.0.1` (internal) |
 | DART | 5001 | `127.0.0.1` (internal) |
 | ChromaDB | 8100 | Docker |
 | Redis | 6379 | `127.0.0.1` |
+
+## Port 8000 Gateway Architecture
+
+- Official UI always calls Port 8000 (`/process_query`, `/tasks/{task_id}`)
+- Motion artifacts are also served through Port 8000 (`/download/{file}` or `/static/...`), never direct Port 5001 links
+- This enables a single Ngrok tunnel for end-to-end remote usage
+
+Unified polling contract:
+
+- `POST /process_query` -> `{task_id, status, progress_stage, result, error}`
+- `GET /tasks/{task_id}` -> same schema with progressive `progress_stage` updates (`queued -> motion_generation -> ... -> completed`)
 
 ## Start
 
@@ -30,6 +42,9 @@ docker compose up -d chromadb
 # 2. Launch full stack (API + Orchestrator + Celery + DART + Chat UI)
 conda activate firstconda
 python run_stack.py
+
+# Default frontend (Official UI)
+# http://localhost:3000
 ```
 
 ## Health Check
@@ -63,11 +78,24 @@ ngrok config add-authtoken <your-token-from-dashboard.ngrok.com>
 
 **2. Start Tunnel** (make sure `run_stack.py` is running first):
 ```powershell
-# Expose the Chat UI (port 8501) — it talks to the API internally
-ngrok http 8501
+# Expose Official ECA UI static page (single tunnel)
+ngrok http 3000
 ```
 
-Team accesses at `https://xxxx.ngrok-free.app/query` — ports 8080, 5001 are **not** exposed.
+For Official ECA UI remote access, open the 3000 tunnel URL with the 8000 API base query parameter:
+
+`https://<eca-ui-tunnel>.ngrok-free.app/?api_base=https://<gateway-8000-tunnel>.ngrok-free.app`
+
+If you also need to expose the API directly, run a second tunnel for 8000:
+
+```powershell
+ngrok http 8000
+ngrok http 3000
+```
+
+This preserves single-origin API usage from the UI without exposing internal ports 5001/8080.
+
+Streamlit parity UI can be exposed separately if needed (`ngrok http 8501`). Keep 5001 internal.
 
 ## Troubleshooting
 

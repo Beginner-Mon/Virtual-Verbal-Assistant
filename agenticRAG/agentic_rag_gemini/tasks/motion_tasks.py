@@ -30,6 +30,7 @@ DART_GENERATE_ENDPOINT = os.getenv("DART_GENERATE_ENDPOINT", "http://localhost:5
 MOTION_DEFAULT_DURATION_SECONDS = float(os.getenv("MOTION_DEFAULT_DURATION_SECONDS", "12"))
 RERANK_TIMEOUT_SECONDS = int(os.getenv("MOTION_RERANK_TIMEOUT_SECONDS", "8"))
 MOTION_VIDEO_ROOT = os.getenv("MOTION_VIDEO_ROOT", "./static/videos")
+MOTION_GLB_ROOT = os.getenv("MOTION_GLB_ROOT", "./static/motions")
 API_PUBLIC_BASE_URL = os.getenv("API_PUBLIC_BASE_URL", "http://localhost:8000")
 DART_REQUEST_TIMEOUT_SECONDS = int(os.getenv("MOTION_DART_TIMEOUT_SECONDS", "180"))
 DIRECT_HIT_THRESHOLD = float(os.getenv("MOTION_DIRECT_HIT_THRESHOLD", "0.95"))
@@ -47,6 +48,11 @@ def _celery_task(*args, **kwargs):
 def _ensure_video_root() -> str:
     os.makedirs(MOTION_VIDEO_ROOT, exist_ok=True)
     return MOTION_VIDEO_ROOT
+
+
+def _ensure_glb_root() -> str:
+    os.makedirs(MOTION_GLB_ROOT, exist_ok=True)
+    return MOTION_GLB_ROOT
 
 
 def _normalize_job_id(raw_job_id: str) -> str:
@@ -70,8 +76,7 @@ def _extract_npz_filename(motion_file_url: str) -> str:
     return motion_file_url.rstrip("/").split("/")[-1]
 
 
-def _download_npz(dart_payload: Dict[str, Any], tmp_npz_path: str) -> str:
-    motion_file_url = dart_payload.get("motion_file_url")
+def _download_artifact(motion_file_url: str, output_path: str) -> str:
     if not motion_file_url:
         raise RuntimeError("DART response missing motion_file_url")
 
@@ -83,10 +88,15 @@ def _download_npz(dart_payload: Dict[str, Any], tmp_npz_path: str) -> str:
 
     resp = requests.get(download_url, timeout=DART_REQUEST_TIMEOUT_SECONDS)
     resp.raise_for_status()
-    with open(tmp_npz_path, "wb") as f:
+    with open(output_path, "wb") as f:
         f.write(resp.content)
 
     return download_url
+
+
+def _download_npz(dart_payload: Dict[str, Any], tmp_npz_path: str) -> str:
+    motion_file_url = dart_payload.get("motion_file_url")
+    return _download_artifact(motion_file_url, tmp_npz_path)
 
 
 def _render_npz_to_mp4(npz_path: str, output_mp4_path: str, fps: int = 30) -> None:
@@ -180,9 +190,13 @@ def render_motion_job(self, user_query: str, motion_prompt: str, user_id: str, d
     job_id = _normalize_job_id(raw_job_id)
     effective_duration = duration_seconds or MOTION_DEFAULT_DURATION_SECONDS
     video_root = _ensure_video_root()
+    glb_root = _ensure_glb_root()
     output_filename = f"job_{job_id}.mp4"
+    output_glb_filename = f"job_{job_id}.glb"
     output_mp4_path = os.path.join(video_root, output_filename)
+    output_glb_path = os.path.join(glb_root, output_glb_filename)
     relative_video_path = f"/static/videos/{output_filename}"
+    relative_glb_path = f"/static/motions/{output_glb_filename}"
 
     stage = "candidate_retrieval"
     self.update_state(state="STARTED", meta={"stage": stage})
@@ -245,28 +259,15 @@ def render_motion_job(self, user_query: str, motion_prompt: str, user_id: str, d
         "num_steps": 25,
     }
 
+    seed_value = int.from_bytes(os.urandom(4), "big")
+
     cache = _get_cache()
     cached_url = cache.get_motion_result(rewritten_prompt, effective_duration, body["num_steps"])
     if cached_url:
         cached_filename = cached_url.rstrip("/").split("/")[-1]
         cached_local_path = os.path.join(video_root, cached_filename)
         if os.path.exists(cached_local_path):
-            logger.info("Motion cache HIT for prompt: '%s'", rewritten_prompt[:40])
-            return {
-                "status": "completed",
-                "video_url": cached_url,
-                "error": None,
-                "job_id": job_id,
-                "stage": "completed",
-                "relative_video_path": f"/static/videos/{cached_filename}",
-                "selected_strategy": "cache_hit",
-                "selected_candidate": {
-                    "candidate_id": top1.candidate_id,
-                    "text_description": top1.text_description,
-                    "rewritten_prompt": rewritten_prompt,
-                    "score": top1.score,
-                },
-            }
+            logger.info("Motion cache HIT for mp4 fallback: '%s'", rewritten_prompt[:40])
 
     tmp_handle = tempfile.NamedTemporaryFile(
         mode="wb",
@@ -278,37 +279,69 @@ def render_motion_job(self, user_query: str, motion_prompt: str, user_id: str, d
     tmp_handle.close()
 
     try:
-        stage = "dart_generate"
+        stage = "dart_generate_glb"
         self.update_state(state="STARTED", meta={"stage": stage})
-        resp = requests.post(DART_GENERATE_ENDPOINT, json=body, timeout=DART_REQUEST_TIMEOUT_SECONDS)
-        resp.raise_for_status()
-        dart_payload = resp.json()
+        glb_body = {**body, "seed": seed_value, "output_format": "glb"}
+        glb_resp = requests.post(DART_GENERATE_ENDPOINT, json=glb_body, timeout=DART_REQUEST_TIMEOUT_SECONDS)
+        glb_resp.raise_for_status()
+        glb_payload = glb_resp.json()
 
-        stage = "npz_download"
+        motion_fps = int(glb_payload.get("fps", 30) or 30)
+        motion_frames = int(glb_payload.get("num_frames", max(1, round(effective_duration * motion_fps))) or max(1, round(effective_duration * motion_fps)))
+        motion_duration_seconds = float(glb_payload.get("duration_seconds", effective_duration) or effective_duration)
+
+        stage = "glb_download"
         self.update_state(state="STARTED", meta={"stage": stage})
-        _download_npz(dart_payload, tmp_npz_path)
+        _download_artifact(glb_payload.get("motion_file_url"), output_glb_path)
 
-        stage = "mp4_render"
-        self.update_state(state="STARTED", meta={"stage": stage})
-        fps = int(dart_payload.get("fps", 30) or 30)
-        _render_npz_to_mp4(tmp_npz_path, output_mp4_path, fps=fps)
+        if not os.path.exists(output_glb_path):
+            raise RuntimeError("GLB download completed but output glb was not created")
 
-        if not os.path.exists(output_mp4_path):
-            raise RuntimeError("Render completed but output mp4 was not created")
+        motion_file_url = _public_video_url(relative_glb_path)
 
-        video_url = _public_video_url(relative_video_path)
+        video_url = None
+        try:
+            stage = "dart_generate_npz"
+            self.update_state(state="STARTED", meta={"stage": stage})
+            npz_body = {**body, "seed": seed_value, "output_format": "npz"}
+            resp = requests.post(DART_GENERATE_ENDPOINT, json=npz_body, timeout=DART_REQUEST_TIMEOUT_SECONDS)
+            resp.raise_for_status()
+            dart_payload = resp.json()
+
+            motion_fps = int(dart_payload.get("fps", motion_fps) or motion_fps)
+            motion_frames = int(dart_payload.get("num_frames", motion_frames) or motion_frames)
+            motion_duration_seconds = float(dart_payload.get("duration_seconds", motion_duration_seconds) or motion_duration_seconds)
+
+            stage = "npz_download"
+            self.update_state(state="STARTED", meta={"stage": stage})
+            _download_npz(dart_payload, tmp_npz_path)
+
+            stage = "mp4_render"
+            self.update_state(state="STARTED", meta={"stage": stage})
+            fps = int(dart_payload.get("fps", 30) or 30)
+            _render_npz_to_mp4(tmp_npz_path, output_mp4_path, fps=fps)
+            if os.path.exists(output_mp4_path):
+                video_url = _public_video_url(relative_video_path)
+        except Exception as mp4_exc:
+            logger.warning("MP4 fallback generation failed for job %s: %s", job_id, mp4_exc)
 
         if os.path.exists(tmp_npz_path):
             os.remove(tmp_npz_path)
 
-        cache.set_motion_result(rewritten_prompt, effective_duration, body["num_steps"], video_url)
+        if video_url:
+            cache.set_motion_result(rewritten_prompt, effective_duration, body["num_steps"], video_url)
 
         return {
             "status": "completed",
+            "motion_file_url": motion_file_url,
             "video_url": video_url,
+            "frames": motion_frames,
+            "fps": motion_fps,
+            "duration_seconds": motion_duration_seconds,
             "error": None,
             "job_id": job_id,
             "stage": "completed",
+            "relative_motion_path": relative_glb_path,
             "relative_video_path": relative_video_path,
             "selected_strategy": selected_strategy,
             "selected_candidate": {
@@ -327,6 +360,11 @@ def render_motion_job(self, user_query: str, motion_prompt: str, user_id: str, d
         if os.path.exists(output_mp4_path):
             try:
                 os.remove(output_mp4_path)
+            except Exception:
+                pass
+        if os.path.exists(output_glb_path):
+            try:
+                os.remove(output_glb_path)
             except Exception:
                 pass
         logger.error("Motion render job failed: %s", exc)

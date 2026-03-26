@@ -244,7 +244,39 @@ class CacheService:
             logger.debug(f"Orchestrator cache write error: {exc}")
 
     # ------------------------------------------------------------------
-    # E) Motion Prompt Cache (Semantic Bridge)
+    # E) Semantic Cache (Query Transformation & HyDE)
+    #    Caches the expanded query and generated HyDE document to skip LLM calls.
+    # ------------------------------------------------------------------
+
+    def get_semantic_transformation(self, query: str) -> Optional[Dict[str, str]]:
+        """Look up cached query expansion and HyDE documents.
+
+        Returns None on cache miss or if Redis is unavailable.
+        """
+        if not self._available:
+            return None
+        try:
+            nq = normalize_query(query)
+            key = f"sem:{self._hash(nq)}"
+            data = self._redis.get(key)
+            return pickle.loads(data) if data else None
+        except Exception as exc:
+            logger.debug(f"Semantic cache read error: {exc}")
+            return None
+
+    def set_semantic_transformation(self, query: str, transformation: Dict[str, str]) -> None:
+        """Store query expansion and HyDE documents in the cache."""
+        if not self._available:
+            return
+        try:
+            nq = normalize_query(query)
+            key = f"sem:{self._hash(nq)}"
+            self._redis.setex(key, self._motion_prompt_ttl, pickle.dumps(transformation))
+        except Exception as exc:
+            logger.debug(f"Semantic cache write error: {exc}")
+
+    # ------------------------------------------------------------------
+    # F) Motion Prompt Cache (Semantic Bridge)
     #    NOT user-specific: the HumanML3D vocabulary mapping is identical
     #    for all users, so we cache by query text only.
     #    TTL: 7 days (the knowledge base is static).

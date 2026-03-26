@@ -15,12 +15,13 @@ from celery_app import celery_app
 API_PUBLIC_BASE_URL = os.getenv("API_PUBLIC_BASE_URL", "http://localhost:8000")
 
 
-def _build_absolute_video_url(video_url: Optional[str]) -> Optional[str]:
-    if not video_url:
+def _build_absolute_url(url_or_path: Optional[str], base_url: Optional[str] = None) -> Optional[str]:
+    if not url_or_path:
         return None
-    if video_url.startswith("http://") or video_url.startswith("https://"):
-        return video_url
-    return urljoin(API_PUBLIC_BASE_URL.rstrip("/") + "/", video_url.lstrip("/"))
+    if url_or_path.startswith("http://") or url_or_path.startswith("https://"):
+        return url_or_path
+    base = (base_url or API_PUBLIC_BASE_URL).rstrip("/") + "/"
+    return urljoin(base, url_or_path.lstrip("/"))
 
 
 class MotionJobManager:
@@ -42,11 +43,12 @@ class MotionJobManager:
         )
         return task.id
 
-    def get_status(self, job_id: str) -> Dict[str, Any]:
+    def get_status(self, job_id: str, request_base_url: Optional[str] = None) -> Dict[str, Any]:
         if celery_app is None or AsyncResult is None:
             return {
                 "job_id": job_id,
                 "status": "failed",
+                "motion_file_url": None,
                 "video_url": None,
                 "error": "Celery is not available in this runtime.",
             }
@@ -66,7 +68,11 @@ class MotionJobManager:
         payload: Dict[str, Any] = {
             "job_id": job_id,
             "status": mapped_status,
+            "motion_file_url": None,
             "video_url": None,
+            "frames": None,
+            "fps": None,
+            "duration_seconds": None,
             "error": None,
             "stage": None,
         }
@@ -75,10 +81,15 @@ class MotionJobManager:
             payload["stage"] = result.info.get("stage")
 
         if mapped_status == "completed" and isinstance(result.result, dict):
-            raw_url = result.result.get("video_url")
-            payload["video_url"] = _build_absolute_video_url(raw_url)
+            raw_motion_url = result.result.get("motion_file_url")
+            raw_video_url = result.result.get("video_url")
+            payload["motion_file_url"] = _build_absolute_url(raw_motion_url, request_base_url)
+            payload["video_url"] = _build_absolute_url(raw_video_url, request_base_url)
             payload["status"] = result.result.get("status", "completed")
             payload["error"] = result.result.get("error")
+            payload["frames"] = result.result.get("frames")
+            payload["fps"] = result.result.get("fps")
+            payload["duration_seconds"] = result.result.get("duration_seconds")
             payload["selected_strategy"] = result.result.get("selected_strategy")
             payload["selected_candidate"] = result.result.get("selected_candidate")
             if payload["status"] == "failed" and not payload["error"]:

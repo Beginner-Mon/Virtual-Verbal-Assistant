@@ -22,6 +22,8 @@ DART_HOST = "127.0.0.1"
 DART_PORT = 5001
 DART_START_TIMEOUT_SECONDS = 240
 UI_PORT = int(os.getenv("AGENTICRAG_UI_PORT", "8501"))
+ECA_UI_PORT = int(os.getenv("ECA_UI_PORT", "3000"))
+ECA_UI_ROOT = REPO_ROOT / "ECA_UI"
 REQUIRED_PY_MODULES = ("celery", "fastapi", "redis")
 
 
@@ -29,6 +31,13 @@ def is_port_open(host: str, port: int, timeout: float = 0.5) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
         return sock.connect_ex((host, port)) == 0
+
+
+def probe_host(host: str) -> str:
+    # 0.0.0.0/:: are bind addresses, not routable connect targets.
+    if host in {"0.0.0.0", "::", "*", ""}:
+        return "127.0.0.1"
+    return host
 
 
 def reader_thread(
@@ -175,6 +184,7 @@ def terminate_process(name: str, process: subprocess.Popen) -> None:
 
 
 def main() -> int:
+    health_probe_host = probe_host(API_HOST)
     py_exe = resolve_python_executable()
     base_env = os.environ.copy()
     base_env["MOTION_ASYNC_ENABLED"] = "true"
@@ -221,11 +231,16 @@ def main() -> int:
             )
             dart_proc = start_process("DART", ["wsl", "-e", "bash", "-lc", dart_cmd], REPO_ROOT, base_env)
             processes.append(("DART", dart_proc))
+            print(f"[Stack] DART is loading model in background (may take 2-5 min)... other services starting now.")
 
-            if not wait_for_port(DART_HOST, DART_PORT, DART_START_TIMEOUT_SECONDS, "DART"):
-                raise RuntimeError(
-                    f"DART did not become ready on {DART_HOST}:{DART_PORT} within {DART_START_TIMEOUT_SECONDS}s"
-                )
+            def _dart_watcher():
+                if wait_for_port(DART_HOST, DART_PORT, DART_START_TIMEOUT_SECONDS, "DART"):
+                    print("[Stack] ✓ DART is now ready — motion generation enabled.")
+                else:
+                    print(f"[Stack] ⚠ DART did not start within {DART_START_TIMEOUT_SECONDS}s. Motion generation will be unavailable.")
+
+            dart_thread = threading.Thread(target=_dart_watcher, daemon=True)
+            dart_thread.start()
 
         if is_port_open(REDIS_HOST, REDIS_PORT):
             print(f"[Stack] redis already available at {REDIS_HOST}:{REDIS_PORT}, skip starting redis-server")
@@ -249,21 +264,33 @@ def main() -> int:
         )
         processes.append(("Beat", beat_proc))
 
-        if is_port_open(API_HOST, API_PORT):
+        if is_port_open(health_probe_host, API_PORT):
             print(f"[Stack] API already available at {API_HOST}:{API_PORT}, skip starting api_server.py")
         else:
             api_proc = start_process("API", [py_exe, "api_server.py"], SERVICE_ROOT, base_env)
             processes.append(("API", api_proc))
 
-        if is_port_open(API_HOST, MAIN_API_PORT):
+        if is_port_open(health_probe_host, MAIN_API_PORT):
             print(f"[Stack] Orchestrator already available at {API_HOST}:{MAIN_API_PORT}, skip starting main_api.py")
         else:
             main_api_proc = start_process("Orchestrator", [py_exe, "main_api.py"], SERVICE_ROOT, base_env)
             processes.append(("Orchestrator", main_api_proc))
 
-        # --- Streamlit Chat UI ---
-        if is_port_open(API_HOST, UI_PORT):
-            print(f"[Stack] UI already available at {API_HOST}:{UI_PORT}, skip starting streamlit")
+        # --- ECA Official UI 2.0 (Default Frontend) ---
+        if is_port_open(health_probe_host, ECA_UI_PORT):
+            print(f"[Stack] ECA UI already available at {API_HOST}:{ECA_UI_PORT}, using as default frontend")
+        else:
+            eca_proc = start_process(
+                "ECA_UI",
+                [py_exe, "-m", "http.server", str(ECA_UI_PORT), "--bind", API_HOST],
+                ECA_UI_ROOT,
+                base_env,
+            )
+            processes.append(("ECA_UI", eca_proc))
+
+        # --- Streamlit Chat UI (Parity/Testing Fallback) ---
+        if is_port_open(health_probe_host, UI_PORT):
+            print(f"[Stack] Streamlit UI already available at {API_HOST}:{UI_PORT}, skip starting streamlit")
         else:
             ui_proc = start_process(
                 "UI",
@@ -285,7 +312,9 @@ def main() -> int:
             thread.start()
             log_threads.append(thread)
 
-        print("[Stack] all services launched. Press Ctrl+C to stop.")
+        print(f"[Stack] all services launched. Default frontend: http://{API_HOST}:{ECA_UI_PORT}")
+        print(f"[Stack] Streamlit parity UI remains available at: http://{API_HOST}:{UI_PORT}")
+        print("[Stack] Press Ctrl+C to stop.")
 
         while not stop_event.is_set():
             for name, proc in processes:

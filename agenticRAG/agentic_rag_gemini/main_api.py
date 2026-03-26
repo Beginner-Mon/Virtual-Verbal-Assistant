@@ -16,7 +16,7 @@ import os
 import asyncio
 import uuid
 import re
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -178,6 +178,8 @@ class AnswerResponse(BaseModel):
     status: str = Field(..., description="processing or completed")
     pending_services: List[str] = Field(default_factory=list, description="Background services still running")
     language: str = Field("other", description="Detected language code: en | vi | jp | other")
+    selected_strategy: str = Field("unknown", description="The routing strategy, e.g., visualize_motion")
+    progress_stage: str = Field("completed", description="Current execution stage for polling visibility")
 
     text_answer: str = Field(..., description="Text response from AgenticRAG")
     exercises: List[Dict[str, str]] = Field(
@@ -254,6 +256,7 @@ async def _generate_motion_from_dart(
         "guidance_scale": 5.0,
         "num_steps": 50,
         "gender": "female",
+        "output_format": rag_data.get("motion_format", "glb"),
     }
     if "respacing" in rag_data:
         dart_body["respacing"] = rag_data["respacing"]
@@ -427,21 +430,31 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
                 logger.error(f"[TTS] sync failed: {exc}")
                 errors["tts"] = str(exc)
 
+        selected_strategy = "unknown"
+        if rag_data:
+            selected_strategy = rag_data.get("orchestrator_decision", {}).get("intent", "unknown")
+
         # 4. Async mode: return text quickly and finish services in background.
         pending_services: List[str] = []
         status = "completed"
+        progress_stage = "completed"
         if rag_data and MAIN_API_ASYNC_ENRICHMENT:
             if motion is None and motion_prompt:
                 pending_services.append("dart")
+                progress_stage = "motion_generation"
             pending_services.append("tts")
             if pending_services:
                 status = "processing"
+                if progress_stage == "completed":
+                    progress_stage = "voice_synthesis"
                 async with ANSWER_JOBS_LOCK:
                     ANSWER_JOBS[request_id] = {
                         "request_id": request_id,
                         "status": status,
                         "pending_services": pending_services.copy(),
                         "language": language,
+                        "selected_strategy": selected_strategy,
+                        "progress_stage": progress_stage,
                         "text_answer": text_answer,
                         "exercises": exercises,
                         "motion": motion,
@@ -474,6 +487,8 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
         status=status if rag_data else "completed",
         pending_services=pending_services if rag_data else [],
         language=language,
+        selected_strategy=selected_strategy if rag_data else "unknown",
+        progress_stage=progress_stage if rag_data else "completed",
         text_answer=text_answer,
         exercises=exercises,
         motion=motion,
@@ -496,6 +511,8 @@ async def get_answer_status(request_id: str) -> AnswerResponse:
         status=job.get("status", "processing"),
         pending_services=job.get("pending_services", []),
         language=job.get("language", "other"),
+        selected_strategy=job.get("selected_strategy", "unknown"),
+        progress_stage=job.get("progress_stage", "completed") if job.get("status") == "processing" else "completed",
         text_answer=job.get("text_answer", ""),
         exercises=job.get("exercises", []),
         motion=job.get("motion"),
