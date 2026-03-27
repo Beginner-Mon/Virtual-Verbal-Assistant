@@ -38,7 +38,7 @@ console.log("[ECA_UI] API_BASE_URL =", API_BASE_URL);
 
 const POLL_INTERVAL_MS = 1500;
 const NOT_FOUND_RETRY_LIMIT = 3;
-const POLL_TIMEOUT_MS = 180000;
+const POLL_TIMEOUT_MS = 600000;
 
 function flattenTaskPayload(taskPayload) {
   const task = taskPayload || {};
@@ -61,6 +61,7 @@ function flattenTaskPayload(taskPayload) {
     text_answer: result.text_answer || "",
     clinical_advice: result.text_answer || "",
     motion_duration_seconds: result.motion_duration_seconds ?? null,
+    motion_error: result.motion_error || task.error || null,
     motion: motionUrl
       ? {
           motion_file_url: motionUrl,
@@ -88,17 +89,26 @@ function sleep(ms) {
  * Poll unified task status until terminal state.
  * Retries initial transient 404 responses to avoid premature failure.
  */
-async function pollTaskStatus(taskId, onProgress = null) {
+async function pollTaskStatus(taskId, onProgress = null, options = {}) {
+  const stopWhenTextReady = Boolean(options.stopWhenTextReady);
   const startedAt = Date.now();
   let notFoundCount = 0;
+  let lastTaskData = null;
 
   while (Date.now() - startedAt < POLL_TIMEOUT_MS) {
     try {
       const response = await axios.get(`${API_BASE_URL}/tasks/${taskId}`);
       const data = response.data || {};
+      lastTaskData = data;
+      const flattened = flattenTaskPayload(data);
 
       if (onProgress) {
-        onProgress(flattenTaskPayload(data));
+        onProgress(flattened);
+      }
+
+      const hasText = Boolean(flattened.text_answer && String(flattened.text_answer).trim());
+      if (stopWhenTextReady && hasText) {
+        return data;
       }
 
       if (data.status === "completed" || data.status === "failed") {
@@ -116,7 +126,10 @@ async function pollTaskStatus(taskId, onProgress = null) {
     await sleep(POLL_INTERVAL_MS);
   }
 
-  throw new Error("Task polling timed out");
+  const timeoutError = new Error("Task polling timed out");
+  timeoutError.code = "TASK_POLL_TIMEOUT";
+  timeoutError.partial = lastTaskData ? flattenTaskPayload(lastTaskData) : null;
+  throw timeoutError;
 }
 
 /**
@@ -151,13 +164,42 @@ async function askEca(query, userId = "guest", onProgress = null) {
       }));
     }
 
-    // 2. Poll task state
-    const finalTask = await pollTaskStatus(taskId, onProgress);
-    if (finalTask.status === "failed") {
-      throw new Error(finalTask.error || "Task failed");
+    // 2. Poll until text is available, then return early while motion continues.
+    const textReadyTask = await pollTaskStatus(taskId, onProgress, { stopWhenTextReady: true });
+    const textReadyPayload = flattenTaskPayload(textReadyTask);
+
+    const isTerminal = textReadyTask.status === "completed" || textReadyTask.status === "failed";
+    if (isTerminal) {
+      if (textReadyTask.status === "failed" && !textReadyPayload.text_answer) {
+        const terminalError = new Error(textReadyTask.error || "Task failed");
+        terminalError.partial = textReadyPayload;
+        throw terminalError;
+      }
+      return textReadyPayload;
     }
 
-    return flattenTaskPayload(finalTask);
+    const finalPromise = pollTaskStatus(taskId, onProgress)
+      .then((finalTask) => {
+        const finalPayload = flattenTaskPayload(finalTask);
+        if (finalTask.status === "failed" && !finalPayload.text_answer) {
+          const terminalError = new Error(finalTask.error || "Task failed");
+          terminalError.partial = finalPayload;
+          throw terminalError;
+        }
+        return finalPayload;
+      })
+      .catch((error) => {
+        if (!error.partial) {
+          error.partial = textReadyPayload;
+        }
+        throw error;
+      });
+
+    return {
+      ...textReadyPayload,
+      task_id: taskId,
+      finalPromise,
+    };
   } catch (error) {
     const status = error?.response?.status;
     if (status === 404 && API_BASE_URL === String(window.location.origin).replace(/\/$/, "")) {
@@ -174,3 +216,4 @@ async function askEca(query, userId = "guest", onProgress = null) {
 window.askEca = askEca;
 window.pollTaskStatus = pollTaskStatus;
 window.fetchChatHistory = fetchChatHistory;
+window.flattenTaskPayload = flattenTaskPayload;

@@ -787,6 +787,7 @@ class AgenticRAGAPI:
         conversation_history: Optional[List[Dict[str, str]]] = None,
         stream: bool = False,
         motion_duration_seconds: Optional[float] = None,
+        prefer_async_motion: bool = False,
     ) -> Any:
         """Process a user query through the intent-branched pipeline.
 
@@ -1050,9 +1051,10 @@ class AgenticRAGAPI:
             # ── Step 2b: Call MotionGenerationTool if motion was requested ────
             motion_metadata: Optional[MotionMetadata] = None
             motion_job: Optional[MotionJobStatus] = None
+            motion_async_enabled = bool(self.motion_async_enabled or prefer_async_motion)
             if exercise_motion_prompt:
                 motion_start = time.time()
-                if self.motion_async_enabled:
+                if motion_async_enabled:
                     try:
                         job_id = self.motion_job_manager.enqueue(
                             user_query=query,
@@ -1072,7 +1074,7 @@ class AgenticRAGAPI:
                         logger.error("Async queue failed, falling back sync motion: %s", _qe)
                         trace["errors"].append(f"Motion queue error: {str(_qe)}")
 
-                if not self.motion_async_enabled or (self.motion_async_enabled and motion_job is None):
+                if not motion_async_enabled or (motion_async_enabled and motion_job is None):
                     # For kinematic motion search, we now pass the hyde_document instead of a vague prompt string
                     motion_target = hyde_document if intent != "conversation" else exercise_motion_prompt
                     if constraints:
@@ -1228,9 +1230,19 @@ app = FastAPI(
 )
 
 def _normalize_enums(value: Any) -> Any:
-    """Recursively convert Enum values to .value to guarantee JSON-safe strings."""
+    """Recursively normalize enums and model-like objects into JSON-safe values."""
     if isinstance(value, Enum):
         return value.value
+    if hasattr(value, "model_dump"):
+        try:
+            return _normalize_enums(value.model_dump())
+        except Exception:
+            pass
+    if hasattr(value, "dict"):
+        try:
+            return _normalize_enums(value.dict())
+        except Exception:
+            pass
     if isinstance(value, dict):
         return {str(k): _normalize_enums(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -1330,9 +1342,9 @@ async def _proxy_main_api_request(
 
 def _build_unified_result(query_payload: Dict[str, Any], request: Request) -> Dict[str, Any]:
     """Project QueryResponse into the stable result payload used by Official UI."""
-    orchestrator = query_payload.get("orchestrator_decision") or {}
-    motion = query_payload.get("motion") or {}
-    motion_job = query_payload.get("motion_job") or {}
+    orchestrator = _model_to_dict(query_payload.get("orchestrator_decision") or {})
+    motion = _model_to_dict(query_payload.get("motion") or {})
+    motion_job = _model_to_dict(query_payload.get("motion_job") or {})
 
     motion_file_url = None
 
@@ -1566,6 +1578,7 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
             history,
             False,
             request_payload.motion_duration_seconds,
+            True,
         )
 
         response_payload = _normalize_enums(_model_to_dict(raw_response))
@@ -1660,8 +1673,11 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
 
                 async with TASK_STORE_LOCK:
                     next_status = "processing"
+                    has_text = bool((unified_result.get("text_answer") or "").strip())
                     if motion_status == "failed":
-                        next_status = "failed"
+                        next_status = "completed" if has_text else "failed"
+                        if motion_state.get("error"):
+                            unified_result["motion_error"] = motion_state.get("error")
                     elif motion_status == "completed":
                         next_status = "completed"
 
@@ -1674,9 +1690,17 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
                     }
 
                 if motion_status in {"completed", "failed"}:
-                    final_status = "failed" if motion_status == "failed" else "completed"
-                    final_stage = "failed" if motion_status == "failed" else "completed"
-                    final_error = motion_state.get("error")
+                    has_text = bool((unified_result.get("text_answer") or "").strip())
+                    if motion_status == "failed" and has_text:
+                        final_status = "completed"
+                        final_stage = "failed"
+                        final_error = None
+                        if motion_state.get("error"):
+                            unified_result["motion_error"] = motion_state.get("error")
+                    else:
+                        final_status = "failed" if motion_status == "failed" else "completed"
+                        final_stage = "failed" if motion_status == "failed" else "completed"
+                        final_error = motion_state.get("error")
                     break
 
                 await asyncio.sleep(1.5)

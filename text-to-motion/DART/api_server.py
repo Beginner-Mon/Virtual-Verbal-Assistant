@@ -455,6 +455,10 @@ cleanup_task: Optional[asyncio.Task] = None
 def convert_npz_to_glb(npz_path: Path, glb_path: Path, gender: Literal["female", "male"]) -> None:
     script_path = Path(__file__).with_name("to_glb.py")
     model_path = Path(__file__).resolve().parent / "data" / "smplx_lockedhead_20230207" / "models_lockedhead"
+    glb_export_mode = (os.getenv("DART_GLB_EXPORT_MODE", "single") or "single").strip().lower()
+    if glb_export_mode not in {"single", "stack", "sequence"}:
+        logger.warning("Invalid DART_GLB_EXPORT_MODE=%r, defaulting to 'single'", glb_export_mode)
+        glb_export_mode = "single"
 
     if not script_path.exists():
         raise RuntimeError(f"GLB converter script not found: {script_path}")
@@ -468,6 +472,8 @@ def convert_npz_to_glb(npz_path: Path, glb_path: Path, gender: Literal["female",
         str(glb_path),
         "--gender",
         gender,
+        "--mode",
+        glb_export_mode,
     ]
 
     if model_path.exists():

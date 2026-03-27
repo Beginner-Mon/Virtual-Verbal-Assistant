@@ -13,6 +13,8 @@
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.7/dist/purify.min.js"></script>
   <script src="./api.js"></script>
   <style>
     * {
@@ -236,6 +238,63 @@
     .new-btn:hover {
       opacity: 0.85 !important;
     }
+
+    .assistant-markdown {
+      color: var(--text-primary);
+      line-height: 1.7;
+      letter-spacing: -0.1px;
+      font-size: 14.5px;
+      white-space: normal;
+    }
+
+    .assistant-markdown p {
+      margin: 0 0 10px;
+    }
+
+    .assistant-markdown p:last-child {
+      margin-bottom: 0;
+    }
+
+    .assistant-markdown ul,
+    .assistant-markdown ol {
+      margin: 0 0 10px 18px;
+      padding: 0;
+    }
+
+    .assistant-markdown li {
+      margin: 3px 0;
+    }
+
+    .assistant-markdown strong {
+      color: #0A84FF;
+      font-weight: 700;
+    }
+
+    .assistant-markdown code {
+      background: var(--chip-bg);
+      padding: 1px 5px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+    }
+
+    .assistant-markdown pre {
+      background: var(--chip-bg);
+      border: 1px solid var(--divider);
+      border-radius: 10px;
+      padding: 10px;
+      overflow-x: auto;
+      margin: 0 0 10px;
+    }
+
+    .assistant-markdown blockquote {
+      margin: 0 0 10px;
+      border-left: 3px solid #FF9500;
+      background: rgba(255, 149, 0, 0.08);
+      padding: 8px 10px;
+      border-radius: 8px;
+      color: var(--text-primary);
+    }
   </style>
 </head>
 
@@ -276,6 +335,25 @@
       "Walking gait pattern",
       "Raise both arms slowly",
     ];
+
+    function renderMarkdown(text) {
+      const source = String(text || "").trim();
+      if (!source) return "";
+
+      if (window.marked && window.marked.parse) {
+        const raw = window.marked.parse(source, { breaks: true, gfm: true });
+        if (window.DOMPurify && window.DOMPurify.sanitize) {
+          return window.DOMPurify.sanitize(raw);
+        }
+        return raw;
+      }
+
+      return source
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\n/g, "<br />");
+    }
 
     const RESPONSES = {
       walk: "Here's a walking gait pattern. Notice the natural arm-leg opposition — left arm swings forward with the right leg. This is key for rehab after lower limb surgery.",
@@ -774,15 +852,25 @@
           }}>
 
             <div style={{
-              background: isUser ? "#007AFF" : "#fff",
+              background: isUser ? "#007AFF" : "transparent",
               color: isUser ? "#fff" : "#1C1C1E",
-              borderRadius: isUser ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
-              padding: "11px 15px", fontSize: 14.5, lineHeight: 1.55, letterSpacing: -0.1,
-              boxShadow: isUser
-                ? "0 2px 10px rgba(0,122,255,0.22)"
-                : "0 1px 4px rgba(0,0,0,0.07), 0 0 0 1px rgba(0,0,0,0.04)",
+              borderRadius: isUser ? "18px 18px 4px 18px" : "0",
+              padding: isUser ? "11px 15px" : "4px 0",
+              fontSize: 14.5, lineHeight: 1.55, letterSpacing: -0.1,
+              boxShadow: isUser ? "0 2px 10px rgba(0,122,255,0.22)" : "none",
             }}>
-              {msg.text}
+              {isUser ? (
+                msg.text
+              ) : (
+                msg.isStreamingText ? (
+                  <div style={{ whiteSpace: "pre-wrap" }}>{msg.text}</div>
+                ) : (
+                  <div
+                    className="assistant-markdown"
+                    dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.text) }}
+                  />
+                )
+              )}
             </div>
 
             {motionLabel && (
@@ -815,11 +903,69 @@
       const [clinicalAdvice, setClinicalAdvice] = useState("");
       const [motionMeta, setMotionMeta] = useState(null);
       const [activeTaskStage, setActiveTaskStage] = useState("");
+      const [activeTaskId, setActiveTaskId] = useState(null);
+      const [motionError, setMotionError] = useState("");
       const [activeSession, setActiveSession] = useState(1);
       const [micActive, setMicActive] = useState(false);
       const [dark, setDark] = useState(false);
       const bottomRef = useRef(null);
       const textRef = useRef(null);
+      const textStreamRef = useRef({ messageId: null, targetText: "", cursor: 0, timer: null });
+
+      const stopTextStream = () => {
+        const state = textStreamRef.current;
+        if (state.timer) {
+          clearInterval(state.timer);
+          state.timer = null;
+        }
+      };
+
+      const streamAssistantText = (messageId, fullText) => {
+        const target = String(fullText || "");
+        if (!target.trim()) return;
+
+        const state = textStreamRef.current;
+        if (state.messageId !== messageId) {
+          stopTextStream();
+          state.messageId = messageId;
+          state.targetText = target;
+          state.cursor = 0;
+          setMessages(msgs => msgs.map((msg) => (
+            msg.id === messageId ? { ...msg, text: "", isStreamingText: true } : msg
+          )));
+        } else if (target.length > state.targetText.length) {
+          state.targetText = target;
+        }
+
+        if (state.timer) return;
+
+        state.timer = setInterval(() => {
+          const current = textStreamRef.current;
+          if (current.messageId !== messageId) {
+            stopTextStream();
+            return;
+          }
+
+          if (current.cursor >= current.targetText.length) {
+            stopTextStream();
+            setMessages(msgs => msgs.map((msg) => (
+              msg.id === messageId
+                ? { ...msg, text: current.targetText, isStreamingText: false }
+                : msg
+            )));
+            return;
+          }
+
+          current.cursor = Math.min(current.cursor + 1, current.targetText.length);
+          const partial = current.targetText.slice(0, current.cursor);
+
+          setMessages(msgs => msgs.map((msg) => (
+            msg.id === messageId
+              ? { ...msg, text: partial, isStreamingText: true }
+              : msg
+          )));
+        }, 10);
+      };
 
       useEffect(() => {
         document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
@@ -840,6 +986,12 @@
 
         return () => {
           cancelled = true;
+        };
+      }, []);
+
+      useEffect(() => {
+        return () => {
+          stopTextStream();
         };
       }, []);
 
@@ -876,11 +1028,16 @@
         const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         const assistantMessageId = Date.now() + 1;
 
+        stopTextStream();
+        setMotionError("");
+        setActiveTaskId(null);
+
         setMessages(m => [...m, { id: Date.now(), role: "user", text, motion: null, time: now }]);
         setMessages(m => [...m, {
           id: assistantMessageId,
           role: "assistant",
           text: "",
+          isStreamingText: false,
           motion: null,
           time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         }]);
@@ -914,8 +1071,11 @@
             }
 
             if (hasText) {
-              updateAssistantMessage({ text: progress.text_answer });
+              streamAssistantText(assistantMessageId, progress.text_answer);
               setClinicalAdvice(progress.clinical_advice || progress.text_answer || "");
+              if (progress?.task_id) {
+                setActiveTaskId(progress.task_id);
+              }
             }
 
             if (progress?.motion && progress.motion.motion_file_url) {
@@ -924,12 +1084,92 @@
               setMotionMeta(progress.motion || null);
               updateAssistantMessage({ motion: motionBadge });
             }
+
+            if (progress?.motion_error) {
+              setMotionError(String(progress.motion_error));
+            }
           });
+
+          setClinicalAdvice(replyData.clinical_advice || replyData.text_answer || "");
+          if (replyData.task_id) {
+            setActiveTaskId(replyData.task_id);
+          }
+
+          setMessages(msgs => msgs.map((msg) => (
+            msg.id === assistantMessageId
+              ? {
+                  ...msg,
+                  text: msg.text || "",
+                  motion: msg.motion || null,
+                }
+              : msg
+          )));
+
+          if (replyData.text_answer) {
+            streamAssistantText(assistantMessageId, replyData.text_answer);
+          }
+
+          if (replyData.finalPromise) {
+            setThinking(false);
+            setGenerating(true);
+            setActiveTaskStage("motion_generation");
+
+            replyData.finalPromise
+              .then((finalData) => {
+                setThinking(false);
+                setGenerating(false);
+                setActiveTaskStage("");
+                setClinicalAdvice(finalData.clinical_advice || finalData.text_answer || "");
+                setMotionMeta(finalData.motion || null);
+
+                if (finalData.motion && finalData.motion.motion_file_url) {
+                  setMotionUrl(finalData.motion.motion_file_url);
+                  let filename = finalData.motion.motion_file_url.split('/').pop().replace('.glb', '');
+                  if (filename && filename.length > 0) {
+                    setMotionKey(filename);
+                  }
+                }
+
+                const finalMotionBadge = toMotionBadge(finalData.motion);
+                setMessages(msgs => msgs.map((msg) => (
+                  msg.id === assistantMessageId
+                    ? {
+                        ...msg,
+                        text: msg.text || "",
+                        motion: finalMotionBadge || msg.motion || null,
+                      }
+                    : msg
+                )));
+
+                if (finalData.text_answer) {
+                  streamAssistantText(assistantMessageId, finalData.text_answer);
+                }
+
+                if (finalData.motion_error) {
+                  setMotionError(String(finalData.motion_error));
+                }
+              })
+              .catch((error) => {
+                setThinking(false);
+                setGenerating(false);
+                setActiveTaskStage("failed");
+
+                const partial = error?.partial || {};
+                const detail = partial.motion_error || error?.message || "Motion generation timed out";
+                setMotionError(String(detail));
+
+                if (partial.text_answer) {
+                  streamAssistantText(assistantMessageId, partial.text_answer);
+                  setClinicalAdvice(partial.clinical_advice || partial.text_answer || "");
+                }
+              });
+
+            return;
+          }
 
           setThinking(false);
           setGenerating(false);
           setActiveTaskStage("completed");
-          setClinicalAdvice(replyData.clinical_advice || replyData.text_answer || "");
           setMotionMeta(replyData.motion || null);
 
           if (replyData.motion && replyData.motion.motion_file_url) {
@@ -965,9 +1205,54 @@
             : rawMessage;
           setMessages(msgs => msgs.map((msg) => (
             msg.id === assistantMessageId
-              ? { ...msg, text: `Error communicating with ECA backend: ${detail}`, motion: null }
+              ? {
+                  ...msg,
+                  text: msg.text && String(msg.text).trim()
+                    ? msg.text
+                    : `Error communicating with ECA backend: ${detail}`,
+                  isStreamingText: false,
+                  motion: msg.motion || null,
+                }
               : msg
           )));
+          setMotionError(String(detail));
+        }
+      };
+
+      const retryMotion = async () => {
+        if (!activeTaskId) return;
+        setMotionError("");
+        setGenerating(true);
+        setActiveTaskStage("motion_generation");
+
+        try {
+          const task = await window.pollTaskStatus(activeTaskId, (progress) => {
+            const stage = String(progress?.progress_stage || "").toLowerCase();
+            setActiveTaskStage(stage);
+            if (progress?.motion && progress.motion.motion_file_url) {
+              setMotionUrl(progress.motion.motion_file_url);
+              setMotionMeta(progress.motion || null);
+            }
+            if (progress?.text_answer) {
+              setClinicalAdvice(progress.clinical_advice || progress.text_answer || "");
+            }
+          });
+
+          const finalData = window.flattenTaskPayload ? window.flattenTaskPayload(task) : task;
+          if (finalData?.motion && finalData.motion.motion_file_url) {
+            setMotionUrl(finalData.motion.motion_file_url);
+            setMotionMeta(finalData.motion || null);
+          }
+          if (finalData?.motion_error) {
+            setMotionError(String(finalData.motion_error));
+          }
+          setActiveTaskStage(finalData?.progress_stage || "");
+        } catch (error) {
+          const detail = error?.message || "Unable to refresh motion status";
+          setMotionError(String(detail));
+          setActiveTaskStage("failed");
+        } finally {
+          setGenerating(false);
         }
       };
 
@@ -1303,6 +1588,27 @@
                     {clinicalAdvice || "-"}
                   </p>
                 </div>
+
+                {motionError && (
+                  <div style={{ marginTop: 10, borderTop: "1px solid rgba(0,0,0,0.06)", paddingTop: 10 }}>
+                    <p style={{ fontSize: 11, color: "#FF3B30", fontWeight: 700, marginBottom: 4 }}>Motion status</p>
+                    <p style={{ fontSize: 12, color: "#8A3C34", lineHeight: 1.35 }}>{motionError}</p>
+                    <button
+                      onClick={retryMotion}
+                      style={{
+                        marginTop: 8,
+                        padding: "6px 10px",
+                        borderRadius: 8,
+                        background: "#007AFF",
+                        color: "#fff",
+                        fontSize: 12,
+                        fontWeight: 600,
+                      }}
+                    >
+                      Retry Motion Sync
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </aside>
