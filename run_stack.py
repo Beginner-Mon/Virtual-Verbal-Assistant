@@ -12,10 +12,12 @@ import shutil
 
 REPO_ROOT = Path(__file__).resolve().parent
 SERVICE_ROOT = REPO_ROOT / "agenticRAG" / "agentic_rag_gemini"
+SPEECH_LLM_ROOT = REPO_ROOT / "SpeechLLm"
 DART_ROOT = REPO_ROOT / "text-to-motion" / "DART"
 API_HOST = os.getenv("API_HOST", "0.0.0.0")
 API_PORT = 8000
 MAIN_API_PORT = 8080
+SPEECH_LLM_PORT = int(os.getenv("SPEECH_LLM_PORT", "5000"))
 REDIS_HOST = "127.0.0.1"
 REDIS_PORT = 6379
 DART_HOST = "127.0.0.1"
@@ -170,6 +172,25 @@ def enrich_path_for_ffmpeg(env: dict[str, str]) -> dict[str, str]:
     return env
 
 
+def resolve_conda_executable() -> str | None:
+    candidates = [
+        os.environ.get("CONDA_EXE"),
+        shutil.which("conda"),
+        str(Path.home() / "miniconda3" / "Scripts" / "conda.exe"),
+        r"C:\Miniconda\Scripts\conda.exe",
+    ]
+
+    seen = set()
+    for exe in candidates:
+        if not exe or exe in seen:
+            continue
+        seen.add(exe)
+        if Path(exe).exists():
+            return exe
+
+    return None
+
+
 def terminate_process(name: str, process: subprocess.Popen) -> None:
     if process.poll() is not None:
         return
@@ -187,6 +208,9 @@ def main() -> int:
     health_probe_host = probe_host(API_HOST)
     py_exe = resolve_python_executable()
     base_env = os.environ.copy()
+    speech_llm_conda_env = os.getenv("SPEECH_LLM_CONDA_ENV", "tts")
+    speech_llm_python = os.getenv("SPEECH_LLM_PYTHON", "python")
+    conda_exe = resolve_conda_executable()
     base_env["MOTION_ASYNC_ENABLED"] = "true"
     base_env["API_PUBLIC_BASE_URL"] = os.getenv(
         "API_PUBLIC_BASE_URL",
@@ -276,6 +300,32 @@ def main() -> int:
             main_api_proc = start_process("Orchestrator", [py_exe, "main_api.py"], SERVICE_ROOT, base_env)
             processes.append(("Orchestrator", main_api_proc))
 
+        if is_port_open(health_probe_host, SPEECH_LLM_PORT):
+            print(
+                f"[Stack] SpeechLLM API already available at {API_HOST}:{SPEECH_LLM_PORT}, "
+                "skip starting SpeechLLm/api_server.py"
+            )
+        else:
+            if conda_exe is not None:
+                speech_cmd = [
+                    conda_exe,
+                    "run",
+                    "-n",
+                    speech_llm_conda_env,
+                    speech_llm_python,
+                    "api_server.py",
+                ]
+                print(f"[Stack] SpeechLLM will run in conda env: {speech_llm_conda_env}")
+            else:
+                speech_cmd = [py_exe, "api_server.py"]
+                print(
+                    "[Stack] warning: conda executable not found; "
+                    f"starting SpeechLLM with shared python: {py_exe}"
+                )
+
+            speech_proc = start_process("SpeechLLM", speech_cmd, SPEECH_LLM_ROOT, base_env)
+            processes.append(("SpeechLLM", speech_proc))
+
         # --- ECA Official UI 2.0 (Default Frontend) ---
         if is_port_open(health_probe_host, ECA_UI_PORT):
             print(f"[Stack] ECA UI already available at {API_HOST}:{ECA_UI_PORT}, using as default frontend")
@@ -314,6 +364,7 @@ def main() -> int:
 
         print(f"[Stack] all services launched. Default frontend: http://{API_HOST}:{ECA_UI_PORT}")
         print(f"[Stack] Streamlit parity UI remains available at: http://{API_HOST}:{UI_PORT}")
+        print(f"[Stack] SpeechLLM TTS API available at: http://{API_HOST}:{SPEECH_LLM_PORT}")
         print("[Stack] Press Ctrl+C to stop.")
 
         while not stop_event.is_set():

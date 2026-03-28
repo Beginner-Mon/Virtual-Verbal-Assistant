@@ -41,8 +41,8 @@ docker compose up -d chromadb
 
 # 2. Launch full stack (API + Orchestrator + Celery + DART + Chat UI)
 conda activate firstconda
-python run_stack.py
 
+h
 # Default frontend (Official UI)
 # http://localhost:3000
 ```
