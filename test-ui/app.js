@@ -1,9 +1,20 @@
-// Detect base URL: use current origin when served through Ngrok or any reverse proxy.
-// If served locally on a different port (e.g. 8081), default back to the real API port 8000.
-const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-const API_BASE = (window.location.protocol.startsWith('http') && !isLocalhost)
-    ? window.location.origin
-    : 'http://localhost:8000';
+// API base resolution priority:
+// 1) Query param: ?api_base=https://your-api-host
+// 2) Global override: window.TEST_UI_API_BASE_URL
+// 3) If page itself is served from :8000, use current origin
+// 4) Local default: http://localhost:8000
+function resolveApiBase() {
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = params.get('api_base');
+    const fromGlobal = window.TEST_UI_API_BASE_URL;
+    const isApiPort = window.location.port === '8000';
+
+    const base = fromQuery || fromGlobal || (isApiPort ? window.location.origin : 'http://localhost:8000');
+    return String(base).replace(/\/$/, '');
+}
+
+const API_BASE = resolveApiBase();
+console.log('[test-ui] API_BASE =', API_BASE);
 
 const SERVICES = {
     rag: {
@@ -57,6 +68,21 @@ async function checkHealth(serviceKey) {
             addLog('error', service.name, `Unexpected response: ${JSON.stringify(data)}`);
         }
     } catch (err) {
+        // When opened via file://, browsers often block cross-origin JSON reads.
+        // Fallback to no-cors to detect basic reachability.
+        const isFileProtocol = window.location.protocol === 'file:';
+        if (isFileProtocol) {
+            try {
+                await fetch(service.healthUrl, { mode: 'no-cors' });
+                dot.className = 'status-dot checking';
+                label.textContent = '⚠️ Reachable — CORS blocked in file:// mode';
+                addLog('error', service.name, 'Endpoint reachable, but browser blocked response in file:// mode (CORS). Serve test-ui over http:// for full health details.');
+                return;
+            } catch {
+                // Fall through to offline if even no-cors cannot reach endpoint.
+            }
+        }
+
         dot.className = 'status-dot offline';
         label.textContent = `❌ Offline — ${err.message}`;
         addLog('error', service.name, `Health check failed: ${err.message}`);
@@ -210,18 +236,34 @@ async function testPipeline() {
 
     try {
         // main_api.py fans out to AgenticRAG + DART simultaneously
-        const response = await fetch(`${API_BASE}/query`, {
+        const response = await fetch(`${API_BASE}/answer`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ query, user_id: userId, conversation_history: [] }),
         });
 
+        if (!response.ok) {
+            clearTimerInterval();
+            throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+        }
+
+        let data = await response.json();
+        
+        // Poll if async enrichment is enabled
+        while (data.status === 'processing') {
+            await new Promise(r => setTimeout(r, 2000));
+            const statusResp = await fetch(`${API_BASE}/answer/status/${data.request_id}`);
+            if (statusResp.ok) {
+                data = await statusResp.json();
+                container.innerHTML = `<div class="result-placeholder">Waiting for background services... (Pending: ${data.pending_services.join(', ')})</div>`;
+            } else {
+                break; // stop polling on error
+            }
+        }
+
         const elapsed = Math.round(performance.now() - start);
         clearTimerInterval();
 
-        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-
-        const data = await response.json();
         showPipelineResult(container, data, elapsed, response.status);
 
         const motionInfo = data.motion

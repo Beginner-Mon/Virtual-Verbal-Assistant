@@ -17,6 +17,20 @@ agenticRAG/agentic_rag_gemini/celerybeat-schedule.dir
 
 # Generated media outputs
 agenticRAG/agentic_rag_gemini/static/videos/
+agenticRAG/agentic_rag_gemini/static/motions/
+
+# Local runtime/session artifacts
+agenticRAG/agentic_rag_gemini/memory/chat_history/
+memory/chat_history/
+
+# Local debug and ad-hoc test outputs
+agenticRAG/agentic_rag_gemini/api_results*.txt
+agenticRAG/agentic_rag_gemini/debug_out.txt
+agenticRAG/agentic_rag_gemini/debug_startup.py
+tmp_query*.json
+
+# Local caches
+text-to-motion/DART/data_loaders/humanml/data/__pycache__/
 
 # Local Chroma volume data
 chroma_data/

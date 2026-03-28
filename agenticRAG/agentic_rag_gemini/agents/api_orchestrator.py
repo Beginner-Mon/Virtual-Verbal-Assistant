@@ -31,6 +31,8 @@ from utils.gemini_client import GeminiClientWrapper
 from agents.tools.memory_tool import MemoryTool
 from agents.tools.document_retrieval_tool import DocumentRetrievalTool
 from agents.tools.web_search_tool import WebSearchTool
+from agents.tools.motion_candidate_retriever import MotionCandidateRetriever
+from agents.query_transform import QueryTransformer
 
 
 logger = get_logger(__name__)
@@ -219,6 +221,8 @@ class OrchestratorAgent:
         self._memory_tool = memory_tool
         self._document_tool = document_tool
         self._web_search_tool = web_search_tool
+        self._motion_retriever = MotionCandidateRetriever()
+        self._query_transformer = QueryTransformer(use_cache=True)
 
         logger.info(
             f"Initialized OrchestratorAgent | model={self.config.model} | "
@@ -444,9 +448,39 @@ class OrchestratorAgent:
         intent   = analysis["intent"]
         action   = analysis["action"]
 
-        # ── Step 2: Select and run tools concurrently ────────────────────────
-        # Build a synthetic OrchestratorDecision so _select_tools / _run_tools
-        # can reuse the same logic unchanged.
+        # ── Step 1.5: Query Transformation (Double-RAG Engine) ──────────────
+        expanded_query = analysis["expanded_query"]
+        hyde_document = query
+        if analysis["needs_rag"] or action == ActionType.GENERATE_MOTION:
+            transform_res = self._query_transformer.transform_query(query)
+            expanded_query = transform_res.get("expanded_query", query)
+            hyde_document  = transform_res.get("hyde_document", query)
+
+        # ── Step 2: Multi-Stage Orchestration (Double-RAG) ───────────────────
+        # If we need clinical knowledge and motion execution, execute Double-RAG
+        double_rag_results = {}
+        if self._document_tool and (action == ActionType.GENERATE_MOTION or analysis["needs_rag"]):
+            # 1. Clinical Dispatch
+            clinical_docs = self._document_tool.search_documents(expanded_query)
+            
+            # 2. Constraint Extraction
+            constraints = self._extract_constraints(clinical_docs)
+            logger.info(f"Extracted Constraints: {constraints}")
+            
+            # 3. Conditioned Motion Search
+            conditioned_query = f"{hyde_document} Constraints: {constraints}"
+            motion_candidates = self._motion_retriever.retrieve_top_k(conditioned_query, k=1)
+            
+            if motion_candidates:
+                hyde_document = motion_candidates[0].text_description
+            
+            double_rag_results = {
+                "clinical_docs": clinical_docs,
+                "constraints": constraints,
+                "motion_candidates": motion_candidates
+            }
+
+        # ── Step 3: Select and run remaining tools concurrently ──────────────
         decision = OrchestratorDecision(
             action=action,
             confidence=analysis["confidence"],
@@ -459,23 +493,36 @@ class OrchestratorAgent:
             },
         )
         selected_tools = self._select_tools(decision, intent)
-        tool_results   = self._run_tools(selected_tools, analysis["expanded_query"], user_id)
+        # We drop document_tool from concurrent tool run if we already did Double-RAG
+        if "documents" in selected_tools and double_rag_results:
+            selected_tools.remove("documents")
+            
+        tool_results = self._run_tools(selected_tools, expanded_query, user_id)
+        
+        # Merge clinical documents back into tool_results for RAG pipeline
+        if double_rag_results.get("clinical_docs"):
+            tool_results["documents"] = double_rag_results["clinical_docs"]
 
-        # ── Step 3: Assemble action plan ─────────────────────────────────────
+        # ── Step 4: Assemble action plan ─────────────────────────────────────
         action_plan = {
             "user_id":         user_id,
             "query":           query,
-            "intent":          intent.value,
-            "decision":        decision.to_dict(),
+            "intent":          intent.value if hasattr(intent, "value") else str(intent),
+            "action":          action.value if hasattr(action, "value") else str(action),
+            "decision":        decision.to_dict() if hasattr(decision, 'to_dict') else {},
             "actions": {
                 "retrieve_memory": "memory" in selected_tools,
                 "call_llm":        action in (ActionType.CALL_LLM, ActionType.HYBRID, ActionType.RETRIEVE_MEMORY),
-                "generate_motion": analysis["generate_motion"] or intent == IntentType.VISUALIZE_MOTION,
+                "generate_motion": analysis.get("generate_motion", False) or intent == IntentType.VISUALIZE_MOTION,
             },
-            "parameters":      decision.parameters,
-            "expanded_query":  analysis["expanded_query"],
-            "needs_rag":       analysis["needs_rag"],
-            "exercise_name":   analysis["exercise_name"],
+            "parameters":      getattr(decision, "parameters", {}),
+            "expanded_query":  expanded_query,
+            "hyde_document":   hyde_document,  # Expose to api_server for DART mapping
+            "double_rag_meta": {
+                "constraints": double_rag_results.get("constraints", "")
+            },
+            "needs_rag":       analysis.get("needs_rag", True),
+            "exercise_name":   analysis.get("exercise_name"),
             "tool_results":    tool_results,
         }
 
@@ -485,6 +532,32 @@ class OrchestratorAgent:
             f"tools_run={list(tool_results.keys())}"
         )
         return action_plan
+
+    def _extract_constraints(self, clinical_docs: List[Dict[str, Any]]) -> str:
+        """Extract safety constraints and targeted muscles from clinical documents."""
+        if not clinical_docs:
+            return "No specific constraints."
+            
+        clincal_text = "\\n".join([doc.get("document", "") for doc in clinical_docs[:3]])
+        
+        prompt = f'''You are a clinical expert. Extract the key physical constraints, safety warnings, and targeted muscles from the provided clinical text.
+Ensure the output is extremely brief, no more than 2 sentences. Focus ONLY on biomechanical rules and limitations.
+
+Clinical Text:
+{clincal_text}'''
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.config.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=150
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"Failed to extract constraints: {e}")
+            return "General safe range of motion."
+
 
 
     # ──────────────────────────────────────────────────────────────────────

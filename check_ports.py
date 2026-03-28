@@ -14,6 +14,7 @@ if sys.platform == "win32":
 SERVICES = [
     ("AgenticRAG API", "127.0.0.1", 8000, "/health"),
     ("Streamlit UI",   "127.0.0.1", 8501, None),
+    ("ECA UI 2.0",     "127.0.0.1", 3000, None),
     ("Orchestrator",   "127.0.0.1", 8080, "/health"),
     ("DART",           "127.0.0.1", 5001, "/health"),
     ("ChromaDB",       "127.0.0.1", 8100, "/api/v1/heartbeat"),

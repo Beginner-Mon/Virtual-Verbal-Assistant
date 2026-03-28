@@ -40,6 +40,8 @@
 - 📚 **Multi-source knowledge** — Retrieves context from uploaded documents (PDF, Word, Images w/ OCR), conversation memory, chat session summaries, and live web search.
 - 🔁 **Self-correcting pipeline** — Implements query reformulation, iterative reflection (verifies answers against sources), and web search fallback.
 - 💾 **Persistent memory & Caching** — Stores state in ChromaDB and uses **Redis** for sub-millisecond embedding and retrieval caching.
+- 🧬 **Double-RAG Orchestration** — Multi-stage pipeline: Clinical RAG (Safety) → Constraint Extraction → Conditioned Motion RAG (HyDE).
+- 🔌 **Axios-Ready API** — Standardized JSON responses with polling support (`progress_stage`) for the official ECA UI.
 - 🔑 **Multi-key API management** — Rotates across multiple Gemini API keys automatically on quota errors.
 - 🌐 **Streamlit & API exposure** — Streamlit UI plus a high-performance FastAPI server (`api_server.py`) supporting concurrent requests.
 
@@ -59,12 +61,13 @@ Upload course documents (PDFs, Word files) and ask questions about their content
                       │ query + uploaded files             │ response
                       ▼                                    ▲
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  1. HYBRID ORCHESTRATOR               agents/local_orchestrator.py      │
+│  1. HYBRID ORCHESTRATOR               agents/api_orchestrator.py        │
 │     ┌────────────────────────────────────────────────────┐              │
-│     │ Primary: Ollama (Qwen 0.5B, local, temp=0.1)       │              │
-│     │ Fallback: Gemini 2.5 Flash (via orchestrator.py)   │              │
-│     │ Analyzes query → decides intent/action plan (JSON) │              │
-│     │ Latency: ~200-500ms (Local) vs ~3-10s (API)        │              │
+│     │ Phase 3: Double-RAG Logic                          │              │
+│     │ 1. Clinical Dispatch (Safety & Anatomy)            │              │
+│     │ 2. Constraint Extraction (e.g., "gentle move")     │              │
+│     │ 3. HyDE Transformation (Motion context)            │              │
+│     │ 4. Conditioned Motion Search (Hybrid Filters)      │              │
 │     └────────────────────────────────────────────────────┘              │
 └─────────────────────┬───────────────────────────────────────────────────┘
                       ▼
@@ -365,6 +368,37 @@ OpenAI-compatible wrapper around Google's Gemini API.
 - Converts OpenAI-style `messages` list to Gemini's `contents` format
 - System prompt extracted from messages and passed as `system_instruction`
 - Supports `response_format` parameter for JSON mode
+
+---
+
+### 11. Unified API Entry — `main_api.py` (Port 8080)
+
+The standard entry point for Axios-based frontends follows a **polling-based enrichment** pattern.
+
+| Endpoint | Purpose | Fields |
+|---|---|---|
+| `POST /answer` | Initiates RAG + Motion query | `text_answer`, `request_id`, `status: processing` |
+| `GET /answer/status/{id}`| Polls for background tasks | `progress_stage`, `selected_strategy`, `motion` |
+
+**Progress Stages**:
+1. `rag_processing` — AgenticRAG is generating the clinical text.
+2. `motion_generation` — DART is synthesizing the 3D sequence.
+3. `voice_synthesis` — Optional TTS generation.
+4. `completed` — All enrichment tasks done.
+
+---
+
+## Double-RAG & Constraint Mapping (Phase 3)
+
+The system bridges the "Linguistic Gap" between user queries and motion datasets using a two-stage retrieval process:
+
+1. **Clinical Dispatch**: The orchestrator searches the `clinical_knowledge` collection using the `expanded_query`.
+2. **Safety Extraction**: LLM identifies constraints (e.g., "avoid rapid neck extension", "focus on shoulder blade").
+3. **Motion Conditioning**:
+   - The original query is transformed into a **HyDE** document (hypothetical exercise description).
+   - The HyDE document is fused with the Clinical Constraints.
+   - The result is sent to the `humanml3d_library` (Motion RAG).
+4. **Final Response**: Returns instructions + safe visualization metadata.
 
 ---
 
@@ -1064,6 +1098,19 @@ python -c "from utils.web_search import WebSearchService; s = WebSearchService()
 ### ✅ Multi-User Cache Layer
 **Problem**: Redundant RAG calls for identical queries.  
 **Fix**: Implemented Redis `CacheService` with distinct Knowledge vs Memory retrieval keys.
+
+### ✅ Phase 3 – Double-RAG Stability (2026-03-26)
+**Problem**: Orchestrator crashing with `KeyError: 'expanded_query'` and Pydantic Enum serialization errors during complex RAG flows.  
+**Fix**: Refactored `api_orchestrator.py` to ensure consistent intermediate key population and explicit `.value` serialization for Enums.  
+**Result**: 100% stability on complex Double-RAG chains.
+
+### ✅ Phase 4 – Axios & ECA UI 2.0 Integration (2026-03-26)
+**Problem**: Frontend unable to parse heterogeneous API responses or track background motion generation.  
+**Fix**:
+1. Standardized all API outputs to consistent JSON structures.
+2. Implemented `api.js` Axios client in `ECA_UI/` with a state-aware polling loop.
+3. Added `progress_stage` (e.g., `motion_generation`) to the polling endpoint for high visibility.
+**Result**: Official UI now communicates seamlessly with the unified backend.
 
 ---
 

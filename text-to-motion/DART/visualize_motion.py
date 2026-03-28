@@ -1,89 +1,161 @@
-import numpy as np
-import torch
-import smplx
-import pyrender
-import trimesh
 import time
+from pathlib import Path
+import re
+
+import numpy as np
+import pyrender
+import smplx
+import torch
+import trimesh
+
 
 # ==========================
 # CONFIG
 # ==========================
-NPZ_PATH = "outputs/motion_8c3fa0a0-c40.npz"
+INPUT_PATH = "outputs/motion_9b7d3af8-a44.glb"
 MODEL_PATH = "./data/smplx_lockedhead_20230207/models_lockedhead"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+GLB_MULTI_GEOMETRY_MODE = "middle"  # middle | animate
+GLB_PREVIEW_FPS = 30
 
-# ==========================
-# LOAD MOTION
-# ==========================
-data = np.load(NPZ_PATH, allow_pickle=True)
-print("Keys:", data.files)
 
-poses = data["poses"]      # expect (T, 165)
-trans = data["trans"]
+def render_npz(npz_path: Path) -> None:
+    """Render SMPL-X motion stored in NPZ (poses/trans/betas)."""
+    data = np.load(str(npz_path), allow_pickle=True)
+    print("Keys:", data.files)
 
-if "betas" in data:
-    betas = data["betas"][:10]
-else:
-    betas = np.zeros(10)
+    if "poses" not in data or "trans" not in data:
+        raise ValueError("NPZ must contain 'poses' and 'trans' arrays")
 
-print("Pose shape:", poses.shape)
+    poses = data["poses"]
+    trans = data["trans"]
 
-T = poses.shape[0]
+    if "betas" in data:
+        betas = data["betas"][:10]
+    else:
+        betas = np.zeros(10)
 
-# ==========================
-# LOAD SMPL-X MODEL
-# ==========================
-model = smplx.create(
-    MODEL_PATH,
-    model_type="smplx",
-    gender="neutral",
-    use_pca=False
-).to(DEVICE)
+    print("Pose shape:", poses.shape)
+    total_frames = poses.shape[0]
 
-betas = torch.tensor(betas, dtype=torch.float32).unsqueeze(0).to(DEVICE)
+    model = smplx.create(
+        MODEL_PATH,
+        model_type="smplx",
+        gender="neutral",
+        use_pca=False,
+    ).to(DEVICE)
 
-# ==========================
-# RENDER SETUP
-# ==========================
-scene = pyrender.Scene()
-viewer = pyrender.Viewer(scene, use_raymond_lighting=True, run_in_thread=True)
+    betas_t = torch.tensor(betas, dtype=torch.float32).unsqueeze(0).to(DEVICE)
 
-mesh_node = None
+    scene = pyrender.Scene()
+    viewer = pyrender.Viewer(scene, use_raymond_lighting=True, run_in_thread=True)
 
-# ==========================
-# ANIMATION
-# ==========================
-for t in range(T):
+    mesh_node = None
+    for frame_idx in range(total_frames):
+        pose_t = torch.tensor(poses[frame_idx], dtype=torch.float32).unsqueeze(0).to(DEVICE)
+        trans_t = torch.tensor(trans[frame_idx], dtype=torch.float32).unsqueeze(0).to(DEVICE)
 
-    pose = torch.tensor(poses[t], dtype=torch.float32).unsqueeze(0).to(DEVICE)
-    translation = torch.tensor(trans[t], dtype=torch.float32).unsqueeze(0).to(DEVICE)
+        with torch.no_grad():
+            output = model(
+                betas=betas_t,
+                global_orient=pose_t[:, :3],
+                body_pose=pose_t[:, 3:66],
+                left_hand_pose=pose_t[:, 66:111],
+                right_hand_pose=pose_t[:, 111:156],
+                jaw_pose=pose_t[:, 156:159],
+                leye_pose=pose_t[:, 159:162],
+                reye_pose=pose_t[:, 162:165],
+                transl=trans_t,
+            )
 
-    with torch.no_grad():
-        output = model(
-            betas=betas,
-            global_orient=pose[:, :3],
-            body_pose=pose[:, 3:66],
-            left_hand_pose=pose[:, 66:111],
-            right_hand_pose=pose[:, 111:156],
-            jaw_pose=pose[:, 156:159],
-            leye_pose=pose[:, 159:162],
-            reye_pose=pose[:, 162:165],
-            transl=translation
+        vertices = output.vertices[0].cpu().numpy()
+        mesh = trimesh.Trimesh(vertices, model.faces, process=False)
+        render_mesh = pyrender.Mesh.from_trimesh(mesh)
+
+        with viewer.render_lock:
+            if mesh_node is not None:
+                scene.remove_node(mesh_node)
+            mesh_node = scene.add(render_mesh)
+
+        time.sleep(1 / 30)
+
+    print("NPZ animation finished.")
+
+
+def render_glb(glb_path: Path) -> None:
+    """Render a GLB/GLTF asset directly without NumPy loading."""
+    loaded = trimesh.load(str(glb_path), force="scene")
+
+    if isinstance(loaded, trimesh.Trimesh):
+        tm_scene = trimesh.Scene(loaded)
+    elif isinstance(loaded, trimesh.Scene):
+        tm_scene = loaded
+    else:
+        raise ValueError(f"Unsupported GLB/GLTF content type: {type(loaded)}")
+
+    if not tm_scene.geometry:
+        raise ValueError("GLB/GLTF scene has no geometry to render")
+
+    geometry_names = list(tm_scene.geometry.keys())
+
+    def _frame_sort_key(name: str):
+        match = re.search(r"frame_(\d+)", name)
+        if match:
+            return (0, int(match.group(1)))
+        return (1, name)
+
+    geometry_names.sort(key=_frame_sort_key)
+
+    if len(geometry_names) > 1:
+        print(
+            f"Detected {len(geometry_names)} geometries in GLB. "
+            f"Using multi-geometry mode: {GLB_MULTI_GEOMETRY_MODE}."
         )
 
-    vertices = output.vertices[0].cpu().numpy()
-    faces = model.faces
+        if GLB_MULTI_GEOMETRY_MODE == "animate":
+            scene = pyrender.Scene()
+            viewer = pyrender.Viewer(scene, use_raymond_lighting=True, run_in_thread=True)
+            node = None
+            frame_delay = 1.0 / max(1, GLB_PREVIEW_FPS)
 
-    mesh = trimesh.Trimesh(vertices, faces, process=False)
-    render_mesh = pyrender.Mesh.from_trimesh(mesh)
+            while viewer.is_active:
+                for name in geometry_names:
+                    mesh = tm_scene.geometry[name]
+                    render_mesh = pyrender.Mesh.from_trimesh(mesh)
+                    with viewer.render_lock:
+                        if node is not None:
+                            scene.remove_node(node)
+                        node = scene.add(render_mesh)
+                    if not viewer.is_active:
+                        break
+                    time.sleep(frame_delay)
+            return
 
-    with viewer.render_lock:
-        if mesh_node is not None:
-            scene.remove_node(mesh_node)
+        middle_name = geometry_names[len(geometry_names) // 2]
+        middle_mesh = tm_scene.geometry[middle_name]
+        preview_scene = trimesh.Scene(middle_mesh)
+        render_scene = pyrender.Scene.from_trimesh_scene(preview_scene)
+        pyrender.Viewer(render_scene, use_raymond_lighting=True, run_in_thread=False)
+        return
 
-        mesh_node = scene.add(render_mesh)
+    render_scene = pyrender.Scene.from_trimesh_scene(tm_scene)
+    pyrender.Viewer(render_scene, use_raymond_lighting=True, run_in_thread=False)
 
 
-    time.sleep(1/30)
+def main() -> None:
+    input_path = Path(INPUT_PATH)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input file not found: {input_path}")
 
-print("Done.")
+    ext = input_path.suffix.lower()
+    if ext == ".npz":
+        render_npz(input_path)
+    elif ext in {".glb", ".gltf"}:
+        render_glb(input_path)
+        print("GLB/GLTF render finished.")
+    else:
+        raise ValueError(f"Unsupported file extension: {ext}. Use .npz, .glb, or .gltf")
+
+
+if __name__ == "__main__":
+    main()

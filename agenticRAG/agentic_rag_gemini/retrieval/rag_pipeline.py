@@ -154,7 +154,8 @@ def extract_exercises_from_plain_text(text: str) -> List[Dict[str, str]]:
     # 2) Another Exercise
     # 3. Third Exercise — description
     patterns = [
-        r'^\d+[\.\)]\s+([^:\n\—]+)',  # "1. Name:" or "1) Name" or "1. Name —"
+        r'^\d+[\.\)]\s+(.+)$',  # "1. Name" / "1) Name"
+        r'^[-*]\s+(.+)$',          # "- Name" / "* Name"
     ]
     
     for line in text.split('\n'):
@@ -162,8 +163,10 @@ def extract_exercises_from_plain_text(text: str) -> List[Dict[str, str]]:
             match = re.match(pattern, line.strip())
             if match:
                 exercise_name = match.group(1).strip()
-                # Remove trailing punctuation and descriptors
-                exercise_name = re.sub(r'[\—\–\-].+$', '', exercise_name).strip()
+                # Normalize markdown and trim trailing descriptions while preserving hyphenated names.
+                exercise_name = re.sub(r'[*_`]+', '', exercise_name).strip()
+                exercise_name = re.sub(r'\s*:\s.*$', '', exercise_name).strip()
+                exercise_name = re.sub(r'\s+[\—\–\-]\s+.*$', '', exercise_name).strip()
                 if exercise_name and len(exercise_name) > 2:  # Filter very short names
                     exercises.append({"name": exercise_name})
                     break
@@ -545,6 +548,11 @@ class RAGPipeline:
             query=query,
         )
 
+        context_source_counts: Dict[str, int] = {}
+        for item in retrieved_context:
+            source = str(item.get("source_type", "unknown") or "unknown")
+            context_source_counts[source] = context_source_counts.get(source, 0) + 1
+
         # Step 6: Handle validation failures
         if not validation_result["is_valid"] and self.llm_config.enable_validation:
             logger.warning(f"Response failed validation: {validation_result['issues']}")
@@ -559,12 +567,16 @@ class RAGPipeline:
             "exercises": [],        # populated below when structured=True
             "metadata": {
                 "retrieved_context_count": len(retrieved_context),
+                "context_source_counts": context_source_counts,
+                "context_quality_score": self._assess_context_quality(retrieved_context),
                 "validation": validation_result,
                 "query_processed": processed_query != query,
                 "web_search_used": web_search_used,
                 "reformulation_count": reformulation_count,
                 "reflection_used": reflection_used,
                 "structured": structured,
+                "structured_parse_strategy": "disabled",
+                "exercises_extracted_count": 0,
             },
         }
 
@@ -573,18 +585,54 @@ class RAGPipeline:
         # (e.g. ```json ... ```) when json_object mode is not enforced at API level.
         if structured:
             extracted_successfully = False
+            parse_strategy = "json"
             
             # Try #1: Standard JSON parsing
             try:
                 import json as _json
                 cleaned  = clean_json_response(response_text)
                 parsed   = _json.loads(cleaned)
-                result["response"]  = parsed.get("text_answer", response_text)
-                result["exercises"] = parsed.get("exercises", [])
+
+                parsed_text_answer = response_text
+                parsed_exercises: List[Dict[str, str]] = []
+                if isinstance(parsed, dict):
+                    parsed_text_answer = parsed.get("text_answer", response_text)
+                    parsed_exercises = parsed.get("exercises", []) or []
+                elif isinstance(parsed, str):
+                    parsed_text_answer = parsed
+
+                # Some model responses wrap another JSON object inside text_answer.
+                if isinstance(parsed_text_answer, str):
+                    nested_candidate = clean_json_response(parsed_text_answer)
+                    if nested_candidate.strip().startswith("{"):
+                        try:
+                            nested_parsed = _json.loads(nested_candidate)
+                            if isinstance(nested_parsed, dict):
+                                nested_text = nested_parsed.get("text_answer")
+                                nested_exercises = nested_parsed.get("exercises", [])
+                                if isinstance(nested_text, str) and nested_text.strip():
+                                    parsed_text_answer = nested_text
+                                if not parsed_exercises and nested_exercises:
+                                    parsed_exercises = nested_exercises
+                                    parse_strategy = "json_nested"
+                        except Exception:
+                            pass
+
+                result["response"] = parsed_text_answer
+                result["exercises"] = parsed_exercises
+
+                # If model returned valid JSON but omitted exercises, recover from text_answer when possible.
+                if not result["exercises"]:
+                    extracted_exercises = extract_exercises_from_plain_text(str(result["response"]))
+                    if extracted_exercises:
+                        result["exercises"] = extracted_exercises
+                        parse_strategy = "json_with_text_fallback"
+
                 logger.info(f"Structured JSON parsed successfully: {len(result['exercises'])} exercises")
                 extracted_successfully = True
             except Exception as _exc:
                 logger.debug(f"JSON parsing failed ({_exc}); trying regex extraction")
+                parse_strategy = "regex_fallback"
                 
                 # Try #2: Regex-based field extraction (handles malformed JSON)
                 text_answer = extract_text_answer_from_json_string(response_text)
@@ -602,6 +650,7 @@ class RAGPipeline:
                 
                 # Try #3: Full fallback to plain text parsing
                 if not extracted_successfully:
+                    parse_strategy = "plain_text_fallback"
                     logger.warning(
                         f"Structured parsing failed completely; treating as plain text"
                     )
@@ -610,6 +659,9 @@ class RAGPipeline:
                     result["exercises"] = extracted_exercises
                     if extracted_exercises:
                         logger.info(f"Plain text fallback found {len(extracted_exercises)} exercises")
+
+            result["metadata"]["structured_parse_strategy"] = parse_strategy
+            result["metadata"]["exercises_extracted_count"] = len(result["exercises"])
 
         # NOTE: Interaction storage is handled by the UI layer (process_user_query)
         # which stores with richer metadata (active documents, source info).

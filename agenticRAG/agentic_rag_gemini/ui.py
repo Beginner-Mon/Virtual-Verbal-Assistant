@@ -47,11 +47,26 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        logger.warning(f"Invalid float for {name}={value!r}; using default {default}")
+        return default
+
+
 AGENTICRAG_API_URL = os.getenv("AGENTICRAG_API_URL", "http://localhost:8000")
 DART_BASE_URL = os.getenv("DART_URL", "http://localhost:5001")
 UI_BACKEND_TIMEOUT = float(_env_int("UI_BACKEND_TIMEOUT", 90))
 UI_DART_TIMEOUT = float(_env_int("UI_DART_TIMEOUT", 45))
 UI_MOTION_DEFAULT_DURATION_SECONDS = float(os.getenv("MOTION_DEFAULT_DURATION_SECONDS", "12"))
+UI_TASK_POLL_INTERVAL_SECONDS = _env_float("UI_TASK_POLL_INTERVAL_SECONDS", 0.8)
+UI_TASK_MAX_WAIT_SECONDS = _env_int("UI_TASK_MAX_WAIT_SECONDS", 300)
+UI_ASSISTANT_BATCH_WORDS = _env_int("UI_ASSISTANT_BATCH_WORDS", 45)
+UI_ASSISTANT_BATCH_DELAY_SECONDS = _env_float("UI_ASSISTANT_BATCH_DELAY_SECONDS", 0.08)
 
 
 def _normalize_motion_prompt(prompt: str) -> str:
@@ -300,6 +315,7 @@ def init_session_state():
         st.session_state.last_response_exercises = []
         st.session_state.last_response_needs_motion = False
         st.session_state.last_response_motion = None
+        st.session_state.last_response_motion_job = None
         st.session_state.last_response_motion_prompt = None
         st.session_state.last_response_errors = {}
         st.session_state.last_response_source = "local"
@@ -607,6 +623,153 @@ def process_user_query(query: str):
         return local_result
 
 
+def _split_answer_batches(answer: str, target_words: int) -> List[str]:
+    """Split text into readable markdown-sized batches for progressive UI updates."""
+    text = (answer or "").strip()
+    if not text:
+        return []
+
+    words_per_batch = max(12, int(target_words or 45))
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    batches: List[str] = []
+    current_parts: List[str] = []
+    current_words = 0
+
+    for paragraph in paragraphs:
+        paragraph_word_count = len(paragraph.split())
+        if current_parts and (current_words + paragraph_word_count) > words_per_batch:
+            batches.append("\n\n".join(current_parts))
+            current_parts = [paragraph]
+            current_words = paragraph_word_count
+            continue
+
+        current_parts.append(paragraph)
+        current_words += paragraph_word_count
+
+        if current_words >= words_per_batch:
+            batches.append("\n\n".join(current_parts))
+            current_parts = []
+            current_words = 0
+
+    if current_parts:
+        batches.append("\n\n".join(current_parts))
+
+    return batches or [text]
+
+
+def _normalize_unified_task_result(task_state: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize /tasks payload to the same shape used by the existing UI renderer."""
+    result = task_state.get("result") if isinstance(task_state.get("result"), dict) else {}
+    answer = result.get("text_answer", "")
+    exercises = _normalize_exercises(result.get("exercises", []))
+    if not exercises:
+        exercises = _extract_exercises_from_text(answer)
+
+    orchestrator = result.get("orchestrator") if isinstance(result.get("orchestrator"), dict) else {}
+    intent = orchestrator.get("intent", "unknown")
+
+    motion = result.get("motion") if isinstance(result.get("motion"), dict) else None
+    motion_job = result.get("motion_job") if isinstance(result.get("motion_job"), dict) else None
+    motion_prompt = result.get("exercise_motion_prompt")
+
+    if not motion and result.get("motion_file_url"):
+        motion = {
+            "motion_file_url": result.get("motion_file_url"),
+            "fps": None,
+            "frames": None,
+            "duration_seconds": None,
+        }
+
+    errors: Dict[str, Any] = {}
+    if isinstance(task_state.get("error"), str) and task_state.get("error"):
+        errors["task"] = task_state.get("error")
+    if motion_job and motion_job.get("error"):
+        errors["motion"] = motion_job.get("error")
+
+    needs_motion = bool(motion) or bool(motion_prompt) or bool((motion_job or {}).get("job_id"))
+
+    return {
+        "answer": answer,
+        "exercises": exercises,
+        "intent": intent,
+        "needs_motion": needs_motion,
+        "motion": motion,
+        "motion_job": motion_job,
+        "motion_prompt": motion_prompt,
+        "errors": errors,
+        "source": "api_unified",
+    }
+
+
+def process_user_query_unified(query: str, stage_callback=None) -> Dict[str, Any]:
+    """Query unified async task API so text is available before motion completes."""
+    history = [
+        {"role": m["role"], "content": m["content"]}
+        for m in st.session_state.messages[-6:]
+    ]
+    payload = {
+        "query": query,
+        "user_id": st.session_state.user_id,
+        "conversation_history": history,
+        "stream": False,
+    }
+
+    try:
+        logger.info(f"Calling backend unified task API: {AGENTICRAG_API_URL}/process_query")
+        timeout = httpx.Timeout(UI_BACKEND_TIMEOUT, connect=10.0)
+        with httpx.Client(timeout=timeout) as client:
+            create_resp = client.post(f"{AGENTICRAG_API_URL}/process_query", json=payload)
+            create_resp.raise_for_status()
+            create_data = create_resp.json()
+            task_id = create_data.get("task_id")
+            if not task_id:
+                raise RuntimeError("Unified task API did not return task_id")
+
+            deadline = time.time() + max(30, UI_TASK_MAX_WAIT_SECONDS)
+            last_stage = None
+            last_state: Dict[str, Any] = {
+                "status": "processing",
+                "progress_stage": "queued",
+                "result": None,
+                "error": None,
+            }
+
+            while time.time() < deadline:
+                poll_resp = client.get(f"{AGENTICRAG_API_URL}/tasks/{task_id}")
+                poll_resp.raise_for_status()
+                poll_data = poll_resp.json()
+
+                stage = poll_data.get("progress_stage", "processing")
+                if stage_callback and stage != last_stage:
+                    stage_callback(stage, poll_data)
+                last_stage = stage
+                last_state = poll_data
+
+                status_value = (poll_data.get("status") or "processing").lower()
+                if status_value in {"completed", "failed"}:
+                    return _normalize_unified_task_result(poll_data)
+
+                time.sleep(max(0.2, UI_TASK_POLL_INTERVAL_SECONDS))
+
+            timeout_error = {
+                **_normalize_unified_task_result(last_state),
+                "errors": {
+                    **(_normalize_unified_task_result(last_state).get("errors") or {}),
+                    "timeout": f"Unified task timed out after {UI_TASK_MAX_WAIT_SECONDS}s",
+                },
+            }
+            return timeout_error
+
+    except Exception as exc:
+        logger.warning(f"Unified task API unavailable, falling back to /query: {exc}")
+        fallback = process_user_query(query)
+        fallback["errors"] = {
+            **(fallback.get("errors") or {}),
+            "unified_api": f"Fallback to /query path: {exc}",
+        }
+        return fallback
+
+
 def _execute_query(query_text: str):
     """Execute a query and persist user/assistant turns in chat history."""
     add_message_to_chat("user", query_text)
@@ -615,11 +778,18 @@ def _execute_query(query_text: str):
         logger.info(f"Processing query: {query_text[:50]}...")
 
         with st.status("🔄 Processing your query...", expanded=True) as status:
-            status.update(label="🔍 Classifying intent and retrieving context...", state="running")
-            status.update(label="🔨 Building response...", state="running")
-            status.update(label="⏳ Generating response from model...", state="running")
+            stage_labels = {
+                "queued": "🧾 Request queued...",
+                "text_ready": "✍️ Text response ready. Preparing workspace batches...",
+                "motion_generation": "🎬 Generating motion artifacts in background...",
+                "completed": "✅ Response generated",
+                "failed": "❌ Task failed",
+            }
 
-            result = process_user_query(query_text)
+            def _on_stage(stage: str, _payload: Dict[str, Any]) -> None:
+                status.update(label=stage_labels.get(stage, f"⏳ Stage: {stage}"), state="running")
+
+            result = process_user_query_unified(query_text, stage_callback=_on_stage)
 
             status.update(label="✅ Response generated", state="complete")
 
@@ -633,12 +803,22 @@ def _execute_query(query_text: str):
             f"needs_motion: {needs_motion}, source={result.get('source')}"
         )
 
+        if answer:
+            workspace_preview = st.empty()
+            batched_content: List[str] = []
+            for batch in _split_answer_batches(answer, UI_ASSISTANT_BATCH_WORDS):
+                batched_content.append(batch)
+                workspace_preview.markdown("### 🧠 Assistant Workspace (live)\n\n" + "\n\n".join(batched_content))
+                if UI_ASSISTANT_BATCH_DELAY_SECONDS > 0:
+                    time.sleep(UI_ASSISTANT_BATCH_DELAY_SECONDS)
+
         add_message_to_chat("assistant", answer)
 
         st.session_state.last_response_answer = answer
         st.session_state.last_response_exercises = exercises
         st.session_state.last_response_needs_motion = needs_motion
         st.session_state.last_response_motion = result.get("motion")
+        st.session_state.last_response_motion_job = result.get("motion_job")
         st.session_state.last_response_motion_prompt = result.get("motion_prompt")
         st.session_state.last_response_errors = result.get("errors", {})
         st.session_state.last_response_source = result.get("source", "local")
@@ -833,16 +1013,32 @@ with tab1:
 
     st.markdown("Ask questions and the system will remember previous conversations and loaded documents.")
     
-    # Chat display
-    chat_container = st.container()
-    
-    with chat_container:
-        for idx, msg in enumerate(st.session_state.messages):
-            if msg["role"] == "user":
-                st_message(msg["content"], is_user=True, key=f"msg_user_{idx}")
-            else:
-                # Display assistant message as normal text (not in a chat bubble)
-                st.write(msg["content"])
+    # Two-pane parity layout: user bubbles on the left, assistant markdown workspace on the right.
+    user_col, workspace_col = st.columns([0.35, 0.65], gap="large")
+
+    with user_col:
+        st.markdown("#### 🗨️ User Input")
+        user_messages = [m for m in st.session_state.messages if m.get("role") == "user"]
+        if not user_messages:
+            st.info("Your prompts will appear here as chat bubbles.")
+        for idx, msg in enumerate(user_messages):
+            st_message(msg.get("content", ""), is_user=True, key=f"msg_user_{idx}")
+
+    with workspace_col:
+        st.markdown("#### 🧠 Assistant Workspace")
+        assistant_messages = [m for m in st.session_state.messages if m.get("role") == "assistant"]
+        if not assistant_messages:
+            st.info("Assistant responses will stream here in Markdown batches.")
+        else:
+            workspace_blocks: List[str] = []
+            for idx, msg in enumerate(assistant_messages, start=1):
+                content = (msg.get("content") or "").strip()
+                if not content:
+                    continue
+                workspace_blocks.append(f"### Response {idx}\n\n{content}")
+
+            if workspace_blocks:
+                st.markdown("\n\n---\n\n".join(workspace_blocks))
     
     # Display last response with exercises (if processing just completed)
     if st.session_state.get("last_response_answer"):
@@ -856,6 +1052,12 @@ with tab1:
             st.subheader("🎬 Motion Visualization")
 
             motion = st.session_state.get("last_response_motion") or {}
+            motion_job = st.session_state.get("last_response_motion_job") or {}
+            motion_url = motion.get("motion_file_url") or motion_job.get("motion_file_url")
+
+            if motion_job and motion_job.get("status") in {"queued", "processing"}:
+                st.info(f"Motion job is {motion_job.get('status')}... artifact will appear when complete.")
+
             if motion:
                 frames = motion.get("frames", motion.get("num_frames", 0))
                 fps = motion.get("fps", 30)
@@ -864,7 +1066,6 @@ with tab1:
                     duration = round(float(frames) / float(fps), 2)
 
                 st.success(f"Generated motion: {frames} frames @ {fps} fps" + (f" ({duration}s)" if duration is not None else ""))
-                motion_url = motion.get("motion_file_url")
                 if motion_url:
                     st.link_button("⬇️ Download Motion NPZ", motion_url, use_container_width=False)
             else:
@@ -945,29 +1146,9 @@ with tab1:
                                 
                                 result = process_user_query(st.session_state.last_failed_message)
                                 status.update(label="✅ Response generated", state="complete")
-                            
-                            st.write("---")
+
                             answer = result.get("answer", "")
                             exercises = result.get("exercises", [])
-                            if answer:
-                                st.write(answer)
-                                
-                                # Display exercises if present
-                                if exercises:
-                                    st.divider()
-                                    st.subheader("📘 Available Exercises")
-                                    cols = st.columns(len(exercises)) if len(exercises) <= 3 else st.columns(3)
-                                    for idx, exercise in enumerate(exercises):
-                                        col_idx = idx % 3 if len(exercises) > 3 else idx
-                                        with cols[col_idx]:
-                                            exercise_name = exercise.get("name", exercise.get("title", f"Exercise {idx+1}"))
-                                            if st.button(
-                                                f"📘 {exercise_name}",
-                                                key=f"retry_exercise_{idx}_{hash(exercise_name)}",
-                                                use_container_width=True
-                                            ):
-                                                st.session_state.pending_exercise_query = f"Show me {exercise_name}"
-                                                st.rerun()
                             
                             # Update last assistant message
                             if st.session_state.messages and st.session_state.messages[-1]["role"] == "assistant":
@@ -979,6 +1160,7 @@ with tab1:
                             st.session_state.last_response_exercises = exercises
                             st.session_state.last_response_needs_motion = result.get("needs_motion", False)
                             st.session_state.last_response_motion = result.get("motion")
+                            st.session_state.last_response_motion_job = result.get("motion_job")
                             st.session_state.last_response_motion_prompt = result.get("motion_prompt")
                             st.session_state.last_response_errors = result.get("errors", {})
                             st.session_state.last_response_source = result.get("source", "local")
