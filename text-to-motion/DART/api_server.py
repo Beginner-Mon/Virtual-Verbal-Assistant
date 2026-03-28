@@ -18,7 +18,7 @@ import subprocess
 import time
 from urllib.request import urlopen
 from urllib.error import URLError
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict, Any
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -56,6 +56,13 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         logger.warning("Invalid integer for %s=%r; using default %d", name, value, default)
         return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _is_port_in_use(host: str, port: int) -> bool:
@@ -119,6 +126,7 @@ class MotionGenerationResponse(BaseModel):
     fps: int = 30
     duration_seconds: float
     text_prompt: str
+    debug: Optional[Dict[str, Any]] = None
 
 
 # ── Model & Diffusion Manager ────────────────────────────────────────────────
@@ -450,6 +458,7 @@ generator: Optional[MotionGenerator] = None
 OUTPUT_DIR = Path("outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
 cleanup_task: Optional[asyncio.Task] = None
+DART_INCLUDE_DEBUG = _env_bool("DART_INCLUDE_DEBUG", True)
 
 
 def convert_npz_to_glb(npz_path: Path, glb_path: Path, gender: Literal["female", "male"]) -> None:
@@ -533,6 +542,22 @@ async def generate_motion(req: MotionGenerationRequest):
     if generator is None:
         raise HTTPException(503, "Service not ready")
 
+    request_start_perf = time.perf_counter()
+    debug_payload: Dict[str, Any] = {
+        "request": {
+            "output_format": req.output_format,
+            "duration_seconds": req.duration_seconds,
+            "respacing": req.respacing,
+            "seed": req.seed,
+        },
+        "runtime": {
+            "device": str(getattr(generator, "device", "unknown")),
+            "cuda_available": bool(torch.cuda.is_available()),
+        },
+        "timings_ms": {},
+    }
+
+    model_generate_start_perf = time.perf_counter()
     result = generator.generate(
         text_prompt=req.text_prompt,
         duration_seconds=req.duration_seconds,
@@ -541,6 +566,10 @@ async def generate_motion(req: MotionGenerationRequest):
         seed=req.seed,
         respacing=req.respacing,
         gender=req.gender,
+    )
+    debug_payload["timings_ms"]["model_generate_ms"] = round(
+        (time.perf_counter() - model_generate_start_perf) * 1000,
+        3,
     )
 
     npz_file_name = Path(result["motion_file"]).name
@@ -551,12 +580,21 @@ async def generate_motion(req: MotionGenerationRequest):
         glb_file_name = f"{Path(npz_file_name).stem}.glb"
         glb_path = OUTPUT_DIR / glb_file_name
         try:
+            glb_convert_start_perf = time.perf_counter()
             convert_npz_to_glb(npz_path=npz_path, glb_path=glb_path, gender=req.gender)
+            debug_payload["timings_ms"]["glb_convert_ms"] = round(
+                (time.perf_counter() - glb_convert_start_perf) * 1000,
+                3,
+            )
             selected_file_name = glb_file_name
             logger.info(f"Generated GLB artifact: {glb_file_name} from {npz_file_name}")
         except Exception as exc:
             logger.error(f"Failed to generate GLB for request {result['request_id']}: {exc}")
             raise HTTPException(500, f"GLB conversion failed: {exc}")
+    else:
+        debug_payload["timings_ms"]["glb_convert_ms"] = 0.0
+
+    debug_payload["timings_ms"]["total_ms"] = round((time.perf_counter() - request_start_perf) * 1000, 3)
 
     logger.info(
         f"Motion request {result['request_id']} output_format={req.output_format} file={selected_file_name}"
@@ -569,6 +607,7 @@ async def generate_motion(req: MotionGenerationRequest):
         fps=30,
         duration_seconds=result["duration_seconds"],
         text_prompt=result["text_prompt"],
+        debug=debug_payload if DART_INCLUDE_DEBUG else None,
     )
     return response
 

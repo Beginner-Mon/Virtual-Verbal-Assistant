@@ -57,6 +57,24 @@ CHAT_HISTORY_DIR = os.getenv("CHAT_HISTORY_DIR", "./memory/chat_history")
 CHAT_HISTORY_LOCK = asyncio.Lock()
 
 
+def _epoch_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _new_timeline_id() -> str:
+    return f"tl_{uuid.uuid4().hex[:12]}"
+
+
+def _clone_timeline(timeline: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(timeline, dict):
+        return {}
+    return {
+        "timeline_id": timeline.get("timeline_id"),
+        "request_received_epoch_ms": timeline.get("request_received_epoch_ms"),
+        "timings_ms": dict(timeline.get("timings_ms") or {}),
+    }
+
+
 def _env_int(name: str, default: int) -> int:
     value = os.getenv(name)
     if value is None:
@@ -220,6 +238,9 @@ class MotionJobStatus(BaseModel):
     motion_file_url: Optional[str] = Field(None, description="Absolute GLB URL when completed")
     video_url: Optional[str] = Field(None, description="Rendered video or artifact URL when completed")
     error: Optional[str] = Field(None, description="Error details for failed jobs")
+    stage: Optional[str] = Field(None, description="Current worker stage for queue processing")
+    timings_ms: Optional[Dict[str, float]] = Field(None, description="Worker and queue timing buckets in ms")
+    timeline_id: Optional[str] = Field(None, description="Timeline correlation identifier")
 
 
 class QueryResponse(BaseModel):
@@ -528,15 +549,132 @@ class AgenticRAGAPI:
         q = (query or "").lower()
         multi_markers = (
             "exercises", "exercise list", "list", "suggest", "recommend",
-            "top ", "best ", "routine", "workout plan",
+            "top ", "best ", "workout plan",
         )
-        explicit_count_markers = (
-            " 2 ", " 3 ", " 4 ", " 5 ", " 6 ", " 7 ", " 8 ", " 9 ", " 10 ",
-            "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        explicit_count_patterns = (
+            r"\b2\b", r"\b3\b", r"\b4\b", r"\b5\b", r"\b6\b", r"\b7\b", r"\b8\b", r"\b9\b", r"\b10\b",
+            r"\btwo\b", r"\bthree\b", r"\bfour\b", r"\bfive\b", r"\bsix\b", r"\bseven\b", r"\beight\b", r"\bnine\b", r"\bten\b",
         )
         asks_multiple = any(m in q for m in multi_markers)
-        asks_count = any(m in f" {q} " for m in explicit_count_markers)
+        asks_count = any(re.search(pattern, q) for pattern in explicit_count_patterns)
         return asks_multiple or asks_count
+
+    def _query_requests_visualization(self, query: str) -> bool:
+        """Detect whether the user explicitly asks to see/animate movement."""
+        q = (query or "").strip().lower()
+        if not q:
+            return False
+
+        direct_visual_markers = (
+            "show me",
+            "demonstrate",
+            "visualize",
+            "visualise",
+            "animate",
+            "animation",
+            "3d",
+            "glb",
+        )
+        if any(marker in q for marker in direct_visual_markers):
+            return True
+
+        # Handle phrasing like "create a short plank exercise motion routine".
+        if "motion" in q:
+            fitness_markers = (
+                "exercise",
+                "workout",
+                "stretch",
+                "squat",
+                "plank",
+                "walk",
+                "run",
+                "warm-up",
+            )
+            return any(marker in q for marker in fitness_markers)
+
+        return False
+
+    def _query_is_exercise_related(self, query: str) -> bool:
+        """Detect exercise/fitness intent, even when phrasing is broad."""
+        q = (query or "").strip().lower()
+        if not q:
+            return False
+        markers = (
+            "exercise",
+            "workout",
+            "stretch",
+            "mobility",
+            "strength",
+            "rehab",
+            "training",
+            "cardio",
+            "warm-up",
+            "cool down",
+            "running form",
+            "posture",
+            "squat",
+            "plank",
+            "lunge",
+            "pain",
+        )
+        return any(marker in q for marker in markers)
+
+    def _query_requests_exercise_recommendation(self, query: str) -> bool:
+        """Detect recommendation/list-style requests for exercises."""
+        q = (query or "").strip().lower()
+        if not q:
+            return False
+        recommendation_markers = (
+            "recommend",
+            "suggest",
+            "best",
+            "which exercise",
+            "what exercise",
+            "exercise for",
+            "routine",
+            "program",
+            "plan",
+            "list",
+        )
+        return self._query_is_exercise_related(q) and any(marker in q for marker in recommendation_markers)
+
+    def _extract_exercises_from_text_answer(self, text: str, max_items: int = 8) -> List[Dict[str, str]]:
+        """Best-effort extraction from numbered/bulleted exercise lists in plain text."""
+        if not text:
+            return []
+
+        patterns = [
+            r"^\s*\d+[\.)]\s+(.+)$",          # 1. Name / 1) Name
+            r"^\s*[-*]\s+(.+)$",                # - Name / * Name
+        ]
+
+        exercises: List[Dict[str, str]] = []
+        seen = set()
+        for line in text.splitlines():
+            candidate = None
+            for pattern in patterns:
+                match = re.match(pattern, line.strip())
+                if match:
+                    candidate = match.group(1).strip()
+                    break
+            if not candidate:
+                continue
+
+            # Remove markdown emphasis and trailing descriptive clauses.
+            candidate = re.sub(r"[*_`]+", "", candidate).strip()
+            candidate = re.sub(r"\s*:\s.*$", "", candidate).strip()
+            candidate = re.sub(r"\s+[\-\u2013\u2014]\s+.*$", "", candidate).strip()
+            if len(candidate) < 3:
+                continue
+            lowered = candidate.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            exercises.append({"name": candidate})
+            if len(exercises) >= max_items:
+                break
+
+        return exercises
 
     def _is_direct_motion_command(self, query: str) -> bool:
         """Detect direct motion-demo commands that should bypass slow routing."""
@@ -726,12 +864,11 @@ class AgenticRAGAPI:
             # If Qwen is unsure (confidence < 0.6) AND the user uses explicit
             # visualization verbs, force intent to visualize_motion so DART
             # generates the motion instead of RAG returning a text-only answer.
-            _VIZ_KEYWORDS = ("show me how", "how to do", "visualize", "demonstrate")
             _q = query.lower()
             if (
                 decision.get("confidence", 1.0) < 0.6
                 and decision["intent"] != "visualize_motion"
-                and any(kw in _q for kw in _VIZ_KEYWORDS)
+                and self._query_requests_visualization(_q)
                 and not self._is_multi_activity_request(query)
             ):
                 logger.info(
@@ -740,6 +877,7 @@ class AgenticRAGAPI:
                 )
                 decision["intent"] = "visualize_motion"
                 decision["needs_motion"] = True
+                decision["needs_retrieval"] = False
 
             # Convert to format expected by existing code
             result = {
@@ -788,6 +926,7 @@ class AgenticRAGAPI:
         stream: bool = False,
         motion_duration_seconds: Optional[float] = None,
         prefer_async_motion: bool = False,
+        timeline_id: Optional[str] = None,
     ) -> Any:
         """Process a user query through the intent-branched pipeline.
 
@@ -806,6 +945,7 @@ class AgenticRAGAPI:
         """
         import time
         start_time = time.time()
+        active_timeline_id = timeline_id or _new_timeline_id()
 
         user_id = (user_id or "guest").strip() or "guest"
         
@@ -825,12 +965,15 @@ class AgenticRAGAPI:
             "rag_used": False,
             "path_taken": None,
             "errors": [],
+            "retrieval_diagnostics": {},
         }
         perf = {
+            "safety_ms": 0.0,
             "orchestrator_ms": 0.0,
             "tools_ms": 0.0,
             "rag_ms": 0.0,
             "motion_ms": 0.0,
+            "motion_enqueue_ms": 0.0,
             "total_ms": 0.0,
         }
 
@@ -838,8 +981,9 @@ class AgenticRAGAPI:
             # ── Step 0: Red Flag Safety Screening (First Gate) ───────────────
             safety_start = time.time()
             safety_result = self.safety_filter.check_query_safety(query)
+            perf["safety_ms"] = (time.time() - safety_start) * 1000
             if not safety_result["is_safe"]:
-                safety_ms = (time.time() - safety_start) * 1000
+                safety_ms = perf["safety_ms"]
                 logger.warning(f"Query rejected by SafetyFilter: {safety_result['reason']}")
                 # Fast return rejecting the unsafe query
                 return {
@@ -886,6 +1030,60 @@ class AgenticRAGAPI:
             if isinstance(intent, Enum):
                 intent = intent.value
             generate_motion = bool(actions.get("generate_motion", False))
+            low_confidence = float(action_plan.get("confidence", 1.0) or 1.0)
+            wants_visualization = self._query_requests_visualization(query)
+            exercise_related_query = self._query_is_exercise_related(query)
+            wants_exercise_recommendation = self._query_requests_exercise_recommendation(query)
+            initial_intent = intent
+
+            retrieval_diagnostics: Dict[str, Any] = {
+                "initial_intent": initial_intent,
+                "initial_confidence": low_confidence,
+                "final_intent": initial_intent,
+                "query_exercise_related": exercise_related_query,
+                "query_requests_visualization": wants_visualization,
+                "query_requests_exercise_recommendation": wants_exercise_recommendation,
+                "route_override": None,
+            }
+
+            if (
+                wants_visualization
+                and intent in {"knowledge_query", "exercise_recommendation", "unknown"}
+                and low_confidence < 0.65
+                and not self._is_multi_activity_request(query)
+            ):
+                logger.info(
+                    "Process-level visualization override: intent=%s confidence=%.2f -> visualize_motion",
+                    intent,
+                    low_confidence,
+                )
+                intent = "visualize_motion"
+                generate_motion = True
+                action_plan["intent"] = intent
+                actions["generate_motion"] = True
+                retrieval_diagnostics["route_override"] = "low_confidence_visualization"
+            elif (
+                intent != "visualize_motion"
+                and wants_exercise_recommendation
+                and intent in {"knowledge_query", "unknown", "conversation"}
+                and low_confidence < 0.65
+            ):
+                logger.info(
+                    "Process-level exercise recommendation override: intent=%s confidence=%.2f -> exercise_recommendation",
+                    intent,
+                    low_confidence,
+                )
+                intent = "exercise_recommendation"
+                generate_motion = False
+                action_plan["intent"] = intent
+                action_plan["needs_rag"] = True
+                actions["generate_motion"] = False
+                actions["use_documents"] = True
+                retrieval_diagnostics["route_override"] = "low_confidence_exercise_recommendation"
+
+            retrieval_diagnostics["final_intent"] = intent
+            trace["retrieval_diagnostics"] = retrieval_diagnostics
+
             tool_results = action_plan.get("tool_results") or {}
             expanded_query  = action_plan.get("expanded_query") or query
             needs_rag = bool(action_plan.get("needs_rag", True))
@@ -1025,27 +1223,55 @@ class AgenticRAGAPI:
                 
                 text_answer = rag_result["response"]
                 exercises   = rag_result.get("exercises", [])
+                rag_meta = rag_result.get("metadata", {}) if isinstance(rag_result, dict) else {}
+
+                retrieval_diagnostics["rag_context_count"] = rag_meta.get("retrieved_context_count")
+                retrieval_diagnostics["rag_context_source_counts"] = rag_meta.get("context_source_counts", {})
+                retrieval_diagnostics["rag_context_quality_score"] = rag_meta.get("context_quality_score")
+                retrieval_diagnostics["rag_web_search_used"] = rag_meta.get("web_search_used")
+                retrieval_diagnostics["rag_structured_parse_strategy"] = rag_meta.get("structured_parse_strategy")
+                retrieval_diagnostics["rag_reformulation_count"] = rag_meta.get("reformulation_count")
+
+                exercise_fallback_reason = None
+                if intent in {"knowledge_query", "exercise_recommendation"} and exercise_related_query and not exercises:
+                    extracted_exercises = self._extract_exercises_from_text_answer(text_answer)
+                    if extracted_exercises:
+                        exercises = extracted_exercises
+                        exercise_fallback_reason = "text_answer_extraction"
+                    else:
+                        detected_exercise = action_plan.get("exercise") or action_plan.get("exercise_name")
+                        if isinstance(detected_exercise, str) and detected_exercise.strip():
+                            exercises = [{"name": detected_exercise.strip()}]
+                            exercise_fallback_reason = "detected_exercise_seed"
+
+                retrieval_diagnostics["exercise_count"] = len(exercises)
+                if exercise_fallback_reason:
+                    retrieval_diagnostics["exercise_fallback_applied"] = exercise_fallback_reason
+                elif intent in {"knowledge_query", "exercise_recommendation"} and exercise_related_query and not exercises:
+                    retrieval_diagnostics["empty_exercise_reason"] = (
+                        f"no_exercises_after_{rag_meta.get('structured_parse_strategy', 'unknown')}"
+                    )
 
                 # ── Visualization intent detection ────────────────────────────
                 # If the query implies the user wants to SEE the exercise performed,
                 # select the first exercise as the motion target.  MotionGenerationTool
                 # will use this in a later integration step — for now we just prepare the field.
-                _VIZ_KEYWORDS = (
-                    "show", "visualize", "visualise", "demonstrate",
-                    "animation", "animate", "how to do", "how do i",
-                )
-                _q_lower = query.lower()
                 is_multi_activity = self._is_multi_activity_request(query)
-                if exercises and any(kw in _q_lower for kw in _VIZ_KEYWORDS) and not is_multi_activity:
+                if exercises and wants_visualization and not is_multi_activity:
                     # Double-RAG engine provides the exact motion prompt via hyde_document
                     exercise_motion_prompt = hyde_document
                     logger.info(
                         f"Visualization query detected → exercise_motion_prompt={exercise_motion_prompt!r}"
                     )
-                elif exercises and any(kw in _q_lower for kw in _VIZ_KEYWORDS) and is_multi_activity:
+                elif exercises and wants_visualization and is_multi_activity:
                     logger.info(
                         "Visualization keyword found, but query is multi-activity/list request; "
                         "returning exercise list without auto-generating motion."
+                    )
+                elif (not exercises) and wants_visualization and not is_multi_activity:
+                    exercise_motion_prompt = hyde_document or query
+                    logger.info(
+                        "Visualization query had no structured exercises; using HyDE prompt for motion generation"
                     )
 
             # ── Step 2b: Call MotionGenerationTool if motion was requested ────
@@ -1056,12 +1282,16 @@ class AgenticRAGAPI:
                 motion_start = time.time()
                 if motion_async_enabled:
                     try:
+                        enqueue_start = time.time()
                         job_id = self.motion_job_manager.enqueue(
                             user_query=query,
                             motion_prompt=exercise_motion_prompt,
                             user_id=user_id,
                             duration_seconds=resolved_motion_duration_seconds,
+                            enqueue_epoch_ms=_epoch_ms(),
+                            timeline_id=active_timeline_id,
                         )
+                        perf["motion_enqueue_ms"] = (time.time() - enqueue_start) * 1000
                         motion_job = MotionJobStatus(
                             job_id=job_id,
                             status="queued",
@@ -1161,6 +1391,8 @@ class AgenticRAGAPI:
                     "llm_calls": trace["llm_calls_count"],
                     "rag_used": trace["rag_used"],
                     "path": trace["path_taken"],
+                    "route_override": trace.get("retrieval_diagnostics", {}).get("route_override"),
+                    "exercise_count": trace.get("retrieval_diagnostics", {}).get("exercise_count"),
                 },
             )
             
@@ -1184,6 +1416,8 @@ class AgenticRAGAPI:
             response.metadata = dict(response.metadata or {})
             response.metadata["motion_duration_seconds"] = resolved_motion_duration_seconds
             response.metadata["motion_duration_policy"] = self.motion_duration_policy
+            response.metadata["timings_ms"] = perf
+            response.metadata["timeline_id"] = active_timeline_id
 
             logger.info(
                 f"✓ Query processed successfully | "
@@ -1345,6 +1579,8 @@ def _build_unified_result(query_payload: Dict[str, Any], request: Request) -> Di
     orchestrator = _model_to_dict(query_payload.get("orchestrator_decision") or {})
     motion = _model_to_dict(query_payload.get("motion") or {})
     motion_job = _model_to_dict(query_payload.get("motion_job") or {})
+    performance = _model_to_dict(query_payload.get("performance") or {})
+    pipeline_trace = _model_to_dict(query_payload.get("pipeline_trace") or {})
 
     motion_file_url = None
 
@@ -1382,6 +1618,8 @@ def _build_unified_result(query_payload: Dict[str, Any], request: Request) -> Di
         "motion_file_url": _to_absolute_url(motion_file_url, request),
         "motion": motion,
         "motion_job": motion_job,
+        "performance": performance,
+        "pipeline_trace": pipeline_trace,
     }
 
 
@@ -1545,6 +1783,18 @@ async def process_query(request: QueryRequest):
 
 async def _run_query_task(task_id: str, request_payload: QueryRequest, request: Request) -> None:
     """Background worker for unified task flow."""
+    task_started_epoch_ms = _epoch_ms()
+    task_start_perf = time.perf_counter()
+
+    def _merge_numeric_buckets(target: Dict[str, Any], source: Optional[Dict[str, Any]]) -> None:
+        if not isinstance(source, dict):
+            return
+        for key, value in source.items():
+            try:
+                target[key] = round(float(value), 3)
+            except (TypeError, ValueError):
+                continue
+
     if api_instance is None:
         async with TASK_STORE_LOCK:
             TASK_STORE[task_id] = {
@@ -1553,6 +1803,11 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
                 "progress_stage": "failed",
                 "result": None,
                 "error": "API not initialized",
+                "timeline": {
+                    "timeline_id": _new_timeline_id(),
+                    "request_received_epoch_ms": task_started_epoch_ms,
+                    "timings_ms": {"api_init_failure_ms": 0.0},
+                },
             }
         return
 
@@ -1561,16 +1816,32 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
         history = [turn.dict() for turn in request_payload.conversation_history]
 
     request_user_id = (request_payload.user_id or "guest").strip() or "guest"
+    timeline: Dict[str, Any] = {}
+    unified_result: Dict[str, Any] = {}
 
     try:
         request_base = _get_request_base_url(request)
         async with TASK_STORE_LOCK:
             state = TASK_STORE.get(task_id) or {}
+            timeline = _clone_timeline(state.get("timeline"))
+            if not timeline.get("timeline_id"):
+                timeline["timeline_id"] = _new_timeline_id()
+            received_epoch_ms = timeline.get("request_received_epoch_ms")
+            if not isinstance(received_epoch_ms, int):
+                received_epoch_ms = task_started_epoch_ms
+                timeline["request_received_epoch_ms"] = received_epoch_ms
+            timings_ms = timeline.setdefault("timings_ms", {})
+            timings_ms["queue_to_worker_start_ms"] = round(
+                max(0.0, float(task_started_epoch_ms - received_epoch_ms)),
+                3,
+            )
             state["status"] = "processing"
             state["progress_stage"] = "queued"
             state["error"] = None
+            state["timeline"] = timeline
             TASK_STORE[task_id] = state
 
+        pipeline_start_perf = time.perf_counter()
         raw_response = await asyncio.to_thread(
             api_instance.process_query,
             request_payload.query,
@@ -1579,10 +1850,25 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
             False,
             request_payload.motion_duration_seconds,
             True,
+            timeline.get("timeline_id"),
+        )
+        timeline.setdefault("timings_ms", {})["agentic_pipeline_ms"] = round(
+            (time.perf_counter() - pipeline_start_perf) * 1000,
+            3,
         )
 
         response_payload = _normalize_enums(_model_to_dict(raw_response))
         unified_result = _build_unified_result(response_payload, request)
+        _merge_numeric_buckets(
+            timeline["timings_ms"],
+            unified_result.get("performance") if isinstance(unified_result, dict) else None,
+        )
+        first_text_ms = max(
+            0.0,
+            float(_epoch_ms() - timeline.get("request_received_epoch_ms", task_started_epoch_ms)),
+        )
+        timeline["timings_ms"]["first_text_ms"] = round(first_text_ms, 3)
+        unified_result["timeline"] = _clone_timeline(timeline)
 
         async with TASK_STORE_LOCK:
             TASK_STORE[task_id] = {
@@ -1591,6 +1877,7 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
                 "progress_stage": "text_ready",
                 "result": unified_result,
                 "error": None,
+                "timeline": timeline,
             }
 
         motion_job = unified_result.get("motion_job") or {}
@@ -1608,6 +1895,8 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
 
             if should_enqueue_motion:
                 try:
+                    enqueue_epoch_ms = _epoch_ms()
+                    enqueue_start_perf = time.perf_counter()
                     resolved_duration = _coerce_duration_seconds(
                         (unified_result.get("motion_duration_seconds") or request_payload.motion_duration_seconds),
                         api_instance.motion_min_duration_seconds,
@@ -1619,6 +1908,12 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
                         motion_prompt=exercise_motion_prompt or request_payload.query,
                         user_id=request_user_id,
                         duration_seconds=resolved_duration,
+                        enqueue_epoch_ms=enqueue_epoch_ms,
+                        timeline_id=timeline.get("timeline_id"),
+                    )
+                    timeline["timings_ms"]["motion_enqueue_ms"] = round(
+                        (time.perf_counter() - enqueue_start_perf) * 1000,
+                        3,
                     )
                     motion_job_id = queued_job_id
                     unified_result["motion_job"] = {
@@ -1627,7 +1922,9 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
                         "motion_file_url": None,
                         "video_url": None,
                         "error": None,
+                        "timeline_id": timeline.get("timeline_id"),
                     }
+                    unified_result["timeline"] = _clone_timeline(timeline)
 
                     async with TASK_STORE_LOCK:
                         TASK_STORE[task_id] = {
@@ -1636,6 +1933,7 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
                             "progress_stage": "motion_generation",
                             "result": unified_result,
                             "error": None,
+                            "timeline": timeline,
                         }
                 except Exception as queue_exc:
                     logger.error(
@@ -1647,14 +1945,18 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
         final_status = "completed"
         final_stage = "completed"
         final_error = None
+        poll_count = 0
 
         if motion_job_id and api_instance is not None:
             # Keep task open while async motion artifact is being generated.
             while True:
+                poll_count += 1
                 motion_state = api_instance.get_motion_job_status(
                     motion_job_id,
                     request_base_url=request_base,
                 )
+                _merge_numeric_buckets(timeline["timings_ms"], motion_state.get("timings_ms"))
+                timeline["timings_ms"]["motion_poll_count"] = float(poll_count)
                 motion_status = (motion_state.get("status") or "processing").lower()
                 motion_stage = motion_state.get("stage") or "motion_generation"
                 normalized_stage = motion_stage
@@ -1670,6 +1972,7 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
                     unified_result["motion_file_url"] = motion_state.get("motion_file_url")
                 if motion_state.get("video_url"):
                     unified_result["video_url"] = motion_state.get("video_url")
+                unified_result["timeline"] = _clone_timeline(timeline)
 
                 async with TASK_STORE_LOCK:
                     next_status = "processing"
@@ -1687,9 +1990,17 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
                         "progress_stage": normalized_stage,
                         "result": unified_result,
                         "error": motion_state.get("error"),
+                        "timeline": timeline,
                     }
 
                 if motion_status in {"completed", "failed"}:
+                    timeline["timings_ms"]["full_motion_ms"] = round(
+                        max(
+                            0.0,
+                            float(_epoch_ms() - timeline.get("request_received_epoch_ms", task_started_epoch_ms)),
+                        ),
+                        3,
+                    )
                     has_text = bool((unified_result.get("text_answer") or "").strip())
                     if motion_status == "failed" and has_text:
                         final_status = "completed"
@@ -1713,6 +2024,9 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
             final_status = "completed"
             final_stage = "completed"
 
+        timeline["timings_ms"]["task_total_wall_ms"] = round((time.perf_counter() - task_start_perf) * 1000, 3)
+        unified_result["timeline"] = _clone_timeline(timeline)
+
         async with TASK_STORE_LOCK:
             TASK_STORE[task_id] = {
                 "task_id": task_id,
@@ -1720,6 +2034,7 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
                 "progress_stage": final_stage,
                 "result": unified_result,
                 "error": final_error,
+                "timeline": timeline,
             }
 
         if final_status == "completed":
@@ -1757,13 +2072,17 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
             )
     except Exception as exc:
         logger.error("Unified task failed: %s", exc, exc_info=True)
+        timeline = _clone_timeline(timeline)
+        timings_ms = timeline.setdefault("timings_ms", {})
+        timings_ms["task_total_wall_ms"] = round((time.perf_counter() - task_start_perf) * 1000, 3)
         async with TASK_STORE_LOCK:
             TASK_STORE[task_id] = {
                 "task_id": task_id,
                 "status": "failed",
                 "progress_stage": "failed",
-                "result": None,
+                "result": {"timeline": timeline} if timeline else None,
                 "error": str(exc),
+                "timeline": timeline,
             }
 
 
@@ -1771,6 +2090,11 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
 async def process_query_unified(request_payload: QueryRequest, request: Request) -> UnifiedTaskResponse:
     """Create a query task and return the unified polling envelope."""
     task_id = str(uuid.uuid4())
+    timeline = {
+        "timeline_id": _new_timeline_id(),
+        "request_received_epoch_ms": _epoch_ms(),
+        "timings_ms": {},
+    }
 
     async with TASK_STORE_LOCK:
         TASK_STORE[task_id] = {
@@ -1779,6 +2103,7 @@ async def process_query_unified(request_payload: QueryRequest, request: Request)
             "progress_stage": "queued",
             "result": None,
             "error": None,
+            "timeline": timeline,
         }
 
     asyncio.create_task(_run_query_task(task_id, request_payload, request))
@@ -1807,8 +2132,13 @@ async def get_task_status(task_id: str, request: Request) -> UnifiedTaskResponse
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
 
     result = _normalize_enums(state.get("result")) if state.get("result") else None
+    timeline = _clone_timeline(state.get("timeline"))
+    if not result and timeline:
+        result = {"timeline": timeline}
     if isinstance(result, dict):
         result["motion_file_url"] = _to_absolute_url(result.get("motion_file_url"), request)
+        if timeline and "timeline" not in result:
+            result["timeline"] = timeline
 
     return UnifiedTaskResponse(
         task_id=state.get("task_id", task_id),

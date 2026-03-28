@@ -50,6 +50,13 @@ def _env_float(name: str, default: float) -> float:
         logger.warning(f"Invalid float for {name}={value!r}; using default {default}")
         return default
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
 # ===========================
 # Service URLs
 # ===========================
@@ -68,6 +75,7 @@ TTS_URL = os.getenv("TTS_URL", f"http://{TTS_HOST}:{TTS_PORT}")
 MAIN_API_HOST = os.getenv("MAIN_API_HOST", "0.0.0.0")
 MAIN_API_PORT = _env_int("MAIN_API_PORT", 8080)
 MAIN_API_ASYNC_ENRICHMENT = os.getenv("MAIN_API_ASYNC_ENRICHMENT", "true").lower() in {"1", "true", "yes", "on"}
+MAIN_API_INCLUDE_DEBUG = _env_bool("MAIN_API_INCLUDE_DEBUG", True)
 MOTION_DEFAULT_DURATION_SECONDS = _env_float("MOTION_DEFAULT_DURATION_SECONDS", 12.0)
 
 
@@ -204,6 +212,7 @@ class AnswerResponse(BaseModel):
     tts: Optional[TTSMetadata] = Field(None, description="Speech output from TTS/SpeechLLM")
     generation_time_ms: float = Field(..., description="Total wall-clock time in ms")
     errors: Optional[Dict[str, str]] = Field(None, description="Per-service errors if any")
+    debug: Optional[Dict[str, Any]] = Field(None, description="Detailed diagnostics for bottleneck analysis")
 
 
 class UnifiedTaskResponseCompat(BaseModel):
@@ -415,6 +424,7 @@ def _answer_to_query_payload(answer: AnswerResponse, query: str, user_id: str) -
             "pending_services": answer.pending_services,
             "progress_stage": answer.progress_stage,
             "tts": _model_to_dict(answer.tts) if answer.tts else None,
+            "debug": answer.debug,
         },
         "pipeline_trace": {"path": "main_api_full_pipeline", "errors": answer.errors or {}},
         "performance": {"total_ms": answer.generation_time_ms},
@@ -453,24 +463,61 @@ async def _run_async_enrichment(
     errors: Dict[str, str] = {}
     motion: Optional[MotionMetadata] = None
     tts: Optional[TTSMetadata] = None
+    async_timings_ms: Dict[str, float] = {}
+    async_services: Dict[str, Any] = {
+        "dart": {"mode": "async", "status": "skipped" if not motion_prompt else "pending"},
+        "tts": {"mode": "async", "status": "pending"},
+    }
 
     async with httpx.AsyncClient(timeout=DOWNSTREAM_TIMEOUT) as client:
         async def maybe_motion() -> Optional[MotionMetadata]:
             if not motion_prompt:
                 return None
+            t0 = time.perf_counter()
             try:
-                return await _generate_motion_from_dart(client, motion_prompt, motion_duration_seconds, rag_data)
+                result = await _generate_motion_from_dart(client, motion_prompt, motion_duration_seconds, rag_data)
+                async_timings_ms["dart_async"] = round((time.perf_counter() - t0) * 1000, 1)
+                async_services["dart"] = {
+                    "mode": "async",
+                    "status": "ok",
+                    "elapsed_ms": async_timings_ms["dart_async"],
+                    "motion_file_url": result.motion_file_url,
+                }
+                return result
             except Exception as exc:
                 logger.error(f"[DART] async failed: {exc}")
                 errors["dart"] = str(exc)
+                async_timings_ms["dart_async"] = round((time.perf_counter() - t0) * 1000, 1)
+                async_services["dart"] = {
+                    "mode": "async",
+                    "status": "failed",
+                    "elapsed_ms": async_timings_ms["dart_async"],
+                    "error": str(exc),
+                }
                 return None
 
         async def maybe_tts() -> Optional[TTSMetadata]:
+            t0 = time.perf_counter()
             try:
-                return await _generate_tts(client, text_answer, user_id)
+                result = await _generate_tts(client, text_answer, user_id)
+                async_timings_ms["tts_async"] = round((time.perf_counter() - t0) * 1000, 1)
+                async_services["tts"] = {
+                    "mode": "async",
+                    "status": "ok",
+                    "elapsed_ms": async_timings_ms["tts_async"],
+                    "audio_file": result.audio_file,
+                }
+                return result
             except Exception as exc:
                 logger.error(f"[TTS] async failed: {exc}")
                 errors["tts"] = str(exc)
+                async_timings_ms["tts_async"] = round((time.perf_counter() - t0) * 1000, 1)
+                async_services["tts"] = {
+                    "mode": "async",
+                    "status": "failed",
+                    "elapsed_ms": async_timings_ms["tts_async"],
+                    "error": str(exc),
+                }
                 return None
 
         motion, tts = await asyncio.gather(maybe_motion(), maybe_tts())
@@ -484,6 +531,14 @@ async def _run_async_enrichment(
         job["errors"] = errors if errors else None
         job["pending_services"] = []
         job["status"] = "completed"
+        if isinstance(job.get("debug"), dict):
+            debug = job["debug"]
+            debug.setdefault("timings_ms", {})
+            debug.setdefault("services", {})
+            debug["timings_ms"].update(async_timings_ms)
+            debug["services"].update(async_services)
+            debug["async_enrichment_completed"] = True
+            debug["async_enrichment_errors"] = errors if errors else None
 
 # ===========================
 # FastAPI Application
@@ -517,6 +572,27 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
     then calls TTS (SpeechLLM) to synthesize speech, and returns the merged results.
     """
     t_start = time.perf_counter()
+    debug_payload: Dict[str, Any] = {
+        "request": {
+            "user_id": request.user_id,
+            "motion_format": request.motion_format,
+            "conversation_turns": len(request.conversation_history or []),
+            "query_length": len(request.query or ""),
+        },
+        "config": {
+            "async_enrichment": MAIN_API_ASYNC_ENRICHMENT,
+            "downstream_timeout_sec": DOWNSTREAM_TIMEOUT,
+            "agentic_rag_url": AGENTIC_RAG_URL,
+            "dart_url": DART_URL,
+            "tts_url": TTS_URL,
+        },
+        "timings_ms": {},
+        "services": {
+            "agenticrag": {"status": "pending", "mode": "sync"},
+            "dart": {"status": "pending", "mode": "agenticrag_or_sync"},
+            "tts": {"status": "pending", "mode": "sync_or_async"},
+        },
+    }
 
     # Convert history to the dict format expected by AgenticRAG
     history: Optional[List[Dict[str, str]]] = None
@@ -534,15 +610,35 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
 
     async with httpx.AsyncClient(timeout=DOWNSTREAM_TIMEOUT) as client:
         # 1. Call AgenticRAG
+        rag_t0 = time.perf_counter()
         try:
             rag_data = await call_agenticrag(client, request.query, request.user_id, history)
+            debug_payload["timings_ms"]["agenticrag"] = round((time.perf_counter() - rag_t0) * 1000, 1)
+            debug_payload["services"]["agenticrag"] = {
+                "status": "ok",
+                "mode": "sync",
+                "elapsed_ms": debug_payload["timings_ms"]["agenticrag"],
+            }
             language = rag_data.get("language", language)
             text_answer = rag_data.get("text_answer", "")
             exercises = rag_data.get("exercises", [])
             motion = _build_motion_from_agenticrag(rag_data)
+            debug_payload["rag_summary"] = {
+                "text_answer_length": len(text_answer or ""),
+                "exercise_count": len(exercises or []),
+                "has_motion_from_rag": motion is not None,
+                "orchestrator_decision": rag_data.get("orchestrator_decision"),
+            }
         except Exception as e:
             logger.error(f"[AgenticRAG] failed: {e}")
             errors["agenticrag"] = str(e)
+            debug_payload["timings_ms"]["agenticrag"] = round((time.perf_counter() - rag_t0) * 1000, 1)
+            debug_payload["services"]["agenticrag"] = {
+                "status": "failed",
+                "mode": "sync",
+                "elapsed_ms": debug_payload["timings_ms"]["agenticrag"],
+                "error": str(e),
+            }
             text_answer = f"[AgenticRAG unavailable — check that {AGENTIC_RAG_URL} is running]"
             exercises = []
             rag_data = None
@@ -556,20 +652,69 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
                 if isinstance(motion_prompt_obj, dict):
                     motion_prompt = motion_prompt_obj.get("description") or motion_prompt_obj.get("primitive_sequence")
         motion_duration_seconds = _resolve_motion_duration_seconds(rag_data or {})
+        debug_payload["rag_summary"] = {
+            **(debug_payload.get("rag_summary") or {}),
+            "motion_prompt_present": bool(motion_prompt),
+            "resolved_motion_duration_seconds": motion_duration_seconds,
+        }
 
         # 3. If no motion came from AgenticRAG and async mode is disabled, run sync enrichment.
         if rag_data and not MAIN_API_ASYNC_ENRICHMENT:
             if motion is None and motion_prompt:
+                dart_t0 = time.perf_counter()
                 try:
                     motion = await _generate_motion_from_dart(client, motion_prompt, motion_duration_seconds, rag_data)
+                    debug_payload["timings_ms"]["dart_sync"] = round((time.perf_counter() - dart_t0) * 1000, 1)
+                    debug_payload["services"]["dart"] = {
+                        "status": "ok",
+                        "mode": "sync",
+                        "elapsed_ms": debug_payload["timings_ms"]["dart_sync"],
+                        "motion_file_url": motion.motion_file_url,
+                    }
                 except Exception as exc:
                     logger.error(f"[DART] sync failed: {exc}")
                     errors["dart"] = str(exc)
+                    debug_payload["timings_ms"]["dart_sync"] = round((time.perf_counter() - dart_t0) * 1000, 1)
+                    debug_payload["services"]["dart"] = {
+                        "status": "failed",
+                        "mode": "sync",
+                        "elapsed_ms": debug_payload["timings_ms"]["dart_sync"],
+                        "error": str(exc),
+                    }
+            elif motion is not None:
+                debug_payload["services"]["dart"] = {
+                    "status": "ok",
+                    "mode": "agenticrag",
+                    "elapsed_ms": 0.0,
+                    "motion_file_url": motion.motion_file_url,
+                }
+            else:
+                debug_payload["services"]["dart"] = {
+                    "status": "skipped",
+                    "mode": "sync",
+                    "reason": "No motion prompt",
+                }
+
+            tts_t0 = time.perf_counter()
             try:
                 tts = await _generate_tts(client, text_answer, request.user_id)
+                debug_payload["timings_ms"]["tts_sync"] = round((time.perf_counter() - tts_t0) * 1000, 1)
+                debug_payload["services"]["tts"] = {
+                    "status": "ok",
+                    "mode": "sync",
+                    "elapsed_ms": debug_payload["timings_ms"]["tts_sync"],
+                    "audio_file": tts.audio_file,
+                }
             except Exception as exc:
                 logger.error(f"[TTS] sync failed: {exc}")
                 errors["tts"] = str(exc)
+                debug_payload["timings_ms"]["tts_sync"] = round((time.perf_counter() - tts_t0) * 1000, 1)
+                debug_payload["services"]["tts"] = {
+                    "status": "failed",
+                    "mode": "sync",
+                    "elapsed_ms": debug_payload["timings_ms"]["tts_sync"],
+                    "error": str(exc),
+                }
 
         selected_strategy = "unknown"
         if rag_data:
@@ -583,7 +728,30 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
             if motion is None and motion_prompt:
                 pending_services.append("dart")
                 progress_stage = "motion_generation"
+                debug_payload["services"]["dart"] = {
+                    "status": "pending",
+                    "mode": "async",
+                    "reason": "Queued for async enrichment",
+                }
+            elif motion is not None:
+                debug_payload["services"]["dart"] = {
+                    "status": "ok",
+                    "mode": "agenticrag",
+                    "elapsed_ms": 0.0,
+                    "motion_file_url": motion.motion_file_url,
+                }
+            else:
+                debug_payload["services"]["dart"] = {
+                    "status": "skipped",
+                    "mode": "async",
+                    "reason": "No motion prompt",
+                }
             pending_services.append("tts")
+            debug_payload["services"]["tts"] = {
+                "status": "pending",
+                "mode": "async",
+                "reason": "Queued for async enrichment",
+            }
             if pending_services:
                 status = "processing"
                 if progress_stage == "completed":
@@ -602,6 +770,7 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
                         "tts": tts,
                         "errors": errors if errors else None,
                         "started_at": time.time(),
+                        "debug": debug_payload if MAIN_API_INCLUDE_DEBUG else None,
                     }
                 asyncio.create_task(
                     _run_async_enrichment(
@@ -615,6 +784,13 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
                 )
 
     generation_time_ms = (time.perf_counter() - t_start) * 1000
+    debug_payload["timings_ms"]["total"] = round(generation_time_ms, 1)
+    debug_payload["final_state"] = {
+        "status": status if rag_data else "completed",
+        "progress_stage": progress_stage if rag_data else "completed",
+        "pending_services": pending_services if rag_data else [],
+    }
+    debug_payload["errors"] = errors if errors else None
 
     logger.info(
         f"[{request.user_id}] Completed in {generation_time_ms:.0f}ms  "
@@ -636,6 +812,7 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
         tts=tts,
         generation_time_ms=round(generation_time_ms, 1),
         errors=errors if errors else None,
+        debug=debug_payload if MAIN_API_INCLUDE_DEBUG else None,
     )
 
 
@@ -660,6 +837,7 @@ async def get_answer_status(request_id: str) -> AnswerResponse:
         tts=job.get("tts"),
         generation_time_ms=round((time.time() - job.get("started_at", time.time())) * 1000, 1),
         errors=job.get("errors"),
+        debug=job.get("debug") if MAIN_API_INCLUDE_DEBUG else None,
     )
 
 
@@ -761,14 +939,15 @@ async def get_info() -> Dict[str, Any]:
         "service": "Unified Multi-Service Pipeline",
         "version": "2.0.0",
         "async_enrichment": MAIN_API_ASYNC_ENRICHMENT,
+        "include_debug": MAIN_API_INCLUDE_DEBUG,
         "upstream_services": {
             "agenticrag": f"{AGENTIC_RAG_URL}/query",
             "dart": f"{DART_URL}/generate",
             "tts": f"{TTS_URL}/synthesize",
         },
         "endpoints": {
-            "POST /answer": "Fast text-first response, optional async motion/TTS enrichment",
-            "GET /answer/status/{request_id}": "Poll async enrichment status/results",
+            "POST /answer": "Fast text-first response, optional async motion/TTS enrichment, includes debug diagnostics",
+            "GET /answer/status/{request_id}": "Poll async enrichment status/results including debug diagnostics",
             "POST /query": "Compatibility alias for 8000-style query clients",
             "POST /process_query": "Compatibility task submission endpoint",
             "GET /tasks/{task_id}": "Compatibility task polling endpoint",
