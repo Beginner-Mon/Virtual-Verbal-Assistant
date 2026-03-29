@@ -57,6 +57,7 @@ function flattenTaskPayload(taskPayload) {
     null;
 
   const ttsObj = result?.metadata?.tts || task?.tts || result?.tts || null;
+  console.log("[flattenTaskPayload] Extracted TTS object:", ttsObj, "from taskPayload:", taskPayload);
 
   return {
     ...result,
