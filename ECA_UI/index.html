@@ -677,7 +677,8 @@
               mixerRef.current = mixer;
               const action = mixer.clipAction(gltf.animations[0]);
               action.setLoop(THREE.LoopRepeat, Infinity);
-              action.play();
+              clockRef.current.start();
+              action.reset().play();
             }
           },
           undefined,
@@ -885,6 +886,12 @@
               </div>
             )}
 
+            {msg.audioUrl && !isUser && (
+              <div style={{ marginTop: 4 }}>
+                <audio controls src={msg.audioUrl} style={{ height: 32, width: "100%", maxWidth: 280, outline: "none", borderRadius: 8 }} />
+              </div>
+            )}
+
             <span style={{ fontSize: 11, color: "#AEAEB2", paddingLeft: 4, paddingRight: 4 }}>{msg.time}</span>
           </div>
         </div>
@@ -905,11 +912,23 @@
       const [activeTaskStage, setActiveTaskStage] = useState("");
       const [activeTaskId, setActiveTaskId] = useState(null);
       const [motionError, setMotionError] = useState("");
-      const [activeSession, setActiveSession] = useState(1);
+      const [sessions, setSessions] = useState([]);
+      const [activeSession, setActiveSession] = useState(null);
       const [micActive, setMicActive] = useState(false);
       const [dark, setDark] = useState(false);
       const bottomRef = useRef(null);
       const textRef = useRef(null);
+      const audioRef = useRef(null);
+
+      const playAudio = (url) => {
+        if (!url) return;
+        if (audioRef.current) {
+          audioRef.current.pause();
+        }
+        const audio = new Audio(url);
+        audioRef.current = audio;
+        audio.play().catch(e => console.warn("Auto-play prevented", e));
+      };
       const textStreamRef = useRef({ messageId: null, targetText: "", cursor: 0, timer: null });
 
       const stopTextStream = () => {
@@ -973,21 +992,90 @@
 
       useEffect(() => {
         let cancelled = false;
-        (async () => {
+        const loadInitialSessions = async () => {
           try {
-            const history = await window.fetchChatHistory(USER_ID);
-            if (!cancelled && Array.isArray(history) && history.length > 0) {
-              setMessages(history);
+            const historySessions = await window.listSessions(USER_ID);
+            if (!cancelled) {
+              setSessions(historySessions);
+              // Auto-load last session or start new one
+              if (historySessions.length > 0) {
+                 const latest = historySessions[0];
+                 if(latest && latest.session_id) {
+                    loadSession(latest.session_id);
+                 }
+              } else {
+                 createNewSession();
+              }
             }
           } catch (error) {
-            console.warn("Unable to load chat history:", error);
+            console.warn("Unable to load chat sessions:", error);
           }
-        })();
+        };
+        loadInitialSessions();
 
         return () => {
           cancelled = true;
         };
       }, []);
+
+      const createNewSession = async () => {
+        try {
+          const res = await window.createSession(USER_ID);
+          const newSessionId = res.session_id;
+          setActiveSession(newSessionId);
+          setMessages(INIT);
+          setMotionKey("idle");
+          // Refresh sessions list normally, but ensure new one is shown 
+          const historySessions = await window.listSessions(USER_ID);
+          setSessions([{
+             session_id: newSessionId,
+             title: res.title || "New conversation",
+             created_at: res.created_at || new Date().toISOString()
+          }, ...historySessions.filter(s => s.session_id !== newSessionId)]);
+        } catch(e) {
+          console.error("Failed to create session", e);
+        }
+      };
+
+      const loadSession = async (sessionId) => {
+        try {
+          const sessionData = await window.getSession(USER_ID, sessionId);
+          setActiveSession(sessionId);
+          setMotionKey("idle");
+          if (sessionData && sessionData.messages && sessionData.messages.length > 0) {
+             const mapped = sessionData.messages.map((m, i) => ({
+                 id: i + 1,
+                 role: m.role,
+                 text: m.content || "",
+                 motion: m.metadata?.motion || null,
+                 audioUrl: (m.metadata?.tts && m.metadata.tts.audio_url) ? m.metadata.tts.audio_url : null,
+                 time: m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""
+             }));
+             setMessages(mapped);
+          } else {
+             setMessages(INIT);
+          }
+        } catch(e) {
+          console.error("Failed to load session", e);
+        }
+      };
+
+      const removeSession = async (sessionId, e) => {
+        e.stopPropagation();
+        try {
+          await window.deleteSession(USER_ID, sessionId);
+          const historySessions = await window.listSessions(USER_ID);
+          setSessions(historySessions);
+          if (activeSession === sessionId) {
+            setActiveSession(null);
+            setMessages(INIT);
+            setMotionKey("idle");
+          }
+        } catch(e) {
+          console.error("Failed to delete session", e);
+        }
+      };
+
 
       useEffect(() => {
         return () => {
@@ -1026,21 +1114,18 @@
       const send = async (text) => {
         if (!text.trim()) return;
         const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-        const assistantMessageId = Date.now() + 1;
+        const userMessageId = Date.now();
+        const assistantMessageId = userMessageId + 1;
 
         stopTextStream();
         setMotionError("");
         setActiveTaskId(null);
 
-        setMessages(m => [...m, { id: Date.now(), role: "user", text, motion: null, time: now }]);
-        setMessages(m => [...m, {
-          id: assistantMessageId,
-          role: "assistant",
-          text: "",
-          isStreamingText: false,
-          motion: null,
-          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        }]);
+        setMessages(m => [
+          ...m, 
+          { id: userMessageId, role: "user", text, motion: null, time: now },
+          { id: assistantMessageId, role: "assistant", text: "", isStreamingText: false, motion: null, time: now }
+        ]);
         setInput("");
         if (textRef.current) textRef.current.style.height = "auto";
 
@@ -1055,7 +1140,7 @@
             )));
           };
 
-          const replyData = await window.askEca(text, USER_ID, (progress) => {
+          const replyData = await window.askEca(text, USER_ID, activeSession, (progress) => {
             const stage = String(progress?.progress_stage || "").toLowerCase();
             const hasText = Boolean(progress?.text_answer && String(progress.text_answer).trim());
             const isMotionStage = stage.includes("motion") || stage.includes("glb") || stage.includes("mp4") || stage.includes("dart");
@@ -1101,12 +1186,17 @@
                   ...msg,
                   text: msg.text || "",
                   motion: msg.motion || null,
+                  audioUrl: (replyData.tts && replyData.tts.audio_url) ? replyData.tts.audio_url : msg.audioUrl,
                 }
               : msg
           )));
 
           if (replyData.text_answer) {
             streamAssistantText(assistantMessageId, replyData.text_answer);
+          }
+
+          if (replyData.tts && replyData.tts.audio_url) {
+            playAudio(replyData.tts.audio_url);
           }
 
           if (replyData.finalPromise) {
@@ -1137,12 +1227,17 @@
                         ...msg,
                         text: msg.text || "",
                         motion: finalMotionBadge || msg.motion || null,
+                        audioUrl: (finalData.tts && finalData.tts.audio_url) ? finalData.tts.audio_url : msg.audioUrl,
                       }
                     : msg
                 )));
 
                 if (finalData.text_answer) {
                   streamAssistantText(assistantMessageId, finalData.text_answer);
+                }
+
+                if (finalData.tts && finalData.tts.audio_url) {
+                  playAudio(finalData.tts.audio_url);
                 }
 
                 if (finalData.motion_error) {
@@ -1187,6 +1282,7 @@
                   ...msg,
                   text: replyData.text_answer || msg.text || "",
                   motion: finalMotionBadge || msg.motion || null,
+                  audioUrl: (replyData.tts && replyData.tts.audio_url) ? replyData.tts.audio_url : msg.audioUrl,
                 }
               : msg
           )));
@@ -1293,7 +1389,7 @@
               </div>
 
               <button className="new-btn"
-                onClick={() => { setMessages(INIT); setMotionKey("idle"); }}
+                onClick={createNewSession}
                 style={{
                   width: "100%", padding: "8px 0", background: "#007AFF",
                   borderRadius: 10, color: "#fff", fontSize: 13.5, fontWeight: 600,
@@ -1309,20 +1405,28 @@
                 fontSize: 11, fontWeight: 600, color: "var(--text-secondary)", letterSpacing: 0.5,
                 padding: "4px 8px 8px", textTransform: "uppercase"
               }}>Recents</p>
-              {SESSIONS.map(s => (
-                <button key={s.id} className="session-row"
-                  onClick={() => setActiveSession(s.id)}
+              {sessions.map(s => (
+                <div key={s.session_id} className="session-row"
+                  onClick={() => loadSession(s.session_id)}
                   style={{
                     width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 8,
-                    background: activeSession === s.id ? "var(--session-active)" : "transparent",
-                    marginBottom: 1, transition: "background 0.1s"
+                    background: activeSession === s.session_id ? "var(--session-active)" : "transparent",
+                    marginBottom: 1, transition: "background 0.1s", cursor: "pointer",
+                    display: "flex", justifyContent: "space-between", alignItems: "center"
                   }}>
-                  <div style={{
-                    fontSize: 13.5, fontWeight: 500, letterSpacing: -0.2,
-                    color: activeSession === s.id ? "#007AFF" : "var(--text-primary)"
-                  }}>{s.title}</div>
-                  <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 1 }}>{s.time}</div>
-                </button>
+                  <div>
+                    <div style={{
+                      fontSize: 13.5, fontWeight: 500, letterSpacing: -0.2,
+                      color: activeSession === s.session_id ? "#007AFF" : "var(--text-primary)"
+                    }}>{s.title || `Session ${s.session_id.substring(0,6)}`}</div>
+                    <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 1 }}>
+                      {s.created_at ? new Date(s.created_at).toLocaleDateString() : ""}
+                    </div>
+                  </div>
+                  <button onClick={(e) => removeSession(s.session_id, e)} style={{
+                    color: "var(--text-tertiary)", fontSize: 18, padding: "0 4px", background: "none", border: "none", cursor: "pointer", zIndex: 10
+                  }}>&times;</button>
+                </div>
               ))}
             </div>
 
@@ -1521,33 +1625,8 @@
             </div>
 
             <div style={{ padding: "14px 14px 20px", borderTop: "1px solid rgba(0,0,0,0.06)" }}>
-              <p style={{
-                fontSize: 11, fontWeight: 600, color: "#8E8E93", letterSpacing: 0.5,
-                marginBottom: 10, textTransform: "uppercase"
-              }}>Presets</p>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                {Object.entries(MOTIONS).map(([key, val]) => (
-                  <button key={key} className="chip" onClick={() => setMotionKey(key)} style={{
-                    padding: "7px 10px", borderRadius: 9,
-                    background: motionKey === key ? `${val.color}14` : "#F2F2F7",
-                    border: `1.5px solid ${motionKey === key ? val.color + "50" : "transparent"}`,
-                    textAlign: "left", transition: "all 0.15s",
-                    display: "flex", alignItems: "center", gap: 7
-                  }}>
-                    <div style={{
-                      width: 7, height: 7, borderRadius: "50%",
-                      background: val.color, flexShrink: 0
-                    }} />
-                    <span style={{
-                      fontSize: 12, fontWeight: 500, letterSpacing: -0.1,
-                      color: motionKey === key ? val.color : "#3C3C43"
-                    }}>{val.label}</span>
-                  </button>
-                ))}
-              </div>
-
               {/* Output info */}
-              <div style={{ marginTop: 12, background: "#F2F2F7", borderRadius: 10, padding: "10px 12px" }}>
+              <div style={{ background: "#F2F2F7", borderRadius: 10, padding: "10px 12px" }}>
                 <p style={{
                   fontSize: 11, fontWeight: 600, color: "#8E8E93", letterSpacing: 0.4,
                   marginBottom: 6, textTransform: "uppercase"

@@ -101,7 +101,7 @@ class MotionGenerationTool:
                     "text_prompt": prompt,
                     "duration_seconds": _DEFAULT_DURATION_SECONDS,
                     "guidance_scale": 5.0,
-                    "num_steps": 50
+                    "num_steps": 10
                 },
                 timeout=self._timeout,
             )

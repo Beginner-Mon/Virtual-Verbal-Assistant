@@ -154,8 +154,12 @@ class QueryRequestCompat(BaseModel):
 
     query: str = Field(..., description="User query")
     user_id: str = Field(default="default", description="User identifier")
+    session_id: Optional[str] = Field(
+        None,
+        description="Session ID for server-managed history. When provided, conversation_history is ignored.",
+    )
     conversation_history: Optional[List[ConversationTurn]] = Field(
-        None, description="Previous conversation turns"
+        None, description="Previous conversation turns (legacy fallback, ignored when session_id is set)"
     )
     motion_duration_seconds: Optional[float] = Field(
         None,
@@ -169,12 +173,16 @@ class AnswerRequest(BaseModel):
 
     query: str = Field(..., description="User query")
     user_id: str = Field(default="default", description="User identifier")
+    session_id: Optional[str] = Field(
+        None,
+        description="Session ID for server-managed history. When provided, conversation_history is ignored.",
+    )
     motion_format: Literal["glb", "npz"] = Field(
         default="glb",
         description="Requested motion output format: 'glb' or 'npz'",
     )
     conversation_history: Optional[List[ConversationTurn]] = Field(
-        None, description="Previous conversation turns"
+        None, description="Previous conversation turns (legacy fallback, ignored when session_id is set)"
     )
 
 
@@ -241,13 +249,16 @@ async def call_agenticrag(
     query: str,
     user_id: str,
     conversation_history: Optional[List[Dict[str, str]]],
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """POST to AgenticRAG /query and return the parsed JSON body."""
     payload: Dict[str, Any] = {
         "query": query,
         "user_id": user_id,
     }
-    if conversation_history:
+    if session_id:
+        payload["session_id"] = session_id
+    elif conversation_history:
         payload["conversation_history"] = conversation_history
 
     logger.info(f"[AgenticRAG] → POST {AGENTIC_RAG_URL}/query  query={query[:80]}...")
@@ -296,7 +307,7 @@ async def _generate_motion_from_dart(
         "duration_seconds": duration_seconds,
         "output_format": motion_format,
         "guidance_scale": 5.0,
-        "num_steps": 50,
+        "num_steps": 10,
         "gender": "female",
         "output_format": rag_data.get("motion_format", "glb"),
     }
@@ -607,8 +618,10 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
     }
 
     # Convert history to the dict format expected by AgenticRAG
+    # session_id takes priority: if provided, let api_server.py handle history from disk
+    session_id = request.session_id
     history: Optional[List[Dict[str, str]]] = None
-    if request.conversation_history:
+    if not session_id and request.conversation_history:
         history = [{"role": t.role, "content": t.content} for t in request.conversation_history]
 
     request_id = str(uuid.uuid4())[:12]
@@ -624,7 +637,7 @@ async def get_answer(request: AnswerRequest) -> AnswerResponse:
         # 1. Call AgenticRAG
         rag_t0 = time.perf_counter()
         try:
-            rag_data = await call_agenticrag(client, request.query, request.user_id, history)
+            rag_data = await call_agenticrag(client, request.query, request.user_id, history, session_id=session_id)
             debug_payload["timings_ms"]["agenticrag"] = round((time.perf_counter() - rag_t0) * 1000, 1)
             debug_payload["services"]["agenticrag"] = {
                 "status": "ok",
@@ -868,6 +881,7 @@ async def query_compat(request: QueryRequestCompat) -> Dict[str, Any]:
         AnswerRequest(
             query=request.query,
             user_id=request.user_id,
+            session_id=request.session_id,
             conversation_history=request.conversation_history,
             motion_format="glb",
         )
@@ -882,6 +896,7 @@ async def process_query_compat(request: QueryRequestCompat) -> UnifiedTaskRespon
         AnswerRequest(
             query=request.query,
             user_id=request.user_id,
+            session_id=request.session_id,
             conversation_history=request.conversation_history,
             motion_format="glb",
         )
@@ -957,7 +972,7 @@ async def get_info() -> Dict[str, Any]:
     """Return configuration and endpoint documentation."""
     return {
         "service": "Unified Multi-Service Pipeline",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "async_enrichment": MAIN_API_ASYNC_ENRICHMENT,
         "include_debug": MAIN_API_INCLUDE_DEBUG,
         "upstream_services": {
@@ -966,15 +981,78 @@ async def get_info() -> Dict[str, Any]:
             "tts": f"{TTS_URL}/synthesize",
         },
         "endpoints": {
-            "POST /answer": "Fast text-first response, optional async motion/TTS enrichment, includes debug diagnostics",
+            "POST /answer": "Fast text-first response (supports session_id), optional async motion/TTS enrichment",
             "GET /answer/status/{request_id}": "Poll async enrichment status/results including debug diagnostics",
-            "POST /query": "Compatibility alias for 8000-style query clients",
+            "POST /query": "Compatibility alias for 8000-style query clients (supports session_id)",
             "POST /process_query": "Compatibility task submission endpoint",
             "GET /tasks/{task_id}": "Compatibility task polling endpoint",
+            "POST /sessions": "Create a new chat session",
+            "GET /sessions/{user_id}": "List all sessions for a user",
+            "GET /sessions/{user_id}/{session_id}": "Get full session with messages",
+            "DELETE /sessions/{user_id}/{session_id}": "Delete a chat session",
+            "POST /sessions/{user_id}/{session_id}/summarize": "Summarize session to ChromaDB",
             "GET /health": "Ping downstream services",
             "GET /info": "This document",
         },
     }
+
+
+# ===========================
+# Session Management Proxy Endpoints
+# ===========================
+
+DOWNSTREAM_SESSION_TIMEOUT = 15.0
+
+
+@app.post("/sessions", summary="Create a new chat session")
+async def proxy_create_session(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Proxy to AgenticRAG POST /sessions."""
+    async with httpx.AsyncClient(timeout=DOWNSTREAM_SESSION_TIMEOUT) as client:
+        resp = await client.post(f"{AGENTIC_RAG_URL}/sessions", json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+
+@app.get("/sessions/{user_id}", summary="List all sessions for a user")
+async def proxy_list_sessions(user_id: str) -> Any:
+    """Proxy to AgenticRAG GET /sessions/{user_id}."""
+    async with httpx.AsyncClient(timeout=DOWNSTREAM_SESSION_TIMEOUT) as client:
+        resp = await client.get(f"{AGENTIC_RAG_URL}/sessions/{user_id}")
+        resp.raise_for_status()
+        return resp.json()
+
+
+@app.get("/sessions/{user_id}/{session_id}", summary="Get full session with messages")
+async def proxy_get_session(user_id: str, session_id: str) -> Dict[str, Any]:
+    """Proxy to AgenticRAG GET /sessions/{user_id}/{session_id}."""
+    async with httpx.AsyncClient(timeout=DOWNSTREAM_SESSION_TIMEOUT) as client:
+        resp = await client.get(f"{AGENTIC_RAG_URL}/sessions/{user_id}/{session_id}")
+        if resp.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+        resp.raise_for_status()
+        return resp.json()
+
+
+@app.delete("/sessions/{user_id}/{session_id}", summary="Delete a chat session")
+async def proxy_delete_session(user_id: str, session_id: str) -> Dict[str, Any]:
+    """Proxy to AgenticRAG DELETE /sessions/{user_id}/{session_id}."""
+    async with httpx.AsyncClient(timeout=DOWNSTREAM_SESSION_TIMEOUT) as client:
+        resp = await client.delete(f"{AGENTIC_RAG_URL}/sessions/{user_id}/{session_id}")
+        if resp.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+        resp.raise_for_status()
+        return resp.json()
+
+
+@app.post("/sessions/{user_id}/{session_id}/summarize", summary="Summarize session to ChromaDB")
+async def proxy_summarize_session(user_id: str, session_id: str) -> Dict[str, Any]:
+    """Proxy to AgenticRAG POST /sessions/{user_id}/{session_id}/summarize."""
+    async with httpx.AsyncClient(timeout=DOWNSTREAM_TIMEOUT) as client:
+        resp = await client.post(f"{AGENTIC_RAG_URL}/sessions/{user_id}/{session_id}/summarize")
+        if resp.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+        resp.raise_for_status()
+        return resp.json()
 
 
 # ===========================

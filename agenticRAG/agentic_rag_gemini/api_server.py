@@ -36,6 +36,7 @@ from memory.memory_manager import MemoryManager
 from memory.document_store import DocumentStore
 from memory.vector_store import VectorStore
 from memory.embedding_service import EmbeddingService
+from memory.session_store import SessionStore
 from retrieval.rag_pipeline import RAGPipeline
 from config import get_config
 from utils.logger import get_logger
@@ -180,8 +181,20 @@ class QueryRequest(BaseModel):
 
     query: str = Field(..., description="User's query")
     user_id: str = Field("guest", description="User identifier (optional, defaults to guest)")
+    session_id: Optional[str] = Field(
+        None,
+        description=(
+            "Session ID for server-managed conversation history. "
+            "When provided, history is loaded from SessionStore and "
+            "conversation_history field is ignored."
+        ),
+    )
     conversation_history: Optional[List[ConversationTurn]] = Field(
-        None, description="Previous conversation turns"
+        None,
+        description=(
+            "Previous conversation turns (legacy/stateless fallback). "
+            "Ignored when session_id is provided."
+        ),
     )
     motion_duration_seconds: Optional[float] = Field(
         None,
@@ -315,6 +328,26 @@ class ChatHistoryResponse(BaseModel):
 
     user_id: str
     messages: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class SessionCreateRequest(BaseModel):
+    """Request to create a new chat session."""
+
+    user_id: str = Field("guest", description="User identifier")
+    first_message: Optional[str] = Field(
+        None, description="Optional first message to set the session title"
+    )
+
+
+class SessionMetaResponse(BaseModel):
+    """Lightweight session metadata for listing."""
+
+    session_id: str = Field(..., description="Session UUID")
+    title: str = Field(..., description="Auto-generated session title")
+    created_at: str = Field(..., description="ISO timestamp of session creation")
+    updated_at: str = Field(..., description="ISO timestamp of last update")
+    message_count: int = Field(..., description="Total messages in session")
+    is_summarized: bool = Field(False, description="Whether session has been summarized to ChromaDB")
 
 
 # ===========================
@@ -1739,20 +1772,29 @@ async def process_query(request: QueryRequest):
     if api_instance is None:
         raise HTTPException(status_code=500, detail="API not initialized")
 
-    # Convert history to dict format if provided
+    # Resolve conversation history: session_id takes priority
     history = None
-    if request.conversation_history:
-        history = [turn.dict() for turn in request.conversation_history]
-
-    # IMPORTANT: api_instance.process_query() is synchronous and contains
-    # blocking I/O (requests.post → Ollama, ChromaDB queries, Gemini API).
-    # Calling it directly from an async handler freezes the uvicorn event loop,
-    # making all concurrent requests stall until the blocking call completes.
-    # asyncio.to_thread() offloads it to a worker thread so the event loop
-    # stays responsive throughout.
-    
-    # If streaming is requested, return StreamingResponse with text chunks
+    session_id = request.session_id
     request_user_id = (request.user_id or "guest").strip() or "guest"
+
+    if session_id:
+        # Server-managed history: load from SessionStore on disk
+        try:
+            store = SessionStore(request_user_id)
+            session_data = store.load_session(session_id)
+            if session_data:
+                history = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in session_data.get("messages", [])
+                ]
+                logger.info(f"Loaded {len(history)} turns from session {session_id}")
+            else:
+                logger.warning(f"Session {session_id} not found for user {request_user_id}")
+        except Exception as exc:
+            logger.error(f"Failed to load session {session_id}: {exc}")
+    elif request.conversation_history:
+        # Legacy stateless fallback: client manages its own history
+        history = [turn.dict() for turn in request.conversation_history]
 
     if request.stream:
         # For streaming, we run it in a thread and wrap the generator.
@@ -1777,6 +1819,19 @@ async def process_query(request: QueryRequest):
         False,
         request.motion_duration_seconds,
     )
+
+    # Auto-save turns to SessionStore if session_id was given
+    if session_id and not request.stream:
+        try:
+            store = SessionStore(request_user_id)
+            store.save_turn(session_id, "user", request.query)
+            response_payload = _normalize_enums(_model_to_dict(response))
+            text_answer = response_payload.get("text_answer", "")
+            if text_answer:
+                store.save_turn(session_id, "assistant", text_answer)
+            logger.info(f"Auto-saved turns to session {session_id}")
+        except Exception as exc:
+            logger.error(f"Failed to auto-save to session {session_id}: {exc}")
 
     return _normalize_enums(_model_to_dict(response))
 
@@ -1811,11 +1866,28 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
             }
         return
 
+    request_user_id = (request_payload.user_id or "guest").strip() or "guest"
+    session_id = getattr(request_payload, "session_id", None)
+
+    # Resolve conversation history: session_id takes priority
     history = None
-    if request_payload.conversation_history:
+    if session_id:
+        try:
+            store = SessionStore(request_user_id)
+            session_data = store.load_session(session_id)
+            if session_data:
+                history = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in session_data.get("messages", [])
+                ]
+                logger.info(f"[Task {task_id}] Loaded {len(history)} turns from session {session_id}")
+            else:
+                logger.warning(f"[Task {task_id}] Session {session_id} not found")
+        except Exception as exc:
+            logger.error(f"[Task {task_id}] Failed to load session {session_id}: {exc}")
+    elif request_payload.conversation_history:
         history = [turn.dict() for turn in request_payload.conversation_history]
 
-    request_user_id = (request_payload.user_id or "guest").strip() or "guest"
     timeline: Dict[str, Any] = {}
     unified_result: Dict[str, Any] = {}
 
@@ -2070,6 +2142,18 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
                     },
                 ],
             )
+
+            # Auto-save turns to SessionStore if session_id was provided
+            if session_id:
+                try:
+                    store = SessionStore(request_user_id)
+                    store.save_turn(session_id, "user", request_payload.query)
+                    text_answer = unified_result.get("text_answer", "")
+                    if text_answer:
+                        store.save_turn(session_id, "assistant", text_answer)
+                    logger.info(f"[Task {task_id}] Auto-saved turns to session {session_id}")
+                except Exception as exc:
+                    logger.error(f"[Task {task_id}] Failed to save to session {session_id}: {exc}")
     except Exception as exc:
         logger.error("Unified task failed: %s", exc, exc_info=True)
         timeline = _clone_timeline(timeline)
@@ -2154,6 +2238,136 @@ async def get_chat_history(user_id: str) -> ChatHistoryResponse:
     messages = await _read_chat_history(user_id)
     return ChatHistoryResponse(user_id=user_id, messages=messages)
 
+
+# ===========================
+# Session Management Endpoints
+# ===========================
+
+
+@app.post("/sessions", summary="Create a new chat session")
+async def create_session(request: SessionCreateRequest) -> Dict[str, Any]:
+    """Create a new chat session for a user.
+
+    Returns the session_id, user_id and auto-generated title.
+    """
+    user_id = (request.user_id or "guest").strip() or "guest"
+    store = SessionStore(user_id)
+    session_id = store.create_session(first_message=request.first_message)
+    session_data = store.load_session(session_id)
+    return {
+        "session_id": session_id,
+        "user_id": user_id,
+        "title": session_data.get("title", "New conversation") if session_data else "New conversation",
+        "created_at": session_data.get("created_at", "") if session_data else "",
+    }
+
+
+@app.get("/sessions/{user_id}", response_model=List[SessionMetaResponse], summary="List all sessions for a user")
+async def list_sessions(user_id: str) -> List[SessionMetaResponse]:
+    """Return all non-empty sessions for a user, sorted newest-first.
+
+    Ideal for populating a sidebar chat history list.
+    """
+    user_id = (user_id or "guest").strip() or "guest"
+    store = SessionStore(user_id)
+    metas = store.list_sessions()
+    return [
+        SessionMetaResponse(
+            session_id=m.session_id,
+            title=m.title,
+            created_at=m.created_at,
+            updated_at=m.updated_at,
+            message_count=m.message_count,
+            is_summarized=m.is_summarized,
+        )
+        for m in metas
+    ]
+
+
+@app.get("/sessions/{user_id}/{session_id}", summary="Get full session with messages")
+async def get_session(user_id: str, session_id: str) -> Dict[str, Any]:
+    """Load the complete session data including all message turns.
+
+    Returns the full JSON structure with session_id, title, messages[], etc.
+    """
+    user_id = (user_id or "guest").strip() or "guest"
+    store = SessionStore(user_id)
+    session_data = store.load_session(session_id)
+    if session_data is None:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+    return session_data
+
+
+@app.delete("/sessions/{user_id}/{session_id}", summary="Delete a chat session")
+async def delete_session(user_id: str, session_id: str) -> Dict[str, Any]:
+    """Delete a session JSON file from disk.
+
+    Returns success status and the deleted session_id.
+    """
+    user_id = (user_id or "guest").strip() or "guest"
+    store = SessionStore(user_id)
+    deleted = store.delete_session(session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+    return {"deleted": True, "session_id": session_id, "user_id": user_id}
+
+
+@app.post("/sessions/{user_id}/{session_id}/summarize", summary="Summarize session to ChromaDB")
+async def summarize_session(user_id: str, session_id: str) -> Dict[str, Any]:
+    """Summarize a chat session and store the summary in ChromaDB.
+
+    This triggers the SummarizeAgent to condense the session into a
+    summary embedding, enabling cross-session memory recall.
+    """
+    user_id = (user_id or "guest").strip() or "guest"
+    store = SessionStore(user_id)
+    session_data = store.load_session(session_id)
+    if session_data is None:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+
+    messages = session_data.get("messages", [])
+    if len(messages) < 2:
+        raise HTTPException(status_code=400, detail="Session needs at least 2 messages to summarize")
+
+    if session_data.get("is_summarized", False):
+        return {
+            "session_id": session_id,
+            "already_summarized": True,
+            "summary": session_data.get("summary", ""),
+        }
+
+    # Import and run the SummarizeAgent
+    from agents.summarize_agent import SummarizeAgent
+
+    if api_instance is not None:
+        # Use the shared vector_store and embedding_service from the API instance
+        summarize_agent = SummarizeAgent(
+            vector_store=api_instance.rag_pipeline.memory_manager.vector_store
+            if hasattr(api_instance.rag_pipeline, "memory_manager")
+            else None,
+            embedding_service=api_instance.rag_pipeline.memory_manager.embedding_service
+            if hasattr(api_instance.rag_pipeline, "memory_manager")
+            else None,
+        )
+    else:
+        summarize_agent = SummarizeAgent()
+
+    summary = await asyncio.to_thread(
+        summarize_agent.summarize_and_store,
+        user_id,
+        session_id,
+        messages,
+        session_data.get("title", ""),
+    )
+
+    if summary:
+        store.mark_summarized(session_id, summary)
+
+    return {
+        "session_id": session_id,
+        "summarized": bool(summary),
+        "summary": summary or "",
+    }
 
 @app.get("/download/{filename:path}", summary="Proxy DART artifacts through port 8000")
 async def proxy_dart_download(filename: str) -> Response:
@@ -2312,14 +2526,19 @@ async def get_info() -> Dict[str, Any]:
     """
     return {
         "service": "AgenticRAG API",
-        "version": "1.0.0",
-        "description": "REST API for Agentic Retrieval-Augmented Generation",
+        "version": "1.1.0",
+        "description": "REST API for Agentic Retrieval-Augmented Generation with Session Management",
         "endpoints": {
-            "POST /query": "Process a user query",
+            "POST /query": "Process a user query (supports session_id for server-managed history)",
             "POST /process_query": "Submit async query task and return task envelope",
             "GET /tasks/{task_id}": "Poll unified task state",
             "POST /answer": "Proxy to orchestrator /answer on port 8080",
             "GET /answer/status/{request_id}": "Proxy to orchestrator async status on port 8080",
+            "POST /sessions": "Create a new chat session",
+            "GET /sessions/{user_id}": "List all sessions for a user",
+            "GET /sessions/{user_id}/{session_id}": "Get full session with messages",
+            "DELETE /sessions/{user_id}/{session_id}": "Delete a chat session",
+            "POST /sessions/{user_id}/{session_id}/summarize": "Summarize session to ChromaDB",
             "GET /health": "Health check",
             "GET /info": "Service information",
         },
