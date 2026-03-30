@@ -97,16 +97,15 @@ function sleep(ms) {
  * Poll unified task status until terminal state.
  * Retries initial transient 404 responses to avoid premature failure.
  */
-async function pollTaskStatus(taskId, onProgress = null, options = {}) {
-  const stopWhenTextReady = Boolean(options.stopWhenTextReady);
-  const startedAt = Date.now();
+async function pollTaskStatus(taskId, onProgress = null, { stopWhenTextReady = false, maxRetries = 150 } = {}) {
   let notFoundCount = 0;
   let lastTaskData = null;
 
-  while (Date.now() - startedAt < POLL_TIMEOUT_MS) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      const response = await axios.get(`${API_BASE_URL}/tasks/${taskId}`);
-      const data = response.data || {};
+      // Changed to poll /answer/status instead of /tasks for Orchestrator routing
+      let statusResp = await axios.get(`${API_BASE_URL}/answer/status/${encodeURIComponent(taskId)}`);
+      let data = statusResp.data || {};
       lastTaskData = data;
       const flattened = flattenTaskPayload(data);
 
@@ -154,33 +153,41 @@ async function askEca(query, userId = "guest", sessionId = null, onProgress = nu
     const payload = { query: query, user_id: userId };
     if (sessionId) payload.session_id = sessionId;
 
-    // 1. Submit unified async task
-    const response = await axios.post(`${API_BASE_URL}/process_query`, payload);
+    // 1. Submit unified async task via Orchestrator endpoint (includes TTS)
+    const response = await axios.post(`${API_BASE_URL}/answer`, payload);
 
     const submitData = response.data || {};
-    const taskId = submitData.task_id;
+    // Orchestrator uses request_id instead of task_id
+    const taskId = submitData.request_id || submitData.task_id;
     if (!taskId) {
-      throw new Error("Missing task_id from /process_query response");
+      throw new Error("Missing request_id from /answer response");
     }
 
     if (onProgress) {
-      onProgress(flattenTaskPayload({
-        task_id: taskId,
-        status: submitData.status || "processing",
-        progress_stage: submitData.progress_stage || "queued",
-        result: submitData.result || null,
-        error: submitData.error || null,
-      }));
+      onProgress(flattenTaskPayload(submitData));
     }
 
-    // 2. Poll until text is available, then return early while motion continues.
-    const textReadyTask = await pollTaskStatus(taskId, onProgress, { stopWhenTextReady: true });
-    const textReadyPayload = flattenTaskPayload(textReadyTask);
+    if (submitData.status === "completed" || submitData.status === "failed") {
+      const payload = flattenTaskPayload(submitData);
+      if (submitData.status === "failed" && !payload.text_answer) {
+        throw new Error(submitData.error || submitData.errors?.agenticrag || "Task failed sync");
+      }
+      return payload;
+    }
 
-    const isTerminal = textReadyTask.status === "completed" || textReadyTask.status === "failed";
+    const submitPayload = flattenTaskPayload(submitData);
+    let textReadyPayload = submitPayload;
+
+    if (!submitPayload.text_answer || !String(submitPayload.text_answer).trim()) {
+      // 2. Poll until text is available, then return early while motion continues.
+      const textReadyTask = await pollTaskStatus(taskId, onProgress, { stopWhenTextReady: true });
+      textReadyPayload = flattenTaskPayload(textReadyTask);
+    }
+
+    const isTerminal = textReadyPayload.status === "completed" || textReadyPayload.status === "failed";
     if (isTerminal) {
-      if (textReadyTask.status === "failed" && !textReadyPayload.text_answer) {
-        const terminalError = new Error(textReadyTask.error || "Task failed");
+      if (textReadyPayload.status === "failed" && !textReadyPayload.text_answer) {
+        const terminalError = new Error(textReadyPayload.error || "Task failed");
         terminalError.partial = textReadyPayload;
         throw terminalError;
       }

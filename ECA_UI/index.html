@@ -842,6 +842,11 @@
       const motionLabel = typeof msg.motion === "string"
         ? msg.motion
         : (msg.motion?.label || msg.motion?.prompt || null);
+
+      if (msg.audioUrl && !isUser) {
+         console.log("[Bubble Render] Rendering audio tag with URL:", msg.audioUrl);
+      }
+
       return (
         <div style={{
           display: "flex", justifyContent: isUser ? "flex-end" : "flex-start",
@@ -887,8 +892,8 @@
             )}
 
             {msg.audioUrl && !isUser && (
-              <div style={{ marginTop: 4 }}>
-                <audio controls src={msg.audioUrl} style={{ height: 32, width: "100%", maxWidth: 280, outline: "none", borderRadius: 8 }} />
+              <div style={{ marginTop: 8, minWidth: 240, width: "100%" }}>
+                <audio controls src={msg.audioUrl} style={{ width: "100%", display: "block", outline: "none", borderRadius: 8, background: "#F2F2F7" }} />
               </div>
             )}
 
