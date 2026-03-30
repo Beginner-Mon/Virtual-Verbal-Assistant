@@ -21,21 +21,21 @@ class ResponseTemplateGenerator:
 
     # Motion primitive database
     MOTION_PRIMITIVES = {
-        "walk": {"num_primitives": 20, "description": "Walking forward"},
-        "run": {"num_primitives": 15, "description": "Running forward"},
-        "jog": {"num_primitives": 18, "description": "Jogging forward"},
-        "stand": {"num_primitives": 5, "description": "Standing idle"},
-        "sit": {"num_primitives": 8, "description": "Sitting down"},
-        "jump": {"num_primitives": 6, "description": "Jumping in place"},
-        "turn_left": {"num_primitives": 8, "description": "Turning left"},
-        "turn_right": {"num_primitives": 8, "description": "Turning right"},
-        "wave": {"num_primitives": 6, "description": "Waving hand"},
-        "raise_arm": {"num_primitives": 5, "description": "Raising arm"},
-        "lower_arm": {"num_primitives": 5, "description": "Lowering arm"},
+        "walk": {"num_primitives": 10, "description": "Walking forward"},
+        "run": {"num_primitives": 10, "description": "Running forward"},
+        "jog": {"num_primitives": 10, "description": "Jogging forward"},
+        "stand": {"num_primitives": 10, "description": "Standing idle"},
+        "sit": {"num_primitives": 10, "description": "Sitting down"},
+        "jump": {"num_primitives": 10, "description": "Jumping in place"},
+        "turn_left": {"num_primitives": 10, "description": "Turning left"},
+        "turn_right": {"num_primitives": 10, "description": "Turning right"},
+        "wave": {"num_primitives": 10, "description": "Waving hand"},
+        "raise_arm": {"num_primitives": 10, "description": "Raising arm"},
+        "lower_arm": {"num_primitives": 10, "description": "Lowering arm"},
         "stretch": {"num_primitives": 10, "description": "Stretching"},
-        "dance": {"num_primitives": 25, "description": "Dancing"},
-        "kick": {"num_primitives": 8, "description": "Kicking"},
-        "punch": {"num_primitives": 6, "description": "Punching"},
+        "dance": {"num_primitives": 10, "description": "Dancing"},
+        "kick": {"num_primitives": 10, "description": "Kicking"},
+        "punch": {"num_primitives": 10, "description": "Punching"},
     }
 
     # Emotion mappings for voice
@@ -95,8 +95,9 @@ class ResponseTemplateGenerator:
                 return None
 
             # Estimate duration from primitive metadata while keeping a plain prompt.
-            primitive_count = self.MOTION_PRIMITIVES.get(motion_type, {}).get("num_primitives", 12)
-            duration_seconds = max(2.0, (primitive_count * 8.0) / 30.0)
+            # DART expects 16 frames per primitive (chunk). 10 primitives = 160 frames = 5.33 seconds
+            primitive_count = self.MOTION_PRIMITIVES.get(motion_type, {}).get("num_primitives", 10)
+            duration_seconds = max(2.0, (primitive_count * 16.0) / 30.0)
             num_frames = int(round(duration_seconds * 30.0))
 
             motion_prompt = {

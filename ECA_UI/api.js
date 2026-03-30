@@ -42,31 +42,39 @@ const POLL_TIMEOUT_MS = 600000;
 
 function flattenTaskPayload(taskPayload) {
   const task = taskPayload || {};
-  const result = task.result || {};
+  const isDirectAnswer = "text_answer" in task;
+  const result = isDirectAnswer ? task : (task.result || {});
+  
   const motionPayload = result.motion || {};
   const motionJob = result.motion_job || {};
-  const motionUrl = result.motion_file_url || motionJob.motion_file_url || null;
+  // In AnswerResponse, motion is a dict with motion_file_url directly.
+  const motionUrl = result.motion_file_url || motionPayload.motion_file_url || motionJob.motion_file_url || null;
   const motionPrompt =
     result.exercise_motion_prompt ||
+    motionPayload.text_prompt ||
     motionJob?.selected_candidate?.rewritten_prompt ||
     motionJob?.selected_candidate?.text_description ||
     null;
 
+  const ttsObj = result?.metadata?.tts || task?.tts || result?.tts || null;
+  console.log("[flattenTaskPayload] Extracted TTS object:", ttsObj, "from taskPayload:", taskPayload);
+
   return {
     ...result,
-    task_id: task.task_id,
+    task_id: task.task_id || task.request_id,
     status: task.status || "processing",
     progress_stage: task.progress_stage || "queued",
-    error: task.error || null,
+    error: task.error || (task.errors ? JSON.stringify(task.errors) : null),
     text_answer: result.text_answer || "",
     clinical_advice: result.text_answer || "",
-    motion_duration_seconds: result.motion_duration_seconds ?? null,
+    motion_duration_seconds: result.motion_duration_seconds ?? motionPayload.duration_seconds ?? null,
     motion_error: result.motion_error || task.error || null,
+    tts: ttsObj,
     motion: motionUrl
       ? {
           motion_file_url: motionUrl,
           prompt: motionPrompt,
-          frames: motionPayload.frames || motionJob.frames || null,
+          frames: motionPayload.frames || motionPayload.num_frames || motionJob.frames || null,
           fps: motionPayload.fps || motionJob.fps || null,
           duration_seconds: motionPayload.duration_seconds || motionJob.duration_seconds || result.motion_duration_seconds || null,
           stage: motionJob.stage || null,
@@ -89,16 +97,15 @@ function sleep(ms) {
  * Poll unified task status until terminal state.
  * Retries initial transient 404 responses to avoid premature failure.
  */
-async function pollTaskStatus(taskId, onProgress = null, options = {}) {
-  const stopWhenTextReady = Boolean(options.stopWhenTextReady);
-  const startedAt = Date.now();
+async function pollTaskStatus(taskId, onProgress = null, { stopWhenTextReady = false, maxRetries = 150 } = {}) {
   let notFoundCount = 0;
   let lastTaskData = null;
 
-  while (Date.now() - startedAt < POLL_TIMEOUT_MS) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      const response = await axios.get(`${API_BASE_URL}/tasks/${taskId}`);
-      const data = response.data || {};
+      // Changed to poll /answer/status instead of /tasks for Orchestrator routing
+      let statusResp = await axios.get(`${API_BASE_URL}/answer/status/${encodeURIComponent(taskId)}`);
+      let data = statusResp.data || {};
       lastTaskData = data;
       const flattened = flattenTaskPayload(data);
 
@@ -137,41 +144,50 @@ async function pollTaskStatus(taskId, onProgress = null, options = {}) {
  * 
  * @param {string} query - The user's input text
  * @param {string} userId - The unique identifier for the user session
+ * @param {string} sessionId - Optional session ID
  * @param {function} onProgress - Callback triggered when polling updates
  * @returns {Promise<Object>} Flattened final payload for UI consumption
  */
-async function askEca(query, userId = "guest", onProgress = null) {
+async function askEca(query, userId = "guest", sessionId = null, onProgress = null) {
   try {
-    // 1. Submit unified async task
-    const response = await axios.post(`${API_BASE_URL}/process_query`, {
-      query: query,
-      user_id: userId
-    });
+    const payload = { query: query, user_id: userId };
+    if (sessionId) payload.session_id = sessionId;
+
+    // 1. Submit unified async task via Orchestrator endpoint (includes TTS)
+    const response = await axios.post(`${API_BASE_URL}/answer`, payload);
 
     const submitData = response.data || {};
-    const taskId = submitData.task_id;
+    // Orchestrator uses request_id instead of task_id
+    const taskId = submitData.request_id || submitData.task_id;
     if (!taskId) {
-      throw new Error("Missing task_id from /process_query response");
+      throw new Error("Missing request_id from /answer response");
     }
 
     if (onProgress) {
-      onProgress(flattenTaskPayload({
-        task_id: taskId,
-        status: submitData.status || "processing",
-        progress_stage: submitData.progress_stage || "queued",
-        result: submitData.result || null,
-        error: submitData.error || null,
-      }));
+      onProgress(flattenTaskPayload(submitData));
     }
 
-    // 2. Poll until text is available, then return early while motion continues.
-    const textReadyTask = await pollTaskStatus(taskId, onProgress, { stopWhenTextReady: true });
-    const textReadyPayload = flattenTaskPayload(textReadyTask);
+    if (submitData.status === "completed" || submitData.status === "failed") {
+      const payload = flattenTaskPayload(submitData);
+      if (submitData.status === "failed" && !payload.text_answer) {
+        throw new Error(submitData.error || submitData.errors?.agenticrag || "Task failed sync");
+      }
+      return payload;
+    }
 
-    const isTerminal = textReadyTask.status === "completed" || textReadyTask.status === "failed";
+    const submitPayload = flattenTaskPayload(submitData);
+    let textReadyPayload = submitPayload;
+
+    if (!submitPayload.text_answer || !String(submitPayload.text_answer).trim()) {
+      // 2. Poll until text is available, then return early while motion continues.
+      const textReadyTask = await pollTaskStatus(taskId, onProgress, { stopWhenTextReady: true });
+      textReadyPayload = flattenTaskPayload(textReadyTask);
+    }
+
+    const isTerminal = textReadyPayload.status === "completed" || textReadyPayload.status === "failed";
     if (isTerminal) {
-      if (textReadyTask.status === "failed" && !textReadyPayload.text_answer) {
-        const terminalError = new Error(textReadyTask.error || "Task failed");
+      if (textReadyPayload.status === "failed" && !textReadyPayload.text_answer) {
+        const terminalError = new Error(textReadyPayload.error || "Task failed");
         terminalError.partial = textReadyPayload;
         throw terminalError;
       }
@@ -212,8 +228,37 @@ async function askEca(query, userId = "guest", onProgress = null) {
   }
 }
 
+// Session APIs
+async function createSession(userId) {
+  const response = await axios.post(`${API_BASE_URL}/sessions`, { user_id: userId });
+  return response.data;
+}
+
+async function listSessions(userId) {
+  const response = await axios.get(`${API_BASE_URL}/sessions/${encodeURIComponent(userId)}`);
+  const data = response.data;
+  if (!data) return [];
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data.sessions)) return data.sessions;
+  return Object.values(data);
+}
+
+async function getSession(userId, sessionId) {
+  const response = await axios.get(`${API_BASE_URL}/sessions/${encodeURIComponent(userId)}/${encodeURIComponent(sessionId)}`);
+  return response.data;
+}
+
+async function deleteSession(userId, sessionId) {
+  const response = await axios.delete(`${API_BASE_URL}/sessions/${encodeURIComponent(userId)}/${encodeURIComponent(sessionId)}`);
+  return response.data;
+}
+
 // Make it globally available for Babel/React script
 window.askEca = askEca;
 window.pollTaskStatus = pollTaskStatus;
 window.fetchChatHistory = fetchChatHistory;
 window.flattenTaskPayload = flattenTaskPayload;
+window.createSession = createSession;
+window.listSessions = listSessions;
+window.getSession = getSession;
+window.deleteSession = deleteSession;
