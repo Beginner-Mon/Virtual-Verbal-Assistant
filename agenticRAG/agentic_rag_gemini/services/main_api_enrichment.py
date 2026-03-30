@@ -25,6 +25,7 @@ async def run_async_enrichment(
     downstream_timeout: float,
     dart_url: str,
     tts_url: str,
+    semantic_bridge_prompt: Optional[str] = None,
 ) -> None:
     """Run motion/TTS asynchronously and persist results in in-memory job store."""
     errors: Dict[str, str] = {}
@@ -49,6 +50,7 @@ async def run_async_enrichment(
                     duration_seconds=motion_duration_seconds,
                     motion_format=motion_format,
                     rag_data=rag_data,
+                    semantic_bridge_prompt=semantic_bridge_prompt,
                 )
                 async_timings_ms["dart_async"] = round((time.perf_counter() - t0) * 1000, 1)
                 async_services["dart"] = {

@@ -106,12 +106,17 @@ async def get_answer_impl(request: AnswerRequest) -> AnswerResponse:
             rag_data = None
 
         motion_prompt: Optional[str] = None
+        semantic_bridge_prompt: Optional[str] = None
         if rag_data:
             motion_prompt = rag_data.get("exercise_motion_prompt")
             if not motion_prompt:
                 motion_prompt_obj = rag_data.get("motion_prompt")
                 if isinstance(motion_prompt_obj, dict):
                     motion_prompt = motion_prompt_obj.get("description") or motion_prompt_obj.get("primitive_sequence")
+            # The exercise_motion_prompt may already carry the semantic bridge
+            # result (set by the parallel Task B in app.py). We also check for
+            # an explicit field in case the AgenticRAG response includes it.
+            semantic_bridge_prompt = rag_data.get("semantic_bridge_prompt")
 
         motion_duration_seconds = resolve_motion_duration_seconds(
             rag_data or {},
@@ -120,6 +125,7 @@ async def get_answer_impl(request: AnswerRequest) -> AnswerResponse:
         debug_payload["rag_summary"] = {
             **(debug_payload.get("rag_summary") or {}),
             "motion_prompt_present": bool(motion_prompt),
+            "semantic_bridge_prompt_present": bool(semantic_bridge_prompt),
             "resolved_motion_duration_seconds": motion_duration_seconds,
         }
 
@@ -134,6 +140,7 @@ async def get_answer_impl(request: AnswerRequest) -> AnswerResponse:
                         duration_seconds=motion_duration_seconds,
                         motion_format=request.motion_format,
                         rag_data=rag_data,
+                        semantic_bridge_prompt=semantic_bridge_prompt,
                     )
                     debug_payload["timings_ms"]["dart_sync"] = round((time.perf_counter() - dart_t0) * 1000, 1)
                     debug_payload["services"]["dart"] = {
@@ -264,6 +271,7 @@ async def get_answer_impl(request: AnswerRequest) -> AnswerResponse:
                         downstream_timeout=SETTINGS.downstream_timeout,
                         dart_url=SETTINGS.dart_url,
                         tts_url=SETTINGS.tts_url,
+                        semantic_bridge_prompt=semantic_bridge_prompt if motion is None else None,
                     )
                 )
 

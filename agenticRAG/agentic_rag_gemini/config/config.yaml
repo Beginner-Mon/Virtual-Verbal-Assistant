@@ -244,11 +244,11 @@ local_orchestrator:
 # Intent-based Token Limits (dynamic max_tokens per intent type)
 # Tighter budgets = faster Gemini responses (fewer tokens to generate)
 intent_token_limits:
-  conversation: 256             # Light chat: greetings, small talk, follow-ups
-  visualize_motion: 512         # Exercise steps (3-6 steps, keep as-is)
-  knowledge_query: 1024         # RAG with docs/web (most answers fit in 600 tokens)
-  exercise_recommendation: 1024 # Structured recommendations
-  fallback: 512                 # Unknown intents use moderate limit
+  conversation: 512             # Light chat: greetings, small talk, follow-ups
+  visualize_motion: 2048        # Increased from 512 to prevent truncation (finish_reason=2)
+  knowledge_query: 2048         # RAG with docs/web (most answers fit in 600 tokens)
+  exercise_recommendation: 2048 # Structured recommendations
+  fallback: 1024                # Unknown intents use moderate limit
 
 # Ollama Service Configuration
 ollama:

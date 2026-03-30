@@ -118,12 +118,28 @@ async def generate_motion_from_dart(
     duration_seconds: float,
     motion_format: Literal["glb", "npz"],
     rag_data: Dict[str, Any],
+    semantic_bridge_prompt: Optional[str] = None,
 ) -> MotionMetadata:
-    """Generate motion by calling DART API directly."""
+    """Generate motion by calling DART API directly.
+
+    When a semantic_bridge_prompt is provided (from the parallel Semantic
+    Bridge), it takes priority over the normalized motion_prompt because it
+    has already been translated into HumanML3D-compatible vocabulary.
+    """
     normalized_prompt = normalize_motion_description(motion_prompt)
+
+    # Priority: semantic_bridge_prompt > normalized_prompt
+    effective_prompt = semantic_bridge_prompt.strip() if semantic_bridge_prompt else normalized_prompt
+    if semantic_bridge_prompt:
+        logger.info(
+            "[DART] Using semantic_bridge_prompt: '%s' (overriding normalized: '%s')",
+            effective_prompt[:60],
+            normalized_prompt[:40],
+        )
+
     resolved_motion_format = rag_data.get("motion_format") if rag_data.get("motion_format") in {"glb", "npz"} else motion_format
     dart_body: Dict[str, Any] = {
-        "text_prompt": normalized_prompt,
+        "text_prompt": effective_prompt,
         "duration_seconds": duration_seconds,
         "output_format": resolved_motion_format,
         "guidance_scale": 5.0,
@@ -144,7 +160,7 @@ async def generate_motion_from_dart(
         num_frames=dart_data.get("num_frames", 0),
         fps=dart_data.get("fps", 30),
         duration_seconds=dart_data.get("duration_seconds", 0.0),
-        text_prompt=dart_data.get("text_prompt", normalized_prompt),
+        text_prompt=dart_data.get("text_prompt", effective_prompt),
     )
 
 

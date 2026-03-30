@@ -50,6 +50,7 @@ from agents.safety_filter import SafetyFilter
 from agents.query_transform import QueryTransformer
 from agents.tools import MemoryTool, DocumentRetrievalTool, WebSearchTool
 from agents.tools.motion_generation_tool import MotionGenerationTool
+from agents.semantic_bridge import SemanticBridgeService
 from memory.memory_manager import MemoryManager
 from memory.document_store import DocumentStore
 from memory.vector_store import VectorStore
@@ -277,6 +278,19 @@ class AgenticRAGAPI:
             # Exercise Detector for hybrid entity extraction
             self.exercise_detector = get_exercise_detector()
             logger.info(f"ExerciseDetector initialized with {self.exercise_detector.get_exercise_count()} exercises")
+
+            # Semantic Bridge — parallel kinematic translator (Task B)
+            self.semantic_bridge_enabled = os.getenv(
+                "SEMANTIC_BRIDGE_ENABLED", "true"
+            ).lower() in {"1", "true", "yes", "on"}
+            self.semantic_bridge: Optional[SemanticBridgeService] = None
+            if self.semantic_bridge_enabled:
+                try:
+                    self.semantic_bridge = SemanticBridgeService()
+                    logger.info("SemanticBridge initialized — parallel motion prompting enabled")
+                except Exception as sb_exc:
+                    logger.warning("SemanticBridge init failed (%s) — disabled", sb_exc)
+                    self.semantic_bridge = None
 
             # Lightweight in-memory cache for orchestrator routing decisions.
             self._orchestrator_cache: Dict[str, Dict[str, Any]] = {}
@@ -986,6 +1000,28 @@ class AgenticRAGAPI:
             if constraints:
                 logger.info(f"Clinical Constraints extracted by orchestrator: {constraints}")
 
+            # ── Step 1.7: Fire Semantic Bridge (Task B) in parallel ────────
+            # This non-blocking call finishes in < 2s while Task A (RAG) runs.
+            # Since process_query is sync (called via asyncio.to_thread), we use
+            # concurrent.futures.ThreadPoolExecutor instead of asyncio.
+            _bridge_future = None
+            _bridge_started = False
+            _bridge_executor = None
+            detected_exercise_name = action_plan.get("exercise_name") or action_plan.get("exercise")
+            if (
+                self.semantic_bridge is not None
+                and intent != "conversation"
+                and (exercise_related_query or detected_exercise_name or wants_visualization)
+            ):
+                try:
+                    from concurrent.futures import ThreadPoolExecutor as _BridgePool
+                    _bridge_executor = _BridgePool(max_workers=1, thread_name_prefix="semantic-bridge")
+                    _bridge_future = _bridge_executor.submit(self.semantic_bridge.translate, query)
+                    _bridge_started = True
+                    logger.info("SemanticBridge Task B fired (parallel thread)")
+                except Exception as _sb_err:
+                    logger.warning("SemanticBridge dispatch failed: %s", _sb_err)
+
             # ── Step 2: Branch by intent ─────────────────────────────────────
             text_answer = ""
             exercises   = []   # populated only through the structured RAG path
@@ -1137,6 +1173,44 @@ class AgenticRAGAPI:
                     logger.info(
                         "Visualization query had no structured exercises; using HyDE prompt for motion generation"
                     )
+
+            # ── Step 2a: Harvest Semantic Bridge result (Task B) ──────────
+            semantic_bridge_prompt: Optional[str] = None
+            if _bridge_future is not None:
+                try:
+                    # Task B should already be done (<2s) by the time Task A finishes.
+                    # Give it at most 3s extra grace period.
+                    semantic_bridge_prompt = _bridge_future.result(timeout=3.0)
+                    perf["semantic_bridge_ms"] = 0.0  # already accounted in parallel time
+                    logger.info(
+                        "SemanticBridge result: '%s'",
+                        (semantic_bridge_prompt or "")[:80],
+                    )
+                except Exception as _sbr_err:
+                    logger.warning("SemanticBridge harvest failed: %s", _sbr_err)
+                finally:
+                    # Clean up the thread pool
+                    if _bridge_executor is not None:
+                        try:
+                            _bridge_executor.shutdown(wait=False, cancel_futures=True)
+                        except Exception:
+                            pass
+
+            # Priority: semantic_bridge_prompt > exercise_motion_prompt (hyde_document)
+            if semantic_bridge_prompt and exercise_motion_prompt:
+                logger.info(
+                    "SemanticBridge overrides exercise_motion_prompt: '%s' → '%s'",
+                    (exercise_motion_prompt or "")[:40],
+                    (semantic_bridge_prompt or "")[:40],
+                )
+                exercise_motion_prompt = semantic_bridge_prompt
+            elif semantic_bridge_prompt and not exercise_motion_prompt and wants_visualization:
+                # Bridge produced a result but no motion prompt was set yet
+                exercise_motion_prompt = semantic_bridge_prompt
+                logger.info(
+                    "SemanticBridge set exercise_motion_prompt (was empty): '%s'",
+                    (semantic_bridge_prompt or "")[:60],
+                )
 
             # ── Step 2b: Call MotionGenerationTool if motion was requested ────
             motion_metadata: Optional[MotionMetadata] = None

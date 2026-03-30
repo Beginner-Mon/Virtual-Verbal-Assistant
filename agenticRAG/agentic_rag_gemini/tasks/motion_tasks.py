@@ -256,64 +256,83 @@ def render_motion_job(
             meta["error"] = error
         return meta
 
-    stage = "candidate_retrieval"
-    self.update_state(state="STARTED", meta=_build_meta(stage))
-
-    query_for_selection = (user_query or motion_prompt or "").strip()
-    retrieval_start_perf = time.perf_counter()
-    try:
-        candidates = _get_retriever().retrieve_top_k(query_for_selection, k=5)
-    except Exception as exc:
-        logger.warning("Candidate retrieval failed, fallback to raw query: %s", exc)
-        candidates = [MotionCandidate("fallback", query_for_selection, query_for_selection, 0.0)]
-    timings_ms["candidate_retrieval_ms"] = round((time.perf_counter() - retrieval_start_perf) * 1000, 3)
-
-    top1 = candidates[0]
-
-    # ── Stage 2: Decision Gate — Direct Hit vs. Semantic Bridge ──
+    # ── Stage 1: Strategy Selection ──────────────────────────────
     rewritten_prompt = None
     selected_strategy = "unknown"
+    top1_candidate_id = "none"
+    top1_text = ""
+    top1_score = 0.0
 
-    if top1.score > DIRECT_HIT_THRESHOLD:
-        # ── FAST PATH: Direct Hit ──────────────────────────────
-        # High similarity means the matched HumanML3D description is already
-        # in native T2M vocabulary — no need for Gemini rewrite.
-        rewritten_prompt = top1.motion_prompt
-        selected_strategy = "direct_hit"
-        logger.info(
-            "DIRECT HIT (score=%.3f > %.2f): skipping Semantic Bridge, "
-            "using matched description directly: '%s'",
-            top1.score, DIRECT_HIT_THRESHOLD, rewritten_prompt[:80],
-        )
+    # If the parallel Semantic Bridge (from app.py) already provided a high-quality 
+    # motion prompt, use it directly and bypass redundant retrieval/reranking.
+    if motion_prompt and len(motion_prompt.split()) > 3:
+        rewritten_prompt = motion_prompt.strip()
+        selected_strategy = "pre_computed_bridge"
+        timings_ms["candidate_retrieval_ms"] = 0.0
         timings_ms["semantic_bridge_ms"] = 0.0
-        self.update_state(state="STARTED", meta=_build_meta("direct_hit"))
+        self.update_state(state="STARTED", meta=_build_meta("pre_computed_bridge"))
+        logger.info(
+            "Motion path: strategy=%s, using provided motion_prompt directly: '%s'",
+            selected_strategy, rewritten_prompt[:80],
+        )
     else:
-        # ── SLOW PATH: Semantic Bridge — rewrite via Gemini ────
-        stage = "semantic_bridge"
+        stage = "candidate_retrieval"
         self.update_state(state="STARTED", meta=_build_meta(stage))
 
-        reference_captions = [c.text_description for c in candidates]
-        bridge_start_perf = time.perf_counter()
+        query_for_selection = (user_query or motion_prompt or "").strip()
+        retrieval_start_perf = time.perf_counter()
         try:
-            rewritten_prompt = _get_reranker().rewrite_prompt(
-                user_query=query_for_selection,
-                reference_captions=reference_captions,
-                timeout_seconds=RERANK_TIMEOUT_SECONDS,
-            )
-            selected_strategy = "semantic_bridge"
+            candidates = _get_retriever().retrieve_top_k(query_for_selection, k=5)
         except Exception as exc:
-            logger.warning("Semantic Bridge failed, falling back to top-1 candidate: %s", exc)
-        timings_ms["semantic_bridge_ms"] = round((time.perf_counter() - bridge_start_perf) * 1000, 3)
+            logger.warning("Candidate retrieval failed, fallback to raw query: %s", exc)
+            candidates = [MotionCandidate("fallback", query_for_selection, query_for_selection, 0.0)]
+        timings_ms["candidate_retrieval_ms"] = round((time.perf_counter() - retrieval_start_perf) * 1000, 3)
 
-        # Fallback: if rewrite failed, use the best candidate's motion_prompt
-        if not rewritten_prompt:
+        top1 = candidates[0]
+        top1_candidate_id = top1.candidate_id
+        top1_text = top1.text_description
+        top1_score = top1.score
+
+        # ── Stage 2: Decision Gate — Direct Hit vs. Semantic Bridge ──
+        if top1.score > DIRECT_HIT_THRESHOLD:
+            # High similarity means the matched HumanML3D description is already
+            # in native T2M vocabulary — no need for Gemini rewrite.
             rewritten_prompt = top1.motion_prompt
-            selected_strategy = "embedding_fallback"
+            selected_strategy = "direct_hit"
+            logger.info(
+                "DIRECT HIT (score=%.3f > %.2f): skipping Semantic Bridge, "
+                "using matched description directly: '%s'",
+                top1.score, DIRECT_HIT_THRESHOLD, rewritten_prompt[:80],
+            )
+            timings_ms["semantic_bridge_ms"] = 0.0
+            self.update_state(state="STARTED", meta=_build_meta("direct_hit"))
+        else:
+            # SLOW PATH: Semantic Bridge — rewrite via Gemini
+            stage = "semantic_bridge"
+            self.update_state(state="STARTED", meta=_build_meta(stage))
 
-    logger.info(
-        "Motion path: strategy=%s, prompt='%s'",
-        selected_strategy, rewritten_prompt[:80],
-    )
+            reference_captions = [c.text_description for c in candidates]
+            bridge_start_perf = time.perf_counter()
+            try:
+                rewritten_prompt = _get_reranker().rewrite_prompt(
+                    user_query=query_for_selection,
+                    reference_captions=reference_captions,
+                    timeout_seconds=RERANK_TIMEOUT_SECONDS,
+                )
+                selected_strategy = "semantic_bridge"
+            except Exception as exc:
+                logger.warning("Semantic Bridge failed, falling back to top-1 candidate: %s", exc)
+            timings_ms["semantic_bridge_ms"] = round((time.perf_counter() - bridge_start_perf) * 1000, 3)
+
+            # Fallback: if rewrite failed, use the best candidate's motion_prompt
+            if not rewritten_prompt:
+                rewritten_prompt = top1.motion_prompt
+                selected_strategy = "embedding_fallback"
+
+        logger.info(
+            "Motion path: strategy=%s, prompt='%s'",
+            selected_strategy, rewritten_prompt[:80],
+        )
 
     body = {
         "text_prompt": rewritten_prompt,
@@ -436,10 +455,10 @@ def render_motion_job(
             "worker_finished_epoch_ms": worker_finished_epoch_ms,
             "timings_ms": timings_ms,
             "selected_candidate": {
-                "candidate_id": top1.candidate_id,
-                "text_description": top1.text_description,
+                "candidate_id": top1_candidate_id,
+                "text_description": top1_text,
                 "rewritten_prompt": rewritten_prompt,
-                "score": top1.score,
+                "score": top1_score,
             },
         }
     except Exception as exc:
@@ -465,7 +484,14 @@ def render_motion_job(
         try:
             failure_meta = _build_meta(stage, str(exc))
             failure_meta["worker_finished_epoch_ms"] = worker_finished_epoch_ms
-            self.update_state(state="FAILURE", meta=failure_meta)
+            # NOTE: Do NOT use state="FAILURE" here — Celery's result backend
+            # expects FAILURE results to be serialized exception tuples, not
+            # dicts.  Storing a dict under FAILURE corrupts the backend and
+            # crashes workers on startup with:
+            #   ValueError: Exception information must include the exception type
+            # Use "PROGRESS" to stash debug metadata; the re-raised RuntimeError
+            # below will let Celery set the real FAILURE state correctly.
+            self.update_state(state="PROGRESS", meta=failure_meta)
         except Exception:
             pass
         raise RuntimeError(error_message) from exc
