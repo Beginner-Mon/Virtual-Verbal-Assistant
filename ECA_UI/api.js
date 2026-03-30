@@ -5,17 +5,53 @@
 // 2) Global override: window.ECA_API_BASE_URL
 // 3) Local default: http://localhost:8000
 
-function resolveApiBaseUrl() {
+const API_BASE_STORAGE_KEY = "eca_api_base_url";
+
+function normalizeApiBaseUrl(url) {
+  return String(url || "").trim().replace(/\/$/, "");
+}
+
+function getStoredApiBaseUrl() {
+  try {
+    const stored = window.localStorage.getItem(API_BASE_STORAGE_KEY);
+    if (!stored) return null;
+    return normalizeApiBaseUrl(stored);
+  } catch (_err) {
+    return null;
+  }
+}
+
+function setStoredApiBaseUrl(url) {
+  try {
+    const normalized = normalizeApiBaseUrl(url);
+    if (!normalized) return;
+    window.localStorage.setItem(API_BASE_STORAGE_KEY, normalized);
+  } catch (_err) {
+    // Ignore storage issues (privacy mode, disabled storage, etc.)
+  }
+}
+
+function parseApiBaseFromQuery() {
   const params = new URLSearchParams(window.location.search);
   const fromQuery = params.get("api_base");
-  const fromGlobal = window.ECA_API_BASE_URL;
+  return fromQuery ? normalizeApiBaseUrl(fromQuery) : null;
+}
+
+function resolveApiBaseUrl() {
+  const fromQuery = parseApiBaseFromQuery();
+  const fromGlobal = normalizeApiBaseUrl(window.ECA_API_BASE_URL);
+  const fromStorage = getStoredApiBaseUrl();
 
   const host = String(window.location.hostname || "").toLowerCase();
   const isLocal = host === "localhost" || host === "127.0.0.1";
   const isNgrok = host.endsWith(".ngrok-free.app") || host.endsWith(".ngrok.app");
 
-  if (fromQuery || fromGlobal) {
-    return String(fromQuery || fromGlobal).replace(/\/$/, "");
+  if (fromQuery || fromGlobal || fromStorage) {
+    const chosen = fromQuery || fromGlobal || fromStorage;
+    if (fromQuery) {
+      setStoredApiBaseUrl(fromQuery);
+    }
+    return chosen;
   }
 
   // Local browser can safely call local API.
@@ -33,8 +69,28 @@ function resolveApiBaseUrl() {
   return String(window.location.origin).replace(/\/$/, "");
 }
 
-const API_BASE_URL = resolveApiBaseUrl();
+let API_BASE_URL = resolveApiBaseUrl();
 console.log("[ECA_UI] API_BASE_URL =", API_BASE_URL);
+
+function promptForApiBaseUrl() {
+  const suggested = parseApiBaseFromQuery() || getStoredApiBaseUrl() || "https://<your-api-tunnel>.ngrok-free.app";
+  const entered = window.prompt(
+    "This URL only serves the UI. Paste your API base URL (example: https://<your-api-tunnel>.ngrok-free.app)",
+    suggested
+  );
+
+  if (!entered) {
+    return null;
+  }
+
+  const normalized = normalizeApiBaseUrl(entered);
+  if (!/^https?:\/\//i.test(normalized)) {
+    throw new Error("Invalid API URL. Please include http:// or https://");
+  }
+
+  setStoredApiBaseUrl(normalized);
+  return normalized;
+}
 
 const POLL_INTERVAL_MS = 1500;
 const NOT_FOUND_RETRY_LIMIT = 3;
@@ -148,7 +204,7 @@ async function pollTaskStatus(taskId, onProgress = null, { stopWhenTextReady = f
  * @param {function} onProgress - Callback triggered when polling updates
  * @returns {Promise<Object>} Flattened final payload for UI consumption
  */
-async function askEca(query, userId = "guest", sessionId = null, onProgress = null) {
+async function askEca(query, userId = "guest", sessionId = null, onProgress = null, allowRecovery = true) {
   try {
     const payload = { query: query, user_id: userId };
     if (sessionId) payload.session_id = sessionId;
@@ -218,9 +274,22 @@ async function askEca(query, userId = "guest", sessionId = null, onProgress = nu
     };
   } catch (error) {
     const status = error?.response?.status;
-    if (status === 404 && API_BASE_URL === String(window.location.origin).replace(/\/$/, "")) {
+    const sameOrigin = API_BASE_URL === String(window.location.origin).replace(/\/$/, "");
+    if (status === 404 && sameOrigin) {
+      if (allowRecovery) {
+        try {
+          const recoveredBase = promptForApiBaseUrl();
+          if (recoveredBase) {
+            API_BASE_URL = recoveredBase;
+            console.log("[ECA_UI] API_BASE_URL updated to", API_BASE_URL);
+            return askEca(query, userId, sessionId, onProgress, false);
+          }
+        } catch (recoverErr) {
+          throw recoverErr;
+        }
+      }
       throw new Error(
-        "This ngrok URL serves UI but not /process_query. Use the API tunnel via ?api_base=<api-ngrok-url>, or use a single 8000 tunnel and open /eca/."
+        "This ngrok URL serves UI but not /answer. Provide ?api_base=<api-ngrok-url>, or open /eca/ on the single 8000 tunnel."
       );
     }
     console.error("API Error in askEca:", error);

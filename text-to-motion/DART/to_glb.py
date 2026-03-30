@@ -17,10 +17,10 @@ def parse_args():
     parser.add_argument(
         "--mode",
         choices=["single", "stack", "sequence"],
-        default="single",
+        default="stack",
         help=(
-            "single: export one representative frame to one GLB (default); "
-            "stack: legacy behavior that combines many frame meshes in one static scene; "
+            "single: export one representative frame to one GLB; "
+            "stack: export many frame meshes in one GLB (default, frame_* nodes); "
             "sequence: export one GLB per frame."
         ),
     )

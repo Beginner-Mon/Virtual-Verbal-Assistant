@@ -563,6 +563,8 @@
       const clockRef = useRef(new THREE.Clock());
       const controlsRef = useRef(null);
       const loadTokenRef = useRef(0);
+      const frameNodesRef = useRef([]);
+      const framePlaybackRef = useRef({ index: 0, acc: 0, frameDuration: 1 / 25 });
 
       const fitCameraToObject = (camera, controls, object, viewportAspect) => {
         const box = new THREE.Box3().setFromObject(object);
@@ -649,6 +651,12 @@
               scene.remove(modelRef.current);
             }
             mixerRef.current = null;
+            frameNodesRef.current = [];
+            framePlaybackRef.current = {
+              index: 0,
+              acc: 0,
+              frameDuration: 1 / Math.max(1, Number(motionMeta?.fps) || 25),
+            };
 
             const model = gltf.scene;
             // Auto-center & scale
@@ -679,6 +687,24 @@
               action.setLoop(THREE.LoopRepeat, Infinity);
               clockRef.current.start();
               action.reset().play();
+            } else {
+              // Fallback: stack-mode GLBs expose frame_* nodes with no clip.
+              // Cycle these nodes to emulate animation playback in the viewer.
+              const frameNodes = [];
+              model.traverse((node) => {
+                const match = /^frame_(\d+)$/i.exec(String(node.name || ""));
+                if (match) {
+                  frameNodes.push({ idx: Number(match[1]), node });
+                }
+              });
+
+              if (frameNodes.length > 1) {
+                frameNodes.sort((a, b) => a.idx - b.idx);
+                frameNodesRef.current = frameNodes.map((item) => item.node);
+                frameNodesRef.current.forEach((node, idx) => {
+                  node.visible = idx === 0;
+                });
+              }
             }
           },
           undefined,
@@ -694,7 +720,19 @@
         const animate = () => {
           animFrameRef.current = requestAnimationFrame(animate);
           const delta = clockRef.current.getDelta();
-          if (mixerRef.current) mixerRef.current.update(delta);
+          if (mixerRef.current) {
+            mixerRef.current.update(delta);
+          } else if (frameNodesRef.current.length > 1) {
+            const state = framePlaybackRef.current;
+            state.acc += delta;
+            while (state.acc >= state.frameDuration) {
+              state.acc -= state.frameDuration;
+              const prev = state.index;
+              state.index = (state.index + 1) % frameNodesRef.current.length;
+              frameNodesRef.current[prev].visible = false;
+              frameNodesRef.current[state.index].visible = true;
+            }
+          }
           controls.update();
           renderer.render(scene, camera);
         };
@@ -714,12 +752,13 @@
 
         return () => {
           loadTokenRef.current += 1;
+          frameNodesRef.current = [];
           window.removeEventListener("resize", onResize);
           cancelAnimationFrame(animFrameRef.current);
           renderer.dispose();
           if (el.contains(renderer.domElement)) el.removeChild(renderer.domElement);
         };
-      }, [motionUrl]);
+      }, [motionUrl, motionMeta?.fps]);
 
       const displayedFps = motionMeta?.fps || 25;
 

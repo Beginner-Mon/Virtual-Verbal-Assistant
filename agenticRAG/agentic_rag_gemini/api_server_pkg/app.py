@@ -12,6 +12,7 @@ import time
 import re
 import uuid
 import json
+from enum import Enum
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
@@ -24,7 +25,10 @@ import uvicorn
 import httpx
 from .models import (
     ChatHistoryResponse,
+    MotionMetadata,
     MotionJobStatus,
+    OrchestratorDecision,
+    QueryResponse,
     QueryRequest,
     SessionCreateRequest,
     SessionMetaResponse,
@@ -1266,8 +1270,8 @@ class AgenticRAGAPI:
                 motion=motion_metadata,
                 motion_job=motion_job,
                 orchestrator_decision=orch_decision,
-                motion_prompt=MotionPrompt(**motion_prompt) if motion_prompt else None,
-                voice_prompt=VoicePrompt(**voice_prompt) if voice_prompt else None,
+                motion_prompt=motion_prompt if motion_prompt else None,
+                voice_prompt=voice_prompt if voice_prompt else None,
                 metadata=action_plan.get("metadata", {}),
                 pipeline_trace=trace,
                 performance=perf,
@@ -1398,12 +1402,12 @@ os.makedirs("./static/videos", exist_ok=True)
 app.mount("/static", StaticFiles(directory="./static"), name="static")
 
 # Serve test-ui frontend at /ui/ so it's accessible through Ngrok
-_ui_dir = os.path.join(os.path.dirname(__file__), "..", "..", "test-ui")
+_ui_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "test-ui")
 if os.path.isdir(_ui_dir):
     app.mount("/ui", StaticFiles(directory=_ui_dir, html=True), name="test-ui")
 
 # Serve Official ECA UI at /eca/ so one port-8000 tunnel can host UI + API.
-_eca_ui_dir = os.path.join(os.path.dirname(__file__), "..", "..", "ECA_UI")
+_eca_ui_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "ECA_UI")
 if os.path.isdir(_eca_ui_dir):
     app.mount("/eca", StaticFiles(directory=_eca_ui_dir, html=True), name="eca-ui")
 
@@ -2101,7 +2105,7 @@ async def get_job_status(job_id: str, request: Request):
 async def health_check() -> Dict[str, Any]:
     """Check connectivity of all infrastructure dependencies through Port 8000.
 
-    Probes: Redis, ChromaDB, Celery workers, DART (5001), Orchestrator (8080).
+    Probes: Redis, ChromaDB, Celery workers, Orchestrator (8080).
     """
     import socket as _socket
 
@@ -2140,8 +2144,16 @@ async def health_check() -> Dict[str, Any]:
     try:
         from celery_app import celery_app as _celery
         if _celery is not None:
-            inspector = _celery.control.inspect(timeout=0.2)
-            active = inspector.active_queues()
+            import time as _time
+
+            # Use a practical timeout and one retry to avoid transient false negatives
+            # from broker/worker round-trip jitter.
+            inspector = _celery.control.inspect(timeout=1.0)
+            active = inspector.active_queues() or {}
+            if not active:
+                _time.sleep(0.15)
+                inspector = _celery.control.inspect(timeout=1.0)
+                active = inspector.active_queues() or {}
             checks["celery"] = {
                 "status": "ok" if active else "no_workers",
                 "workers": len(active) if active else 0,
@@ -2153,7 +2165,6 @@ async def health_check() -> Dict[str, Any]:
 
     # 4. Internal services via TCP probe
     for name, host, port in [
-        ("dart", "127.0.0.1", 5001),
         ("orchestrator", "127.0.0.1", 8080),
     ]:
         try:

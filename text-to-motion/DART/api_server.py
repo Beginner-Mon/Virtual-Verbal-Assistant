@@ -464,10 +464,10 @@ DART_INCLUDE_DEBUG = _env_bool("DART_INCLUDE_DEBUG", True)
 def convert_npz_to_glb(npz_path: Path, glb_path: Path, gender: Literal["female", "male"]) -> None:
     script_path = Path(__file__).with_name("to_glb.py")
     model_path = Path(__file__).resolve().parent / "data" / "smplx_lockedhead_20230207" / "models_lockedhead"
-    glb_export_mode = (os.getenv("DART_GLB_EXPORT_MODE", "single") or "single").strip().lower()
+    glb_export_mode = (os.getenv("DART_GLB_EXPORT_MODE", "stack") or "stack").strip().lower()
     if glb_export_mode not in {"single", "stack", "sequence"}:
-        logger.warning("Invalid DART_GLB_EXPORT_MODE=%r, defaulting to 'single'", glb_export_mode)
-        glb_export_mode = "single"
+        logger.warning("Invalid DART_GLB_EXPORT_MODE=%r, defaulting to 'stack'", glb_export_mode)
+        glb_export_mode = "stack"
 
     if not script_path.exists():
         raise RuntimeError(f"GLB converter script not found: {script_path}")
