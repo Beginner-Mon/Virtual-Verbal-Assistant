@@ -41,8 +41,8 @@ docker compose up -d chromadb
 
 # 2. Launch full stack (API + Orchestrator + Celery + DART + Chat UI)
 conda activate firstconda
+python run_stack.py
 
-h
 # Default frontend (Official UI)
 # http://localhost:3000
 ```
@@ -90,7 +90,6 @@ If you also need to expose the API directly, run a second tunnel for 8000:
 
 ```powershell
 ngrok http 8000
-ngrok http 3000
 ```
 
 This preserves single-origin API usage from the UI without exposing internal ports 5001/8080.

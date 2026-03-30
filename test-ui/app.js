@@ -16,6 +16,39 @@ function resolveApiBase() {
 const API_BASE = resolveApiBase();
 console.log('[test-ui] API_BASE =', API_BASE);
 
+function siblingBaseFromApi(defaultPort, fallbackUrl) {
+    try {
+        const u = new URL(API_BASE);
+        u.port = String(defaultPort);
+        return u.origin;
+    } catch {
+        return fallbackUrl;
+    }
+}
+
+function resolveServiceBase(paramName, globalName, fallbackUrl) {
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = params.get(paramName);
+    const fromGlobal = window[globalName];
+    return String(fromQuery || fromGlobal || fallbackUrl).replace(/\/$/, '');
+}
+
+const ORCHESTRATOR_BASE = resolveServiceBase(
+    'orchestrator_base',
+    'TEST_UI_ORCHESTRATOR_BASE_URL',
+    siblingBaseFromApi(8080, 'http://localhost:8080')
+);
+const DART_BASE = resolveServiceBase(
+    'dart_base',
+    'TEST_UI_DART_BASE_URL',
+    'http://localhost:5001'
+);
+const SPEECH_BASE = resolveServiceBase(
+    'speech_base',
+    'TEST_UI_SPEECH_BASE_URL',
+    siblingBaseFromApi(5000, 'http://localhost:5000')
+);
+
 const SERVICES = {
     rag: {
         name: 'AgenticRAG',
@@ -24,20 +57,60 @@ const SERVICES = {
     },
     dart: {
         name: 'DART Motion',
-        baseUrl: 'http://localhost:5001',
-        healthUrl: 'http://localhost:5001/health',
+        baseUrl: DART_BASE,
+        healthUrl: `${DART_BASE}/health`,
     },
     orchestrator: {
         name: 'Orchestrator',
-        baseUrl: 'http://localhost:8080',
-        healthUrl: 'http://localhost:8080/health',
+        baseUrl: ORCHESTRATOR_BASE,
+        healthUrl: `${ORCHESTRATOR_BASE}/health`,
     },
     speechllm: {
         name: 'SpeechLLm',
-        baseUrl: 'http://localhost:5000',
-        healthUrl: 'http://localhost:5000/health',
+        baseUrl: SPEECH_BASE,
+        healthUrl: `${SPEECH_BASE}/health`,
     },
 };
+
+function joinUrl(baseUrl, pathOrUrl) {
+    if (!pathOrUrl) return null;
+    if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+    const normalizedBase = String(baseUrl || '').replace(/\/$/, '');
+    const normalizedPath = String(pathOrUrl).startsWith('/') ? pathOrUrl : `/${pathOrUrl}`;
+    return `${normalizedBase}${normalizedPath}`;
+}
+
+function setServiceBaseUrl(serviceKey, baseUrl) {
+    const normalizedBase = String(baseUrl || '').replace(/\/$/, '');
+    SERVICES[serviceKey].baseUrl = normalizedBase;
+    SERVICES[serviceKey].healthUrl = `${normalizedBase}/health`;
+}
+
+async function initializeServiceEndpoints() {
+    try {
+        const orchestratorInfoUrl = `${SERVICES.orchestrator.baseUrl}/info`;
+        const response = await fetch(orchestratorInfoUrl, { cache: 'no-store' });
+        if (!response.ok) return;
+
+        const info = await response.json();
+        const upstream = info?.upstream_services || {};
+
+        if (upstream.dart) {
+            const dartBase = String(upstream.dart).replace(/\/generate\/?$/, '');
+            setServiceBaseUrl('dart', dartBase);
+        }
+        if (upstream.tts) {
+            const ttsBase = String(upstream.tts).replace(/\/synthesize\/?$/, '');
+            setServiceBaseUrl('speechllm', ttsBase);
+        }
+        console.log('[test-ui] Resolved service endpoints from orchestrator /info', {
+            dart: SERVICES.dart.baseUrl,
+            speechllm: SERVICES.speechllm.baseUrl,
+        });
+    } catch (err) {
+        console.warn('[test-ui] Could not resolve dynamic service endpoints, using defaults.', err);
+    }
+}
 
 // ==============================
 // Health Checks
@@ -99,7 +172,8 @@ async function checkAllHealth() {
 }
 
 // Auto-check on load
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
+    await initializeServiceEndpoints();
     checkAllHealth();
 });
 
@@ -192,8 +266,7 @@ async function testDART() {
         if (respacing !== '') body.respacing = respacing;
         if (seedStr !== '' && !isNaN(Number(seedStr))) body.seed = Number(seedStr);
 
-        // DART runs on port 5001 (WSL/Linux)
-        const response = await fetch('http://localhost:5001/generate', {
+        const response = await fetch(`${SERVICES.dart.baseUrl}/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
@@ -385,7 +458,7 @@ function showRagResult(container, data, elapsed, status) {
 
 /** Render DART /generate response with download link. */
 function showDartResult(container, data, elapsed, status) {
-    const fileUrl = data.motion_file_url ? `${SERVICES.dart.baseUrl}${data.motion_file_url}` : null;
+    const fileUrl = joinUrl(SERVICES.dart.baseUrl, data.motion_file_url);
 
     container.className = 'result-container result-success';
     container.innerHTML = `
@@ -430,9 +503,7 @@ function showDartResult(container, data, elapsed, status) {
 function showPipelineResult(container, data, elapsed, status) {
     const motion = data.motion;
     const errors = data.errors;
-    const fileUrl = motion?.motion_file_url
-        ? `${SERVICES.dart.baseUrl}${motion.motion_file_url}`
-        : null;
+    const fileUrl = joinUrl(SERVICES.dart.baseUrl, motion?.motion_file_url);
 
     const errBanner = errors
         ? `<div class="result-card-section result-error-banner">

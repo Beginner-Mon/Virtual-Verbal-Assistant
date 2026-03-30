@@ -1,4 +1,5 @@
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -88,6 +89,22 @@ def windows_to_wsl_path(path: Path) -> str:
         drive = resolved[0].lower()
         rest = resolved[2:].replace("\\", "/")
         return f"/mnt/{drive}{rest}"
+
+
+def resolve_wsl_ipv4() -> str | None:
+    """Return the first IPv4 reported by WSL, if available."""
+    try:
+        out = subprocess.check_output(
+            ["wsl", "-e", "bash", "-lc", "hostname -I"],
+            text=True,
+            stderr=subprocess.STDOUT,
+            timeout=5,
+        )
+    except Exception:
+        return None
+
+    match = re.search(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", out)
+    return match.group(0) if match else None
 
 
 def wait_for_port(host: str, port: int, timeout_seconds: int, label: str) -> bool:
@@ -219,6 +236,12 @@ def main() -> int:
     base_env["PYTHONUNBUFFERED"] = "1"
     base_env = enrich_path_for_ffmpeg(base_env)
 
+    dart_wsl_ipv4 = resolve_wsl_ipv4()
+    dart_probe_hosts = [DART_HOST]
+    if dart_wsl_ipv4 and dart_wsl_ipv4 not in dart_probe_hosts:
+        dart_probe_hosts.append(dart_wsl_ipv4)
+    dart_client_host = DART_HOST
+
     print(f"[Stack] python executable: {py_exe}")
     if not python_has_modules(py_exe, REQUIRED_PY_MODULES):
         print(
@@ -243,8 +266,14 @@ def main() -> int:
         signal.signal(signal.SIGTERM, request_shutdown)
 
     try:
-        if is_port_open(DART_HOST, DART_PORT):
-            print(f"[Stack] DART already available at {DART_HOST}:{DART_PORT}, skip starting WSL DART")
+        existing_dart_host = next(
+            (host for host in dart_probe_hosts if is_port_open(host, DART_PORT)),
+            None,
+        )
+
+        if existing_dart_host is not None:
+            dart_client_host = existing_dart_host
+            print(f"[Stack] DART already available at {existing_dart_host}:{DART_PORT}, skip starting WSL DART")
         else:
             dart_wsl_root = windows_to_wsl_path(DART_ROOT)
             dart_cmd = (
@@ -257,14 +286,27 @@ def main() -> int:
             processes.append(("DART", dart_proc))
             print(f"[Stack] DART is loading model in background (may take 2-5 min)... other services starting now.")
 
+            # On some Windows+WSL setups localhost forwarding is disabled;
+            # in that case DART is reachable through the WSL VM IP.
+            dart_client_host = dart_wsl_ipv4 or DART_HOST
+
             def _dart_watcher():
-                if wait_for_port(DART_HOST, DART_PORT, DART_START_TIMEOUT_SECONDS, "DART"):
+                if wait_for_port(dart_client_host, DART_PORT, DART_START_TIMEOUT_SECONDS, "DART"):
                     print("[Stack] ✓ DART is now ready — motion generation enabled.")
                 else:
                     print(f"[Stack] ⚠ DART did not start within {DART_START_TIMEOUT_SECONDS}s. Motion generation will be unavailable.")
 
             dart_thread = threading.Thread(target=_dart_watcher, daemon=True)
             dart_thread.start()
+
+        if dart_client_host != DART_HOST:
+            print(
+                f"[Stack] DART localhost forwarding unavailable; "
+                f"using WSL IP for clients: {dart_client_host}:{DART_PORT}"
+            )
+
+        base_env["DART_HOST"] = dart_client_host
+        base_env["DART_URL"] = f"http://{dart_client_host}:{DART_PORT}"
 
         if is_port_open(REDIS_HOST, REDIS_PORT):
             print(f"[Stack] redis already available at {REDIS_HOST}:{REDIS_PORT}, skip starting redis-server")

@@ -8,8 +8,18 @@ import os
 import json
 from typing import List, Dict, Any, Optional
 
-import google.generativeai as genai
-from google.generativeai import types
+try:
+    from google import genai as modern_genai
+    from google.genai import types as modern_types
+    legacy_genai = None
+    legacy_types = None
+    _SDK_FLAVOR = "modern"
+except ImportError:  # pragma: no cover - exercised in environments with legacy SDK only
+    modern_genai = None
+    modern_types = None
+    import google.generativeai as legacy_genai
+    from google.generativeai import types as legacy_types
+    _SDK_FLAVOR = "legacy"
 
 from utils.logger import get_logger
 from utils.api_key_manager import get_api_key_manager, APIKeyManager
@@ -38,8 +48,15 @@ class GeminiClient:
         if not self.api_key:
             raise ValueError("No Gemini API key found. Set GEMINI_API_KEYS or GEMINI_API_KEY in environment.")
         
-        # Configure Gemini with current key
-        genai.configure(api_key=self.api_key)
+        self._sdk_flavor = _SDK_FLAVOR
+        self._modern_client = None
+
+        # Configure Gemini client with current key.
+        if self._sdk_flavor == "modern" and modern_genai is not None:
+            self._modern_client = modern_genai.Client(api_key=self.api_key)
+        else:
+            legacy_genai.configure(api_key=self.api_key)
+            self._sdk_flavor = "legacy"
         
         logger.info(f"Initialized GeminiClient with API key {self.key_manager.get_current_key_index() + 1}/{self.key_manager.get_total_keys()}")
     
@@ -77,41 +94,54 @@ class GeminiClient:
             # Convert messages to Gemini format
             gemini_contents = self._convert_messages_to_gemini(messages)
             
-            # Create model instance
-            model_instance = genai.GenerativeModel(model_name=model)
-            
             # Build generation config.
-            # NOTE: We intentionally do NOT set response_mime_type='application/json'
-            # here even when the caller requests JSON mode via response_format.
-            # Enforcing JSON mode at the Gemini API level causes finish_reason=OTHER
-            # on complex/long prompts, which triggers the key-rotation retry loop and
-            # exhausts all API keys.  JSON output is enforced through prompt instruction
-            # instead, and clean_json_response() strips any markdown fences afterward.
-            try:
-                # Newer API (0.4.0+)
-                config = types.GenerateContentConfig(
+            # NOTE: We intentionally do NOT enforce response_mime_type='application/json'
+            # at API level because strict JSON mode can cause finish_reason=OTHER on
+            # long prompts, which leads to aggressive key rotation.
+            if self._sdk_flavor == "modern" and self._modern_client is not None:
+                config = modern_types.GenerateContentConfig(
                     temperature=temperature,
                     max_output_tokens=max_tokens,
                 )
-                response = model_instance.generate_content(
-                    contents=gemini_contents,
-                    generation_config=config,
-                    stream=stream
-                )
-            except (AttributeError, TypeError):
-                # Older API (0.3.x)
-                logger.debug("Using older google-generativeai API (0.3.x)")
-                response = model_instance.generate_content(
-                    contents=gemini_contents,
-                    generation_config=genai.types.GenerationConfig(
+                if stream:
+                    response = self._modern_client.models.generate_content_stream(
+                        model=model,
+                        contents=gemini_contents,
+                        config=config,
+                    )
+                else:
+                    response = self._modern_client.models.generate_content(
+                        model=model,
+                        contents=gemini_contents,
+                        config=config,
+                    )
+            else:
+                model_instance = legacy_genai.GenerativeModel(model_name=model)
+                try:
+                    # Newer legacy API variants
+                    config = legacy_types.GenerateContentConfig(
                         temperature=temperature,
-                        candidate_count=1,
                         max_output_tokens=max_tokens,
-                        top_p=0.95,
-                        top_k=40
-                    ),
-                    stream=stream
-                )
+                    )
+                    response = model_instance.generate_content(
+                        contents=gemini_contents,
+                        generation_config=config,
+                        stream=stream,
+                    )
+                except (AttributeError, TypeError):
+                    # Older API (0.3.x)
+                    logger.debug("Using older google-generativeai API (0.3.x)")
+                    response = model_instance.generate_content(
+                        contents=gemini_contents,
+                        generation_config=legacy_genai.types.GenerationConfig(
+                            temperature=temperature,
+                            candidate_count=1,
+                            max_output_tokens=max_tokens,
+                            top_p=0.95,
+                            top_k=40,
+                        ),
+                        stream=stream,
+                    )
             
             if stream:
                 return self._yield_stream(response)
@@ -131,12 +161,18 @@ class GeminiClient:
                         retry_count=_retry_count
                     )
             
-            if not hasattr(response, 'candidates') or not response.candidates or len(response.candidates) == 0:
+            candidates = getattr(response, "candidates", None) or []
+            if not candidates:
+                # Modern SDK can still expose direct response.text in some cases.
+                direct_text = getattr(response, "text", None)
+                if direct_text:
+                    self.key_manager.reset_success()
+                    return direct_text
                 error_msg = "Gemini API returned no candidates"
                 logger.error(error_msg)
                 raise RuntimeError(error_msg)
-            
-            candidate = response.candidates[0]
+
+            candidate = candidates[0]
             
             # Check finish reason
             if hasattr(candidate, 'finish_reason'):
@@ -178,8 +214,13 @@ class GeminiClient:
                 error_msg = "Gemini response has no content parts"
                 logger.error(error_msg)
                 raise RuntimeError(error_msg)
-            
-            result = candidate.content.parts[0].text
+
+            part0 = candidate.content.parts[0]
+            result = getattr(part0, "text", "")
+            if not result:
+                direct_text = getattr(response, "text", None)
+                if direct_text:
+                    result = direct_text
             
             # Ensure result is a string
             if isinstance(result, dict):
@@ -221,6 +262,16 @@ class GeminiClient:
             for chunk in response_it:
                 if hasattr(chunk, 'text') and chunk.text:
                     yield chunk.text
+                else:
+                    chunk_candidates = getattr(chunk, "candidates", None) or []
+                    if chunk_candidates:
+                        first = chunk_candidates[0]
+                        content = getattr(first, "content", None)
+                        parts = getattr(content, "parts", None) if content is not None else None
+                        if parts:
+                            text = getattr(parts[0], "text", None)
+                            if text:
+                                yield text
         except Exception as e:
             logger.error(f"Gemini stream error: {e}")
             yield f"\n[STREAM_ERROR] {str(e)}"
@@ -280,7 +331,10 @@ class GeminiClient:
         """
         if self.key_manager.rotate_to_next_key():
             self.api_key = self.key_manager.get_current_key()
-            genai.configure(api_key=self.api_key)
+            if self._sdk_flavor == "modern" and modern_genai is not None:
+                self._modern_client = modern_genai.Client(api_key=self.api_key)
+            else:
+                legacy_genai.configure(api_key=self.api_key)
             logger.info(f"Switched to API key {self.key_manager.get_current_key_index() + 1}/{self.key_manager.get_total_keys()}")
             return True
         return False
@@ -352,12 +406,25 @@ class GeminiClient:
             embeddings = []
             
             for text in texts:
-                result = genai.embed_content(
-                    model=model,
-                    content=text,
-                    task_type="retrieval_document"
-                )
-                embeddings.append(result['embedding'])
+                if self._sdk_flavor == "modern" and self._modern_client is not None:
+                    result = self._modern_client.models.embed_content(
+                        model=model,
+                        contents=text,
+                        config=modern_types.EmbedContentConfig(
+                            task_type="RETRIEVAL_DOCUMENT"
+                        ),
+                    )
+                    values = []
+                    if getattr(result, "embeddings", None):
+                        values = getattr(result.embeddings[0], "values", []) or []
+                    embeddings.append(values)
+                else:
+                    result = legacy_genai.embed_content(
+                        model=model,
+                        content=text,
+                        task_type="retrieval_document"
+                    )
+                    embeddings.append(result['embedding'])
             
             logger.debug(f"Generated {len(embeddings)} embeddings")
             return embeddings

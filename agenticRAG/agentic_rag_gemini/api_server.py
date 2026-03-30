@@ -2232,7 +2232,7 @@ async def get_job_status(job_id: str, request: Request):
 async def health_check() -> Dict[str, Any]:
     """Check connectivity of all infrastructure dependencies through Port 8000.
 
-    Probes: Redis, ChromaDB, Celery workers, DART (5001), Orchestrator (8080).
+    Probes: Redis, ChromaDB, Celery workers, Orchestrator (8080).
     """
     import socket as _socket
 
@@ -2284,7 +2284,6 @@ async def health_check() -> Dict[str, Any]:
 
     # 4. Internal services via TCP probe
     for name, host, port in [
-        ("dart", "127.0.0.1", 5001),
         ("orchestrator", "127.0.0.1", 8080),
     ]:
         try:
