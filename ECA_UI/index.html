@@ -1043,18 +1043,10 @@
             const historySessions = await window.listSessions(USER_ID);
             if (!cancelled) {
               setSessions(historySessions);
-              // Auto-load last session or start new one
-              if (historySessions.length > 0) {
-                 const latest = historySessions[0];
-                 if(latest && latest.session_id) {
-                    loadSession(latest.session_id);
-                 }
-              } else {
-                 // Lazy init
-                 setActiveSession(null);
-                 setMessages(INIT);
-                 setMotionKey("idle");
-              }
+              // Always start a new blank session upon loading the page
+              setActiveSession(null);
+              setMessages(INIT);
+              setMotionKey("idle");
             }
           } catch (error) {
             console.error("Failed to fetch history", error);
