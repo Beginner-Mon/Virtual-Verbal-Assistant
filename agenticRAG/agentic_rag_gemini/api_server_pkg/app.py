@@ -230,7 +230,7 @@ class AgenticRAGAPI:
             self.motion_async_enabled = os.getenv("MOTION_ASYNC_ENABLED", "false").lower() in {
                 "1", "true", "yes", "on"
             }
-            self.motion_default_duration_seconds = _env_float("MOTION_DEFAULT_DURATION_SECONDS", 12.0)
+            self.motion_default_duration_seconds = _env_float("MOTION_DEFAULT_DURATION_SECONDS", 5.33)
             self.motion_min_duration_seconds = _env_float("MOTION_MIN_DURATION_SECONDS", 1.0)
             self.motion_max_duration_seconds = _env_float("MOTION_MAX_DURATION_SECONDS", 120.0)
             if self.motion_max_duration_seconds < self.motion_min_duration_seconds:

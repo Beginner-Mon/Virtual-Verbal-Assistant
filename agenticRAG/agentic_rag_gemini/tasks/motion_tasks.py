@@ -35,7 +35,7 @@ def _get_cache() -> CacheService:
     return CacheService()
 
 DART_GENERATE_ENDPOINT = os.getenv("DART_GENERATE_ENDPOINT", "http://localhost:5001/generate")
-MOTION_DEFAULT_DURATION_SECONDS = float(os.getenv("MOTION_DEFAULT_DURATION_SECONDS", "12"))
+MOTION_DEFAULT_DURATION_SECONDS = float(os.getenv("MOTION_DEFAULT_DURATION_SECONDS", "5.33"))
 RERANK_TIMEOUT_SECONDS = int(os.getenv("MOTION_RERANK_TIMEOUT_SECONDS", "8"))
 MOTION_VIDEO_ROOT = os.getenv("MOTION_VIDEO_ROOT", "./static/videos")
 MOTION_GLB_ROOT = os.getenv("MOTION_GLB_ROOT", "./static/motions")

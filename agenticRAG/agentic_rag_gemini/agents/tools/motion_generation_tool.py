@@ -22,7 +22,7 @@ logger = get_logger(__name__)
 # Defaults — can be overridden at construction time
 _DEFAULT_ENDPOINT = "http://localhost:5001/generate"
 _DEFAULT_TIMEOUT  = 30   # seconds
-_DEFAULT_DURATION_SECONDS = float(os.getenv("MOTION_DEFAULT_DURATION_SECONDS", "12"))
+_DEFAULT_DURATION_SECONDS = float(os.getenv("MOTION_DEFAULT_DURATION_SECONDS", "5.33"))
 
 
 def _normalize_motion_prompt(prompt: str) -> str:
