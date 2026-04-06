@@ -2198,18 +2198,26 @@ async def health_check() -> Dict[str, Any]:
     except Exception as exc:
         checks["redis"] = {"status": "unreachable", "error": str(exc)}
 
-    # 2. Vector Database (ChromaDB or Qdrant)
+    # 2. Vector Database (ChromaDB or Pinecone)
     vector_db_type = os.getenv("VECTOR_DB_TYPE", "chromadb").strip().lower()
-    if vector_db_type == "qdrant":
+    if vector_db_type == "pinecone":
         try:
-            from qdrant_client import QdrantClient
-            qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
-            qdrant_key = os.getenv("QDRANT_API_KEY") or None
-            qc = QdrantClient(url=qdrant_url, api_key=qdrant_key, timeout=5)
-            colls = qc.get_collections()
-            checks["vector_db"] = {"status": "ok", "backend": "qdrant", "collections": len(colls.collections)}
+            from pinecone import Pinecone
+            pc_key = os.getenv("PINECONE_API_KEY") or ""
+            pc_index = os.getenv("PINECONE_INDEX_NAME", "kinetichat")
+            if pc_key:
+                pc = Pinecone(api_key=pc_key)
+                idx = pc.Index(name=pc_index)
+                stats = idx.describe_index_stats()
+                checks["vector_db"] = {
+                    "status": "ok",
+                    "backend": "pinecone",
+                    "total_vectors": stats.get("total_vector_count", 0),
+                }
+            else:
+                checks["vector_db"] = {"status": "not_configured", "backend": "pinecone"}
         except Exception as exc:
-            checks["vector_db"] = {"status": "unreachable", "backend": "qdrant", "error": str(exc)}
+            checks["vector_db"] = {"status": "unreachable", "backend": "pinecone", "error": str(exc)}
     else:
         try:
             import chromadb

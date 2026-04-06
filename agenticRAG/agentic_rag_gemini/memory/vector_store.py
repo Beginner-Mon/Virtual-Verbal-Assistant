@@ -5,12 +5,11 @@ embeddings of user conversations and context.
 
 Supports two backends:
   - **ChromaDB** (local Docker or PersistentClient)
-  - **Qdrant**   (local or Qdrant Cloud)
+  - **Pinecone** (serverless cloud)
 
-When using Qdrant, four named collections are created:
+When using Pinecone, a single index is used with four namespaces:
   conversations, documents, chat_summaries, humanml3d_library
-User isolation is achieved via a ``user_id`` metadata filter (payload field)
-rather than per-user collections.
+User isolation is achieved via a ``user_id`` metadata filter.
 """
 
 from typing import List, Dict, Any, Optional
@@ -28,17 +27,17 @@ logger = get_logger(__name__)
 PUBLIC_COLLECTION_NAME = "humanml3d_library"
 DEFAULT_GUEST_USER_ID = "guest"
 
-# Qdrant collection names
-_QDRANT_CONVERSATIONS = "conversations"
-_QDRANT_DOCUMENTS = "documents"
-_QDRANT_CHAT_SUMMARIES = "chat_summaries"
-_QDRANT_PUBLIC = PUBLIC_COLLECTION_NAME
+# Pinecone namespace names (used as namespaces within a single index)
+_NS_CONVERSATIONS = "conversations"
+_NS_DOCUMENTS = "documents"
+_NS_CHAT_SUMMARIES = "chat_summaries"
+_NS_PUBLIC = PUBLIC_COLLECTION_NAME
 
 
 class VectorStore:
     """Vector database wrapper for memory storage and retrieval.
     
-    Supports ChromaDB and Qdrant backends for storing document embeddings
+    Supports ChromaDB and Pinecone backends for storing document embeddings
     and performing similarity search.
     """
     
@@ -53,8 +52,8 @@ class VectorStore:
         
         if self.db_type == "chromadb":
             self._init_chromadb()
-        elif self.db_type == "qdrant":
-            self._init_qdrant()
+        elif self.db_type == "pinecone":
+            self._init_pinecone()
         else:
             raise ValueError(f"Unsupported vector database type: {self.db_type}")
         
@@ -127,45 +126,44 @@ class VectorStore:
         )
 
     # ==================================================================
-    # Qdrant initialisation (rewritten for cloud support)
+    # Pinecone initialisation
     # ==================================================================
 
-    def _init_qdrant(self):
-        """Initialize Qdrant client and collections.
+    def _init_pinecone(self):
+        """Initialize Pinecone client and index.
 
-        Reads ``qdrant.url`` and ``qdrant.api_key`` from config / env.
-        Creates four collections if they don't exist:
-            conversations, documents, chat_summaries, humanml3d_library
+        Reads ``pinecone.api_key`` and ``pinecone.index_name`` from config / env.
+        Uses namespaces within a single index for different collection types.
         """
-        from qdrant_client import QdrantClient
-        from qdrant_client.models import Distance, VectorParams
+        from pinecone import Pinecone
 
-        qdrant_config = self.config.qdrant
+        pinecone_config = self.config.pinecone
 
-        url = os.getenv("QDRANT_URL") or qdrant_config.get("url", "http://localhost:6333")
-        api_key = os.getenv("QDRANT_API_KEY") or qdrant_config.get("api_key") or None
-        vector_size = int(qdrant_config.get("vector_size", 384))
+        api_key = os.getenv("PINECONE_API_KEY") or pinecone_config.get("api_key", "")
+        index_name = os.getenv("PINECONE_INDEX_NAME") or pinecone_config.get("index_name", "kinetichat")
+        index_host = os.getenv("PINECONE_INDEX_HOST") or pinecone_config.get("index_host", "")
 
-        self.client = QdrantClient(url=url, api_key=api_key, timeout=30)
-        self._qdrant_vector_size = vector_size
-        logger.info("Qdrant client connected to %s", url)
+        if not api_key:
+            raise ValueError(
+                "Pinecone API key is required. Set PINECONE_API_KEY env var "
+                "or pinecone.api_key in config.yaml"
+            )
 
-        # Ensure all required collections exist
-        existing = {c.name for c in self.client.get_collections().collections}
+        self.client = Pinecone(api_key=api_key)
 
-        for coll_name in (_QDRANT_CONVERSATIONS, _QDRANT_DOCUMENTS,
-                          _QDRANT_CHAT_SUMMARIES, _QDRANT_PUBLIC):
-            if coll_name not in existing:
-                self.client.create_collection(
-                    collection_name=coll_name,
-                    vectors_config=VectorParams(
-                        size=vector_size,
-                        distance=Distance.COSINE,
-                    ),
-                )
-                logger.info("Created Qdrant collection: %s", coll_name)
-            else:
-                logger.info("Qdrant collection already exists: %s", coll_name)
+        if index_host:
+            self._pinecone_index = self.client.Index(name=index_name, host=index_host)
+        else:
+            self._pinecone_index = self.client.Index(name=index_name)
+
+        # Verify connectivity
+        stats = self._pinecone_index.describe_index_stats()
+        logger.info(
+            "Pinecone connected: index=%s, total_vectors=%d, namespaces=%s",
+            index_name,
+            stats.get("total_vector_count", 0),
+            list(stats.get("namespaces", {}).keys()),
+        )
 
     # ==================================================================
     # Helpers
@@ -214,31 +212,18 @@ class VectorStore:
         return self.client.get_collection(name=PUBLIC_COLLECTION_NAME, embedding_function=None)
 
     # ------------------------------------------------------------------
-    # Qdrant helper: map collection_type → Qdrant collection name
+    # Pinecone helper: map collection_type → namespace
     # ------------------------------------------------------------------
 
-    def _qdrant_collection(self, collection_type: str) -> str:
-        """Return the Qdrant collection name for a logical collection type."""
+    def _pinecone_ns(self, collection_type: str) -> str:
+        """Return the Pinecone namespace for a logical collection type."""
         mapping = {
-            "conversations": _QDRANT_CONVERSATIONS,
-            "documents": _QDRANT_DOCUMENTS,
-            "chat_summaries": _QDRANT_CHAT_SUMMARIES,
-            "public": _QDRANT_PUBLIC,
+            "conversations": _NS_CONVERSATIONS,
+            "documents": _NS_DOCUMENTS,
+            "chat_summaries": _NS_CHAT_SUMMARIES,
+            "public": _NS_PUBLIC,
         }
-        return mapping.get(collection_type, _QDRANT_CONVERSATIONS)
-
-    @staticmethod
-    def _qdrant_uuid(raw_id: str) -> str:
-        """Ensure *raw_id* is a valid UUID string (Qdrant requires UUIDs for named vectors).
-
-        If the incoming ID is already a valid UUID it is returned as-is;
-        otherwise we derive a deterministic UUID-5 from it.
-        """
-        try:
-            uuid.UUID(raw_id)
-            return raw_id
-        except (ValueError, AttributeError):
-            return str(uuid.uuid5(uuid.NAMESPACE_URL, str(raw_id)))
+        return mapping.get(collection_type, _NS_CONVERSATIONS)
 
     # ==================================================================
     # add_documents
@@ -253,18 +238,7 @@ class VectorStore:
         collection_type: str = "conversations",
         user_id: Optional[str] = None,
     ) -> List[str]:
-        """Add documents to vector store.
-        
-        Args:
-            documents: List of document texts
-            embeddings: List of embedding vectors
-            metadata: List of metadata dictionaries for each document
-            ids: Optional list of document IDs. Generated if not provided.
-            collection_type: "conversations" or "documents"
-            
-        Returns:
-            List of document IDs
-        """
+        """Add documents to vector store."""
         if ids is None:
             ids = [str(uuid.uuid4()) for _ in documents]
         
@@ -280,7 +254,6 @@ class VectorStore:
         
         resolved_user_id = self._resolve_user_id(user_id or metadata[0].get("user_id"))
 
-        # Select collection based on type
         if self.db_type == "chromadb":
             collection = self._get_chroma_collection(collection_type, resolved_user_id, create_if_missing=True)
             collection.add(
@@ -289,25 +262,17 @@ class VectorStore:
                 metadatas=metadata,
                 ids=ids
             )
-        elif self.db_type == "qdrant":
-            from qdrant_client.models import PointStruct
-
-            coll = self._qdrant_collection(collection_type)
-            points = []
+        elif self.db_type == "pinecone":
+            ns = self._pinecone_ns(collection_type)
+            vectors = []
             for i, (id_, doc, embedding, meta) in enumerate(zip(ids, documents, embeddings, metadata)):
-                payload = {
+                pinecone_meta = {
                     "text": doc,
                     "user_id": resolved_user_id,
                     **meta,
                 }
-                points.append(
-                    PointStruct(
-                        id=self._qdrant_uuid(id_),
-                        vector=embedding,
-                        payload=payload,
-                    )
-                )
-            self.client.upsert(collection_name=coll, points=points)
+                vectors.append((id_, embedding, pinecone_meta))
+            self._pinecone_index.upsert(vectors=vectors, namespace=ns)
         
         logger.info(
             "Added %d documents to vector store (collection_type=%s user_id=%s)",
@@ -334,7 +299,6 @@ class VectorStore:
             resolved_user_id = self._resolve_user_id(user_id or user_from_filter)
             collection = self._get_chroma_collection("conversations", resolved_user_id, create_if_missing=True)
 
-            # Handle multiple filter conditions with $and operator
             where_clause = dict(filter_metadata or {})
             where_clause.pop("user_id", None)
             if not where_clause:
@@ -348,7 +312,6 @@ class VectorStore:
                 where=where_clause
             )
             
-            # Format results
             formatted_results = []
             for i in range(len(results["ids"][0])):
                 formatted_results.append({
@@ -361,8 +324,8 @@ class VectorStore:
             
             return formatted_results
         
-        elif self.db_type == "qdrant":
-            return self._qdrant_search(
+        elif self.db_type == "pinecone":
+            return self._pinecone_search(
                 collection_type="conversations",
                 query_embedding=query_embedding,
                 top_k=top_k,
@@ -370,7 +333,6 @@ class VectorStore:
                 user_id=user_id,
             )
         
-        # Fallback for unsupported db types
         logger.warning(f"Unsupported database type for search: {self.db_type}")
         return []
 
@@ -420,19 +382,11 @@ class VectorStore:
                 metadatas=metadata,
                 ids=ids,
             )
-        elif self.db_type == "qdrant":
-            from qdrant_client.models import PointStruct
-
-            points = []
+        elif self.db_type == "pinecone":
+            vectors = []
             for id_, doc, embedding, meta in zip(ids, documents, embeddings, metadata):
-                points.append(
-                    PointStruct(
-                        id=self._qdrant_uuid(id_),
-                        vector=embedding,
-                        payload={"text": doc, **(meta or {})},
-                    )
-                )
-            self.client.upsert(collection_name=_QDRANT_PUBLIC, points=points)
+                vectors.append((id_, embedding, {"text": doc, **(meta or {})}))
+            self._pinecone_index.upsert(vectors=vectors, namespace=_NS_PUBLIC)
 
         logger.info("Added %d entries to public collection %s", len(documents), PUBLIC_COLLECTION_NAME)
         return ids
@@ -455,7 +409,6 @@ class VectorStore:
             resolved_user_id = self._resolve_user_id(user_id or user_from_filter)
             documents_collection = self._get_chroma_collection("documents", resolved_user_id, create_if_missing=True)
 
-            # Handle multiple filter conditions with $and operator
             where_clause = dict(filter_metadata or {})
             where_clause.pop("user_id", None)
             if not where_clause:
@@ -469,7 +422,6 @@ class VectorStore:
                 where=where_clause
             )
             
-            # Format results
             formatted_results = []
             for i in range(len(results["ids"][0])):
                 formatted_results.append({
@@ -502,8 +454,8 @@ class VectorStore:
 
             return formatted_results
 
-        elif self.db_type == "qdrant":
-            results = self._qdrant_search(
+        elif self.db_type == "pinecone":
+            results = self._pinecone_search(
                 collection_type="documents",
                 query_embedding=query_embedding,
                 top_k=top_k,
@@ -512,7 +464,7 @@ class VectorStore:
             )
 
             if include_public:
-                public_results = self._qdrant_search(
+                public_results = self._pinecone_search(
                     collection_type="public",
                     query_embedding=query_embedding,
                     top_k=top_k,
@@ -559,23 +511,15 @@ class VectorStore:
                 metadatas=[metadata],
                 ids=[id]
             )
-        elif self.db_type == "qdrant":
-            from qdrant_client.models import PointStruct
-
-            payload = {
+        elif self.db_type == "pinecone":
+            pinecone_meta = {
                 "text": summary,
                 "user_id": resolved_user_id,
                 **metadata,
             }
-            self.client.upsert(
-                collection_name=_QDRANT_CHAT_SUMMARIES,
-                points=[
-                    PointStruct(
-                        id=self._qdrant_uuid(id),
-                        vector=embedding,
-                        payload=payload,
-                    )
-                ],
+            self._pinecone_index.upsert(
+                vectors=[(id, embedding, pinecone_meta)],
+                namespace=_NS_CHAT_SUMMARIES,
             )
         
         logger.info(f"Added chat summary with ID: {id}")
@@ -623,8 +567,8 @@ class VectorStore:
             
             return formatted_results
         
-        elif self.db_type == "qdrant":
-            return self._qdrant_search(
+        elif self.db_type == "pinecone":
+            return self._pinecone_search(
                 collection_type="chat_summaries",
                 query_embedding=query_embedding,
                 top_k=top_k,
@@ -635,10 +579,10 @@ class VectorStore:
         return []
 
     # ==================================================================
-    # Qdrant unified search helper
+    # Pinecone unified search helper
     # ==================================================================
 
-    def _qdrant_search(
+    def _pinecone_search(
         self,
         collection_type: str,
         query_embedding: List[float],
@@ -646,45 +590,42 @@ class VectorStore:
         filter_metadata: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Generic Qdrant similarity search with optional user_id + metadata filter."""
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        """Generic Pinecone similarity search with optional user_id + metadata filter."""
+        ns = self._pinecone_ns(collection_type)
 
-        coll = self._qdrant_collection(collection_type)
+        # Build Pinecone filter dict
+        pinecone_filter: Dict[str, Any] = {}
 
-        conditions: list = []
-        # User-scoped filter (skip for public collection)
+        # User-scoped filter (skip for public namespace)
         if collection_type != "public":
             resolved_uid = self._resolve_user_id(
                 user_id or (filter_metadata or {}).get("user_id")
             )
-            conditions.append(
-                FieldCondition(key="user_id", match=MatchValue(value=resolved_uid))
-            )
+            pinecone_filter["user_id"] = {"$eq": resolved_uid}
 
         # Extra metadata filters
         extra = dict(filter_metadata or {})
         extra.pop("user_id", None)
         for k, v in extra.items():
-            conditions.append(FieldCondition(key=k, match=MatchValue(value=v)))
+            pinecone_filter[k] = {"$eq": v}
 
-        query_filter = Filter(must=conditions) if conditions else None
-
-        results = self.client.search(
-            collection_name=coll,
-            query_vector=query_embedding,
-            limit=top_k,
-            query_filter=query_filter,
+        results = self._pinecone_index.query(
+            vector=query_embedding,
+            top_k=top_k,
+            namespace=ns,
+            filter=pinecone_filter if pinecone_filter else None,
+            include_metadata=True,
         )
 
         formatted: List[Dict[str, Any]] = []
-        for point in results:
-            payload = point.payload or {}
+        for match in results.get("matches", []):
+            meta = match.get("metadata", {})
             formatted.append({
-                "id": str(point.id),
-                "document": payload.get("text", ""),
-                "metadata": {k: v for k, v in payload.items() if k != "text"},
-                "distance": 1 - point.score,
-                "similarity": point.score,
+                "id": match["id"],
+                "document": meta.get("text", ""),
+                "metadata": {k: v for k, v in meta.items() if k != "text"},
+                "distance": 1 - match["score"],
+                "similarity": match["score"],
             })
         return formatted
 
@@ -713,14 +654,9 @@ class VectorStore:
         if self.db_type == "chromadb":
             collection = self._get_chroma_collection(collection_type, self._resolve_user_id(user_id), create_if_missing=True)
             collection.delete(ids=ids)
-        elif self.db_type == "qdrant":
-            from qdrant_client.models import PointIdsList
-            coll = self._qdrant_collection(collection_type)
-            qdrant_ids = [self._qdrant_uuid(i) for i in ids]
-            self.client.delete(
-                collection_name=coll,
-                points_selector=PointIdsList(points=qdrant_ids),
-            )
+        elif self.db_type == "pinecone":
+            ns = self._pinecone_ns(collection_type)
+            self._pinecone_index.delete(ids=ids, namespace=ns)
         
         logger.info(f"Deleted {len(ids)} documents from vector store")
         return True
@@ -756,28 +692,22 @@ class VectorStore:
                 sum_remaining = self.chat_summaries_collection.count()
                 
                 if conv_remaining == 0 and doc_remaining == 0 and sum_remaining == 0:
-                    logger.info("✅ Successfully cleared all ChromaDB data")
+                    logger.info("Successfully cleared all ChromaDB data")
                     return True
                 else:
-                    logger.warning(f"⚠️ Data may remain - Conversations: {conv_remaining}, Documents: {doc_remaining}, Summaries: {sum_remaining}")
+                    logger.warning(f"Data may remain - Conversations: {conv_remaining}, Documents: {doc_remaining}, Summaries: {sum_remaining}")
                     return False
                     
-            elif self.db_type == "qdrant":
-                from qdrant_client.models import Filter
-                logger.info("Clearing all Qdrant data...")
-
-                for coll_name in (_QDRANT_CONVERSATIONS, _QDRANT_DOCUMENTS, _QDRANT_CHAT_SUMMARIES):
+            elif self.db_type == "pinecone":
+                logger.info("Clearing all Pinecone data...")
+                for ns in (_NS_CONVERSATIONS, _NS_DOCUMENTS, _NS_CHAT_SUMMARIES):
                     try:
-                        # Delete all points by scrolling
-                        self.client.delete(
-                            collection_name=coll_name,
-                            points_selector=Filter(must=[]),
-                        )
-                        logger.info("Cleared Qdrant collection: %s", coll_name)
+                        self._pinecone_index.delete(delete_all=True, namespace=ns)
+                        logger.info("Cleared Pinecone namespace: %s", ns)
                     except Exception as e:
-                        logger.warning("Error clearing Qdrant collection %s: %s", coll_name, e)
+                        logger.warning("Error clearing Pinecone namespace %s: %s", ns, e)
 
-                logger.info("✅ Successfully cleared all Qdrant data")
+                logger.info("Successfully cleared all Pinecone data")
                 return True
             
             logger.error(f"Unsupported database type: {self.db_type}")
@@ -824,29 +754,19 @@ class VectorStore:
                     embedding_function=None
                 )
                 
-                logger.info("✅ Successfully reset ChromaDB collections")
+                logger.info("Successfully reset ChromaDB collections")
                 return True
 
-            elif self.db_type == "qdrant":
-                from qdrant_client.models import Distance, VectorParams
-                logger.info("Resetting Qdrant collections...")
-
-                for coll_name in (_QDRANT_CONVERSATIONS, _QDRANT_DOCUMENTS, _QDRANT_CHAT_SUMMARIES):
+            elif self.db_type == "pinecone":
+                logger.info("Resetting Pinecone namespaces...")
+                for ns in (_NS_CONVERSATIONS, _NS_DOCUMENTS, _NS_CHAT_SUMMARIES):
                     try:
-                        self.client.delete_collection(collection_name=coll_name)
-                        logger.info("Deleted Qdrant collection: %s", coll_name)
+                        self._pinecone_index.delete(delete_all=True, namespace=ns)
+                        logger.info("Cleared Pinecone namespace: %s", ns)
                     except Exception:
                         pass
-                    self.client.create_collection(
-                        collection_name=coll_name,
-                        vectors_config=VectorParams(
-                            size=self._qdrant_vector_size,
-                            distance=Distance.COSINE,
-                        ),
-                    )
-                    logger.info("Recreated Qdrant collection: %s", coll_name)
 
-                logger.info("✅ Successfully reset Qdrant collections")
+                logger.info("Successfully reset Pinecone namespaces")
                 return True
                 
             else:
@@ -869,13 +789,19 @@ class VectorStore:
                 ids=[id],
                 metadatas=[metadata]
             )
-        elif self.db_type == "qdrant":
-            self.client.set_payload(
-                collection_name=_QDRANT_CONVERSATIONS,
-                payload=metadata,
-                points=[self._qdrant_uuid(id)],
-            )
-        
+        elif self.db_type == "pinecone":
+            # Pinecone doesn't support partial metadata update directly;
+            # we fetch, merge, and upsert
+            result = self._pinecone_index.fetch(ids=[id], namespace=_NS_CONVERSATIONS)
+            vectors = result.get("vectors", {})
+            if id in vectors:
+                existing = vectors[id]
+                merged_meta = {**(existing.get("metadata", {})), **metadata}
+                self._pinecone_index.upsert(
+                    vectors=[(id, existing["values"], merged_meta)],
+                    namespace=_NS_CONVERSATIONS,
+                )
+
         logger.info(f"Updated metadata for document: {id}")
         return True
 
@@ -893,16 +819,15 @@ class VectorStore:
                     "document": result["documents"][0],
                     "metadata": result["metadatas"][0]
                 }
-        elif self.db_type == "qdrant":
-            result = self.client.retrieve(
-                collection_name=_QDRANT_CONVERSATIONS,
-                ids=[self._qdrant_uuid(id)],
-            )
-            if result:
+        elif self.db_type == "pinecone":
+            result = self._pinecone_index.fetch(ids=[id], namespace=_NS_CONVERSATIONS)
+            vectors = result.get("vectors", {})
+            if id in vectors:
+                meta = vectors[id].get("metadata", {})
                 return {
-                    "id": str(result[0].id),
-                    "document": result[0].payload.get("text", ""),
-                    "metadata": {k: v for k, v in result[0].payload.items() if k != "text"}
+                    "id": id,
+                    "document": meta.get("text", ""),
+                    "metadata": {k: v for k, v in meta.items() if k != "text"}
                 }
         
         return None
@@ -915,22 +840,20 @@ class VectorStore:
         """Count documents in vector store."""
         if self.db_type == "chromadb":
             return self.collection.count()
-        elif self.db_type == "qdrant":
-            info = self.client.get_collection(_QDRANT_CONVERSATIONS)
-            return info.points_count
+        elif self.db_type == "pinecone":
+            stats = self._pinecone_index.describe_index_stats()
+            ns_stats = stats.get("namespaces", {}).get(_NS_CONVERSATIONS, {})
+            return ns_stats.get("vector_count", 0)
         
         return 0
 
 
 if __name__ == "__main__":
-    # Example usage
     from memory.embedding_service import EmbeddingService
     
-    # Initialize
     vector_store = VectorStore()
     embedding_service = EmbeddingService()
     
-    # Add sample documents
     documents = [
         "User mentioned having neck pain from desk work",
         "User prefers exercises without equipment",
@@ -948,7 +871,6 @@ if __name__ == "__main__":
     ids = vector_store.add_documents(documents, embeddings, metadata)
     print(f"Added documents with IDs: {ids}")
     
-    # Search
     query = "What are user's physical issues?"
     query_embedding = embedding_service.embed_texts([query])[0]
     results = vector_store.search(query_embedding, top_k=3)

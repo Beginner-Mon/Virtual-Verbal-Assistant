@@ -42,9 +42,10 @@ VECTOR_DB_TYPE = os.getenv("VECTOR_DB_TYPE", "chromadb").strip().lower()
 # ChromaDB (legacy)
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8100"))
-# Qdrant
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
-QDRANT_API_KEY = os.getenv("QDRANT_API_KEY") or None
+# Pinecone
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY") or None
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "kinetichat")
+PINECONE_INDEX_HOST = os.getenv("PINECONE_INDEX_HOST") or None
 
 COLLECTION_NAME = "humanml3d_library"
 FEW_SHOT_K = int(os.getenv("SEMANTIC_BRIDGE_FEW_SHOT_K", "5"))
@@ -94,13 +95,13 @@ class SemanticBridgeService:
 
     def __init__(self) -> None:
         self._collection = None  # ChromaDB collection (legacy)
-        self._qdrant_client = None  # Qdrant client
+        self._pinecone_index = None  # Pinecone index
         self._embedder = None
         self._client = GeminiClientWrapper()
         self._vector_db_type = VECTOR_DB_TYPE
 
-        if self._vector_db_type == "qdrant":
-            self._init_qdrant()
+        if self._vector_db_type == "pinecone":
+            self._init_pinecone()
         else:
             self._init_chromadb()
 
@@ -137,29 +138,39 @@ class SemanticBridgeService:
         except Exception as exc:
             logger.warning("SemanticBridge: ChromaDB unavailable (%s) — few-shot disabled", exc)
 
-    def _init_qdrant(self) -> None:
-        """Connect to the humanml3d_library Qdrant collection."""
+    def _init_pinecone(self) -> None:
+        """Connect to the humanml3d_library Pinecone namespace."""
         try:
-            from qdrant_client import QdrantClient
+            from pinecone import Pinecone
 
-            self._qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=10)
-            info = self._qdrant_client.get_collection(COLLECTION_NAME)
-            count = info.points_count
+            if not PINECONE_API_KEY:
+                logger.warning("SemanticBridge: PINECONE_API_KEY not set — few-shot disabled")
+                return
+
+            pc = Pinecone(api_key=PINECONE_API_KEY)
+            if PINECONE_INDEX_HOST:
+                self._pinecone_index = pc.Index(name=PINECONE_INDEX_NAME, host=PINECONE_INDEX_HOST)
+            else:
+                self._pinecone_index = pc.Index(name=PINECONE_INDEX_NAME)
+
+            stats = self._pinecone_index.describe_index_stats()
+            ns_stats = stats.get("namespaces", {}).get(COLLECTION_NAME, {})
+            count = ns_stats.get("vector_count", 0)
             if count > 0:
                 logger.info(
-                    "SemanticBridge: Qdrant '%s' ready (%d entries)",
+                    "SemanticBridge: Pinecone '%s' ready (%d entries)",
                     COLLECTION_NAME,
                     count,
                 )
             else:
                 logger.warning(
-                    "SemanticBridge: Qdrant '%s' empty — few-shot disabled",
+                    "SemanticBridge: Pinecone '%s' empty — few-shot disabled",
                     COLLECTION_NAME,
                 )
-                self._qdrant_client = None
+                self._pinecone_index = None
         except Exception as exc:
-            logger.warning("SemanticBridge: Qdrant unavailable (%s) — few-shot disabled", exc)
-            self._qdrant_client = None
+            logger.warning("SemanticBridge: Pinecone unavailable (%s) — few-shot disabled", exc)
+            self._pinecone_index = None
 
     def _init_embedder(self) -> None:
         """Load the sentence-transformer model for query embedding."""
@@ -183,8 +194,8 @@ class SemanticBridgeService:
         if self._embedder is None:
             return []
 
-        if self._vector_db_type == "qdrant":
-            return self._retrieve_candidates_qdrant(query, k)
+        if self._vector_db_type == "pinecone":
+            return self._retrieve_candidates_pinecone(query, k)
         return self._retrieve_candidates_chromadb(query, k)
 
     def _retrieve_candidates_chromadb(self, query: str, k: int) -> List[Dict[str, any]]:
@@ -220,33 +231,34 @@ class SemanticBridgeService:
             logger.warning("SemanticBridge: Library retrieval failed: %s", exc)
             return []
 
-    def _retrieve_candidates_qdrant(self, query: str, k: int) -> List[Dict[str, any]]:
-        if self._qdrant_client is None:
+    def _retrieve_candidates_pinecone(self, query: str, k: int) -> List[Dict[str, any]]:
+        if self._pinecone_index is None:
             return []
         try:
             query_emb = self._embedder.encode([query], normalize_embeddings=True).tolist()[0]
-            results = self._qdrant_client.search(
-                collection_name=COLLECTION_NAME,
-                query_vector=query_emb,
-                limit=k,
+            results = self._pinecone_index.query(
+                vector=query_emb,
+                top_k=k,
+                namespace=COLLECTION_NAME,
+                include_metadata=True,
             )
 
             candidates = []
-            for point in results:
-                payload = point.payload or {}
-                doc = payload.get("text", "")
+            for match in results.get("matches", []):
+                meta = match.get("metadata", {})
+                doc = meta.get("text", "")
                 if not doc:
                     continue
                 candidates.append({
                     "text": doc,
-                    "score": point.score,
-                    "motion_id": str(payload.get("motion_id", point.id)),
-                    "duration": float(payload.get("duration", 0.0)),
+                    "score": match["score"],
+                    "motion_id": str(meta.get("motion_id", match["id"])),
+                    "duration": float(meta.get("duration", 0.0)),
                 })
 
             return candidates
         except Exception as exc:
-            logger.warning("SemanticBridge: Qdrant retrieval failed: %s", exc)
+            logger.warning("SemanticBridge: Pinecone retrieval failed: %s", exc)
             return []
 
     # ── Core Translation ─────────────────────────────────────────

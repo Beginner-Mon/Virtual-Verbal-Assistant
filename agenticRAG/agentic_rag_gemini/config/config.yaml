@@ -95,9 +95,10 @@ vector_database:
     ssl: false
     headers: {}
     
-  qdrant:
-    url: "https://YOUR_CLUSTER_ID.us-east4-0.gcp.cloud.qdrant.io:6333"  # overridden by QDRANT_URL env
-    api_key: ""  # overridden by QDRANT_API_KEY env
+  pinecone:
+    api_key: ""  # overridden by PINECONE_API_KEY env var
+    index_name: "kinetichat"  # overridden by PINECONE_INDEX_NAME env var
+    index_host: ""  # overridden by PINECONE_INDEX_HOST env var
     vector_size: 384
 
 memory:
