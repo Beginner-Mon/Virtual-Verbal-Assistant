@@ -1,0 +1,5 @@
+0: moving forward and jump on the front side on the floor. (score: 0.7233595848083496)
+1: walking forward while jumping. (score: 0.691740870475769)
+2: jumping up and down in place (score: 0.6900039315223694)
+3: a person does a jump (score: 0.6894011497497559)
+4: walking forward and jumping. (score: 0.6848931908607483)
