@@ -1,8 +1,12 @@
-"""Top-K motion candidate retrieval via ChromaDB (with JSONL fallback).
+"""Top-K motion candidate retrieval via vector DB (with JSONL fallback).
 
-Primary path:  query the `humanml3d_library` ChromaDB collection.
-Fallback path: if ChromaDB is unreachable or empty, load the local JSONL
+Primary path:  query the ``humanml3d_library`` collection in the configured
+               vector database (Qdrant Cloud or ChromaDB).
+Fallback path: if the vector DB is unreachable or empty, load the local JSONL
                and do in-memory cosine search (original approach).
+
+The backend is selected by the ``VECTOR_DB_TYPE`` environment variable
+(``qdrant`` or ``chromadb``).
 """
 
 from dataclasses import dataclass
@@ -11,16 +15,21 @@ import os
 import re
 from typing import Any, Dict, List
 
-import chromadb
-from chromadb.config import Settings
-
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# ── ChromaDB settings ─────────────────────────────────────────────
+# ── Vector DB selection ───────────────────────────────────────────
+VECTOR_DB_TYPE = os.getenv("VECTOR_DB_TYPE", "chromadb").strip().lower()
+
+# ── ChromaDB settings (legacy) ───────────────────────────────────
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8100"))
+
+# ── Qdrant settings ──────────────────────────────────────────────
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY") or None
+
 COLLECTION_NAME = "humanml3d_library"
 
 # ── Fallback JSONL path ───────────────────────────────────────────
@@ -51,15 +60,43 @@ class MotionCandidate:
 
 
 class MotionCandidateRetriever:
-    """Retrieve Top-K HumanML3D candidates — ChromaDB first, JSONL fallback."""
+    """Retrieve Top-K HumanML3D candidates — vector DB first, JSONL fallback."""
 
     def __init__(self) -> None:
-        self._use_chromadb = False
-        self._collection = None
+        self._use_vector_db = False
+        self._vector_db_type = VECTOR_DB_TYPE
+        self._collection = None   # ChromaDB collection handle
+        self._qdrant_client = None  # Qdrant client handle
         self._embedder = None
 
-        # ── Try ChromaDB first ──────────────────────────────────
+        # ── Try vector DB first ─────────────────────────────────
+        if self._vector_db_type == "qdrant":
+            self._try_init_qdrant()
+        else:
+            self._try_init_chromadb()
+
+        # ── Load embedding model (needed for both paths) ────────
         try:
+            from sentence_transformers import SentenceTransformer
+            self._embedder = SentenceTransformer(EMBEDDING_MODEL)
+        except Exception as exc:
+            logger.warning("Cannot load embedding model %s: %s", EMBEDDING_MODEL, exc)
+
+        # ── Fallback: load JSONL into memory ────────────────────
+        if not self._use_vector_db:
+            self._rows = self._load_jsonl()
+            self._embeddings = self._embed_rows()
+        else:
+            self._rows = []
+            self._embeddings = []
+
+    # ── Vector DB initialisation ────────────────────────────────
+
+    def _try_init_chromadb(self) -> None:
+        try:
+            import chromadb
+            from chromadb.config import Settings
+
             client = chromadb.HttpClient(
                 host=CHROMA_HOST,
                 port=CHROMA_PORT,
@@ -70,7 +107,7 @@ class MotionCandidateRetriever:
             count = col.count()
             if count > 0:
                 self._collection = col
-                self._use_chromadb = True
+                self._use_vector_db = True
                 logger.info(
                     "MotionCandidateRetriever: using ChromaDB collection '%s' (%d entries)",
                     COLLECTION_NAME, count,
@@ -83,20 +120,28 @@ class MotionCandidateRetriever:
         except Exception as exc:
             logger.warning("ChromaDB unavailable (%s) — falling back to JSONL", exc)
 
-        # ── Load embedding model (needed for both paths) ────────
+    def _try_init_qdrant(self) -> None:
         try:
-            from sentence_transformers import SentenceTransformer
-            self._embedder = SentenceTransformer(EMBEDDING_MODEL)
-        except Exception as exc:
-            logger.warning("Cannot load embedding model %s: %s", EMBEDDING_MODEL, exc)
+            from qdrant_client import QdrantClient
 
-        # ── Fallback: load JSONL into memory ────────────────────
-        if not self._use_chromadb:
-            self._rows = self._load_jsonl()
-            self._embeddings = self._embed_rows()
-        else:
-            self._rows = []
-            self._embeddings = []
+            self._qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=10)
+            info = self._qdrant_client.get_collection(COLLECTION_NAME)
+            count = info.points_count
+            if count > 0:
+                self._use_vector_db = True
+                logger.info(
+                    "MotionCandidateRetriever: using Qdrant collection '%s' (%d entries)",
+                    COLLECTION_NAME, count,
+                )
+            else:
+                logger.warning(
+                    "Qdrant collection '%s' is empty — falling back to JSONL",
+                    COLLECTION_NAME,
+                )
+                self._qdrant_client = None
+        except Exception as exc:
+            logger.warning("Qdrant unavailable (%s) — falling back to JSONL", exc)
+            self._qdrant_client = None
 
     # ── JSONL fallback helpers ──────────────────────────────────
 
@@ -144,7 +189,9 @@ class MotionCandidateRetriever:
 
     def retrieve_top_k(self, query: str, k: int = 5) -> List[MotionCandidate]:
         """Retrieve top-K motion candidates for the given query."""
-        if self._use_chromadb:
+        if self._use_vector_db:
+            if self._vector_db_type == "qdrant":
+                return self._retrieve_qdrant(query, k)
             return self._retrieve_chromadb(query, k)
         return self._retrieve_fallback(query, k)
 
@@ -178,6 +225,44 @@ class MotionCandidateRetriever:
 
         logger.info(
             "ChromaDB retrieval: top-1='%s' (score=%.3f) for query='%s'",
+            candidates[0].text_description[:60], candidates[0].score, query[:60],
+        )
+        return candidates
+
+    # ── Qdrant path ─────────────────────────────────────────────
+
+    def _retrieve_qdrant(self, query: str, k: int) -> List[MotionCandidate]:
+        if self._embedder is None or self._qdrant_client is None:
+            return [MotionCandidate("fallback", query, query, 0.0)]
+
+        query_emb = self._embedder.encode([query], normalize_embeddings=True).tolist()[0]
+        results = self._qdrant_client.search(
+            collection_name=COLLECTION_NAME,
+            query_vector=query_emb,
+            limit=k,
+        )
+
+        candidates: List[MotionCandidate] = []
+        for point in results:
+            payload = point.payload or {}
+            doc = payload.get("text", "")
+            if not doc:
+                continue
+            cid = str(payload.get("motion_id", point.id))
+            candidates.append(MotionCandidate(
+                candidate_id=cid,
+                text_description=doc,
+                motion_prompt=doc,
+                score=point.score,
+                motion_id=cid,
+                duration=float(payload.get("duration", 0.0)),
+            ))
+
+        if not candidates:
+            return [MotionCandidate("fallback", query, query, 0.0)]
+
+        logger.info(
+            "Qdrant retrieval: top-1='%s' (score=%.3f) for query='%s'",
             candidates[0].text_description[:60], candidates[0].score, query[:60],
         )
         return candidates

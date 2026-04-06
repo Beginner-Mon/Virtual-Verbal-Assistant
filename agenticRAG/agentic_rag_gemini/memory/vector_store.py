@@ -2,14 +2,21 @@
 
 This module provides vector database operations for storing and retrieving
 embeddings of user conversations and context.
+
+Supports two backends:
+  - **ChromaDB** (local Docker or PersistentClient)
+  - **Qdrant**   (local or Qdrant Cloud)
+
+When using Qdrant, four named collections are created:
+  conversations, documents, chat_summaries, humanml3d_library
+User isolation is achieved via a ``user_id`` metadata filter (payload field)
+rather than per-user collections.
 """
 
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import uuid
-
-import chromadb
-from chromadb.config import Settings
+import os
 
 from config import get_config
 from utils.logger import get_logger
@@ -20,6 +27,12 @@ logger = get_logger(__name__)
 
 PUBLIC_COLLECTION_NAME = "humanml3d_library"
 DEFAULT_GUEST_USER_ID = "guest"
+
+# Qdrant collection names
+_QDRANT_CONVERSATIONS = "conversations"
+_QDRANT_DOCUMENTS = "documents"
+_QDRANT_CHAT_SUMMARIES = "chat_summaries"
+_QDRANT_PUBLIC = PUBLIC_COLLECTION_NAME
 
 
 class VectorStore:
@@ -46,9 +59,16 @@ class VectorStore:
             raise ValueError(f"Unsupported vector database type: {self.db_type}")
         
         logger.info(f"Initialized VectorStore with backend: {self.db_type}")
-    
+
+    # ==================================================================
+    # ChromaDB initialisation (unchanged from original)
+    # ==================================================================
+
     def _init_chromadb(self):
         """Initialize ChromaDB client and collections."""
+        import chromadb
+        from chromadb.config import Settings
+
         chroma_config = self.config.chromadb
         mode = str(chroma_config.get("mode", "http")).strip().lower()
 
@@ -106,6 +126,51 @@ class VectorStore:
             PUBLIC_COLLECTION_NAME,
         )
 
+    # ==================================================================
+    # Qdrant initialisation (rewritten for cloud support)
+    # ==================================================================
+
+    def _init_qdrant(self):
+        """Initialize Qdrant client and collections.
+
+        Reads ``qdrant.url`` and ``qdrant.api_key`` from config / env.
+        Creates four collections if they don't exist:
+            conversations, documents, chat_summaries, humanml3d_library
+        """
+        from qdrant_client import QdrantClient
+        from qdrant_client.models import Distance, VectorParams
+
+        qdrant_config = self.config.qdrant
+
+        url = os.getenv("QDRANT_URL") or qdrant_config.get("url", "http://localhost:6333")
+        api_key = os.getenv("QDRANT_API_KEY") or qdrant_config.get("api_key") or None
+        vector_size = int(qdrant_config.get("vector_size", 384))
+
+        self.client = QdrantClient(url=url, api_key=api_key, timeout=30)
+        self._qdrant_vector_size = vector_size
+        logger.info("Qdrant client connected to %s", url)
+
+        # Ensure all required collections exist
+        existing = {c.name for c in self.client.get_collections().collections}
+
+        for coll_name in (_QDRANT_CONVERSATIONS, _QDRANT_DOCUMENTS,
+                          _QDRANT_CHAT_SUMMARIES, _QDRANT_PUBLIC):
+            if coll_name not in existing:
+                self.client.create_collection(
+                    collection_name=coll_name,
+                    vectors_config=VectorParams(
+                        size=vector_size,
+                        distance=Distance.COSINE,
+                    ),
+                )
+                logger.info("Created Qdrant collection: %s", coll_name)
+            else:
+                logger.info("Qdrant collection already exists: %s", coll_name)
+
+    # ==================================================================
+    # Helpers
+    # ==================================================================
+
     def _resolve_user_id(self, user_id: Optional[str]) -> str:
         value = str(user_id or DEFAULT_GUEST_USER_ID).strip()
         return value or DEFAULT_GUEST_USER_ID
@@ -147,32 +212,38 @@ class VectorStore:
                 embedding_function=None,
             )
         return self.client.get_collection(name=PUBLIC_COLLECTION_NAME, embedding_function=None)
-    
-    def _init_qdrant(self):
-        """Initialize Qdrant client and collection."""
-        from qdrant_client import QdrantClient
-        from qdrant_client.models import Distance, VectorParams
-        
-        qdrant_config = self.config.qdrant
-        
-        self.client = QdrantClient(url=qdrant_config["url"])
-        
-        # Create collection if not exists
-        collections = self.client.get_collections().collections
-        collection_names = [c.name for c in collections]
-        
-        if qdrant_config["collection_name"] not in collection_names:
-            self.client.create_collection(
-                collection_name=qdrant_config["collection_name"],
-                vectors_config=VectorParams(
-                    size=qdrant_config["vector_size"],
-                    distance=Distance.COSINE
-                )
-            )
-        
-        self.collection_name = qdrant_config["collection_name"]
-        logger.info(f"Qdrant collection: {self.collection_name}")
-    
+
+    # ------------------------------------------------------------------
+    # Qdrant helper: map collection_type → Qdrant collection name
+    # ------------------------------------------------------------------
+
+    def _qdrant_collection(self, collection_type: str) -> str:
+        """Return the Qdrant collection name for a logical collection type."""
+        mapping = {
+            "conversations": _QDRANT_CONVERSATIONS,
+            "documents": _QDRANT_DOCUMENTS,
+            "chat_summaries": _QDRANT_CHAT_SUMMARIES,
+            "public": _QDRANT_PUBLIC,
+        }
+        return mapping.get(collection_type, _QDRANT_CONVERSATIONS)
+
+    @staticmethod
+    def _qdrant_uuid(raw_id: str) -> str:
+        """Ensure *raw_id* is a valid UUID string (Qdrant requires UUIDs for named vectors).
+
+        If the incoming ID is already a valid UUID it is returned as-is;
+        otherwise we derive a deterministic UUID-5 from it.
+        """
+        try:
+            uuid.UUID(raw_id)
+            return raw_id
+        except (ValueError, AttributeError):
+            return str(uuid.uuid5(uuid.NAMESPACE_URL, str(raw_id)))
+
+    # ==================================================================
+    # add_documents
+    # ==================================================================
+
     def add_documents(
         self,
         documents: List[str],
@@ -220,20 +291,23 @@ class VectorStore:
             )
         elif self.db_type == "qdrant":
             from qdrant_client.models import PointStruct
-            
-            points = [
-                PointStruct(
-                    id=id_,
-                    vector=embedding,
-                    payload={"text": doc, **meta}
+
+            coll = self._qdrant_collection(collection_type)
+            points = []
+            for i, (id_, doc, embedding, meta) in enumerate(zip(ids, documents, embeddings, metadata)):
+                payload = {
+                    "text": doc,
+                    "user_id": resolved_user_id,
+                    **meta,
+                }
+                points.append(
+                    PointStruct(
+                        id=self._qdrant_uuid(id_),
+                        vector=embedding,
+                        payload=payload,
+                    )
                 )
-                for id_, doc, embedding, meta in zip(ids, documents, embeddings, metadata)
-            ]
-            
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=points
-            )
+            self.client.upsert(collection_name=coll, points=points)
         
         logger.info(
             "Added %d documents to vector store (collection_type=%s user_id=%s)",
@@ -242,7 +316,11 @@ class VectorStore:
             resolved_user_id,
         )
         return ids
-    
+
+    # ==================================================================
+    # search (conversations)
+    # ==================================================================
+
     def search(
         self,
         query_embedding: List[float],
@@ -250,16 +328,7 @@ class VectorStore:
         filter_metadata: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Search for similar documents in vector store.
-        
-        Args:
-            query_embedding: Query embedding vector
-            top_k: Number of results to return
-            filter_metadata: Optional metadata filters
-            
-        Returns:
-            List of documents with similarity scores and metadata
-        """
+        """Search for similar documents in vector store."""
         if self.db_type == "chromadb":
             user_from_filter = (filter_metadata or {}).get("user_id")
             resolved_user_id = self._resolve_user_id(user_id or user_from_filter)
@@ -293,41 +362,22 @@ class VectorStore:
             return formatted_results
         
         elif self.db_type == "qdrant":
-            from qdrant_client.models import Filter, FieldCondition, MatchValue
-            
-            # Build filter if provided
-            query_filter = None
-            if filter_metadata:
-                conditions = [
-                    FieldCondition(key=k, match=MatchValue(value=v))
-                    for k, v in filter_metadata.items()
-                ]
-                query_filter = Filter(must=conditions)
-            
-            results = self.client.search(
-                collection_name=self.collection_name,
-                query_vector=query_embedding,
-                limit=top_k,
-                query_filter=query_filter
+            return self._qdrant_search(
+                collection_type="conversations",
+                query_embedding=query_embedding,
+                top_k=top_k,
+                filter_metadata=filter_metadata,
+                user_id=user_id,
             )
-            
-            # Format results
-            formatted_results = []
-            for result in results:
-                formatted_results.append({
-                    "id": str(result.id),
-                    "document": result.payload.get("text", ""),
-                    "metadata": {k: v for k, v in result.payload.items() if k != "text"},
-                    "distance": 1 - result.score,  # Convert score to distance
-                    "similarity": result.score
-                })
-            
-            return formatted_results
         
         # Fallback for unsupported db types
         logger.warning(f"Unsupported database type for search: {self.db_type}")
         return []
-    
+
+    # ==================================================================
+    # add_document (single, to documents collection)
+    # ==================================================================
+
     def add_document(
         self,
         document: str,
@@ -335,17 +385,7 @@ class VectorStore:
         metadata: Optional[Dict[str, Any]] = None,
         id: Optional[str] = None
     ) -> str:
-        """Add a single document to the documents collection.
-        
-        Args:
-            document: Document text
-            embedding: Embedding vector
-            metadata: Document metadata
-            id: Optional document ID
-            
-        Returns:
-            Document ID
-        """
+        """Add a single document to the documents collection."""
         ids = self.add_documents(
             documents=[document],
             embeddings=[embedding],
@@ -355,6 +395,10 @@ class VectorStore:
         )
         return ids[0]
 
+    # ==================================================================
+    # add_public_documents
+    # ==================================================================
+
     def add_public_documents(
         self,
         documents: List[str],
@@ -363,24 +407,40 @@ class VectorStore:
         ids: Optional[List[str]] = None,
     ) -> List[str]:
         """Add shared read-only library entries to the public collection."""
-        if self.db_type != "chromadb":
-            raise ValueError("Public collection helper is only supported for ChromaDB backend")
-
         if ids is None:
             ids = [str(uuid.uuid4()) for _ in documents]
         if metadata is None:
             metadata = [{} for _ in documents]
 
-        collection = self._get_public_collection(create_if_missing=True)
-        collection.add(
-            documents=documents,
-            embeddings=embeddings,
-            metadatas=metadata,
-            ids=ids,
-        )
+        if self.db_type == "chromadb":
+            collection = self._get_public_collection(create_if_missing=True)
+            collection.add(
+                documents=documents,
+                embeddings=embeddings,
+                metadatas=metadata,
+                ids=ids,
+            )
+        elif self.db_type == "qdrant":
+            from qdrant_client.models import PointStruct
+
+            points = []
+            for id_, doc, embedding, meta in zip(ids, documents, embeddings, metadata):
+                points.append(
+                    PointStruct(
+                        id=self._qdrant_uuid(id_),
+                        vector=embedding,
+                        payload={"text": doc, **(meta or {})},
+                    )
+                )
+            self.client.upsert(collection_name=_QDRANT_PUBLIC, points=points)
+
         logger.info("Added %d entries to public collection %s", len(documents), PUBLIC_COLLECTION_NAME)
         return ids
-    
+
+    # ==================================================================
+    # search_documents
+    # ==================================================================
+
     def search_documents(
         self,
         query_embedding: List[float],
@@ -389,16 +449,7 @@ class VectorStore:
         user_id: Optional[str] = None,
         include_public: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Search documents collection specifically.
-        
-        Args:
-            query_embedding: Query embedding vector
-            top_k: Number of results to return
-            filter_metadata: Optional metadata filters
-            
-        Returns:
-            List of documents with scores
-        """
+        """Search documents collection specifically."""
         if self.db_type == "chromadb":
             user_from_filter = (filter_metadata or {}).get("user_id")
             resolved_user_id = self._resolve_user_id(user_id or user_from_filter)
@@ -450,10 +501,36 @@ class VectorStore:
                 return formatted_results[:top_k]
 
             return formatted_results
-        
-        # Similar Qdrant logic would go here...
+
+        elif self.db_type == "qdrant":
+            results = self._qdrant_search(
+                collection_type="documents",
+                query_embedding=query_embedding,
+                top_k=top_k,
+                filter_metadata=filter_metadata,
+                user_id=user_id,
+            )
+
+            if include_public:
+                public_results = self._qdrant_search(
+                    collection_type="public",
+                    query_embedding=query_embedding,
+                    top_k=top_k,
+                )
+                for r in public_results:
+                    r["metadata"]["library_scope"] = "public"
+                results.extend(public_results)
+                results.sort(key=lambda item: item.get("similarity") or 0.0, reverse=True)
+                return results[:top_k]
+
+            return results
+
         return []
-    
+
+    # ==================================================================
+    # add_chat_summary
+    # ==================================================================
+
     def add_chat_summary(
         self,
         summary: str,
@@ -462,17 +539,7 @@ class VectorStore:
         id: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> str:
-        """Add a single chat summary to the chat summaries collection.
-        
-        Args:
-            summary: Chat summary text
-            embedding: Embedding vector
-            metadata: Summary metadata
-            id: Optional summary ID
-            
-        Returns:
-            Summary ID
-        """
+        """Add a single chat summary to the chat summaries collection."""
         if id is None:
             id = str(uuid.uuid4())
         
@@ -494,21 +561,30 @@ class VectorStore:
             )
         elif self.db_type == "qdrant":
             from qdrant_client.models import PointStruct
-            
-            point = PointStruct(
-                id=id,
-                vector=embedding,
-                payload={"text": summary, **metadata}
-            )
-            
+
+            payload = {
+                "text": summary,
+                "user_id": resolved_user_id,
+                **metadata,
+            }
             self.client.upsert(
-                collection_name=f"{self.collection_name}_chat_summaries", # Assuming a separate Qdrant collection for summaries
-                points=[point]
+                collection_name=_QDRANT_CHAT_SUMMARIES,
+                points=[
+                    PointStruct(
+                        id=self._qdrant_uuid(id),
+                        vector=embedding,
+                        payload=payload,
+                    )
+                ],
             )
         
         logger.info(f"Added chat summary with ID: {id}")
         return id
-    
+
+    # ==================================================================
+    # search_chat_summaries
+    # ==================================================================
+
     def search_chat_summaries(
         self,
         query_embedding: List[float],
@@ -516,16 +592,7 @@ class VectorStore:
         filter_metadata: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Search chat summaries collection specifically.
-        
-        Args:
-            query_embedding: Query embedding vector
-            top_k: Number of results to return
-            filter_metadata: Optional metadata filters
-            
-        Returns:
-            List of summaries with scores
-        """
+        """Search chat summaries collection specifically."""
         if self.db_type == "chromadb":
             user_from_filter = (filter_metadata or {}).get("user_id")
             resolved_user_id = self._resolve_user_id(user_id or user_from_filter)
@@ -557,125 +624,133 @@ class VectorStore:
             return formatted_results
         
         elif self.db_type == "qdrant":
-            from qdrant_client.models import Filter, FieldCondition, MatchValue
-            
-            query_filter = None
-            if filter_metadata:
-                conditions = [
-                    FieldCondition(key=k, match=MatchValue(value=v))
-                    for k, v in filter_metadata.items()
-                ]
-                query_filter = Filter(must=conditions)
-            
-            results = self.client.search(
-                collection_name=f"{self.collection_name}_chat_summaries", # Assuming a separate Qdrant collection for summaries
-                query_vector=query_embedding,
-                limit=top_k,
-                query_filter=query_filter
+            return self._qdrant_search(
+                collection_type="chat_summaries",
+                query_embedding=query_embedding,
+                top_k=top_k,
+                filter_metadata=filter_metadata,
+                user_id=user_id,
             )
-            
-            formatted_results = []
-            for result in results:
-                formatted_results.append({
-                    "id": str(result.id),
-                    "document": result.payload.get("text", ""),
-                    "metadata": {k: v for k, v in result.payload.items() if k != "text"},
-                    "distance": 1 - result.score,
-                    "similarity": result.score
-                })
-            
-            return formatted_results
         
         return []
-    
+
+    # ==================================================================
+    # Qdrant unified search helper
+    # ==================================================================
+
+    def _qdrant_search(
+        self,
+        collection_type: str,
+        query_embedding: List[float],
+        top_k: int = 5,
+        filter_metadata: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Generic Qdrant similarity search with optional user_id + metadata filter."""
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+        coll = self._qdrant_collection(collection_type)
+
+        conditions: list = []
+        # User-scoped filter (skip for public collection)
+        if collection_type != "public":
+            resolved_uid = self._resolve_user_id(
+                user_id or (filter_metadata or {}).get("user_id")
+            )
+            conditions.append(
+                FieldCondition(key="user_id", match=MatchValue(value=resolved_uid))
+            )
+
+        # Extra metadata filters
+        extra = dict(filter_metadata or {})
+        extra.pop("user_id", None)
+        for k, v in extra.items():
+            conditions.append(FieldCondition(key=k, match=MatchValue(value=v)))
+
+        query_filter = Filter(must=conditions) if conditions else None
+
+        results = self.client.search(
+            collection_name=coll,
+            query_vector=query_embedding,
+            limit=top_k,
+            query_filter=query_filter,
+        )
+
+        formatted: List[Dict[str, Any]] = []
+        for point in results:
+            payload = point.payload or {}
+            formatted.append({
+                "id": str(point.id),
+                "document": payload.get("text", ""),
+                "metadata": {k: v for k, v in payload.items() if k != "text"},
+                "distance": 1 - point.score,
+                "similarity": point.score,
+            })
+        return formatted
+
+    # ==================================================================
+    # get_documents_collection / get_conversations_collection
+    # ==================================================================
+
     def get_documents_collection(self, user_id: Optional[str] = None):
-        """Get the documents collection object.
-        
-        Returns:
-            Documents collection
-        """
+        """Get the documents collection object."""
         if self.db_type == "chromadb":
             return self._get_chroma_collection("documents", self._resolve_user_id(user_id), create_if_missing=True)
         return None
     
     def get_conversations_collection(self, user_id: Optional[str] = None):
-        """Get the conversations collection object.
-        
-        Returns:
-            Conversations collection
-        """
+        """Get the conversations collection object."""
         if self.db_type == "chromadb":
             return self._get_chroma_collection("conversations", self._resolve_user_id(user_id), create_if_missing=True)
         return None
 
+    # ==================================================================
+    # delete_documents
+    # ==================================================================
+
     def delete_documents(self, ids: List[str], user_id: Optional[str] = None, collection_type: str = "conversations") -> bool:
-        """Delete documents from vector store.
-        
-        Args:
-            ids: List of document IDs to delete
-            
-        Returns:
-            True if successful
-        """
+        """Delete documents from vector store."""
         if self.db_type == "chromadb":
             collection = self._get_chroma_collection(collection_type, self._resolve_user_id(user_id), create_if_missing=True)
             collection.delete(ids=ids)
         elif self.db_type == "qdrant":
+            from qdrant_client.models import PointIdsList
+            coll = self._qdrant_collection(collection_type)
+            qdrant_ids = [self._qdrant_uuid(i) for i in ids]
             self.client.delete(
-                collection_name=self.collection_name,
-                points_selector=ids
+                collection_name=coll,
+                points_selector=PointIdsList(points=qdrant_ids),
             )
         
         logger.info(f"Deleted {len(ids)} documents from vector store")
         return True
-    
+
+    # ==================================================================
+    # clear_all_data
+    # ==================================================================
+
     def clear_all_data(self) -> bool:
-        """Clear all data from all collections (conversations, documents, and chat summaries).
-        
-        Returns:
-            True if successful
-        """
+        """Clear all data from all collections."""
         try:
             if self.db_type == "chromadb":
                 logger.info("Clearing all ChromaDB data...")
                 
-                # Clear conversation collection
-                try:
-                    conv_data = self.collection.get()
-                    conv_ids = conv_data.get("ids", [])
-                    if conv_ids:
-                        logger.info(f"Deleting {len(conv_ids)} conversation records")
-                        self.collection.delete(ids=conv_ids)
-                    else:
-                        logger.info("No conversation records to delete")
-                except Exception as e:
-                    logger.warning(f"Error clearing conversation collection: {e}")
+                for label, coll in [
+                    ("conversations", self.collection),
+                    ("documents", self.documents_collection),
+                    ("chat_summaries", self.chat_summaries_collection),
+                ]:
+                    try:
+                        data = coll.get()
+                        coll_ids = data.get("ids", [])
+                        if coll_ids:
+                            logger.info(f"Deleting {len(coll_ids)} {label} records")
+                            coll.delete(ids=coll_ids)
+                        else:
+                            logger.info(f"No {label} records to delete")
+                    except Exception as e:
+                        logger.warning(f"Error clearing {label} collection: {e}")
                 
-                # Clear documents collection
-                try:
-                    doc_data = self.documents_collection.get()
-                    doc_ids = doc_data.get("ids", [])
-                    if doc_ids:
-                        logger.info(f"Deleting {len(doc_ids)} document records")
-                        self.documents_collection.delete(ids=doc_ids)
-                    else:
-                        logger.info("No document records to delete")
-                except Exception as e:
-                    logger.warning(f"Error clearing documents collection: {e}")
-                
-                # Clear chat summaries collection
-                try:
-                    sum_data = self.chat_summaries_collection.get()
-                    sum_ids = sum_data.get("ids", [])
-                    if sum_ids:
-                        logger.info(f"Deleting {len(sum_ids)} chat summary records")
-                        self.chat_summaries_collection.delete(ids=sum_ids)
-                    else:
-                        logger.info("No chat summary records to delete")
-                except Exception as e:
-                    logger.warning(f"Error clearing chat summaries collection: {e}")
-                
-                # Verify collections are empty
                 conv_remaining = self.collection.count()
                 doc_remaining = self.documents_collection.count()
                 sum_remaining = self.chat_summaries_collection.count()
@@ -688,51 +763,20 @@ class VectorStore:
                     return False
                     
             elif self.db_type == "qdrant":
-                from qdrant_client import models
+                from qdrant_client.models import Filter
                 logger.info("Clearing all Qdrant data...")
-                
-                # Clear conversation memory
-                try:
-                    self.client.delete(
-                        collection_name=self.collection_name,
-                        points_selector=models.FilterSelector(
-                            filter=models.Filter(
-                                must=[]
-                            )
+
+                for coll_name in (_QDRANT_CONVERSATIONS, _QDRANT_DOCUMENTS, _QDRANT_CHAT_SUMMARIES):
+                    try:
+                        # Delete all points by scrolling
+                        self.client.delete(
+                            collection_name=coll_name,
+                            points_selector=Filter(must=[]),
                         )
-                    )
-                    logger.info("Cleared conversation collection")
-                except Exception as e:
-                    logger.warning(f"Error clearing conversation collection: {e}")
-                
-                # Clear documents
-                try:
-                    self.client.delete(
-                        collection_name=f"{self.collection_name}_documents",
-                        points_selector=models.FilterSelector(
-                            filter=models.Filter(
-                                must=[]
-                            )
-                        )
-                    )
-                    logger.info("Cleared documents collection")
-                except Exception as e:
-                    logger.warning(f"Error clearing documents collection: {e}")
-                
-                # Clear chat summaries
-                try:
-                    self.client.delete(
-                        collection_name=f"{self.collection_name}_chat_summaries",
-                        points_selector=models.FilterSelector(
-                            filter=models.Filter(
-                                must=[]
-                            )
-                        )
-                    )
-                    logger.info("Cleared chat summaries collection")
-                except Exception as e:
-                    logger.warning(f"Error clearing chat summaries collection: {e}")
-                
+                        logger.info("Cleared Qdrant collection: %s", coll_name)
+                    except Exception as e:
+                        logger.warning("Error clearing Qdrant collection %s: %s", coll_name, e)
+
                 logger.info("✅ Successfully cleared all Qdrant data")
                 return True
             
@@ -742,54 +786,38 @@ class VectorStore:
         except Exception as e:
             logger.error(f"Failed to clear vector store data: {e}")
             return False
-    
+
+    # ==================================================================
+    # reset_collections
+    # ==================================================================
+
     def reset_collections(self) -> bool:
-        """Reset collections completely (delete and recreate) to fix schema issues.
-        
-        Returns:
-            True if successful
-        """
+        """Reset collections completely (delete and recreate)."""
         try:
             if self.db_type == "chromadb":
                 logger.info("Resetting ChromaDB collections...")
                 
-                # Get collection names
                 conversations_collection_name = self.collection.name
                 documents_collection_name = self.documents_collection.name
                 summaries_collection_name = self.chat_summaries_collection.name
                 
-                # Delete existing collections
-                try:
-                    self.client.delete_collection(name=conversations_collection_name)
-                    logger.info(f"Deleted collection: {conversations_collection_name}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete conversation collection: {e}")
+                for name in (conversations_collection_name, documents_collection_name, summaries_collection_name):
+                    try:
+                        self.client.delete_collection(name=name)
+                        logger.info(f"Deleted collection: {name}")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete collection {name}: {e}")
                 
-                try:
-                    self.client.delete_collection(name=documents_collection_name)
-                    logger.info(f"Deleted collection: {documents_collection_name}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete documents collection: {e}")
-                
-                try:
-                    self.client.delete_collection(name=summaries_collection_name)
-                    logger.info(f"Deleted collection: {summaries_collection_name}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete chat summaries collection: {e}")
-                
-                # Recreate collections
                 self.collection = self.client.get_or_create_collection(
                     name=conversations_collection_name,
                     metadata={"description": "KineticChat conversation history and summaries"},
                     embedding_function=None
                 )
-                
                 self.documents_collection = self.client.get_or_create_collection(
                     name=documents_collection_name,
                     metadata={"description": "KineticChat uploaded documents and knowledge base"},
                     embedding_function=None
                 )
-                
                 self.chat_summaries_collection = self.client.get_or_create_collection(
                     name=summaries_collection_name,
                     metadata={"description": "KineticChat chat session summaries for memory recall"},
@@ -797,6 +825,28 @@ class VectorStore:
                 )
                 
                 logger.info("✅ Successfully reset ChromaDB collections")
+                return True
+
+            elif self.db_type == "qdrant":
+                from qdrant_client.models import Distance, VectorParams
+                logger.info("Resetting Qdrant collections...")
+
+                for coll_name in (_QDRANT_CONVERSATIONS, _QDRANT_DOCUMENTS, _QDRANT_CHAT_SUMMARIES):
+                    try:
+                        self.client.delete_collection(collection_name=coll_name)
+                        logger.info("Deleted Qdrant collection: %s", coll_name)
+                    except Exception:
+                        pass
+                    self.client.create_collection(
+                        collection_name=coll_name,
+                        vectors_config=VectorParams(
+                            size=self._qdrant_vector_size,
+                            distance=Distance.COSINE,
+                        ),
+                    )
+                    logger.info("Recreated Qdrant collection: %s", coll_name)
+
+                logger.info("✅ Successfully reset Qdrant collections")
                 return True
                 
             else:
@@ -806,17 +856,13 @@ class VectorStore:
         except Exception as e:
             logger.error(f"Failed to reset collections: {e}")
             return False
-    
+
+    # ==================================================================
+    # update_metadata
+    # ==================================================================
+
     def update_metadata(self, id: str, metadata: Dict[str, Any], user_id: Optional[str] = None) -> bool:
-        """Update metadata for a document.
-        
-        Args:
-            id: Document ID
-            metadata: New metadata dictionary
-            
-        Returns:
-            True if successful
-        """
+        """Update metadata for a document."""
         if self.db_type == "chromadb":
             collection = self._get_chroma_collection("conversations", self._resolve_user_id(user_id), create_if_missing=True)
             collection.update(
@@ -825,23 +871,20 @@ class VectorStore:
             )
         elif self.db_type == "qdrant":
             self.client.set_payload(
-                collection_name=self.collection_name,
+                collection_name=_QDRANT_CONVERSATIONS,
                 payload=metadata,
-                points=[id]
+                points=[self._qdrant_uuid(id)],
             )
         
         logger.info(f"Updated metadata for document: {id}")
         return True
-    
+
+    # ==================================================================
+    # get_document
+    # ==================================================================
+
     def get_document(self, id: str) -> Optional[Dict[str, Any]]:
-        """Retrieve a document by ID.
-        
-        Args:
-            id: Document ID
-            
-        Returns:
-            Document dictionary or None if not found
-        """
+        """Retrieve a document by ID."""
         if self.db_type == "chromadb":
             result = self.collection.get(ids=[id])
             if result["ids"]:
@@ -852,8 +895,8 @@ class VectorStore:
                 }
         elif self.db_type == "qdrant":
             result = self.client.retrieve(
-                collection_name=self.collection_name,
-                ids=[id]
+                collection_name=_QDRANT_CONVERSATIONS,
+                ids=[self._qdrant_uuid(id)],
             )
             if result:
                 return {
@@ -863,20 +906,17 @@ class VectorStore:
                 }
         
         return None
-    
+
+    # ==================================================================
+    # count_documents
+    # ==================================================================
+
     def count_documents(self, filter_metadata: Optional[Dict[str, Any]] = None) -> int:
-        """Count documents in vector store.
-        
-        Args:
-            filter_metadata: Optional metadata filters
-            
-        Returns:
-            Number of documents
-        """
+        """Count documents in vector store."""
         if self.db_type == "chromadb":
             return self.collection.count()
         elif self.db_type == "qdrant":
-            info = self.client.get_collection(self.collection_name)
+            info = self.client.get_collection(_QDRANT_CONVERSATIONS)
             return info.points_count
         
         return 0

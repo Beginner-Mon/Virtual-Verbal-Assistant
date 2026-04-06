@@ -10,6 +10,9 @@ PyYAML>=6.0
 chromadb>=0.6.0
 qdrant-client>=1.6.0
 
+# Firebase / Firestore (session storage)
+firebase-admin>=6.0.0
+
 # AI/ML dependencies
 google-genai>=1.68.0
 google-generativeai>=0.3.0

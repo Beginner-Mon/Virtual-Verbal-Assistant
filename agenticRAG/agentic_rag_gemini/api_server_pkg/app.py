@@ -2045,9 +2045,9 @@ async def delete_session(user_id: str, session_id: str) -> Dict[str, Any]:
     return {"deleted": True, "session_id": session_id, "user_id": user_id}
 
 
-@app.post("/sessions/{user_id}/{session_id}/summarize", summary="Summarize session to ChromaDB")
+@app.post("/sessions/{user_id}/{session_id}/summarize", summary="Summarize session to vector DB")
 async def summarize_session(user_id: str, session_id: str) -> Dict[str, Any]:
-    """Summarize a chat session and store the summary in ChromaDB.
+    """Summarize a chat session and store the summary in the vector database.
 
     This triggers the SummarizeAgent to condense the session into a
     summary embedding, enabling cross-session memory recall.
@@ -2198,21 +2198,33 @@ async def health_check() -> Dict[str, Any]:
     except Exception as exc:
         checks["redis"] = {"status": "unreachable", "error": str(exc)}
 
-    # 2. ChromaDB
-    try:
-        import chromadb
-        client = chromadb.HttpClient(
-            host=os.getenv("CHROMA_HOST", "localhost"),
-            port=int(os.getenv("CHROMA_PORT", "8100")),
-        )
-        client.heartbeat()
-        checks["chromadb"] = {"status": "ok"}
-    except Exception:
-        # ChromaDB may be running in-process (PersistentClient) which is fine
-        if api_instance and hasattr(api_instance, "rag_pipeline"):
-            checks["chromadb"] = {"status": "ok (in-process)"}
-        else:
-            checks["chromadb"] = {"status": "unreachable"}
+    # 2. Vector Database (ChromaDB or Qdrant)
+    vector_db_type = os.getenv("VECTOR_DB_TYPE", "chromadb").strip().lower()
+    if vector_db_type == "qdrant":
+        try:
+            from qdrant_client import QdrantClient
+            qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+            qdrant_key = os.getenv("QDRANT_API_KEY") or None
+            qc = QdrantClient(url=qdrant_url, api_key=qdrant_key, timeout=5)
+            colls = qc.get_collections()
+            checks["vector_db"] = {"status": "ok", "backend": "qdrant", "collections": len(colls.collections)}
+        except Exception as exc:
+            checks["vector_db"] = {"status": "unreachable", "backend": "qdrant", "error": str(exc)}
+    else:
+        try:
+            import chromadb
+            client = chromadb.HttpClient(
+                host=os.getenv("CHROMA_HOST", "localhost"),
+                port=int(os.getenv("CHROMA_PORT", "8100")),
+            )
+            client.heartbeat()
+            checks["vector_db"] = {"status": "ok", "backend": "chromadb"}
+        except Exception:
+            # ChromaDB may be running in-process (PersistentClient) which is fine
+            if api_instance and hasattr(api_instance, "rag_pipeline"):
+                checks["vector_db"] = {"status": "ok (in-process)", "backend": "chromadb"}
+            else:
+                checks["vector_db"] = {"status": "unreachable", "backend": "chromadb"}
 
     # 3. Celery Worker
     try:
@@ -2278,7 +2290,7 @@ async def get_info() -> Dict[str, Any]:
             "GET /sessions/{user_id}": "List all sessions for a user",
             "GET /sessions/{user_id}/{session_id}": "Get full session with messages",
             "DELETE /sessions/{user_id}/{session_id}": "Delete a chat session",
-            "POST /sessions/{user_id}/{session_id}/summarize": "Summarize session to ChromaDB",
+            "POST /sessions/{user_id}/{session_id}/summarize": "Summarize session to vector DB",
             "GET /health": "Health check",
             "GET /info": "Service information",
         },

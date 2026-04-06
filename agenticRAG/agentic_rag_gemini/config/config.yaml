@@ -84,7 +84,7 @@ embedding:
   batch_size: 32
 
 vector_database:
-  type: "chromadb"  # or "qdrant"
+  type: "chromadb"  # "chromadb" or "qdrant" (set via VECTOR_DB_TYPE env var)
   
   chromadb:
     mode: "http"  # "local" (PersistentClient) or "http" (HttpClient)
@@ -96,8 +96,8 @@ vector_database:
     headers: {}
     
   qdrant:
-    url: "http://localhost:6333"
-    collection_name: "kinetichat_memory"
+    url: "https://YOUR_CLUSTER_ID.us-east4-0.gcp.cloud.qdrant.io:6333"  # overridden by QDRANT_URL env
+    api_key: ""  # overridden by QDRANT_API_KEY env
     vector_size: 384
 
 memory:

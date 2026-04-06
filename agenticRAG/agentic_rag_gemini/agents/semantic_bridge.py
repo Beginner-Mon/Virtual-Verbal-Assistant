@@ -19,9 +19,12 @@ Decision Flow:
 
 Key design decisions:
     - Uses gemini-2.5-flash with max_tokens=200 for complete descriptions.
-    - Few-shot examples from humanml3d_library ChromaDB ground the vocabulary.
+    - Few-shot examples from humanml3d_library vector DB ground the vocabulary.
     - Anti-truncation rules baked into the system prompt.
     - Falls back gracefully to the best library match on any failure.
+
+Supports both ChromaDB (legacy) and Qdrant Cloud backends, selected by
+the ``VECTOR_DB_TYPE`` environment variable.
 """
 
 import json
@@ -34,9 +37,15 @@ from utils.gemini_client import GeminiClientWrapper
 
 logger = get_logger(__name__)
 
-# ── ChromaDB settings ─────────────────────────────────────────────
+# ── Vector DB settings ────────────────────────────────────────────
+VECTOR_DB_TYPE = os.getenv("VECTOR_DB_TYPE", "chromadb").strip().lower()
+# ChromaDB (legacy)
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8100"))
+# Qdrant
+QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY") or None
+
 COLLECTION_NAME = "humanml3d_library"
 FEW_SHOT_K = int(os.getenv("SEMANTIC_BRIDGE_FEW_SHOT_K", "5"))
 
@@ -84,10 +93,17 @@ class SemanticBridgeService:
     """
 
     def __init__(self) -> None:
-        self._collection = None
+        self._collection = None  # ChromaDB collection (legacy)
+        self._qdrant_client = None  # Qdrant client
         self._embedder = None
         self._client = GeminiClientWrapper()
-        self._init_chromadb()
+        self._vector_db_type = VECTOR_DB_TYPE
+
+        if self._vector_db_type == "qdrant":
+            self._init_qdrant()
+        else:
+            self._init_chromadb()
+
         self._init_embedder()
 
     # ── Initialization ───────────────────────────────────────────
@@ -121,6 +137,30 @@ class SemanticBridgeService:
         except Exception as exc:
             logger.warning("SemanticBridge: ChromaDB unavailable (%s) — few-shot disabled", exc)
 
+    def _init_qdrant(self) -> None:
+        """Connect to the humanml3d_library Qdrant collection."""
+        try:
+            from qdrant_client import QdrantClient
+
+            self._qdrant_client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY, timeout=10)
+            info = self._qdrant_client.get_collection(COLLECTION_NAME)
+            count = info.points_count
+            if count > 0:
+                logger.info(
+                    "SemanticBridge: Qdrant '%s' ready (%d entries)",
+                    COLLECTION_NAME,
+                    count,
+                )
+            else:
+                logger.warning(
+                    "SemanticBridge: Qdrant '%s' empty — few-shot disabled",
+                    COLLECTION_NAME,
+                )
+                self._qdrant_client = None
+        except Exception as exc:
+            logger.warning("SemanticBridge: Qdrant unavailable (%s) — few-shot disabled", exc)
+            self._qdrant_client = None
+
     def _init_embedder(self) -> None:
         """Load the sentence-transformer model for query embedding."""
         try:
@@ -139,13 +179,17 @@ class SemanticBridgeService:
     def _retrieve_candidates(
         self, query: str, k: int = FEW_SHOT_K,
     ) -> List[Dict[str, any]]:
-        """Retrieve top-K HumanML3D candidates with scores.
-
-        Returns list of dicts with keys: text, score, motion_id
-        """
-        if self._collection is None or self._embedder is None:
+        """Retrieve top-K HumanML3D candidates with scores."""
+        if self._embedder is None:
             return []
 
+        if self._vector_db_type == "qdrant":
+            return self._retrieve_candidates_qdrant(query, k)
+        return self._retrieve_candidates_chromadb(query, k)
+
+    def _retrieve_candidates_chromadb(self, query: str, k: int) -> List[Dict[str, any]]:
+        if self._collection is None:
+            return []
         try:
             query_emb = self._embedder.encode([query], normalize_embeddings=True).tolist()
             results = self._collection.query(query_embeddings=query_emb, n_results=k)
@@ -176,6 +220,35 @@ class SemanticBridgeService:
             logger.warning("SemanticBridge: Library retrieval failed: %s", exc)
             return []
 
+    def _retrieve_candidates_qdrant(self, query: str, k: int) -> List[Dict[str, any]]:
+        if self._qdrant_client is None:
+            return []
+        try:
+            query_emb = self._embedder.encode([query], normalize_embeddings=True).tolist()[0]
+            results = self._qdrant_client.search(
+                collection_name=COLLECTION_NAME,
+                query_vector=query_emb,
+                limit=k,
+            )
+
+            candidates = []
+            for point in results:
+                payload = point.payload or {}
+                doc = payload.get("text", "")
+                if not doc:
+                    continue
+                candidates.append({
+                    "text": doc,
+                    "score": point.score,
+                    "motion_id": str(payload.get("motion_id", point.id)),
+                    "duration": float(payload.get("duration", 0.0)),
+                })
+
+            return candidates
+        except Exception as exc:
+            logger.warning("SemanticBridge: Qdrant retrieval failed: %s", exc)
+            return []
+
     # ── Core Translation ─────────────────────────────────────────
 
     def translate(self, user_query: str) -> str:
@@ -203,8 +276,6 @@ class SemanticBridgeService:
 
         # ── Step 2: Confidence Gate ──────────────────────────────
         if top1_score >= DIRECT_HIT_THRESHOLD and top1_text:
-            # FAST PATH: Direct Hit — library description is already in
-            # native HumanML3D vocabulary, no Gemini call needed.
             total_ms = (time.perf_counter() - t0) * 1000
             result = self._ensure_quality(top1_text)
             logger.info(
@@ -267,7 +338,6 @@ class SemanticBridgeService:
                 "falling back to best library match",
                 total_ms, exc,
             )
-            # Fallback: use best library match, or raw query as last resort
             if top1_text:
                 return self._ensure_quality(top1_text)
             return self._ensure_quality(user_query)
@@ -278,22 +348,18 @@ class SemanticBridgeService:
         """Strip accidental formatting from LLM output."""
         text = text.strip()
 
-        # Remove markdown fencing
         if text.startswith("```"):
             text = text.strip("`").strip()
 
-        # Remove surrounding quotes
         if (text.startswith('"') and text.endswith('"')) or \
            (text.startswith("'") and text.endswith("'")):
             text = text[1:-1].strip()
 
-        # Remove labels like "Kinematic description:" or "Output:"
         for prefix in ("kinematic description:", "output:", "rewritten caption:",
                         "description:", "motion:", "caption:"):
             if text.lower().startswith(prefix):
                 text = text[len(prefix):].strip()
 
-        # Remove "Chosen Path:" line if model included strategy text
         lines = text.strip().splitlines()
         cleaned_lines = []
         for line in lines:
@@ -308,25 +374,17 @@ class SemanticBridgeService:
         return text
 
     def _ensure_quality(self, text: str) -> str:
-        """Validate output meets minimum quality bar.
-
-        Guards against the 'a person' truncation bug by ensuring
-        the description contains at least one action verb.
-        """
+        """Validate output meets minimum quality bar."""
         text = text.strip()
         if not text:
             return "a person performs a standing exercise movement"
 
-        # Ensure it starts with "a person" (HumanML3D convention)
         lower = text.lower()
         if not lower.startswith("a person"):
             text = f"a person {text}"
 
-        # Guard: reject if too short (just "a person" with no action)
         words = text.split()
         if len(words) < 5:
-            # Too short — this is the truncation bug.  Append a generic
-            # action to make it usable rather than sending garbage to DART.
             logger.warning(
                 "SemanticBridge: output too short (%d words): '%s' — "
                 "appending fallback action",
@@ -334,8 +392,6 @@ class SemanticBridgeService:
             )
             text = f"{text} performs a controlled exercise movement with their body"
 
-        # Enforce max 30 words (slightly above the 25-word prompt limit
-        # to avoid cutting off valid outputs)
         if len(words) > 30:
             text = " ".join(words[:30])
 

@@ -92,3 +92,7 @@ Thumbs.db
 outputs/
 experiments/
 checkpoints/
+
+# Firebase / GCP credentials
+firebase-service-account.json
+*-service-account.json
