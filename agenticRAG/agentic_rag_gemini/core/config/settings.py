@@ -72,7 +72,7 @@ def get_main_api_settings() -> MainAPISettings:
         main_api_port=_env_int("MAIN_API_PORT", 8080),
         async_enrichment=_env_bool("MAIN_API_ASYNC_ENRICHMENT", True),
         include_debug=_env_bool("MAIN_API_INCLUDE_DEBUG", True),
-        motion_default_duration_seconds=_env_float("MOTION_DEFAULT_DURATION_SECONDS", 12.0),
+        motion_default_duration_seconds=_env_float("MOTION_DEFAULT_DURATION_SECONDS", 5.33),
         downstream_timeout=_env_float("DOWNSTREAM_TIMEOUT", 90.0),
         downstream_session_timeout=_env_float("DOWNSTREAM_SESSION_TIMEOUT", 15.0),
     )

@@ -886,6 +886,13 @@
          console.log("[Bubble Render] Rendering audio tag with URL:", msg.audioUrl);
       }
 
+      const audioRef = useRef(null);
+      useEffect(() => {
+        if (msg.autoPlay && msg.audioUrl && audioRef.current) {
+          audioRef.current.play().catch(e => console.warn("[Bubble] Auto-play prevented", e));
+        }
+      }, [msg.audioUrl, msg.autoPlay]);
+
       return (
         <div style={{
           display: "flex", justifyContent: isUser ? "flex-end" : "flex-start",
@@ -932,7 +939,7 @@
 
             {msg.audioUrl && !isUser && (
               <div style={{ marginTop: 8, minWidth: 240, width: "100%" }}>
-                <audio controls src={msg.audioUrl} style={{ width: "100%", display: "block", outline: "none", borderRadius: 8, background: "#F2F2F7" }} />
+                <audio ref={audioRef} controls src={msg.audioUrl} style={{ width: "100%", display: "block", outline: "none", borderRadius: 8, background: "#F2F2F7" }} autoPlay={msg.autoPlay} />
               </div>
             )}
 
@@ -965,13 +972,8 @@
       const audioRef = useRef(null);
 
       const playAudio = (url) => {
-        if (!url) return;
-        if (audioRef.current) {
-          audioRef.current.pause();
-        }
-        const audio = new Audio(url);
-        audioRef.current = audio;
-        audio.play().catch(e => console.warn("Auto-play prevented", e));
+        // Audio playback is now handled directly by the audio element in the Bubble component
+        // to avoid duplicate audio playback.
       };
       const textStreamRef = useRef({ messageId: null, targetText: "", cursor: 0, timer: null });
 
@@ -1041,18 +1043,10 @@
             const historySessions = await window.listSessions(USER_ID);
             if (!cancelled) {
               setSessions(historySessions);
-              // Auto-load last session or start new one
-              if (historySessions.length > 0) {
-                 const latest = historySessions[0];
-                 if(latest && latest.session_id) {
-                    loadSession(latest.session_id);
-                 }
-              } else {
-                 // Lazy init
-                 setActiveSession(null);
-                 setMessages(INIT);
-                 setMotionKey("idle");
-              }
+              // Always start a new blank session upon loading the page
+              setActiveSession(null);
+              setMessages(INIT);
+              setMotionKey("idle");
             }
           } catch (error) {
             console.error("Failed to fetch history", error);
@@ -1156,7 +1150,7 @@
         setMessages(m => [
           ...m, 
           { id: userMessageId, role: "user", text, motion: null, time: now },
-          { id: assistantMessageId, role: "assistant", text: "", isStreamingText: false, motion: null, time: now }
+          { id: assistantMessageId, role: "assistant", text: "", isStreamingText: false, motion: null, time: now, autoPlay: true }
         ]);
         setInput("");
         if (textRef.current) textRef.current.style.height = "auto";
