@@ -345,41 +345,15 @@ class AgenticRAGAPI:
         action_plan: Dict[str, Any],
         request_duration_seconds: Optional[float] = None,
     ) -> float:
-        """Resolve motion duration with strict precedence and bounded clamping."""
+        """
+        Hardcoded to return the default duration (5.33s = 10 chunks).
+        All dynamic LLM and regex fallbacks have been removed.
+        """
         min_s = self.motion_min_duration_seconds
         max_s = self.motion_max_duration_seconds
 
-        candidates: List[Any] = []
-        if request_duration_seconds is not None:
-            candidates.append(request_duration_seconds)
-
-        if isinstance(action_plan, dict):
-            parameters = action_plan.get("parameters")
-            double_rag_meta = action_plan.get("double_rag_meta")
-            motion_prompt = action_plan.get("motion_prompt")
-
-            candidates.append(action_plan.get("duration_seconds"))
-            if isinstance(parameters, dict):
-                candidates.append(parameters.get("duration_seconds"))
-            if isinstance(double_rag_meta, dict):
-                candidates.append(double_rag_meta.get("duration_seconds"))
-                constraints = double_rag_meta.get("constraints")
-                if constraints:
-                    candidates.append(_extract_duration_seconds_from_text(str(constraints)))
-            if isinstance(motion_prompt, dict):
-                candidates.append(motion_prompt.get("duration_seconds"))
-                candidates.append(motion_prompt.get("duration_estimate_seconds"))
-
-        # In strict policy, explicit duration mentions in query should be honored.
-        if self.motion_duration_policy == "strict":
-            candidates.append(_extract_duration_seconds_from_text(query))
-
-        for raw in candidates:
-            resolved = _coerce_duration_seconds(raw, min_s, max_s)
-            if resolved is not None:
-                return resolved
-
-        return _coerce_duration_seconds(self.motion_default_duration_seconds, min_s, max_s) or self.motion_default_duration_seconds
+        # Lock down to exactly the default (5.33)
+        return _coerce_duration_seconds(self.motion_default_duration_seconds, min_s, max_s) or 5.33
 
     # Maps LocalOrchestrator-specific intent strings to the canonical set
     # used in process_query() branching.  Without this, 'greeting' falls
