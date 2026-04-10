@@ -34,8 +34,9 @@ def _env_bool(name: str, default: bool) -> bool:
 def _get_cache() -> CacheService:
     return CacheService()
 
-DART_GENERATE_ENDPOINT = os.getenv("DART_GENERATE_ENDPOINT", "http://localhost:5001/generate")
-MOTION_DEFAULT_DURATION_SECONDS = float(os.getenv("MOTION_DEFAULT_DURATION_SECONDS", "5.33"))
+DART_URL = os.getenv("DART_URL", "http://localhost:5001")
+DART_GENERATE_ENDPOINT = os.getenv("DART_GENERATE_ENDPOINT", f"{DART_URL}/generate")
+MOTION_DEFAULT_DURATION_SECONDS = float(os.getenv("MOTION_DEFAULT_DURATION_SECONDS", "12"))
 RERANK_TIMEOUT_SECONDS = int(os.getenv("MOTION_RERANK_TIMEOUT_SECONDS", "8"))
 MOTION_VIDEO_ROOT = os.getenv("MOTION_VIDEO_ROOT", "./static/videos")
 MOTION_GLB_ROOT = os.getenv("MOTION_GLB_ROOT", "./static/motions")
@@ -108,9 +109,11 @@ def _download_artifact(motion_file_url: str, output_path: str) -> str:
     if not motion_file_url:
         raise RuntimeError("DART response missing motion_file_url")
 
+    # Prevent localhost loops when running through WSL network bridge
     if motion_file_url.startswith("/"):
-        dart_base = DART_GENERATE_ENDPOINT.rsplit("/generate", 1)[0]
-        download_url = f"{dart_base}{motion_file_url}"
+        download_url = f"{DART_URL}{motion_file_url}"
+    elif "localhost:5001" in motion_file_url and DART_URL != "http://localhost:5001":
+        download_url = motion_file_url.replace("http://localhost:5001", DART_URL)
     else:
         download_url = motion_file_url
 

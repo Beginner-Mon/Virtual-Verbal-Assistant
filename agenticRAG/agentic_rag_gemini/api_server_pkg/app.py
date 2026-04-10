@@ -990,7 +990,11 @@ class AgenticRAGAPI:
                 try:
                     from concurrent.futures import ThreadPoolExecutor as _BridgePool
                     _bridge_executor = _BridgePool(max_workers=1, thread_name_prefix="semantic-bridge")
-                    _bridge_future = _bridge_executor.submit(self.semantic_bridge.translate, query)
+                    _bridge_future = _bridge_executor.submit(
+                        self.semantic_bridge.translate,
+                        query,
+                        conversation_history=conversation_history,
+                    )
                     _bridge_started = True
                     logger.info("SemanticBridge Task B fired (parallel thread)")
                 except Exception as _sb_err:
@@ -1011,15 +1015,27 @@ class AgenticRAGAPI:
                 mem_text   = "\n".join(
                     str(m.get("document", m)) for m in memory_ctx
                 ) if memory_ctx else ""
-                conv_prompt = (
-                    f"Memory context:\n{mem_text}\n\n" if mem_text else ""
-                ) + f"User: {query}"
+                
+                # Assemble system instruction with long-term memory context
+                sys_prompt = LLM_PROMPTS["system"]
+                if mem_text:
+                    sys_prompt += f"\n\nContext from previous sessions:\n{mem_text}"
+                
+                llm_messages = [{"role": "system", "content": sys_prompt}]
+                
+                # Inject active short-term conversation history
+                if conversation_history:
+                    for turn in conversation_history[-10:]:  # Keep last 10 turns
+                        llm_messages.append({
+                            "role": turn.get("role", "user"),
+                            "content": turn.get("content", "")
+                        })
+                
+                llm_messages.append({"role": "user", "content": query})
+                
                 _resp = self._conv_client.chat.completions.create(
                     model=self.rag_pipeline.llm_config.model,
-                    messages=[
-                        {"role": "system", "content": LLM_PROMPTS["system"]},
-                        {"role": "user",   "content": conv_prompt},
-                    ],
+                    messages=llm_messages,
                     temperature=0.7,
                     max_tokens=self._get_token_limit("conversation"),
                     stream=stream,
@@ -1152,9 +1168,9 @@ class AgenticRAGAPI:
             semantic_bridge_prompt: Optional[str] = None
             if _bridge_future is not None:
                 try:
-                    # Task B should already be done (<2s) by the time Task A finishes.
-                    # Give it at most 3s extra grace period.
-                    semantic_bridge_prompt = _bridge_future.result(timeout=3.0)
+                    # Task B should finish in <2s on warm runs, but on the first request 
+                    # after booting, SentenceTransformer takes ~8s to load into memory.
+                    semantic_bridge_prompt = _bridge_future.result(timeout=8.0)
                     perf["semantic_bridge_ms"] = 0.0  # already accounted in parallel time
                     logger.info(
                         "SemanticBridge result: '%s'",

@@ -150,16 +150,15 @@ _ACTION_TOOL_MAP: Dict[ActionType, List[str]] = {
     ActionType.CLARIFY:         [],
 }
 
-# CONVERSATION needs NO tool retrieval — not even memory.
-# A greeting/follow-up has no benefit from a ChromaDB vector lookup.
-_INTENT_SKIP_ALL_TOOLS: set = {
-    IntentType.CONVERSATION,
-}
+# CONVERSATION skips heavy documents/web but still needs memory
+# for cross-session context (e.g. "Remember yesterday?").
+_INTENT_SKIP_ALL_TOOLS: set = set()
 
-# VISUALIZE_MOTION skips doc/web retrieval but still benefits from memory
-# context (user history, preferences).
+# VISUALIZE_MOTION and CONVERSATION skip doc/web retrieval but still benefit 
+# from memory context (user history, preferences).
 _INTENT_SKIP_CONTENT_TOOLS: set = {
     IntentType.VISUALIZE_MOTION,
+    IntentType.CONVERSATION,
 }
 
 
