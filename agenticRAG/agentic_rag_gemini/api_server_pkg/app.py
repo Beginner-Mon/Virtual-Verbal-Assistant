@@ -281,7 +281,7 @@ class AgenticRAGAPI:
 
             # Semantic Bridge — parallel kinematic translator (Task B)
             self.semantic_bridge_enabled = os.getenv(
-                "SEMANTIC_BRIDGE_ENABLED", "true"
+                "SEMANTIC_BRIDGE_ENABLED", "false"
             ).lower() in {"1", "true", "yes", "on"}
             self.semantic_bridge: Optional[SemanticBridgeService] = None
             if self.semantic_bridge_enabled:
@@ -1148,8 +1148,8 @@ class AgenticRAGAPI:
                 # will use this in a later integration step — for now we just prepare the field.
                 is_multi_activity = self._is_multi_activity_request(query)
                 if exercises and wants_visualization and not is_multi_activity:
-                    # Double-RAG engine provides the exact motion prompt via hyde_document
-                    exercise_motion_prompt = hyde_document
+                    # Use cleanly extracted verb
+                    exercise_motion_prompt = action_plan.get("exercise_name") or action_plan.get("exercise") or query
                     logger.info(
                         f"Visualization query detected → exercise_motion_prompt={exercise_motion_prompt!r}"
                     )
@@ -1159,7 +1159,8 @@ class AgenticRAGAPI:
                         "returning exercise list without auto-generating motion."
                     )
                 elif (not exercises) and wants_visualization and not is_multi_activity:
-                    exercise_motion_prompt = hyde_document or query
+                    # Use cleanly extracted verb
+                    exercise_motion_prompt = action_plan.get("exercise_name") or action_plan.get("exercise") or query
                     logger.info(
                         "Visualization query had no structured exercises; using HyDE prompt for motion generation"
                     )
