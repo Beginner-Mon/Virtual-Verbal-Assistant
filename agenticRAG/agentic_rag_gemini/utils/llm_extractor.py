@@ -4,16 +4,18 @@ import logging
 from typing import Optional
 
 from utils.logger import get_logger
-from utils.gemini_client import GeminiClientWrapper
+from utils.ollama_client import OllamaClient
 
 logger = get_logger(__name__)
 
 class LLMActionExtractor:
-    """Intelligently extract the target physical action using a zero-shot LLM prompt."""
+    """Intelligently extract the target physical action using a zero-shot local LLM."""
 
     def __init__(self):
-        self.client = GeminiClientWrapper()
-        logger.info("LLMActionExtractor initialized globally with GeminiClientWrapper.")
+        # We use qwen:0.5b because it's already in memory and blazing fast
+        self.client = OllamaClient(model_name="qwen:0.5b")
+        self.client.timeout = 5  # aggressive timeout for fast fallback
+        logger.info("LLMActionExtractor initialized with local OllamaClient (qwen:0.5b).")
 
     def extract_core_action(self, text: str) -> str:
         """Extract the exact exercise noun or verb and nothing else."""
@@ -22,49 +24,47 @@ class LLMActionExtractor:
             
         text = text.strip()
         
-        # If it's incredibly short (1-2 words), it's probably already clean.
-        if len(text.split()) <= 2:
+        # If it's incredibly short (1-2 words) AND doesn't have common conversational prefixes,
+        # it's probably already clean. We just return it directly.
+        words = text.split()
+        if len(words) <= 2 and words[0].lower() not in ("show", "how", "what", "is", "a", "an", "the"):
             return text.lower()
             
         system_prompt = (
-            "You are an exercise extraction engine. The user will provide a conversational query asking to demonstrate or perform a physical exercise, or describing a physical issue.\n"
-            "Your job is to identify the core physical exercise name.\n"
-            "If the query explicitly mentions an exercise or action (e.g., 'jump', 'push up'), extract exactly that action.\n"
-            "If the query is vague, mentions a symptom, or asks for an exercise recommendation without naming one (e.g., 'exercise to alleviate pain'), you MUST generate a single, highly relevant exercise verb (e.g., 'stretch', 'run', 'yoga').\n"
-            "Respond ONLY with a single exercise name or verb in lowercase (no punctuation, no conversational filler).\n"
+            "You are an extraction engine. Extract ONLY the core physical exercise name or action from the query.\n"
+            "Respond ONLY with a single exercise name or verb in lowercase (no punctuation).\n"
             "Examples:\n"
-            "- 'show me how to do shoulder rolls' -> 'shoulder rolls'\n"
-            "- 'demonstrate a cartwheel please' -> 'cartwheel'\n"
-            "- 'show mw to jump' -> 'jump'\n"
-            "- 'i want to see a push up' -> 'push up'\n"
-            "- 'is there any exercise to help me alleviate the pain' -> 'stretch'\n"
-            "- 'my back hurts what should I do' -> 'stretch'\n"
-            "- 'I want to lose weight' -> 'run'\n"
+            "Query: show me how to do shoulder rolls -> shoulder rolls\n"
+            "Query: demonstrate a cartwheel please -> cartwheel\n"
+            "Query: show me how to jump -> jump\n"
+            "Query: i want to see a push up -> push up\n"
+            "Query: my back hurts what should I do -> stretch\n"
+            f"Query: {text} ->"
         )
         
         try:
-            response = self.client.chat.completions.create(
-                model="gemini-2.5-flash",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": text}
-                ],
-                temperature=0.1, # Tiny bit of creativity to prevent blockages
-                max_tokens=100,
+            # We use format="json" if required, but prompt is simple enough for raw text
+            response = self.client.generate(
+                prompt=system_prompt,
+                temperature=0.0,
+                max_tokens=10,
+                stream=False
             )
             
-            extracted = response.choices[0].message.content.strip().lower()
+            # Ollama fallback typically returns JSON string if it crashed locally on the old codebase
+            # since we just send text, it's a string
+            extracted = str(response).strip().lower()
             
             # Failsafe: if the LLM hallucinated and returned a full sentence
-            if len(extracted.split()) > 5:
-                logger.warning(f"LLM verb extraction failed (result too long): {extracted[:30]}...")
+            if len(extracted.split()) > 5 or "{" in extracted:
+                logger.warning(f"LLM verb extraction failed or hallucinated: {extracted[:30]}...")
                 return text
                 
-            logger.info(f"LLMActionExtractor parsed '{text}' -> '{extracted}'")
+            logger.info(f"LLMActionExtractor parsed '{text}' -> '{extracted}' (qwen:0.5b)")
             return extracted
             
         except Exception as e:
-            logger.error(f"LLM extraction API failed: {e}")
+            logger.warning(f"LLM extraction local API failed ({e}). Falling back to raw text.")
             return text
 
 # Singleton instance
