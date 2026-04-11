@@ -1,8 +1,21 @@
-"""Session Store — JSON-on-disk persistence for chat sessions.
+"""Session Store — Firebase Firestore persistence for chat sessions.
 
-Manages chat sessions as individual JSON files under ./data/sessions/{user_id}/.
-Each session contains a full message transcript plus metadata.
+Manages chat sessions as Firestore documents under
+``users/{user_id}/sessions/{session_id}``.
+
+Each session document contains a full message transcript plus metadata.
 Summaries are generated lazily (on session switch) by the Summarize Agent.
+
+Environment variables
+---------------------
+FIRESTORE_PROJECT_ID : str, optional
+    GCP project ID.  If unset the SDK infers from credentials.
+GOOGLE_APPLICATION_CREDENTIALS : str, optional
+    Path to the Firebase/GCP service-account JSON key file.
+    Not required if running on GCP with default credentials.
+
+Falls back to local JSON-on-disk storage if Firestore is unavailable,
+so existing local dev workflows are unaffected.
 """
 
 import json
@@ -16,8 +29,72 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Default base directory for session files
-DEFAULT_SESSIONS_DIR = Path(__file__).parent.parent / "data" / "sessions"
+# Package root: agenticRAG/agentic_rag_gemini/
+_PKG_ROOT = Path(__file__).parent.parent
+
+# Explicitly load .env from the package root so Firebase env vars are available
+# even if another module's load_dotenv() didn't find this .env file.
+from dotenv import load_dotenv
+load_dotenv(_PKG_ROOT / ".env")
+
+# Default base directory for local fallback session files
+DEFAULT_SESSIONS_DIR = _PKG_ROOT / "data" / "sessions"
+
+# ------------------------------------------------------------------
+# Firestore initialisation (lazy singleton)
+# ------------------------------------------------------------------
+_firestore_db = None
+_firestore_init_attempted = False
+
+
+def _get_firestore_db():
+    """Return the Firestore client singleton, or None if unavailable."""
+    global _firestore_db, _firestore_init_attempted
+    if _firestore_init_attempted:
+        return _firestore_db
+
+    _firestore_init_attempted = True
+    try:
+        import firebase_admin
+        from firebase_admin import credentials, firestore
+
+        # Avoid reinitialising if another module already did
+        if not firebase_admin._apps:
+            cred_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+            project_id = os.getenv("FIRESTORE_PROJECT_ID")
+
+            # Resolve cred_path: try as-is, then relative to this package's root
+            resolved_cred = None
+            if cred_path:
+                if os.path.isfile(cred_path):
+                    resolved_cred = cred_path
+                else:
+                    # Try relative to agenticRAG/agentic_rag_gemini/
+                    alt = _PKG_ROOT / cred_path.lstrip("./")
+                    if alt.is_file():
+                        resolved_cred = str(alt)
+                    else:
+                        # Try just the filename in the package root
+                        alt2 = _PKG_ROOT / Path(cred_path).name
+                        if alt2.is_file():
+                            resolved_cred = str(alt2)
+
+            if resolved_cred:
+                logger.info("Using Firebase credentials from: %s", resolved_cred)
+                cred = credentials.Certificate(resolved_cred)
+                firebase_admin.initialize_app(cred, {"projectId": project_id} if project_id else None)
+            else:
+                logger.info("No credential file found, using Application Default Credentials")
+                # Application Default Credentials (e.g. on GCP)
+                firebase_admin.initialize_app(options={"projectId": project_id} if project_id else None)
+
+        _firestore_db = firestore.client()
+        logger.info("Firestore client initialised successfully")
+    except Exception as exc:
+        logger.warning("Firestore unavailable (%s) — falling back to local JSON storage", exc)
+        _firestore_db = None
+
+    return _firestore_db
 
 
 class SessionMeta:
@@ -51,20 +128,42 @@ class SessionMeta:
 
 
 class SessionStore:
-    """Manages chat sessions as JSON files on disk.
+    """Manages chat sessions via Firestore with local JSON fallback.
 
-    Directory layout::
+    Firestore layout::
 
-        data/sessions/<user_id>/
-            <session_id>.json
-            <session_id>.json
+        users/{user_id}/sessions/{session_id}
+            → { session_id, user_id, title, created_at, updated_at,
+                messages[], summary, is_summarized }
+
+    Local fallback layout::
+
+        data/sessions/{user_id}/{session_id}.json
     """
 
     def __init__(self, user_id: str, base_dir: Optional[Path] = None):
         self.user_id = user_id
+        self._db = _get_firestore_db()
+
+        # Local fallback
         self.base_dir = base_dir or DEFAULT_SESSIONS_DIR
         self.user_dir = self.base_dir / user_id
-        self.user_dir.mkdir(parents=True, exist_ok=True)
+
+        if self._db is None:
+            # Ensure local directory exists for fallback
+            self.user_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def _use_firestore(self) -> bool:
+        return self._db is not None
+
+    # ------------------------------------------------------------------
+    # Firestore helpers
+    # ------------------------------------------------------------------
+
+    def _sessions_ref(self):
+        """Return the Firestore collection reference for this user's sessions."""
+        return self._db.collection("users").document(self.user_id).collection("sessions")
 
     # ------------------------------------------------------------------
     # Core CRUD
@@ -88,7 +187,11 @@ class SessionStore:
             "is_summarized": False,
         }
 
-        self._write_session(session_id, session_data)
+        if self._use_firestore:
+            self._sessions_ref().document(session_id).set(session_data)
+        else:
+            self._write_session_local(session_id, session_data)
+
         logger.info(f"Created session {session_id} for user {self.user_id}")
         return session_id
 
@@ -104,7 +207,7 @@ class SessionStore:
         if data is None:
             raise FileNotFoundError(f"Session {session_id} not found")
 
-        turn = {
+        turn: Dict[str, Any] = {
             "role": role,
             "content": content,
             "timestamp": datetime.now().isoformat(),
@@ -126,38 +229,67 @@ class SessionStore:
         return self._read_session(session_id)
 
     def delete_session(self, session_id: str) -> bool:
-        """Delete a session file. Returns True if deleted."""
-        path = self._session_path(session_id)
-        if path.exists():
-            path.unlink()
-            logger.info(f"Deleted session {session_id}")
-            return True
-        return False
+        """Delete a session. Returns True if deleted."""
+        if self._use_firestore:
+            doc_ref = self._sessions_ref().document(session_id)
+            doc = doc_ref.get()
+            if doc.exists:
+                doc_ref.delete()
+                logger.info(f"Deleted session {session_id} from Firestore")
+                return True
+            return False
+        else:
+            path = self._session_path_local(session_id)
+            if path.exists():
+                path.unlink()
+                logger.info(f"Deleted session {session_id}")
+                return True
+            return False
 
     # ------------------------------------------------------------------
     # Listing & pruning
     # ------------------------------------------------------------------
 
     def list_sessions(self, limit: Optional[int] = None) -> List[SessionMeta]:
-        """Return non-empty sessions ordered by most-recently-updated first.
+        """Return non-empty sessions ordered by most-recently-updated first."""
+        if self._use_firestore:
+            return self._list_sessions_firestore(limit)
+        return self._list_sessions_local(limit)
 
-        Sessions with zero messages are excluded — they are transient
-        placeholders created by ``create_session()`` that the user never
-        interacted with.
+    def _list_sessions_firestore(self, limit: Optional[int] = None) -> List[SessionMeta]:
+        query = self._sessions_ref().order_by("updated_at", direction="DESCENDING")
+        if limit:
+            query = query.limit(limit * 2)  # fetch extra to filter empties
 
-        Args:
-            limit: Max number of sessions to return. None = all.
+        metas: List[SessionMeta] = []
+        for doc in query.stream():
+            data = doc.to_dict()
+            msg_count = len(data.get("messages", []))
+            if msg_count == 0:
+                continue
+            metas.append(
+                SessionMeta(
+                    session_id=data["session_id"],
+                    title=data.get("title", "Untitled"),
+                    created_at=data.get("created_at", ""),
+                    updated_at=data.get("updated_at", ""),
+                    message_count=msg_count,
+                    is_summarized=data.get("is_summarized", False),
+                )
+            )
 
-        Returns:
-            List of SessionMeta ordered newest-first, message_count >= 1 only.
-        """
+        if limit is not None:
+            return metas[:limit]
+        return metas
+
+    def _list_sessions_local(self, limit: Optional[int] = None) -> List[SessionMeta]:
         metas: List[SessionMeta] = []
         for path in self.user_dir.glob("*.json"):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 msg_count = len(data.get("messages", []))
                 if msg_count == 0:
-                    continue  # skip empty (never-used) sessions
+                    continue
                 metas.append(
                     SessionMeta(
                         session_id=data["session_id"],
@@ -171,7 +303,6 @@ class SessionStore:
             except (json.JSONDecodeError, KeyError) as exc:
                 logger.warning(f"Skipping corrupt session file {path}: {exc}")
 
-        # Sort newest first
         metas.sort(key=lambda m: m.updated_at, reverse=True)
         if limit is not None:
             return metas[:limit]
@@ -193,12 +324,20 @@ class SessionStore:
 
     def clear_all_sessions(self) -> int:
         """Delete every session for this user. Returns count deleted."""
-        count = 0
-        for path in self.user_dir.glob("*.json"):
-            path.unlink()
-            count += 1
-        logger.info(f"Cleared {count} sessions for user {self.user_id}")
-        return count
+        if self._use_firestore:
+            count = 0
+            for doc in self._sessions_ref().stream():
+                doc.reference.delete()
+                count += 1
+            logger.info(f"Cleared {count} sessions for user {self.user_id} from Firestore")
+            return count
+        else:
+            count = 0
+            for path in self.user_dir.glob("*.json"):
+                path.unlink()
+                count += 1
+            logger.info(f"Cleared {count} sessions for user {self.user_id}")
+            return count
 
     # ------------------------------------------------------------------
     # Summary helpers
@@ -226,14 +365,45 @@ class SessionStore:
         return data
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Internal read/write (dispatch to Firestore or local)
     # ------------------------------------------------------------------
 
-    def _session_path(self, session_id: str) -> Path:
+    def _read_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        if self._use_firestore:
+            return self._read_session_firestore(session_id)
+        return self._read_session_local(session_id)
+
+    def _write_session(self, session_id: str, data: Dict[str, Any]) -> None:
+        if self._use_firestore:
+            self._write_session_firestore(session_id, data)
+        else:
+            self._write_session_local(session_id, data)
+
+    # -- Firestore -------------------------------------------------
+
+    def _read_session_firestore(self, session_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            doc = self._sessions_ref().document(session_id).get()
+            if doc.exists:
+                return doc.to_dict()
+            return None
+        except Exception as exc:
+            logger.error(f"Failed to read session {session_id} from Firestore: {exc}")
+            return None
+
+    def _write_session_firestore(self, session_id: str, data: Dict[str, Any]) -> None:
+        try:
+            self._sessions_ref().document(session_id).set(data)
+        except Exception as exc:
+            logger.error(f"Failed to write session {session_id} to Firestore: {exc}")
+
+    # -- Local JSON fallback ----------------------------------------
+
+    def _session_path_local(self, session_id: str) -> Path:
         return self.user_dir / f"{session_id}.json"
 
-    def _read_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        path = self._session_path(session_id)
+    def _read_session_local(self, session_id: str) -> Optional[Dict[str, Any]]:
+        path = self._session_path_local(session_id)
         if not path.exists():
             return None
         try:
@@ -242,9 +412,13 @@ class SessionStore:
             logger.error(f"Failed to read session {session_id}: {exc}")
             return None
 
-    def _write_session(self, session_id: str, data: Dict[str, Any]) -> None:
-        path = self._session_path(session_id)
+    def _write_session_local(self, session_id: str, data: Dict[str, Any]) -> None:
+        path = self._session_path_local(session_id)
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _generate_title(message: Optional[str]) -> str:

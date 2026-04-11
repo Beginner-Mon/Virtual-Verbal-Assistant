@@ -284,9 +284,13 @@ class AgenticRAGAPI:
             self.exercise_detector = get_exercise_detector()
             logger.info(f"ExerciseDetector initialized with {self.exercise_detector.get_exercise_count()} exercises")
 
-            # Semantic Bridge — DEPRECATED (saves 1 Gemini call per query).
-            # Replaced by zero-LLM KeywordExtractor for motion prompt generation.
-            self.semantic_bridge_enabled = False
+            # Semantic Bridge — parallel kinematic translator (Task B)
+            # Currently DEPRECATED by default (saves 1 Gemini call per query)
+            # and replaced by zero-LLM KeywordExtractor for motion prompt generation.
+            # But can be explicitly enabled via environment variable.
+            self.semantic_bridge_enabled = os.getenv(
+                "SEMANTIC_BRIDGE_ENABLED", "false"
+            ).lower() in {"1", "true", "yes", "on"}
             self.semantic_bridge: Optional[SemanticBridgeService] = None
             logger.info("SemanticBridge DISABLED (replaced by KeywordExtractor)")
 
@@ -392,41 +396,15 @@ class AgenticRAGAPI:
         action_plan: Dict[str, Any],
         request_duration_seconds: Optional[float] = None,
     ) -> float:
-        """Resolve motion duration with strict precedence and bounded clamping."""
+        """
+        Hardcoded to return the default duration (5.33s = 10 chunks).
+        All dynamic LLM and regex fallbacks have been removed.
+        """
         min_s = self.motion_min_duration_seconds
         max_s = self.motion_max_duration_seconds
 
-        candidates: List[Any] = []
-        if request_duration_seconds is not None:
-            candidates.append(request_duration_seconds)
-
-        if isinstance(action_plan, dict):
-            parameters = action_plan.get("parameters")
-            double_rag_meta = action_plan.get("double_rag_meta")
-            motion_prompt = action_plan.get("motion_prompt")
-
-            candidates.append(action_plan.get("duration_seconds"))
-            if isinstance(parameters, dict):
-                candidates.append(parameters.get("duration_seconds"))
-            if isinstance(double_rag_meta, dict):
-                candidates.append(double_rag_meta.get("duration_seconds"))
-                constraints = double_rag_meta.get("constraints")
-                if constraints:
-                    candidates.append(_extract_duration_seconds_from_text(str(constraints)))
-            if isinstance(motion_prompt, dict):
-                candidates.append(motion_prompt.get("duration_seconds"))
-                candidates.append(motion_prompt.get("duration_estimate_seconds"))
-
-        # In strict policy, explicit duration mentions in query should be honored.
-        if self.motion_duration_policy == "strict":
-            candidates.append(_extract_duration_seconds_from_text(query))
-
-        for raw in candidates:
-            resolved = _coerce_duration_seconds(raw, min_s, max_s)
-            if resolved is not None:
-                return resolved
-
-        return _coerce_duration_seconds(self.motion_default_duration_seconds, min_s, max_s) or self.motion_default_duration_seconds
+        # Lock down to exactly the default (5.33)
+        return _coerce_duration_seconds(self.motion_default_duration_seconds, min_s, max_s) or 5.33
 
     # Maps LocalOrchestrator-specific intent strings to the canonical set
     # used in process_query() branching.  Without this, 'greeting' falls
@@ -1377,8 +1355,8 @@ class AgenticRAGAPI:
                 # will use this in a later integration step — for now we just prepare the field.
                 is_multi_activity = self._is_multi_activity_request(query)
                 if exercises and wants_visualization and not is_multi_activity:
-                    # Double-RAG engine provides the exact motion prompt via hyde_document
-                    exercise_motion_prompt = hyde_document
+                    # Use cleanly extracted verb
+                    exercise_motion_prompt = action_plan.get("exercise_name") or action_plan.get("exercise") or query
                     logger.info(
                         f"Visualization query detected → exercise_motion_prompt={exercise_motion_prompt!r}"
                     )
@@ -1388,7 +1366,8 @@ class AgenticRAGAPI:
                         "returning exercise list without auto-generating motion."
                     )
                 elif (not exercises) and wants_visualization and not is_multi_activity:
-                    exercise_motion_prompt = hyde_document or query
+                    # Use cleanly extracted verb
+                    exercise_motion_prompt = action_plan.get("exercise_name") or action_plan.get("exercise") or query
                     logger.info(
                         "Visualization query had no structured exercises; using HyDE prompt for motion generation"
                     )
@@ -2317,9 +2296,9 @@ async def delete_session(user_id: str, session_id: str) -> Dict[str, Any]:
     return {"deleted": True, "session_id": session_id, "user_id": user_id}
 
 
-@app.post("/sessions/{user_id}/{session_id}/summarize", summary="Summarize session to ChromaDB")
+@app.post("/sessions/{user_id}/{session_id}/summarize", summary="Summarize session to vector DB")
 async def summarize_session(user_id: str, session_id: str) -> Dict[str, Any]:
-    """Summarize a chat session and store the summary in ChromaDB.
+    """Summarize a chat session and store the summary in the vector database.
 
     This triggers the SummarizeAgent to condense the session into a
     summary embedding, enabling cross-session memory recall.
@@ -2470,21 +2449,41 @@ async def health_check() -> Dict[str, Any]:
     except Exception as exc:
         checks["redis"] = {"status": "unreachable", "error": str(exc)}
 
-    # 2. ChromaDB
-    try:
-        import chromadb
-        client = chromadb.HttpClient(
-            host=os.getenv("CHROMA_HOST", "localhost"),
-            port=int(os.getenv("CHROMA_PORT", "8100")),
-        )
-        client.heartbeat()
-        checks["chromadb"] = {"status": "ok"}
-    except Exception:
-        # ChromaDB may be running in-process (PersistentClient) which is fine
-        if api_instance and hasattr(api_instance, "rag_pipeline"):
-            checks["chromadb"] = {"status": "ok (in-process)"}
-        else:
-            checks["chromadb"] = {"status": "unreachable"}
+    # 2. Vector Database (ChromaDB or Pinecone)
+    vector_db_type = os.getenv("VECTOR_DB_TYPE", "chromadb").strip().lower()
+    if vector_db_type == "pinecone":
+        try:
+            from pinecone import Pinecone
+            pc_key = os.getenv("PINECONE_API_KEY") or ""
+            pc_index = os.getenv("PINECONE_INDEX_NAME", "kinetichat")
+            if pc_key:
+                pc = Pinecone(api_key=pc_key)
+                idx = pc.Index(name=pc_index)
+                stats = idx.describe_index_stats()
+                checks["vector_db"] = {
+                    "status": "ok",
+                    "backend": "pinecone",
+                    "total_vectors": stats.get("total_vector_count", 0),
+                }
+            else:
+                checks["vector_db"] = {"status": "not_configured", "backend": "pinecone"}
+        except Exception as exc:
+            checks["vector_db"] = {"status": "unreachable", "backend": "pinecone", "error": str(exc)}
+    else:
+        try:
+            import chromadb
+            client = chromadb.HttpClient(
+                host=os.getenv("CHROMA_HOST", "localhost"),
+                port=int(os.getenv("CHROMA_PORT", "8100")),
+            )
+            client.heartbeat()
+            checks["vector_db"] = {"status": "ok", "backend": "chromadb"}
+        except Exception:
+            # ChromaDB may be running in-process (PersistentClient) which is fine
+            if api_instance and hasattr(api_instance, "rag_pipeline"):
+                checks["vector_db"] = {"status": "ok (in-process)", "backend": "chromadb"}
+            else:
+                checks["vector_db"] = {"status": "unreachable", "backend": "chromadb"}
 
     # 3. Celery Worker
     try:
@@ -2550,7 +2549,7 @@ async def get_info() -> Dict[str, Any]:
             "GET /sessions/{user_id}": "List all sessions for a user",
             "GET /sessions/{user_id}/{session_id}": "Get full session with messages",
             "DELETE /sessions/{user_id}/{session_id}": "Delete a chat session",
-            "POST /sessions/{user_id}/{session_id}/summarize": "Summarize session to ChromaDB",
+            "POST /sessions/{user_id}/{session_id}/summarize": "Summarize session to vector DB",
             "GET /health": "Health check",
             "GET /info": "Service information",
         },

@@ -84,7 +84,7 @@ embedding:
   batch_size: 32
 
 vector_database:
-  type: "chromadb"  # or "qdrant"
+  type: "chromadb"  # "chromadb" or "qdrant" (set via VECTOR_DB_TYPE env var)
   
   chromadb:
     mode: "http"  # "local" (PersistentClient) or "http" (HttpClient)
@@ -95,9 +95,10 @@ vector_database:
     ssl: false
     headers: {}
     
-  qdrant:
-    url: "http://localhost:6333"
-    collection_name: "kinetichat_memory"
+  pinecone:
+    api_key: ""  # overridden by PINECONE_API_KEY env var
+    index_name: "kinetichat"  # overridden by PINECONE_INDEX_NAME env var
+    index_host: ""  # overridden by PINECONE_INDEX_HOST env var
     vector_size: 384
 
 memory:

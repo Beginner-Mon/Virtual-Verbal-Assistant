@@ -49,7 +49,7 @@ class VectorDatabaseConfig(BaseModel):
     """Vector database configuration."""
     type: str = Field(default="chromadb")
     chromadb: Dict[str, Any] = Field(default_factory=dict)
-    qdrant: Dict[str, Any] = Field(default_factory=dict)
+    pinecone: Dict[str, Any] = Field(default_factory=dict)
 
 
 class MemoryConfig(BaseModel):

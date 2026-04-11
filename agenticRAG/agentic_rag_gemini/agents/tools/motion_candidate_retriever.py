@@ -1,8 +1,12 @@
-"""Top-K motion candidate retrieval via ChromaDB (with JSONL fallback).
+"""Top-K motion candidate retrieval via vector DB (with JSONL fallback).
 
-Primary path:  query the `humanml3d_library` ChromaDB collection.
-Fallback path: if ChromaDB is unreachable or empty, load the local JSONL
+Primary path:  query the ``humanml3d_library`` collection in the configured
+               vector database (Qdrant Cloud or ChromaDB).
+Fallback path: if the vector DB is unreachable or empty, load the local JSONL
                and do in-memory cosine search (original approach).
+
+The backend is selected by the ``VECTOR_DB_TYPE`` environment variable
+(``qdrant`` or ``chromadb``).
 """
 
 from dataclasses import dataclass
@@ -11,16 +15,22 @@ import os
 import re
 from typing import Any, Dict, List
 
-import chromadb
-from chromadb.config import Settings
-
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# ── ChromaDB settings ─────────────────────────────────────────────
+# ── Vector DB selection ───────────────────────────────────────────
+VECTOR_DB_TYPE = os.getenv("VECTOR_DB_TYPE", "chromadb").strip().lower()
+
+# ── ChromaDB settings (legacy) ───────────────────────────────────
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8100"))
+
+# ── Pinecone settings ──────────────────────────────────────────
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY") or None
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "kinetichat")
+PINECONE_INDEX_HOST = os.getenv("PINECONE_INDEX_HOST") or None
+
 COLLECTION_NAME = "humanml3d_library"
 
 # ── Fallback JSONL path ───────────────────────────────────────────
@@ -51,15 +61,43 @@ class MotionCandidate:
 
 
 class MotionCandidateRetriever:
-    """Retrieve Top-K HumanML3D candidates — ChromaDB first, JSONL fallback."""
+    """Retrieve Top-K HumanML3D candidates — vector DB first, JSONL fallback."""
 
     def __init__(self) -> None:
-        self._use_chromadb = False
-        self._collection = None
+        self._use_vector_db = False
+        self._vector_db_type = VECTOR_DB_TYPE
+        self._collection = None   # ChromaDB collection handle
+        self._pinecone_index = None  # Pinecone index handle
         self._embedder = None
 
-        # ── Try ChromaDB first ──────────────────────────────────
+        # ── Try vector DB first ─────────────────────────────
+        if self._vector_db_type == "pinecone":
+            self._try_init_pinecone()
+        else:
+            self._try_init_chromadb()
+
+        # ── Load embedding model (needed for both paths) ────────
         try:
+            from sentence_transformers import SentenceTransformer
+            self._embedder = SentenceTransformer(EMBEDDING_MODEL)
+        except Exception as exc:
+            logger.warning("Cannot load embedding model %s: %s", EMBEDDING_MODEL, exc)
+
+        # ── Fallback: load JSONL into memory ────────────────────
+        if not self._use_vector_db:
+            self._rows = self._load_jsonl()
+            self._embeddings = self._embed_rows()
+        else:
+            self._rows = []
+            self._embeddings = []
+
+    # ── Vector DB initialisation ────────────────────────────────
+
+    def _try_init_chromadb(self) -> None:
+        try:
+            import chromadb
+            from chromadb.config import Settings
+
             client = chromadb.HttpClient(
                 host=CHROMA_HOST,
                 port=CHROMA_PORT,
@@ -70,7 +108,7 @@ class MotionCandidateRetriever:
             count = col.count()
             if count > 0:
                 self._collection = col
-                self._use_chromadb = True
+                self._use_vector_db = True
                 logger.info(
                     "MotionCandidateRetriever: using ChromaDB collection '%s' (%d entries)",
                     COLLECTION_NAME, count,
@@ -83,20 +121,38 @@ class MotionCandidateRetriever:
         except Exception as exc:
             logger.warning("ChromaDB unavailable (%s) — falling back to JSONL", exc)
 
-        # ── Load embedding model (needed for both paths) ────────
+    def _try_init_pinecone(self) -> None:
         try:
-            from sentence_transformers import SentenceTransformer
-            self._embedder = SentenceTransformer(EMBEDDING_MODEL)
-        except Exception as exc:
-            logger.warning("Cannot load embedding model %s: %s", EMBEDDING_MODEL, exc)
+            from pinecone import Pinecone
 
-        # ── Fallback: load JSONL into memory ────────────────────
-        if not self._use_chromadb:
-            self._rows = self._load_jsonl()
-            self._embeddings = self._embed_rows()
-        else:
-            self._rows = []
-            self._embeddings = []
+            if not PINECONE_API_KEY:
+                logger.warning("PINECONE_API_KEY not set — falling back to JSONL")
+                return
+
+            pc = Pinecone(api_key=PINECONE_API_KEY)
+            if PINECONE_INDEX_HOST:
+                self._pinecone_index = pc.Index(name=PINECONE_INDEX_NAME, host=PINECONE_INDEX_HOST)
+            else:
+                self._pinecone_index = pc.Index(name=PINECONE_INDEX_NAME)
+
+            stats = self._pinecone_index.describe_index_stats()
+            ns_stats = stats.get("namespaces", {}).get(COLLECTION_NAME, {})
+            count = ns_stats.get("vector_count", 0)
+            if count > 0:
+                self._use_vector_db = True
+                logger.info(
+                    "MotionCandidateRetriever: using Pinecone namespace '%s' (%d entries)",
+                    COLLECTION_NAME, count,
+                )
+            else:
+                logger.warning(
+                    "Pinecone namespace '%s' is empty — falling back to JSONL",
+                    COLLECTION_NAME,
+                )
+                self._pinecone_index = None
+        except Exception as exc:
+            logger.warning("Pinecone unavailable (%s) — falling back to JSONL", exc)
+            self._pinecone_index = None
 
     # ── JSONL fallback helpers ──────────────────────────────────
 
@@ -144,7 +200,9 @@ class MotionCandidateRetriever:
 
     def retrieve_top_k(self, query: str, k: int = 5) -> List[MotionCandidate]:
         """Retrieve top-K motion candidates for the given query."""
-        if self._use_chromadb:
+        if self._use_vector_db:
+            if self._vector_db_type == "pinecone":
+                return self._retrieve_pinecone(query, k)
             return self._retrieve_chromadb(query, k)
         return self._retrieve_fallback(query, k)
 
@@ -178,6 +236,45 @@ class MotionCandidateRetriever:
 
         logger.info(
             "ChromaDB retrieval: top-1='%s' (score=%.3f) for query='%s'",
+            candidates[0].text_description[:60], candidates[0].score, query[:60],
+        )
+        return candidates
+
+    # ── Pinecone path ───────────────────────────────────────────
+
+    def _retrieve_pinecone(self, query: str, k: int) -> List[MotionCandidate]:
+        if self._embedder is None or self._pinecone_index is None:
+            return [MotionCandidate("fallback", query, query, 0.0)]
+
+        query_emb = self._embedder.encode([query], normalize_embeddings=True).tolist()[0]
+        results = self._pinecone_index.query(
+            vector=query_emb,
+            top_k=k,
+            namespace=COLLECTION_NAME,
+            include_metadata=True,
+        )
+
+        candidates: List[MotionCandidate] = []
+        for match in results.get("matches", []):
+            meta = match.get("metadata", {})
+            doc = meta.get("text", "")
+            if not doc:
+                continue
+            cid = str(meta.get("motion_id", match["id"]))
+            candidates.append(MotionCandidate(
+                candidate_id=cid,
+                text_description=doc,
+                motion_prompt=doc,
+                score=match["score"],
+                motion_id=cid,
+                duration=float(meta.get("duration", 0.0)),
+            ))
+
+        if not candidates:
+            return [MotionCandidate("fallback", query, query, 0.0)]
+
+        logger.info(
+            "Pinecone retrieval: top-1='%s' (score=%.3f) for query='%s'",
             candidates[0].text_description[:60], candidates[0].score, query[:60],
         )
         return candidates

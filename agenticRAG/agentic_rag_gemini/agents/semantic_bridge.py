@@ -24,12 +24,15 @@ Decision Flow:
 
 Key design decisions:
     - Uses gemini-2.5-flash with max_tokens=200 for complete descriptions.
-    - Few-shot examples from humanml3d_library ChromaDB ground the vocabulary.
+    - Few-shot examples from humanml3d_library vector DB ground the vocabulary.
     - Anti-truncation rules baked into the system prompt.
     - [[ REFINED_PROMPT ]] delimiters enable robust regex extraction.
     - Force-Expansion List decomposes compound exercises DART cannot render as one entity.
     - Conversation history injection enables follow-up refinement ("do it faster").
     - Falls back gracefully to the best library match on any failure.
+
+Supports both ChromaDB (legacy) and Qdrant Cloud backends, selected by
+the ``VECTOR_DB_TYPE`` environment variable.
 """
 
 import json
@@ -43,9 +46,16 @@ from utils.gemini_client import GeminiClientWrapper
 
 logger = get_logger(__name__)
 
-# ── ChromaDB settings ─────────────────────────────────────────────
+# ── Vector DB settings ────────────────────────────────────────────
+VECTOR_DB_TYPE = os.getenv("VECTOR_DB_TYPE", "chromadb").strip().lower()
+# ChromaDB (legacy)
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8100"))
+# Pinecone
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY") or None
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "kinetichat")
+PINECONE_INDEX_HOST = os.getenv("PINECONE_INDEX_HOST") or None
+
 COLLECTION_NAME = "humanml3d_library"
 FEW_SHOT_K = int(os.getenv("SEMANTIC_BRIDGE_FEW_SHOT_K", "5"))
 
@@ -134,10 +144,17 @@ class SemanticBridgeService:
     """
 
     def __init__(self) -> None:
-        self._collection = None
+        self._collection = None  # ChromaDB collection (legacy)
+        self._pinecone_index = None  # Pinecone index
         self._embedder = None
         self._client = GeminiClientWrapper()
-        self._init_chromadb()
+        self._vector_db_type = VECTOR_DB_TYPE
+
+        if self._vector_db_type == "pinecone":
+            self._init_pinecone()
+        else:
+            self._init_chromadb()
+
         self._init_embedder()
 
     # ── Initialization ───────────────────────────────────────────
@@ -171,6 +188,40 @@ class SemanticBridgeService:
         except Exception as exc:
             logger.warning("SemanticBridge: ChromaDB unavailable (%s) — few-shot disabled", exc)
 
+    def _init_pinecone(self) -> None:
+        """Connect to the humanml3d_library Pinecone namespace."""
+        try:
+            from pinecone import Pinecone
+
+            if not PINECONE_API_KEY:
+                logger.warning("SemanticBridge: PINECONE_API_KEY not set — few-shot disabled")
+                return
+
+            pc = Pinecone(api_key=PINECONE_API_KEY)
+            if PINECONE_INDEX_HOST:
+                self._pinecone_index = pc.Index(name=PINECONE_INDEX_NAME, host=PINECONE_INDEX_HOST)
+            else:
+                self._pinecone_index = pc.Index(name=PINECONE_INDEX_NAME)
+
+            stats = self._pinecone_index.describe_index_stats()
+            ns_stats = stats.get("namespaces", {}).get(COLLECTION_NAME, {})
+            count = ns_stats.get("vector_count", 0)
+            if count > 0:
+                logger.info(
+                    "SemanticBridge: Pinecone '%s' ready (%d entries)",
+                    COLLECTION_NAME,
+                    count,
+                )
+            else:
+                logger.warning(
+                    "SemanticBridge: Pinecone '%s' empty — few-shot disabled",
+                    COLLECTION_NAME,
+                )
+                self._pinecone_index = None
+        except Exception as exc:
+            logger.warning("SemanticBridge: Pinecone unavailable (%s) — few-shot disabled", exc)
+            self._pinecone_index = None
+
     def _init_embedder(self) -> None:
         """Load the sentence-transformer model for query embedding."""
         try:
@@ -189,13 +240,17 @@ class SemanticBridgeService:
     def _retrieve_candidates(
         self, query: str, k: int = FEW_SHOT_K,
     ) -> List[Dict[str, any]]:
-        """Retrieve top-K HumanML3D candidates with scores.
-
-        Returns list of dicts with keys: text, score, motion_id, duration
-        """
-        if self._collection is None or self._embedder is None:
+        """Retrieve top-K HumanML3D candidates with scores."""
+        if self._embedder is None:
             return []
 
+        if self._vector_db_type == "pinecone":
+            return self._retrieve_candidates_pinecone(query, k)
+        return self._retrieve_candidates_chromadb(query, k)
+
+    def _retrieve_candidates_chromadb(self, query: str, k: int) -> List[Dict[str, any]]:
+        if self._collection is None:
+            return []
         try:
             query_emb = self._embedder.encode([query], normalize_embeddings=True).tolist()
             results = self._collection.query(query_embeddings=query_emb, n_results=k)
@@ -224,6 +279,36 @@ class SemanticBridgeService:
             return candidates
         except Exception as exc:
             logger.warning("SemanticBridge: Library retrieval failed: %s", exc)
+            return []
+
+    def _retrieve_candidates_pinecone(self, query: str, k: int) -> List[Dict[str, any]]:
+        if self._pinecone_index is None:
+            return []
+        try:
+            query_emb = self._embedder.encode([query], normalize_embeddings=True).tolist()[0]
+            results = self._pinecone_index.query(
+                vector=query_emb,
+                top_k=k,
+                namespace=COLLECTION_NAME,
+                include_metadata=True,
+            )
+
+            candidates = []
+            for match in results.get("matches", []):
+                meta = match.get("metadata", {})
+                doc = meta.get("text", "")
+                if not doc:
+                    continue
+                candidates.append({
+                    "text": doc,
+                    "score": match["score"],
+                    "motion_id": str(meta.get("motion_id", match["id"])),
+                    "duration": float(meta.get("duration", 0.0)),
+                })
+
+            return candidates
+        except Exception as exc:
+            logger.warning("SemanticBridge: Pinecone retrieval failed: %s", exc)
             return []
 
     # ── Force-Expansion Detection ────────────────────────────────
@@ -323,13 +408,7 @@ class SemanticBridgeService:
         top1_text = candidates[0]["text"] if candidates else ""
 
         # ── Step 2: Confidence Gate ──────────────────────────────
-        if (
-            not force_expand
-            and top1_score >= DIRECT_HIT_THRESHOLD
-            and top1_text
-        ):
-            # FAST PATH: Direct Hit — library description is already in
-            # native HumanML3D vocabulary, no Gemini call needed.
+        if top1_score >= DIRECT_HIT_THRESHOLD and top1_text:
             total_ms = (time.perf_counter() - t0) * 1000
             result = self._ensure_quality(top1_text)
             logger.info(
@@ -423,8 +502,6 @@ class SemanticBridgeService:
                 "falling back to best library match",
                 exc,
             )
-            # Fallback: use best library match, or safe default
-            top1_text = candidates[0]["text"] if candidates else ""
             if top1_text:
                 return self._ensure_quality(top1_text)
             return _FALLBACK_DESCRIPTION
@@ -474,11 +551,9 @@ class SemanticBridgeService:
         """
         text = text.strip()
 
-        # Remove markdown fencing
         if text.startswith("```"):
             text = text.strip("`").strip()
 
-        # Remove surrounding quotes
         if (text.startswith('"') and text.endswith('"')) or \
            (text.startswith("'") and text.endswith("'")):
             text = text[1:-1].strip()
@@ -492,7 +567,6 @@ class SemanticBridgeService:
             if text.lower().startswith(prefix):
                 text = text[len(prefix):].strip()
 
-        # Remove "Chosen Path:" / "Strategy:" lines
         lines = text.strip().splitlines()
         cleaned_lines = []
         for line in lines:
@@ -522,33 +596,17 @@ class SemanticBridgeService:
     # ── Quality Guard ────────────────────────────────────────────
 
     def _ensure_quality(self, text: str) -> str:
-        """Validate output meets minimum quality bar.
-
-        Guards against the 'a person' truncation bug by ensuring
-        the description contains at least one action verb.
-        """
+        """Validate output meets minimum quality bar."""
         text = text.strip()
         if not text:
-            return _FALLBACK_DESCRIPTION
+            return "a person performs a standing exercise movement"
 
-        # Remove any residual [[ ]] brackets
-        text = re.sub(r"\[\[|\]\]", "", text).strip()
-
-        # Remove surrounding quotes
-        if (text.startswith('"') and text.endswith('"')) or \
-           (text.startswith("'") and text.endswith("'")):
-            text = text[1:-1].strip()
-
-        # Ensure it starts with "a person" (HumanML3D convention)
         lower = text.lower()
         if not lower.startswith("a person"):
             text = f"a person {text}"
 
-        # Guard: reject if too short (just "a person" with no action)
         words = text.split()
         if len(words) < 5:
-            # Too short — this is the truncation bug.  Append a generic
-            # action to make it usable rather than sending garbage to DART.
             logger.warning(
                 "SemanticBridge: output too short (%d words): '%s' — "
                 "using fallback description",
@@ -556,14 +614,10 @@ class SemanticBridgeService:
             )
             return _FALLBACK_DESCRIPTION
 
-        # Enforce max word limit. Relax the limit if using sequential '*' syntax
-        # because sequence chains natively require more words.
-        if '*' in text:
-            if len(words) > 50:
-                text = " ".join(words[:50])
-        else:
-            if len(words) > 30:
-                text = " ".join(words[:30])
+        # Enforce max 30 words (slightly above the 25-word prompt limit
+        # to avoid cutting off valid outputs)
+        if len(words) > 30:
+            text = " ".join(words[:30])
 
         return text
 

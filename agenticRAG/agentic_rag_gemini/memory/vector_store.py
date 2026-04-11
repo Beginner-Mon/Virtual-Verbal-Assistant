@@ -2,14 +2,20 @@
 
 This module provides vector database operations for storing and retrieving
 embeddings of user conversations and context.
+
+Supports two backends:
+  - **ChromaDB** (local Docker or PersistentClient)
+  - **Pinecone** (serverless cloud)
+
+When using Pinecone, a single index is used with four namespaces:
+  conversations, documents, chat_summaries, humanml3d_library
+User isolation is achieved via a ``user_id`` metadata filter.
 """
 
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import uuid
-
-import chromadb
-from chromadb.config import Settings
+import os
 
 from config import get_config
 from utils.logger import get_logger
@@ -21,11 +27,17 @@ logger = get_logger(__name__)
 PUBLIC_COLLECTION_NAME = "humanml3d_library"
 DEFAULT_GUEST_USER_ID = "guest"
 
+# Pinecone namespace names (used as namespaces within a single index)
+_NS_CONVERSATIONS = "conversations"
+_NS_DOCUMENTS = "documents"
+_NS_CHAT_SUMMARIES = "chat_summaries"
+_NS_PUBLIC = PUBLIC_COLLECTION_NAME
+
 
 class VectorStore:
     """Vector database wrapper for memory storage and retrieval.
     
-    Supports ChromaDB and Qdrant backends for storing document embeddings
+    Supports ChromaDB and Pinecone backends for storing document embeddings
     and performing similarity search.
     """
     
@@ -40,15 +52,22 @@ class VectorStore:
         
         if self.db_type == "chromadb":
             self._init_chromadb()
-        elif self.db_type == "qdrant":
-            self._init_qdrant()
+        elif self.db_type == "pinecone":
+            self._init_pinecone()
         else:
             raise ValueError(f"Unsupported vector database type: {self.db_type}")
         
         logger.info(f"Initialized VectorStore with backend: {self.db_type}")
-    
+
+    # ==================================================================
+    # ChromaDB initialisation (unchanged from original)
+    # ==================================================================
+
     def _init_chromadb(self):
         """Initialize ChromaDB client and collections."""
+        import chromadb
+        from chromadb.config import Settings
+
         chroma_config = self.config.chromadb
         mode = str(chroma_config.get("mode", "http")).strip().lower()
 
@@ -106,6 +125,50 @@ class VectorStore:
             PUBLIC_COLLECTION_NAME,
         )
 
+    # ==================================================================
+    # Pinecone initialisation
+    # ==================================================================
+
+    def _init_pinecone(self):
+        """Initialize Pinecone client and index.
+
+        Reads ``pinecone.api_key`` and ``pinecone.index_name`` from config / env.
+        Uses namespaces within a single index for different collection types.
+        """
+        from pinecone import Pinecone
+
+        pinecone_config = self.config.pinecone
+
+        api_key = os.getenv("PINECONE_API_KEY") or pinecone_config.get("api_key", "")
+        index_name = os.getenv("PINECONE_INDEX_NAME") or pinecone_config.get("index_name", "kinetichat")
+        index_host = os.getenv("PINECONE_INDEX_HOST") or pinecone_config.get("index_host", "")
+
+        if not api_key:
+            raise ValueError(
+                "Pinecone API key is required. Set PINECONE_API_KEY env var "
+                "or pinecone.api_key in config.yaml"
+            )
+
+        self.client = Pinecone(api_key=api_key)
+
+        if index_host:
+            self._pinecone_index = self.client.Index(name=index_name, host=index_host)
+        else:
+            self._pinecone_index = self.client.Index(name=index_name)
+
+        # Verify connectivity
+        stats = self._pinecone_index.describe_index_stats()
+        logger.info(
+            "Pinecone connected: index=%s, total_vectors=%d, namespaces=%s",
+            index_name,
+            stats.get("total_vector_count", 0),
+            list(stats.get("namespaces", {}).keys()),
+        )
+
+    # ==================================================================
+    # Helpers
+    # ==================================================================
+
     def _resolve_user_id(self, user_id: Optional[str]) -> str:
         value = str(user_id or DEFAULT_GUEST_USER_ID).strip()
         return value or DEFAULT_GUEST_USER_ID
@@ -147,32 +210,25 @@ class VectorStore:
                 embedding_function=None,
             )
         return self.client.get_collection(name=PUBLIC_COLLECTION_NAME, embedding_function=None)
-    
-    def _init_qdrant(self):
-        """Initialize Qdrant client and collection."""
-        from qdrant_client import QdrantClient
-        from qdrant_client.models import Distance, VectorParams
-        
-        qdrant_config = self.config.qdrant
-        
-        self.client = QdrantClient(url=qdrant_config["url"])
-        
-        # Create collection if not exists
-        collections = self.client.get_collections().collections
-        collection_names = [c.name for c in collections]
-        
-        if qdrant_config["collection_name"] not in collection_names:
-            self.client.create_collection(
-                collection_name=qdrant_config["collection_name"],
-                vectors_config=VectorParams(
-                    size=qdrant_config["vector_size"],
-                    distance=Distance.COSINE
-                )
-            )
-        
-        self.collection_name = qdrant_config["collection_name"]
-        logger.info(f"Qdrant collection: {self.collection_name}")
-    
+
+    # ------------------------------------------------------------------
+    # Pinecone helper: map collection_type → namespace
+    # ------------------------------------------------------------------
+
+    def _pinecone_ns(self, collection_type: str) -> str:
+        """Return the Pinecone namespace for a logical collection type."""
+        mapping = {
+            "conversations": _NS_CONVERSATIONS,
+            "documents": _NS_DOCUMENTS,
+            "chat_summaries": _NS_CHAT_SUMMARIES,
+            "public": _NS_PUBLIC,
+        }
+        return mapping.get(collection_type, _NS_CONVERSATIONS)
+
+    # ==================================================================
+    # add_documents
+    # ==================================================================
+
     def add_documents(
         self,
         documents: List[str],
@@ -182,18 +238,7 @@ class VectorStore:
         collection_type: str = "conversations",
         user_id: Optional[str] = None,
     ) -> List[str]:
-        """Add documents to vector store.
-        
-        Args:
-            documents: List of document texts
-            embeddings: List of embedding vectors
-            metadata: List of metadata dictionaries for each document
-            ids: Optional list of document IDs. Generated if not provided.
-            collection_type: "conversations" or "documents"
-            
-        Returns:
-            List of document IDs
-        """
+        """Add documents to vector store."""
         if ids is None:
             ids = [str(uuid.uuid4()) for _ in documents]
         
@@ -209,7 +254,6 @@ class VectorStore:
         
         resolved_user_id = self._resolve_user_id(user_id or metadata[0].get("user_id"))
 
-        # Select collection based on type
         if self.db_type == "chromadb":
             collection = self._get_chroma_collection(collection_type, resolved_user_id, create_if_missing=True)
             collection.add(
@@ -218,22 +262,17 @@ class VectorStore:
                 metadatas=metadata,
                 ids=ids
             )
-        elif self.db_type == "qdrant":
-            from qdrant_client.models import PointStruct
-            
-            points = [
-                PointStruct(
-                    id=id_,
-                    vector=embedding,
-                    payload={"text": doc, **meta}
-                )
-                for id_, doc, embedding, meta in zip(ids, documents, embeddings, metadata)
-            ]
-            
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=points
-            )
+        elif self.db_type == "pinecone":
+            ns = self._pinecone_ns(collection_type)
+            vectors = []
+            for i, (id_, doc, embedding, meta) in enumerate(zip(ids, documents, embeddings, metadata)):
+                pinecone_meta = {
+                    "text": doc,
+                    "user_id": resolved_user_id,
+                    **meta,
+                }
+                vectors.append((id_, embedding, pinecone_meta))
+            self._pinecone_index.upsert(vectors=vectors, namespace=ns)
         
         logger.info(
             "Added %d documents to vector store (collection_type=%s user_id=%s)",
@@ -242,7 +281,11 @@ class VectorStore:
             resolved_user_id,
         )
         return ids
-    
+
+    # ==================================================================
+    # search (conversations)
+    # ==================================================================
+
     def search(
         self,
         query_embedding: List[float],
@@ -250,22 +293,12 @@ class VectorStore:
         filter_metadata: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Search for similar documents in vector store.
-        
-        Args:
-            query_embedding: Query embedding vector
-            top_k: Number of results to return
-            filter_metadata: Optional metadata filters
-            
-        Returns:
-            List of documents with similarity scores and metadata
-        """
+        """Search for similar documents in vector store."""
         if self.db_type == "chromadb":
             user_from_filter = (filter_metadata or {}).get("user_id")
             resolved_user_id = self._resolve_user_id(user_id or user_from_filter)
             collection = self._get_chroma_collection("conversations", resolved_user_id, create_if_missing=True)
 
-            # Handle multiple filter conditions with $and operator
             where_clause = dict(filter_metadata or {})
             where_clause.pop("user_id", None)
             if not where_clause:
@@ -279,7 +312,6 @@ class VectorStore:
                 where=where_clause
             )
             
-            # Format results
             formatted_results = []
             for i in range(len(results["ids"][0])):
                 formatted_results.append({
@@ -292,42 +324,22 @@ class VectorStore:
             
             return formatted_results
         
-        elif self.db_type == "qdrant":
-            from qdrant_client.models import Filter, FieldCondition, MatchValue
-            
-            # Build filter if provided
-            query_filter = None
-            if filter_metadata:
-                conditions = [
-                    FieldCondition(key=k, match=MatchValue(value=v))
-                    for k, v in filter_metadata.items()
-                ]
-                query_filter = Filter(must=conditions)
-            
-            results = self.client.search(
-                collection_name=self.collection_name,
-                query_vector=query_embedding,
-                limit=top_k,
-                query_filter=query_filter
+        elif self.db_type == "pinecone":
+            return self._pinecone_search(
+                collection_type="conversations",
+                query_embedding=query_embedding,
+                top_k=top_k,
+                filter_metadata=filter_metadata,
+                user_id=user_id,
             )
-            
-            # Format results
-            formatted_results = []
-            for result in results:
-                formatted_results.append({
-                    "id": str(result.id),
-                    "document": result.payload.get("text", ""),
-                    "metadata": {k: v for k, v in result.payload.items() if k != "text"},
-                    "distance": 1 - result.score,  # Convert score to distance
-                    "similarity": result.score
-                })
-            
-            return formatted_results
         
-        # Fallback for unsupported db types
         logger.warning(f"Unsupported database type for search: {self.db_type}")
         return []
-    
+
+    # ==================================================================
+    # add_document (single, to documents collection)
+    # ==================================================================
+
     def add_document(
         self,
         document: str,
@@ -335,17 +347,7 @@ class VectorStore:
         metadata: Optional[Dict[str, Any]] = None,
         id: Optional[str] = None
     ) -> str:
-        """Add a single document to the documents collection.
-        
-        Args:
-            document: Document text
-            embedding: Embedding vector
-            metadata: Document metadata
-            id: Optional document ID
-            
-        Returns:
-            Document ID
-        """
+        """Add a single document to the documents collection."""
         ids = self.add_documents(
             documents=[document],
             embeddings=[embedding],
@@ -355,6 +357,10 @@ class VectorStore:
         )
         return ids[0]
 
+    # ==================================================================
+    # add_public_documents
+    # ==================================================================
+
     def add_public_documents(
         self,
         documents: List[str],
@@ -363,24 +369,32 @@ class VectorStore:
         ids: Optional[List[str]] = None,
     ) -> List[str]:
         """Add shared read-only library entries to the public collection."""
-        if self.db_type != "chromadb":
-            raise ValueError("Public collection helper is only supported for ChromaDB backend")
-
         if ids is None:
             ids = [str(uuid.uuid4()) for _ in documents]
         if metadata is None:
             metadata = [{} for _ in documents]
 
-        collection = self._get_public_collection(create_if_missing=True)
-        collection.add(
-            documents=documents,
-            embeddings=embeddings,
-            metadatas=metadata,
-            ids=ids,
-        )
+        if self.db_type == "chromadb":
+            collection = self._get_public_collection(create_if_missing=True)
+            collection.add(
+                documents=documents,
+                embeddings=embeddings,
+                metadatas=metadata,
+                ids=ids,
+            )
+        elif self.db_type == "pinecone":
+            vectors = []
+            for id_, doc, embedding, meta in zip(ids, documents, embeddings, metadata):
+                vectors.append((id_, embedding, {"text": doc, **(meta or {})}))
+            self._pinecone_index.upsert(vectors=vectors, namespace=_NS_PUBLIC)
+
         logger.info("Added %d entries to public collection %s", len(documents), PUBLIC_COLLECTION_NAME)
         return ids
-    
+
+    # ==================================================================
+    # search_documents
+    # ==================================================================
+
     def search_documents(
         self,
         query_embedding: List[float],
@@ -389,22 +403,12 @@ class VectorStore:
         user_id: Optional[str] = None,
         include_public: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Search documents collection specifically.
-        
-        Args:
-            query_embedding: Query embedding vector
-            top_k: Number of results to return
-            filter_metadata: Optional metadata filters
-            
-        Returns:
-            List of documents with scores
-        """
+        """Search documents collection specifically."""
         if self.db_type == "chromadb":
             user_from_filter = (filter_metadata or {}).get("user_id")
             resolved_user_id = self._resolve_user_id(user_id or user_from_filter)
             documents_collection = self._get_chroma_collection("documents", resolved_user_id, create_if_missing=True)
 
-            # Handle multiple filter conditions with $and operator
             where_clause = dict(filter_metadata or {})
             where_clause.pop("user_id", None)
             if not where_clause:
@@ -418,7 +422,6 @@ class VectorStore:
                 where=where_clause
             )
             
-            # Format results
             formatted_results = []
             for i in range(len(results["ids"][0])):
                 formatted_results.append({
@@ -450,10 +453,36 @@ class VectorStore:
                 return formatted_results[:top_k]
 
             return formatted_results
-        
-        # Similar Qdrant logic would go here...
+
+        elif self.db_type == "pinecone":
+            results = self._pinecone_search(
+                collection_type="documents",
+                query_embedding=query_embedding,
+                top_k=top_k,
+                filter_metadata=filter_metadata,
+                user_id=user_id,
+            )
+
+            if include_public:
+                public_results = self._pinecone_search(
+                    collection_type="public",
+                    query_embedding=query_embedding,
+                    top_k=top_k,
+                )
+                for r in public_results:
+                    r["metadata"]["library_scope"] = "public"
+                results.extend(public_results)
+                results.sort(key=lambda item: item.get("similarity") or 0.0, reverse=True)
+                return results[:top_k]
+
+            return results
+
         return []
-    
+
+    # ==================================================================
+    # add_chat_summary
+    # ==================================================================
+
     def add_chat_summary(
         self,
         summary: str,
@@ -462,17 +491,7 @@ class VectorStore:
         id: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> str:
-        """Add a single chat summary to the chat summaries collection.
-        
-        Args:
-            summary: Chat summary text
-            embedding: Embedding vector
-            metadata: Summary metadata
-            id: Optional summary ID
-            
-        Returns:
-            Summary ID
-        """
+        """Add a single chat summary to the chat summaries collection."""
         if id is None:
             id = str(uuid.uuid4())
         
@@ -492,23 +511,24 @@ class VectorStore:
                 metadatas=[metadata],
                 ids=[id]
             )
-        elif self.db_type == "qdrant":
-            from qdrant_client.models import PointStruct
-            
-            point = PointStruct(
-                id=id,
-                vector=embedding,
-                payload={"text": summary, **metadata}
-            )
-            
-            self.client.upsert(
-                collection_name=f"{self.collection_name}_chat_summaries", # Assuming a separate Qdrant collection for summaries
-                points=[point]
+        elif self.db_type == "pinecone":
+            pinecone_meta = {
+                "text": summary,
+                "user_id": resolved_user_id,
+                **metadata,
+            }
+            self._pinecone_index.upsert(
+                vectors=[(id, embedding, pinecone_meta)],
+                namespace=_NS_CHAT_SUMMARIES,
             )
         
         logger.info(f"Added chat summary with ID: {id}")
         return id
-    
+
+    # ==================================================================
+    # search_chat_summaries
+    # ==================================================================
+
     def search_chat_summaries(
         self,
         query_embedding: List[float],
@@ -516,16 +536,7 @@ class VectorStore:
         filter_metadata: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Search chat summaries collection specifically.
-        
-        Args:
-            query_embedding: Query embedding vector
-            top_k: Number of results to return
-            filter_metadata: Optional metadata filters
-            
-        Returns:
-            List of summaries with scores
-        """
+        """Search chat summaries collection specifically."""
         if self.db_type == "chromadb":
             user_from_filter = (filter_metadata or {}).get("user_id")
             resolved_user_id = self._resolve_user_id(user_id or user_from_filter)
@@ -556,184 +567,147 @@ class VectorStore:
             
             return formatted_results
         
-        elif self.db_type == "qdrant":
-            from qdrant_client.models import Filter, FieldCondition, MatchValue
-            
-            query_filter = None
-            if filter_metadata:
-                conditions = [
-                    FieldCondition(key=k, match=MatchValue(value=v))
-                    for k, v in filter_metadata.items()
-                ]
-                query_filter = Filter(must=conditions)
-            
-            results = self.client.search(
-                collection_name=f"{self.collection_name}_chat_summaries", # Assuming a separate Qdrant collection for summaries
-                query_vector=query_embedding,
-                limit=top_k,
-                query_filter=query_filter
+        elif self.db_type == "pinecone":
+            return self._pinecone_search(
+                collection_type="chat_summaries",
+                query_embedding=query_embedding,
+                top_k=top_k,
+                filter_metadata=filter_metadata,
+                user_id=user_id,
             )
-            
-            formatted_results = []
-            for result in results:
-                formatted_results.append({
-                    "id": str(result.id),
-                    "document": result.payload.get("text", ""),
-                    "metadata": {k: v for k, v in result.payload.items() if k != "text"},
-                    "distance": 1 - result.score,
-                    "similarity": result.score
-                })
-            
-            return formatted_results
         
         return []
-    
+
+    # ==================================================================
+    # Pinecone unified search helper
+    # ==================================================================
+
+    def _pinecone_search(
+        self,
+        collection_type: str,
+        query_embedding: List[float],
+        top_k: int = 5,
+        filter_metadata: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Generic Pinecone similarity search with optional user_id + metadata filter."""
+        ns = self._pinecone_ns(collection_type)
+
+        # Build Pinecone filter dict
+        pinecone_filter: Dict[str, Any] = {}
+
+        # User-scoped filter (skip for public namespace)
+        if collection_type != "public":
+            resolved_uid = self._resolve_user_id(
+                user_id or (filter_metadata or {}).get("user_id")
+            )
+            pinecone_filter["user_id"] = {"$eq": resolved_uid}
+
+        # Extra metadata filters
+        extra = dict(filter_metadata or {})
+        extra.pop("user_id", None)
+        for k, v in extra.items():
+            pinecone_filter[k] = {"$eq": v}
+
+        results = self._pinecone_index.query(
+            vector=query_embedding,
+            top_k=top_k,
+            namespace=ns,
+            filter=pinecone_filter if pinecone_filter else None,
+            include_metadata=True,
+        )
+
+        formatted: List[Dict[str, Any]] = []
+        for match in results.get("matches", []):
+            meta = match.get("metadata", {})
+            formatted.append({
+                "id": match["id"],
+                "document": meta.get("text", ""),
+                "metadata": {k: v for k, v in meta.items() if k != "text"},
+                "distance": 1 - match["score"],
+                "similarity": match["score"],
+            })
+        return formatted
+
+    # ==================================================================
+    # get_documents_collection / get_conversations_collection
+    # ==================================================================
+
     def get_documents_collection(self, user_id: Optional[str] = None):
-        """Get the documents collection object.
-        
-        Returns:
-            Documents collection
-        """
+        """Get the documents collection object."""
         if self.db_type == "chromadb":
             return self._get_chroma_collection("documents", self._resolve_user_id(user_id), create_if_missing=True)
         return None
     
     def get_conversations_collection(self, user_id: Optional[str] = None):
-        """Get the conversations collection object.
-        
-        Returns:
-            Conversations collection
-        """
+        """Get the conversations collection object."""
         if self.db_type == "chromadb":
             return self._get_chroma_collection("conversations", self._resolve_user_id(user_id), create_if_missing=True)
         return None
 
+    # ==================================================================
+    # delete_documents
+    # ==================================================================
+
     def delete_documents(self, ids: List[str], user_id: Optional[str] = None, collection_type: str = "conversations") -> bool:
-        """Delete documents from vector store.
-        
-        Args:
-            ids: List of document IDs to delete
-            
-        Returns:
-            True if successful
-        """
+        """Delete documents from vector store."""
         if self.db_type == "chromadb":
             collection = self._get_chroma_collection(collection_type, self._resolve_user_id(user_id), create_if_missing=True)
             collection.delete(ids=ids)
-        elif self.db_type == "qdrant":
-            self.client.delete(
-                collection_name=self.collection_name,
-                points_selector=ids
-            )
+        elif self.db_type == "pinecone":
+            ns = self._pinecone_ns(collection_type)
+            self._pinecone_index.delete(ids=ids, namespace=ns)
         
         logger.info(f"Deleted {len(ids)} documents from vector store")
         return True
-    
+
+    # ==================================================================
+    # clear_all_data
+    # ==================================================================
+
     def clear_all_data(self) -> bool:
-        """Clear all data from all collections (conversations, documents, and chat summaries).
-        
-        Returns:
-            True if successful
-        """
+        """Clear all data from all collections."""
         try:
             if self.db_type == "chromadb":
                 logger.info("Clearing all ChromaDB data...")
                 
-                # Clear conversation collection
-                try:
-                    conv_data = self.collection.get()
-                    conv_ids = conv_data.get("ids", [])
-                    if conv_ids:
-                        logger.info(f"Deleting {len(conv_ids)} conversation records")
-                        self.collection.delete(ids=conv_ids)
-                    else:
-                        logger.info("No conversation records to delete")
-                except Exception as e:
-                    logger.warning(f"Error clearing conversation collection: {e}")
+                for label, coll in [
+                    ("conversations", self.collection),
+                    ("documents", self.documents_collection),
+                    ("chat_summaries", self.chat_summaries_collection),
+                ]:
+                    try:
+                        data = coll.get()
+                        coll_ids = data.get("ids", [])
+                        if coll_ids:
+                            logger.info(f"Deleting {len(coll_ids)} {label} records")
+                            coll.delete(ids=coll_ids)
+                        else:
+                            logger.info(f"No {label} records to delete")
+                    except Exception as e:
+                        logger.warning(f"Error clearing {label} collection: {e}")
                 
-                # Clear documents collection
-                try:
-                    doc_data = self.documents_collection.get()
-                    doc_ids = doc_data.get("ids", [])
-                    if doc_ids:
-                        logger.info(f"Deleting {len(doc_ids)} document records")
-                        self.documents_collection.delete(ids=doc_ids)
-                    else:
-                        logger.info("No document records to delete")
-                except Exception as e:
-                    logger.warning(f"Error clearing documents collection: {e}")
-                
-                # Clear chat summaries collection
-                try:
-                    sum_data = self.chat_summaries_collection.get()
-                    sum_ids = sum_data.get("ids", [])
-                    if sum_ids:
-                        logger.info(f"Deleting {len(sum_ids)} chat summary records")
-                        self.chat_summaries_collection.delete(ids=sum_ids)
-                    else:
-                        logger.info("No chat summary records to delete")
-                except Exception as e:
-                    logger.warning(f"Error clearing chat summaries collection: {e}")
-                
-                # Verify collections are empty
                 conv_remaining = self.collection.count()
                 doc_remaining = self.documents_collection.count()
                 sum_remaining = self.chat_summaries_collection.count()
                 
                 if conv_remaining == 0 and doc_remaining == 0 and sum_remaining == 0:
-                    logger.info("✅ Successfully cleared all ChromaDB data")
+                    logger.info("Successfully cleared all ChromaDB data")
                     return True
                 else:
-                    logger.warning(f"⚠️ Data may remain - Conversations: {conv_remaining}, Documents: {doc_remaining}, Summaries: {sum_remaining}")
+                    logger.warning(f"Data may remain - Conversations: {conv_remaining}, Documents: {doc_remaining}, Summaries: {sum_remaining}")
                     return False
                     
-            elif self.db_type == "qdrant":
-                from qdrant_client import models
-                logger.info("Clearing all Qdrant data...")
-                
-                # Clear conversation memory
-                try:
-                    self.client.delete(
-                        collection_name=self.collection_name,
-                        points_selector=models.FilterSelector(
-                            filter=models.Filter(
-                                must=[]
-                            )
-                        )
-                    )
-                    logger.info("Cleared conversation collection")
-                except Exception as e:
-                    logger.warning(f"Error clearing conversation collection: {e}")
-                
-                # Clear documents
-                try:
-                    self.client.delete(
-                        collection_name=f"{self.collection_name}_documents",
-                        points_selector=models.FilterSelector(
-                            filter=models.Filter(
-                                must=[]
-                            )
-                        )
-                    )
-                    logger.info("Cleared documents collection")
-                except Exception as e:
-                    logger.warning(f"Error clearing documents collection: {e}")
-                
-                # Clear chat summaries
-                try:
-                    self.client.delete(
-                        collection_name=f"{self.collection_name}_chat_summaries",
-                        points_selector=models.FilterSelector(
-                            filter=models.Filter(
-                                must=[]
-                            )
-                        )
-                    )
-                    logger.info("Cleared chat summaries collection")
-                except Exception as e:
-                    logger.warning(f"Error clearing chat summaries collection: {e}")
-                
-                logger.info("✅ Successfully cleared all Qdrant data")
+            elif self.db_type == "pinecone":
+                logger.info("Clearing all Pinecone data...")
+                for ns in (_NS_CONVERSATIONS, _NS_DOCUMENTS, _NS_CHAT_SUMMARIES):
+                    try:
+                        self._pinecone_index.delete(delete_all=True, namespace=ns)
+                        logger.info("Cleared Pinecone namespace: %s", ns)
+                    except Exception as e:
+                        logger.warning("Error clearing Pinecone namespace %s: %s", ns, e)
+
+                logger.info("Successfully cleared all Pinecone data")
                 return True
             
             logger.error(f"Unsupported database type: {self.db_type}")
@@ -742,61 +716,57 @@ class VectorStore:
         except Exception as e:
             logger.error(f"Failed to clear vector store data: {e}")
             return False
-    
+
+    # ==================================================================
+    # reset_collections
+    # ==================================================================
+
     def reset_collections(self) -> bool:
-        """Reset collections completely (delete and recreate) to fix schema issues.
-        
-        Returns:
-            True if successful
-        """
+        """Reset collections completely (delete and recreate)."""
         try:
             if self.db_type == "chromadb":
                 logger.info("Resetting ChromaDB collections...")
                 
-                # Get collection names
                 conversations_collection_name = self.collection.name
                 documents_collection_name = self.documents_collection.name
                 summaries_collection_name = self.chat_summaries_collection.name
                 
-                # Delete existing collections
-                try:
-                    self.client.delete_collection(name=conversations_collection_name)
-                    logger.info(f"Deleted collection: {conversations_collection_name}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete conversation collection: {e}")
+                for name in (conversations_collection_name, documents_collection_name, summaries_collection_name):
+                    try:
+                        self.client.delete_collection(name=name)
+                        logger.info(f"Deleted collection: {name}")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete collection {name}: {e}")
                 
-                try:
-                    self.client.delete_collection(name=documents_collection_name)
-                    logger.info(f"Deleted collection: {documents_collection_name}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete documents collection: {e}")
-                
-                try:
-                    self.client.delete_collection(name=summaries_collection_name)
-                    logger.info(f"Deleted collection: {summaries_collection_name}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete chat summaries collection: {e}")
-                
-                # Recreate collections
                 self.collection = self.client.get_or_create_collection(
                     name=conversations_collection_name,
                     metadata={"description": "KineticChat conversation history and summaries"},
                     embedding_function=None
                 )
-                
                 self.documents_collection = self.client.get_or_create_collection(
                     name=documents_collection_name,
                     metadata={"description": "KineticChat uploaded documents and knowledge base"},
                     embedding_function=None
                 )
-                
                 self.chat_summaries_collection = self.client.get_or_create_collection(
                     name=summaries_collection_name,
                     metadata={"description": "KineticChat chat session summaries for memory recall"},
                     embedding_function=None
                 )
                 
-                logger.info("✅ Successfully reset ChromaDB collections")
+                logger.info("Successfully reset ChromaDB collections")
+                return True
+
+            elif self.db_type == "pinecone":
+                logger.info("Resetting Pinecone namespaces...")
+                for ns in (_NS_CONVERSATIONS, _NS_DOCUMENTS, _NS_CHAT_SUMMARIES):
+                    try:
+                        self._pinecone_index.delete(delete_all=True, namespace=ns)
+                        logger.info("Cleared Pinecone namespace: %s", ns)
+                    except Exception:
+                        pass
+
+                logger.info("Successfully reset Pinecone namespaces")
                 return True
                 
             else:
@@ -806,42 +776,41 @@ class VectorStore:
         except Exception as e:
             logger.error(f"Failed to reset collections: {e}")
             return False
-    
+
+    # ==================================================================
+    # update_metadata
+    # ==================================================================
+
     def update_metadata(self, id: str, metadata: Dict[str, Any], user_id: Optional[str] = None) -> bool:
-        """Update metadata for a document.
-        
-        Args:
-            id: Document ID
-            metadata: New metadata dictionary
-            
-        Returns:
-            True if successful
-        """
+        """Update metadata for a document."""
         if self.db_type == "chromadb":
             collection = self._get_chroma_collection("conversations", self._resolve_user_id(user_id), create_if_missing=True)
             collection.update(
                 ids=[id],
                 metadatas=[metadata]
             )
-        elif self.db_type == "qdrant":
-            self.client.set_payload(
-                collection_name=self.collection_name,
-                payload=metadata,
-                points=[id]
-            )
-        
+        elif self.db_type == "pinecone":
+            # Pinecone doesn't support partial metadata update directly;
+            # we fetch, merge, and upsert
+            result = self._pinecone_index.fetch(ids=[id], namespace=_NS_CONVERSATIONS)
+            vectors = result.get("vectors", {})
+            if id in vectors:
+                existing = vectors[id]
+                merged_meta = {**(existing.get("metadata", {})), **metadata}
+                self._pinecone_index.upsert(
+                    vectors=[(id, existing["values"], merged_meta)],
+                    namespace=_NS_CONVERSATIONS,
+                )
+
         logger.info(f"Updated metadata for document: {id}")
         return True
-    
+
+    # ==================================================================
+    # get_document
+    # ==================================================================
+
     def get_document(self, id: str) -> Optional[Dict[str, Any]]:
-        """Retrieve a document by ID.
-        
-        Args:
-            id: Document ID
-            
-        Returns:
-            Document dictionary or None if not found
-        """
+        """Retrieve a document by ID."""
         if self.db_type == "chromadb":
             result = self.collection.get(ids=[id])
             if result["ids"]:
@@ -850,47 +819,41 @@ class VectorStore:
                     "document": result["documents"][0],
                     "metadata": result["metadatas"][0]
                 }
-        elif self.db_type == "qdrant":
-            result = self.client.retrieve(
-                collection_name=self.collection_name,
-                ids=[id]
-            )
-            if result:
+        elif self.db_type == "pinecone":
+            result = self._pinecone_index.fetch(ids=[id], namespace=_NS_CONVERSATIONS)
+            vectors = result.get("vectors", {})
+            if id in vectors:
+                meta = vectors[id].get("metadata", {})
                 return {
-                    "id": str(result[0].id),
-                    "document": result[0].payload.get("text", ""),
-                    "metadata": {k: v for k, v in result[0].payload.items() if k != "text"}
+                    "id": id,
+                    "document": meta.get("text", ""),
+                    "metadata": {k: v for k, v in meta.items() if k != "text"}
                 }
         
         return None
-    
+
+    # ==================================================================
+    # count_documents
+    # ==================================================================
+
     def count_documents(self, filter_metadata: Optional[Dict[str, Any]] = None) -> int:
-        """Count documents in vector store.
-        
-        Args:
-            filter_metadata: Optional metadata filters
-            
-        Returns:
-            Number of documents
-        """
+        """Count documents in vector store."""
         if self.db_type == "chromadb":
             return self.collection.count()
-        elif self.db_type == "qdrant":
-            info = self.client.get_collection(self.collection_name)
-            return info.points_count
+        elif self.db_type == "pinecone":
+            stats = self._pinecone_index.describe_index_stats()
+            ns_stats = stats.get("namespaces", {}).get(_NS_CONVERSATIONS, {})
+            return ns_stats.get("vector_count", 0)
         
         return 0
 
 
 if __name__ == "__main__":
-    # Example usage
     from memory.embedding_service import EmbeddingService
     
-    # Initialize
     vector_store = VectorStore()
     embedding_service = EmbeddingService()
     
-    # Add sample documents
     documents = [
         "User mentioned having neck pain from desk work",
         "User prefers exercises without equipment",
@@ -908,7 +871,6 @@ if __name__ == "__main__":
     ids = vector_store.add_documents(documents, embeddings, metadata)
     print(f"Added documents with IDs: {ids}")
     
-    # Search
     query = "What are user's physical issues?"
     query_embedding = embedding_service.embed_texts([query])[0]
     results = vector_store.search(query_embedding, top_k=3)
