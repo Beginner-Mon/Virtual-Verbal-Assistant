@@ -300,7 +300,8 @@ class AgenticRAGAPI:
             )
 
             # Local conversation client (Ollama) — avoids Gemini for chat
-            self._local_conv_model = os.getenv("LOCAL_CONV_MODEL", "qwen2.5:3b")
+            # Using 0.5B model for blazing fast response to simple queries.
+            self._local_conv_model = os.getenv("LOCAL_CONV_MODEL", "qwen:0.5b")
             self._local_conv_available = False
             try:
                 from utils.ollama_client import OllamaClient
@@ -605,23 +606,26 @@ class AgenticRAGAPI:
             intent = "visualize_motion"
             generate_motion = True
             needs_rag = False
-            agents = ["memory_agent"]
+            use_memory = False
+            agents = ["motion_agent"]
         elif is_conversation:
             intent = "conversation"
             generate_motion = False
             needs_rag = False
+            use_memory = False
             agents = ["memory_agent"]
         else:
             intent = "knowledge_query"
             generate_motion = False
             needs_rag = True
-            agents = ["memory_agent", "retrieval_agent"]
+            use_memory = False
+            agents = ["retrieval_agent"]
 
         return {
             "intent": intent,
             "actions": {
                 "generate_motion": generate_motion,
-                "use_memory": True,
+                "use_memory": use_memory,
                 "use_documents": needs_rag,
                 "use_web_search": False,
             },
@@ -787,7 +791,7 @@ class AgenticRAGAPI:
                 "intent": decision["intent"],
                 "actions": {
                     "generate_motion": decision["needs_motion"],
-                    "use_memory": "memory_agent" in decision["agents"],
+                    "use_memory": decision.get("needs_memory", False),
                     "use_documents": decision["needs_retrieval"],
                     "use_web_search": decision["needs_web_search"]
                 },
@@ -1015,15 +1019,22 @@ class AgenticRAGAPI:
             )
 
             # ── Step 1.5: Query Transformation results (from Double-RAG Engine) ──
-            hyde_document = action_plan.get("hyde_document", query)
-            logger.info(f"Using Double-RAG engine results. HyDE length: {len(hyde_document)}")
-            
-            # The orchestrator already executed Phase 1 & 2 logic internally and 
-            # mapped constraints if this was a motion intent.
-            double_rag_meta = action_plan.get("double_rag_meta", {})
-            constraints = double_rag_meta.get("constraints", "")
-            if constraints:
-                logger.info(f"Clinical Constraints extracted by orchestrator: {constraints}")
+            # GATED: Only fetch HyDE/Double-RAG for intents that need retrieval.
+            # Conversation and greeting queries skip this entirely.
+            _needs_retrieval = bool(actions.get("use_documents", False))
+            hyde_document = query  # default fallback
+            constraints = ""
+            double_rag_meta = {}
+
+            if _needs_retrieval or intent == "visualize_motion":
+                hyde_document = action_plan.get("hyde_document", query)
+                logger.info(f"Using Double-RAG engine results. HyDE length: {len(hyde_document)}")
+                double_rag_meta = action_plan.get("double_rag_meta", {})
+                constraints = double_rag_meta.get("constraints", "")
+                if constraints:
+                    logger.info(f"Clinical Constraints extracted by orchestrator: {constraints}")
+            else:
+                logger.info("HyDE/Double-RAG SKIPPED (intent=%s, needs_retrieval=False)", intent)
 
             # ── Step 1.7: Keyword Extraction (replaces SemanticBridge) ────────
             # Zero-LLM: extracts exercise verb via dictionary + fuzzy matching.
@@ -1048,35 +1059,39 @@ class AgenticRAGAPI:
                     )
 
             # ── Step 1.8: Knowledge Librarian pre-fetch ─────────────────
-            # Fire the Librarian to retrieve structured facts from the best
-            # data layer.  Results enrich the RAG context and enable
-            # DIRECT_MATCH fast-tracking for motion generation.
+            # GATED: Only runs for intents that benefit from structured retrieval.
+            # Conversation/greeting/unknown intents skip this entirely.
             librarian_result: Optional[Dict[str, Any]] = None
             librarian_direct_match = False
-            try:
-                librarian_result = self.knowledge_librarian.retrieve(
-                    user_query=query,
-                    user_id=user_id,
-                    conversation_history=conversation_history,
-                    intent_hint=intent,
-                )
-                librarian_direct_match = bool(
-                    librarian_result and librarian_result.get("direct_match")
-                )
-                librarian_confidence = (librarian_result or {}).get("confidence_score", 0.0)
-                librarian_source = (librarian_result or {}).get("source_collection", "none")
-                perf["librarian_ms"] = (librarian_result or {}).get("elapsed_ms", 0.0)
-                retrieval_diagnostics["librarian_source"] = librarian_source
-                retrieval_diagnostics["librarian_confidence"] = librarian_confidence
-                retrieval_diagnostics["librarian_direct_match"] = librarian_direct_match
-                logger.info(
-                    "KnowledgeLibrarian: source=%s confidence=%.3f direct_match=%s [%.0fms]",
-                    librarian_source, librarian_confidence,
-                    librarian_direct_match, perf.get("librarian_ms", 0),
-                )
-            except Exception as _kl_err:
-                logger.warning("KnowledgeLibrarian pre-fetch failed: %s", _kl_err)
-                trace["errors"].append(f"KnowledgeLibrarian: {_kl_err}")
+            _librarian_intents = {"knowledge_query", "exercise_recommendation", "visualize_motion"}
+
+            if intent in _librarian_intents:
+                try:
+                    librarian_result = self.knowledge_librarian.retrieve(
+                        user_query=query,
+                        user_id=user_id,
+                        conversation_history=conversation_history,
+                        intent_hint=intent,
+                    )
+                    librarian_direct_match = bool(
+                        librarian_result and librarian_result.get("direct_match")
+                    )
+                    librarian_confidence = (librarian_result or {}).get("confidence_score", 0.0)
+                    librarian_source = (librarian_result or {}).get("source_collection", "none")
+                    perf["librarian_ms"] = (librarian_result or {}).get("elapsed_ms", 0.0)
+                    retrieval_diagnostics["librarian_source"] = librarian_source
+                    retrieval_diagnostics["librarian_confidence"] = librarian_confidence
+                    retrieval_diagnostics["librarian_direct_match"] = librarian_direct_match
+                    logger.info(
+                        "KnowledgeLibrarian: source=%s confidence=%.3f direct_match=%s [%.0fms]",
+                        librarian_source, librarian_confidence,
+                        librarian_direct_match, perf.get("librarian_ms", 0),
+                    )
+                except Exception as _kl_err:
+                    logger.warning("KnowledgeLibrarian pre-fetch failed: %s", _kl_err)
+                    trace["errors"].append(f"KnowledgeLibrarian: {_kl_err}")
+            else:
+                logger.info("KnowledgeLibrarian SKIPPED (intent=%s not in %s)", intent, _librarian_intents)
 
             # ── Step 1.9: Gemini Gate — confidence-based API routing ──────
             # When Librarian finds good local context (≥ 0.60), downstream
@@ -1183,11 +1198,13 @@ class AgenticRAGAPI:
                     trace["llm_calls_count"] = 0  # 0 Gemini calls
 
                     # Build prompt for local model
-                    conv_prompt = LLM_PROMPTS["system"] + "\n\n"
+                    # NOTE: Do NOT use the massive general LLM system prompt, it causes the 0.5b model to stall.
+                    mini_sys_prompt = "You are KineticChat, a concise and friendly AI assistant. Respond warmly and keep answers very short."
+                    conv_prompt = mini_sys_prompt + "\n\n"
                     if mem_text:
-                        conv_prompt += f"Context from previous sessions:\n{mem_text}\n\n"
+                        conv_prompt += f"System Context from past chats:\n{mem_text}\n\n"
                     if doc_text:
-                        conv_prompt += f"Context from user documents/files:\n{doc_text}\n\n"
+                        conv_prompt += f"Context from user documents:\n{doc_text}\n\n"
                     if conversation_history:
                         for turn in conversation_history[-6:]:
                             role = turn.get("role", "user")
@@ -2526,6 +2543,30 @@ async def health_check() -> Dict[str, Any]:
     ) else "degraded"
 
     return {"status": overall, "service": "agenticrag", "checks": checks}
+
+
+@app.get("/audio/{filename}", summary="Proxy audio files from internal SpeechLLM to front-end")
+async def get_audio_proxy(filename: str):
+    """Proxy audio streams so Ngrok users don't get 127.0.0.1 link errors."""
+    import httpx
+    from fastapi.responses import StreamingResponse
+    from fastapi import HTTPException
+    
+    tts_url = os.getenv("TTS_URL", "http://localhost:5000")
+    
+    async def stream_audio():
+        async with httpx.AsyncClient() as client:
+            try:
+                async with client.stream("GET", f"{tts_url}/audio/{filename}") as response:
+                    if response.status_code != 200:
+                        raise HTTPException(status_code=response.status_code, detail="Audio not found on backend")
+                    async for chunk in response.aiter_bytes():
+                        yield chunk
+            except httpx.RequestError as e:
+                logger.error(f"[AudioProxy] Error connecting to TTS backend: {e}")
+                raise HTTPException(status_code=502, detail="TTS Backend Unreachable")
+
+    return StreamingResponse(stream_audio(), media_type="audio/mpeg")
 
 
 @app.get("/info", summary="Get service info")

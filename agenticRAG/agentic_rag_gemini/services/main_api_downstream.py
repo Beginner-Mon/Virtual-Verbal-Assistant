@@ -176,7 +176,8 @@ async def generate_tts(
     tts_resp.raise_for_status()
     tts_data = tts_resp.json()
     audio_file = tts_data.get("audio_file", "")
-    audio_url = f"{tts_url}/audio/{audio_file}" if audio_file else ""
+    # Use relative path so it routes through whatever domain the frontend used (e.g. Ngrok proxy)
+    audio_url = f"/audio/{audio_file}" if audio_file else ""
     return TTSMetadata(
         audio_file=audio_file,
         audio_url=audio_url,

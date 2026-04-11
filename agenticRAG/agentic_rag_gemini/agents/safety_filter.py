@@ -1,59 +1,78 @@
-"""Safety Filter — Local SLM-based Red Flag Screening.
+"""Safety Filter — Pure Regex/Keyword-based Red Flag Screening.
 
-Uses Qwen2.5-3B via Ollama to detect medical red flags before processing.
+Zero LLM calls. Runs in <1ms. Checks for:
+- Medical emergencies (chest pain, stroke, fracture...)
+- Violence / self-harm
+- Sexual content
+- Illegal activity
+
+If NONE matched → SAFE.  If ANY matched → UNSAFE with reason.
 """
 
-import json
 import os
+import re
 import time
 from typing import Dict, Any, Optional
 
 from utils.logger import get_logger
-from utils.ollama_client import OllamaClient
 
 logger = get_logger(__name__)
 
-# Prompt designed for fast, accurate red flag detection by a 3B model.
-SAFETY_PROMPT = """You are a medical safety screener for a physical therapy application.
-Your ONLY job is to detect RED FLAG symptoms in the user's query that require immediate emergency medical attention or a doctor's visit.
 
-Red flag symptoms include:
-- Severe, unremitting, or worsening pain
-- Chest pain radiating to the arm, jaw, or back
-- Sudden numbness, tingling, or severe weakness (especially after trauma)
-- Sudden loss of bowel/bladder control
-- Suspected fractures or dislocations
-- High fever accompanied by joint pain or stiffness
+# ── Blocklists ────────────────────────────────────────────────────────────
+# Each tuple: (compiled regex pattern, human-readable category)
 
-Reply purely in JSON format with exactly two keys:
-1. "is_safe": true if safe (no red flags), false if unsafe (red flags detected).
-2. "reason": A brief explanation of why it is unsafe, or "Safe" if it is safe.
+_MEDICAL_EMERGENCY_KEYWORDS = [
+    "chest pain", "heart attack", "can't breathe", "cannot breathe",
+    "difficulty breathing", "loss of bowel", "loss of bladder",
+    "stroke", "numbness spreading", "severe pain", "worsening pain",
+    "fracture", "dislocation", "paralysis", "seizure", "convulsion",
+    "blood clot", "internal bleeding", "anaphylaxis",
+]
 
-User query: "{query}"
+_VIOLENCE_KEYWORDS = [
+    "self-harm", "hurt myself", "kill myself", "suicide", "overdose",
+    "want to die", "end my life", "cut myself", "harm others",
+    "attack someone", "murder", "assault",
+]
 
-JSON format only:"""
+_SEXUAL_KEYWORDS = [
+    "sexual abuse", "rape", "molest", "pornography",
+    "child exploitation", "trafficking",
+]
+
+_ILLEGAL_KEYWORDS = [
+    "how to make a bomb", "how to make drugs", "buy illegal",
+    "hack into", "steal identity", "counterfeit",
+]
+
+# Pre-compile a single master regex for maximum speed
+_ALL_PATTERNS: list[tuple[re.Pattern, str]] = []
+for _kw in _MEDICAL_EMERGENCY_KEYWORDS:
+    _ALL_PATTERNS.append((re.compile(re.escape(_kw), re.IGNORECASE), f"Medical emergency: {_kw}"))
+for _kw in _VIOLENCE_KEYWORDS:
+    _ALL_PATTERNS.append((re.compile(re.escape(_kw), re.IGNORECASE), f"Violence/self-harm: {_kw}"))
+for _kw in _SEXUAL_KEYWORDS:
+    _ALL_PATTERNS.append((re.compile(re.escape(_kw), re.IGNORECASE), f"Inappropriate content: {_kw}"))
+for _kw in _ILLEGAL_KEYWORDS:
+    _ALL_PATTERNS.append((re.compile(re.escape(_kw), re.IGNORECASE), f"Illegal activity: {_kw}"))
+
 
 class SafetyFilter:
-    """SLM-based medical safety bounds checking."""
-    
-    def __init__(self, model_name: str = "qwen:0.5b", timeout: int = 5):
+    """Pure keyword/regex safety screener. No LLM calls."""
+
+    def __init__(self, **kwargs):
         """Initialize SafetyFilter.
-        
-        Args:
-            model_name: Name of the local SLM to use (must be fast and local).
-            timeout: Timeout in seconds for the safety check.
+
+        Accepts **kwargs for backward compatibility (old callers may pass
+        model_name=, timeout=, etc.).  All are ignored since we no longer
+        use an SLM.
         """
-        self.model_name = model_name
-        self.ollama_client = OllamaClient(model_name)
-        # Override the default 30s timeout to be much faster since this is a gate
-        self.ollama_client.timeout = timeout
-        self.fast_safe_bypass = str(os.getenv("SAFETY_FAST_SAFE_BYPASS", "true")).strip().lower() in {
-            "1", "true", "yes", "on"
-        }
         self.cache_ttl_seconds = max(0, int(os.getenv("SAFETY_CACHE_TTL_SECONDS", "300") or 300))
         self._result_cache: Dict[str, Dict[str, Any]] = {}
-        
-        logger.info(f"SafetyFilter initialized with SLM: {model_name}")
+        logger.info("SafetyFilter initialized (pure regex, 0 LLM calls)")
+
+    # ── Cache helpers (unchanged) ─────────────────────────────────────────
 
     def _cache_get(self, query: str) -> Optional[Dict[str, Any]]:
         if self.cache_ttl_seconds <= 0:
@@ -81,107 +100,41 @@ class SafetyFilter:
             "reason": str(result.get("reason", "Safe")),
         }
 
-    def _looks_high_risk(self, query: str) -> bool:
-        q = (query or "").lower()
-        high_risk_markers = [
-            "chest pain", "heart attack", "can't breathe", "cannot breathe",
-            "loss of bowel", "loss of bladder", "stroke", "numbness spreading",
-            "severe pain", "worsening pain", "fracture", "dislocation",
-            "self-harm", "hurt myself", "kill myself", "suicide", "overdose",
-        ]
-        return any(marker in q for marker in high_risk_markers)
-
-    def _looks_low_risk_fitness_query(self, query: str) -> bool:
-        q = (query or "").lower()
-        if not q:
-            return True
-        if self._looks_high_risk(q):
-            return False
-        safe_markers = [
-            "exercise", "workout", "stretch", "squat", "plank", "walk", "run",
-            "warm-up", "mobility", "posture", "motivate", "habit", "hydration",
-            "water", "routine", "show me", "demonstrate", "visualize", "animation",
-            "motion",
-        ]
-        conversation_markers = ["hi", "hello", "thanks", "thank you", "good morning", "good evening"]
-        return any(marker in q for marker in safe_markers) or q.strip() in conversation_markers
+    # ── Public API ────────────────────────────────────────────────────────
 
     def check_query_safety(self, query: str) -> Dict[str, Any]:
-        """Check if a query contains medical red flags.
-        
+        """Check if a query contains unsafe content.
+
+        Runs entirely via compiled regex — no network calls, no LLM.
+
         Args:
             query: The user's query.
-            
+
         Returns:
-            Dict containing:
-                - is_safe (bool): True if safe, False if red flags detected.
-                - reason (str): Explanation for rejection, or "Safe".
+            Dict with ``is_safe`` (bool) and ``reason`` (str).
         """
         cached = self._cache_get(query)
         if cached is not None:
             return cached
 
-        # 1. Rule-based Fast-Path
-        fast_check = query.lower()
-        strict_keywords = [
-            "chest pain", "heart attack", "can't breathe", "cannot breathe",
-            "loss of bowel", "loss of bladder", "stroke", "numbness spreading"
-        ]
-        
-        for word in strict_keywords:
-            if word in fast_check:
-                logger.warning(f"[SafetyFilter] 🚨 Fast-Path Reject: '{word}' detected.")
+        q = (query or "").strip()
+        if not q:
+            result = {"is_safe": True, "reason": "Safe"}
+            self._cache_set(query, result)
+            return result
+
+        # Scan against all compiled patterns
+        for pattern, reason in _ALL_PATTERNS:
+            if pattern.search(q):
+                logger.warning("[SafetyFilter] 🚨 Blocked: %s", reason)
                 result = {
-                    "is_safe": False, 
-                    "reason": f"System detected critical keyword: {word}. Please seek emergency medical help immediately."
+                    "is_safe": False,
+                    "reason": f"⚠️ {reason}. Please seek appropriate help.",
                 }
                 self._cache_set(query, result)
                 return result
 
-        # 1b. Skip expensive SLM call when query clearly looks low-risk.
-        if self.fast_safe_bypass and self._looks_low_risk_fitness_query(query):
-            result = {"is_safe": True, "reason": "Safe (Fast bypass)"}
-            self._cache_set(query, result)
-            return result
-
-        # 2. SLM (Local LLM) Semantic Check
-        prompt = SAFETY_PROMPT.format(query=query)
-        
-        try:
-            logger.info(f"[SafetyFilter] Calling SLM {self.model_name} for Red Flag check...")
-            raw_response = self.ollama_client.generate(
-                prompt=prompt,
-                format="json",
-                temperature=0.1,  # Highly deterministic
-                max_tokens=64,    # Tiny budget for fast response
-            )
-            
-            # Parse response
-            try:
-                result = json.loads(raw_response)
-                is_safe = bool(result.get("is_safe", True))
-                reason = result.get("reason", "Safe")
-            except json.JSONDecodeError:
-                # If SLM fails to output valid JSON, fail open (safe) but log it
-                logger.error(f"[SafetyFilter] Failed to parse SLM output: {raw_response[:100]}")
-                parsed_result = {"is_safe": True, "reason": "Safe (Parse error)"}
-                self._cache_set(query, parsed_result)
-                return parsed_result
-                
-            if not is_safe:
-                logger.warning(f"[SafetyFilter] 🚨 SLM Reject: {reason}")
-
-            slm_result = {
-                "is_safe": is_safe,
-                "reason": reason
-            }
-            self._cache_set(query, slm_result)
-            return slm_result
-            
-        except Exception as exc:
-            logger.error(f"[SafetyFilter] Timeout or Error during generation: {exc}")
-            # In case of SLM crash/timeout, we "fail open" to avoid blocking standard processing,
-            # since RAG prompt itself has medical disclaimers.
-            error_result = {"is_safe": True, "reason": "Safe (SLM Error/Timeout)"}
-            self._cache_set(query, error_result)
-            return error_result
+        # Nothing matched → safe
+        result = {"is_safe": True, "reason": "Safe"}
+        self._cache_set(query, result)
+        return result

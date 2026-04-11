@@ -120,6 +120,7 @@ class OllamaClient:
             "agents": ["retrieval_agent"],
             "needs_motion": False,
             "needs_retrieval": True,
+            "needs_memory": False,
             "needs_web_search": False,
             "confidence": 0.1
         })

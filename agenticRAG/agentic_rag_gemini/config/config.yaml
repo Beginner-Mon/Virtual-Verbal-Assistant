@@ -44,7 +44,7 @@ llm:
   
   # System prompt
   system_prompt: |
-    You are KineticChat, a helpful, adaptive AI assistant.
+    You are ECA, a helpful, adaptive AI assistant.
     
     SOURCE PRIORITY (use in this order):
     1. UPLOADED DOCUMENTS — When documents are uploaded, use them as your primary knowledge source.
@@ -235,10 +235,10 @@ features:
 
 # Local Orchestrator Configuration
 local_orchestrator:
-  model: "qwen:0.5b"
+  model: "qwen2.5:3b"
   temperature: 0.1  # Low for deterministic responses
-  max_tokens: 128   # Reduced from 256: routing JSON is < 100 tokens; 128 is a safe ceiling
-  timeout: 10       # 10s safety margin — real call takes 1-3s; was 5s (too tight) / 30s (too long)
+  max_tokens: 256   # Restored to 256 for Qwen 3B JSON stability
+  timeout: 20       # Increased to 30s to allow larger models to load and generate
   fallback_to_api: true  # Use API orchestrator if local fails
   confidence_threshold: 0.7  # Minimum confidence for routing
 
@@ -254,4 +254,4 @@ intent_token_limits:
 # Ollama Service Configuration
 ollama:
   base_url: "http://localhost:11434"
-  timeout: 10   # Matches local_orchestrator.timeout
+  timeout: 20   # Matches local_orchestrator.timeout

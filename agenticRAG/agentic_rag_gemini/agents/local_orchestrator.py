@@ -78,26 +78,72 @@ class LocalOrchestrator:
             Routing decision dictionary with intent, exercise, agents, etc.
         """
         try:
-            # 1. Greeting Fast-Path
-            # Normalize: lowercase + remove punctuation
+            # ── 1. Regex Pre-Router ──────────────────────────────────────
+            # Deterministic O(1) intent classification for common patterns.
+            # If matched, we skip the expensive 3B model call entirely.
+            import re
             clean_q = normalize_query(query)
-            words = clean_q.split()
-            greetings = {"hi", "hello", "yo", "hey", "sup"}
-            
-            if len(words) <= 2 and words and words[0] in greetings:
-                logger.info(f"[LocalOrchestrator] ⚡ Greeting Fast-Path triggered for: '{clean_q}'")
+
+            # 1a. Greeting patterns (EN + VI)
+            if re.match(
+                r"^(hi|hello|hey|yo|sup|chào|chao|xin chào|xin|"
+                r"good morning|good evening|good night|thanks|thank you|"
+                r"cảm ơn|tạm biệt|bye|goodbye)(\s+\w+){0,3}[.!?]?$",
+                clean_q,
+            ):
+                logger.info("[LocalOrchestrator] ⚡ Pre-Router → greeting: '%s'", clean_q)
                 return {
                     "intent": "greeting",
                     "exercise": None,
                     "agents": ["memory_agent"],
                     "needs_motion": False,
                     "needs_retrieval": False,
+                    "needs_memory": False,
                     "needs_web_search": False,
-                    "confidence": 1.0,
-                    "path": "greeting_fast_path"
+                    "confidence": 0.99,
+                    "path": "regex_pre_router",
                 }
 
-            # 2. Check Cache (per-user)
+            # 1b. Knowledge query patterns (EN + VI)
+            if re.match(
+                r"^(what is|what are|who is|who are|how does|why does|"
+                r"define|explain|tell me about|"
+                r"là gì|định nghĩa|giải thích)\b",
+                clean_q,
+            ):
+                logger.info("[LocalOrchestrator] ⚡ Pre-Router → knowledge_query: '%s'", clean_q)
+                return {
+                    "intent": "knowledge_query",
+                    "exercise": detected_exercise,
+                    "agents": ["retrieval_agent"],
+                    "needs_motion": False,
+                    "needs_retrieval": True,
+                    "needs_memory": False,
+                    "needs_web_search": False,
+                    "confidence": 0.95,
+                    "path": "regex_pre_router",
+                }
+
+            # 1c. Visualization / motion patterns (EN + VI)
+            if re.match(
+                r"^(show me how|show me a|demo|demonstrate|visualize|"
+                r"làm thử|hướng dẫn|cho tôi xem)\b",
+                clean_q,
+            ):
+                logger.info("[LocalOrchestrator] ⚡ Pre-Router → visualize_motion: '%s'", clean_q)
+                return {
+                    "intent": "visualize_motion",
+                    "exercise": detected_exercise,
+                    "agents": ["retrieval_agent", "motion_agent"],
+                    "needs_motion": True,
+                    "needs_retrieval": True,
+                    "needs_memory": False,
+                    "needs_web_search": False,
+                    "confidence": 0.95,
+                    "path": "regex_pre_router",
+                }
+
+            # ── 2. Check Cache (per-user)
             # cache_key = f"{user_id}:{query.lower().strip()}"
             cached_decision = self.cache.get_orchestrator(user_id, query)
             if cached_decision:
@@ -223,7 +269,7 @@ class LocalOrchestrator:
             # Validate required fields
             required_fields = [
                 "intent", "exercise", "agents", 
-                "needs_motion", "needs_retrieval", "needs_web_search", "confidence"
+                "needs_motion", "needs_retrieval", "needs_memory", "needs_web_search", "confidence"
             ]
             
             missing = [f for f in required_fields if f not in parsed]
@@ -286,6 +332,7 @@ class LocalOrchestrator:
             "agents": ["retrieval_agent"],
             "needs_motion": False,
             "needs_retrieval": True,
+            "needs_memory": False,
             "needs_web_search": False,
             "confidence": 0.1
         }

@@ -35,6 +35,30 @@ app.include_router(health_router)
 app.include_router(sessions_router)
 
 
+@app.get("/audio/{filename}", summary="Proxy audio to internal SpeechLLM")
+async def get_audio_proxy(filename: str):
+    import os
+    import httpx
+    from fastapi.responses import StreamingResponse
+    from fastapi import HTTPException
+    
+    tts_url = os.getenv("TTS_URL", "http://localhost:5000")
+    
+    async def stream_audio():
+        async with httpx.AsyncClient() as client:
+            try:
+                async with client.stream("GET", f"{tts_url}/audio/{filename}") as response:
+                    if response.status_code != 200:
+                        raise HTTPException(status_code=response.status_code, detail="Audio not found")
+                    async for chunk in response.aiter_bytes():
+                        yield chunk
+            except httpx.RequestError as e:
+                logger.error(f"[AudioProxy] Connection error: {e}")
+                raise HTTPException(status_code=502, detail="TTS Backend Unreachable")
+
+    return StreamingResponse(stream_audio(), media_type="audio/mpeg")
+
+
 if __name__ == "__main__":
     logger.info(f"Starting Unified Pipeline API on {SETTINGS.main_api_host}:{SETTINGS.main_api_port}...")
     logger.info("")
