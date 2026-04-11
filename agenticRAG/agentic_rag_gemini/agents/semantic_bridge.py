@@ -66,6 +66,7 @@ FORCE_EXPANSION_LIST = [
     "clean and jerk", "clean and press",
     "snatch", "thruster", "man maker", "man-maker",
     "devil press", "muscle up", "muscle-up",
+    "cartwheel", "cart wheel",
 ]
 
 # ── Kinematic Auditor System Prompt (Spoke) ──────────────────────
@@ -106,7 +107,7 @@ Refinement Process:
   Step 2: Check if the action exists as a common exercise name. \
 If yes, use: "a person performs [Action Name]."
   Step 3: If the action is complex or in the FORCE_EXPANSION list, \
-describe it as ONE complete, concise sentence decomposing the skeletal movements.
+use the sequential constraint syntax dictated in the FORCE_EXPANSION section (action1*duration, action2*duration). Do NOT use a continuous sentence.
   Step 4: Final Validation — "Does this sentence end abruptly? \
 Is it under 25 words? Does it sound like a robot describing a motion capture?"
 
@@ -245,9 +246,9 @@ class SemanticBridgeService:
         return (
             f"\nFORCE_EXPANSION ACTIVE for: {', '.join(matched)}.\n"
             f"This exercise cannot be rendered as a single atomic motion by the DART engine.\n"
-            f"You MUST decompose it into 2-3 primitive skeletal movements.\n"
-            f"Example: 'burpee' → 'a person squats down, kicks their legs back into a "
-            f"plank, then jumps up with arms overhead'\n\n"
+            f"You MUST decompose it into a sequential chain using the exact syntax `[action]*[duration], [action]*[duration]`.\n"
+            f"Use a duration of '5' for each step.\n"
+            f"Example: 'burpee' → 'a person squats down*5, kicks legs back into plank*5, pushes up*5, jumps feet forward*5, jumps up with arms overhead*5'\n\n"
         )
 
     # ── Conversation Context Builder ─────────────────────────────
@@ -555,10 +556,14 @@ class SemanticBridgeService:
             )
             return _FALLBACK_DESCRIPTION
 
-        # Enforce max 30 words (slightly above the 25-word prompt limit
-        # to avoid cutting off valid outputs)
-        if len(words) > 30:
-            text = " ".join(words[:30])
+        # Enforce max word limit. Relax the limit if using sequential '*' syntax
+        # because sequence chains natively require more words.
+        if '*' in text:
+            if len(words) > 50:
+                text = " ".join(words[:50])
+        else:
+            if len(words) > 30:
+                text = " ".join(words[:30])
 
         return text
 

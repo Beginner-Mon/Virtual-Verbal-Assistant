@@ -322,6 +322,24 @@ async function deleteSession(userId, sessionId) {
   return response.data;
 }
 
+async function uploadDocument(userId, file) {
+  const formData = new FormData();
+  formData.append("user_id", userId);
+  formData.append("file", file);
+  
+  const response = await axios.post(`${API_BASE_URL}/documents/upload`, formData, {
+    headers: {
+      "Content-Type": "multipart/form-data"
+    }
+  });
+  return response.data;
+}
+
+async function removeDocument(userId, filename) {
+  const response = await axios.delete(`${API_BASE_URL}/documents/${encodeURIComponent(filename)}?user_id=${encodeURIComponent(userId)}`);
+  return response.data;
+}
+
 // Make it globally available for Babel/React script
 window.askEca = askEca;
 window.pollTaskStatus = pollTaskStatus;
@@ -331,3 +349,5 @@ window.createSession = createSession;
 window.listSessions = listSessions;
 window.getSession = getSession;
 window.deleteSession = deleteSession;
+window.uploadDocument = uploadDocument;
+window.removeDocument = removeDocument;

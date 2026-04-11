@@ -444,7 +444,28 @@ class MotionGenerator:
 
 # ── FastAPI App ──────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Text-to-Motion API (MLD)", version="0.2")
+@asynccontextmanager
+async def app_lifespan(app: FastAPI):
+    # --- Startup ---
+    global generator, cleanup_task
+    generator = MotionGenerator()
+    generator.load_models(
+        denoiser_ckpt=args.denoiser_checkpoint,
+        standing_seed_path=args.standing_seed,
+    )
+    cleanup_task = asyncio.create_task(cleanup_loop(args.artifact_ttl_seconds))
+    
+    yield
+    
+    # --- Shutdown ---
+    if cleanup_task:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+
+app = FastAPI(title="Text-to-Motion API (MLD)", version="0.2", lifespan=app_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],                   # ← easiest for local dev
@@ -513,28 +534,6 @@ async def cleanup_loop(ttl_seconds: int) -> None:
     while True:
         remove_expired_artifacts(ttl_seconds)
         await asyncio.sleep(30)
-
-
-@app.on_event("startup")
-async def startup_event():
-    global generator, cleanup_task
-    generator = MotionGenerator()
-    generator.load_models(
-        denoiser_ckpt=args.denoiser_checkpoint,
-        standing_seed_path=args.standing_seed,
-    )
-    cleanup_task = asyncio.create_task(cleanup_loop(args.artifact_ttl_seconds))
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    global cleanup_task
-    if cleanup_task:
-        cleanup_task.cancel()
-        try:
-            await cleanup_task
-        except asyncio.CancelledError:
-            pass
 
 
 @app.post("/generate", response_model=MotionGenerationResponse)

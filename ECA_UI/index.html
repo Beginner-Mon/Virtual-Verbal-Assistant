@@ -970,6 +970,33 @@
       const bottomRef = useRef(null);
       const textRef = useRef(null);
       const audioRef = useRef(null);
+      const fileInputRef = useRef(null);
+      const [uploadingDoc, setUploadingDoc] = useState(false);
+      const [uploadedDocs, setUploadedDocs] = useState([]);
+
+      const handleFileUpload = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        setUploadingDoc(true);
+        try {
+          const res = await window.uploadDocument(activeSession || "guest", file);
+          setUploadedDocs(prev => [...prev, file.name]);
+        } catch (err) {
+          alert("Error uploading document: " + (err.response?.data?.detail || err.message));
+        } finally {
+          setUploadingDoc(false);
+          if (fileInputRef.current) fileInputRef.current.value = "";
+        }
+      };
+
+      const handleRemoveDoc = async (filename) => {
+        try {
+          await window.removeDocument(activeSession || "guest", filename);
+          setUploadedDocs(prev => prev.filter(f => f !== filename));
+        } catch (err) {
+          alert("Error removing document: " + (err.response?.data?.detail || err.message));
+        }
+      };
 
       const playAudio = (url) => {
         // Audio playback is now handled directly by the audio element in the Bubble component
@@ -1622,21 +1649,54 @@
                 background: "var(--input-bg)", borderRadius: 16,
                 padding: "8px 8px 8px 16px",
                 boxShadow: "var(--input-shadow)",
-                display: "flex", alignItems: "flex-end", gap: 8,
+                display: "flex", flexDirection: "column", gap: 8,
                 transition: "background 0.25s, box-shadow 0.25s"
               }}>
-                <textarea ref={textRef} value={input}
-                  onChange={e => {
-                    setInput(e.target.value);
-                    e.target.style.height = "auto";
-                    e.target.style.height = Math.min(e.target.scrollHeight, 100) + "px";
-                  }}
-                  onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(input); } }}
-                  placeholder="Ask about a movement or exercise…" rows={1}
-                  style={{
-                    flex: 1, fontSize: 15, color: "var(--text-primary)",
-                    lineHeight: 1.5, letterSpacing: -0.2, minHeight: 26, maxHeight: 100
-                  }} />
+                {/* Uploaded Documents List */}
+                {uploadedDocs.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, paddingTop: 4 }}>
+                    {uploadedDocs.map(doc => (
+                      <div key={doc} style={{
+                        display: "flex", alignItems: "center", gap: 5,
+                        background: "var(--tag-bg)", borderRadius: 8, padding: "4px 8px",
+                        fontSize: 12, color: "var(--text-secondary)", fontWeight: 500
+                      }}>
+                        <span>📄 {doc}</span>
+                        <button onClick={() => handleRemoveDoc(doc)} style={{
+                          background: "none", border: "none", color: "var(--text-tertiary)",
+                          cursor: "pointer", fontSize: 13, display: "flex", alignItems: "center",
+                          padding: 0, marginLeft: 2
+                        }}>✕</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                
+                <div style={{ display: "flex", alignItems: "flex-end", gap: 8, width: "100%" }}>
+                  <textarea ref={textRef} value={input}
+                    onChange={e => {
+                      setInput(e.target.value);
+                      e.target.style.height = "auto";
+                      e.target.style.height = Math.min(e.target.scrollHeight, 100) + "px";
+                    }}
+                    onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(input); } }}
+                    placeholder="Ask about a movement or exercise…" rows={1}
+                    style={{
+                      flex: 1, fontSize: 15, color: "var(--text-primary)",
+                      lineHeight: 1.5, letterSpacing: -0.2, minHeight: 26, maxHeight: 100,
+                      background: "transparent"
+                    }} />
+
+                  <button onClick={() => fileInputRef.current?.click()} disabled={uploadingDoc} title="Attach Document" style={{
+                    width: 34, height: 34, borderRadius: 10,
+                    background: "var(--chip-bg)",
+                    color: "var(--text-secondary)",
+                    fontSize: 17, display: "flex", alignItems: "center", justifyContent: "center",
+                    transition: "all 0.15s", flexShrink: 0
+                  }}>
+                    {uploadingDoc ? "⏳" : "📎"}
+                  </button>
+                  <input type="file" ref={fileInputRef} style={{ display: "none" }} onChange={handleFileUpload} />
 
                 <button onClick={() => setMicActive(a => !a)} style={{
                   width: 34, height: 34, borderRadius: 10,
@@ -1654,6 +1714,7 @@
                   display: "flex", alignItems: "center", justifyContent: "center",
                   transition: "all 0.15s", flexShrink: 0
                 }}>↑</button>
+                </div>
               </div>
               <p style={{ textAlign: "center", fontSize: 11, color: "var(--text-tertiary)", marginTop: 8, letterSpacing: -0.1 }}>
                 ECA · RAG + Speech LLM + Text-to-3D Motion

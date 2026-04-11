@@ -27,6 +27,8 @@ class QueryRequestCompat(BaseModel):
         description="Compatibility field. Main API infers duration from downstream metadata.",
     )
     stream: bool = Field(False, description="Compatibility field. Streaming is not supported on 8080.")
+    motion_job_enabled: bool = Field(True, description="Enable async motion job tracking.")
+
 
 
 class AnswerRequest(BaseModel):
@@ -57,6 +59,19 @@ class MotionMetadata(BaseModel):
     text_prompt: str = Field(..., description="The prompt that was sent to DART")
 
 
+class MotionJobStatus(BaseModel):
+    """Async motion job status payload."""
+
+    job_id: str = Field(..., description="Celery job identifier")
+    status: str = Field(..., description="queued | processing | completed | failed")
+    motion_file_url: Optional[str] = Field(None, description="Absolute GLB URL when completed")
+    video_url: Optional[str] = Field(None, description="Rendered video or artifact URL when completed")
+    error: Optional[str] = Field(None, description="Error details for failed jobs")
+    stage: Optional[str] = Field(None, description="Current worker stage")
+    timings_ms: Optional[Dict[str, float]] = Field(None, description="Timing details")
+
+
+
 class TTSMetadata(BaseModel):
     """TTS output metadata returned from SpeechLLM."""
 
@@ -81,8 +96,10 @@ class AnswerResponse(BaseModel):
         default_factory=list, description="List of recommended exercises from AgenticRAG"
     )
     motion: Optional[MotionMetadata] = Field(None, description="Motion output from DART")
+    motion_job: Optional[MotionJobStatus] = Field(None, description="Async motion job handle")
     tts: Optional[TTSMetadata] = Field(None, description="Speech output from TTS/SpeechLLM")
     generation_time_ms: float = Field(..., description="Total wall-clock time in ms")
+
     errors: Optional[Dict[str, str]] = Field(None, description="Per-service errors if any")
     debug: Optional[Dict[str, Any]] = Field(None, description="Detailed diagnostics for bottleneck analysis")
 

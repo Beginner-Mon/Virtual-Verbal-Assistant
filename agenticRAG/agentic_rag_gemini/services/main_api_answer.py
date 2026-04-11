@@ -7,7 +7,7 @@ import httpx
 from fastapi import HTTPException
 
 from core.config.settings import get_main_api_settings
-from schemas.main_api import AnswerRequest, AnswerResponse, MotionMetadata, TTSMetadata
+from schemas.main_api import AnswerRequest, AnswerResponse, MotionJobStatus, MotionMetadata, TTSMetadata
 from stores.main_api_stores import answer_job_store
 from utils.logger import get_logger
 
@@ -62,7 +62,9 @@ async def get_answer_impl(request: AnswerRequest) -> AnswerResponse:
     text_answer = ""
     exercises: List[Dict[str, str]] = []
     motion: Optional[MotionMetadata] = None
+    motion_job: Optional[MotionJobStatus] = None
     tts: Optional[TTSMetadata] = None
+
 
     async with httpx.AsyncClient(timeout=SETTINGS.downstream_timeout) as client:
         rag_t0 = time.perf_counter()
@@ -85,12 +87,19 @@ async def get_answer_impl(request: AnswerRequest) -> AnswerResponse:
             text_answer = rag_data.get("text_answer", "")
             exercises = rag_data.get("exercises", [])
             motion = build_motion_from_agenticrag(rag_data, SETTINGS.dart_url)
+            motion_job_raw = rag_data.get("motion_job")
+            if isinstance(motion_job_raw, dict):
+                motion_job = MotionJobStatus(**motion_job_raw)
+                logger.info("Adopting existing motion_job from AgenticRAG: %s", motion_job.job_id)
+
             debug_payload["rag_summary"] = {
                 "text_answer_length": len(text_answer or ""),
                 "exercise_count": len(exercises or []),
                 "has_motion_from_rag": motion is not None,
+                "has_motion_job_from_rag": motion_job is not None,
                 "orchestrator_decision": rag_data.get("orchestrator_decision"),
             }
+
         except Exception as exc:
             logger.error(f"[AgenticRAG] failed: {exc}")
             errors["agenticrag"] = str(exc)
@@ -207,7 +216,14 @@ async def get_answer_impl(request: AnswerRequest) -> AnswerResponse:
         status = "completed"
         progress_stage = "completed"
         if rag_data and SETTINGS.async_enrichment:
-            if motion is None and motion_prompt:
+            if motion is None and motion_job is not None:
+                # Early Warmup already handling it
+                debug_payload["services"]["dart"] = {
+                    "status": "pending",
+                    "mode": "async",
+                    "reason": f"Adopted from AgenticRAG warmup: {motion_job.job_id}",
+                }
+            elif motion is None and motion_prompt:
                 pending_services.append("dart")
                 progress_stage = "motion_generation"
                 debug_payload["services"]["dart"] = {
@@ -215,6 +231,7 @@ async def get_answer_impl(request: AnswerRequest) -> AnswerResponse:
                     "mode": "async",
                     "reason": "Queued for async enrichment",
                 }
+
             elif motion is not None:
                 debug_payload["services"]["dart"] = {
                     "status": "ok",
@@ -286,7 +303,7 @@ async def get_answer_impl(request: AnswerRequest) -> AnswerResponse:
 
     logger.info(
         f"[{request.user_id}] Completed in {generation_time_ms:.0f}ms  "
-        f"rag={'ok' if rag_data else 'ERROR'}  dart={'ok' if motion else 'pending/none'}  "
+        f"rag={'ok' if rag_data else 'ERROR'}  dart={'ok' if motion or motion_job else 'pending/none'}  "
         f"tts={'ok' if tts else ('pending' if SETTINGS.async_enrichment and rag_data else 'none/ERROR')} "
         f"status={status if rag_data else 'completed'}"
     )
@@ -301,6 +318,7 @@ async def get_answer_impl(request: AnswerRequest) -> AnswerResponse:
         text_answer=text_answer,
         exercises=exercises,
         motion=motion,
+        motion_job=motion_job,
         tts=tts,
         generation_time_ms=round(generation_time_ms, 1),
         errors=errors if errors else None,

@@ -36,7 +36,7 @@ def _get_cache() -> CacheService:
 
 DART_URL = os.getenv("DART_URL", "http://localhost:5001")
 DART_GENERATE_ENDPOINT = os.getenv("DART_GENERATE_ENDPOINT", f"{DART_URL}/generate")
-MOTION_DEFAULT_DURATION_SECONDS = float(os.getenv("MOTION_DEFAULT_DURATION_SECONDS", "12"))
+MOTION_DEFAULT_DURATION_SECONDS = float(os.getenv("MOTION_DEFAULT_DURATION_SECONDS", "2.5"))
 RERANK_TIMEOUT_SECONDS = int(os.getenv("MOTION_RERANK_TIMEOUT_SECONDS", "8"))
 MOTION_VIDEO_ROOT = os.getenv("MOTION_VIDEO_ROOT", "./static/videos")
 MOTION_GLB_ROOT = os.getenv("MOTION_GLB_ROOT", "./static/motions")
@@ -341,18 +341,28 @@ def render_motion_job(
         "text_prompt": rewritten_prompt,
         "duration_seconds": effective_duration,
         "guidance_scale": 5.0,
-        "num_steps": 25,
+        "num_steps": 10,
     }
 
     seed_value = int.from_bytes(os.urandom(4), "big")
 
     cache = _get_cache()
-    cached_url = cache.get_motion_result(rewritten_prompt, effective_duration, body["num_steps"])
-    if cached_url:
-        cached_filename = cached_url.rstrip("/").split("/")[-1]
-        cached_local_path = os.path.join(video_root, cached_filename)
-        if os.path.exists(cached_local_path):
-            logger.info("Motion cache HIT for mp4 fallback: '%s'", rewritten_prompt[:40])
+    cached_payload = cache.get_motion_result(rewritten_prompt, effective_duration, body["num_steps"])
+    if cached_payload:
+        logger.info("Motion cache HIT: '%s'", rewritten_prompt[:40])
+        timings_ms["worker_total_ms"] = round((time.perf_counter() - worker_start_perf) * 1000, 3)
+        return {
+            "status": "completed",
+            "motion_file_url": cached_payload.get("motion_file_url"),
+            "video_url": cached_payload.get("video_url"),
+            "frames": cached_payload.get("frames", 160),
+            "fps": cached_payload.get("fps", 30),
+            "duration_seconds": cached_payload.get("duration_seconds", effective_duration),
+            "error": None,
+            "job_id": job_id,
+            "stage": "completed",
+            "timings_ms": timings_ms,
+        }
 
     tmp_npz_path: Optional[str] = None
     if generate_mp4_fallback:
@@ -433,8 +443,13 @@ def render_motion_job(
             timings_ms["mp4_render_ms"] = 0.0
             self.update_state(state="STARTED", meta=_build_meta("mp4_skipped"))
 
-        if video_url:
-            cache.set_motion_result(rewritten_prompt, effective_duration, body["num_steps"], video_url)
+        cache.set_motion_result(rewritten_prompt, effective_duration, body["num_steps"], {
+            "motion_file_url": motion_file_url,
+            "video_url": video_url,
+            "frames": motion_frames,
+            "fps": motion_fps,
+            "duration_seconds": motion_duration_seconds
+        })
 
         worker_finished_epoch_ms = int(time.time() * 1000)
         timings_ms["worker_total_ms"] = round((time.perf_counter() - worker_start_perf) * 1000, 3)

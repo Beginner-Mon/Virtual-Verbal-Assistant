@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, Response, RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -51,6 +51,8 @@ from agents.query_transform import QueryTransformer
 from agents.tools import MemoryTool, DocumentRetrievalTool, WebSearchTool
 from agents.tools.motion_generation_tool import MotionGenerationTool
 from agents.semantic_bridge import SemanticBridgeService
+from agents.keyword_extractor import KeywordExtractor
+from agents.knowledge_librarian import KnowledgeLibrarian
 from memory.memory_manager import MemoryManager
 from memory.document_store import DocumentStore
 from memory.vector_store import VectorStore
@@ -230,7 +232,7 @@ class AgenticRAGAPI:
             self.motion_async_enabled = os.getenv("MOTION_ASYNC_ENABLED", "false").lower() in {
                 "1", "true", "yes", "on"
             }
-            self.motion_default_duration_seconds = _env_float("MOTION_DEFAULT_DURATION_SECONDS", 5.33)
+            self.motion_default_duration_seconds = _env_float("MOTION_DEFAULT_DURATION_SECONDS", 2.5)
             self.motion_min_duration_seconds = _env_float("MOTION_MIN_DURATION_SECONDS", 1.0)
             self.motion_max_duration_seconds = _env_float("MOTION_MAX_DURATION_SECONDS", 120.0)
             if self.motion_max_duration_seconds < self.motion_min_duration_seconds:
@@ -243,8 +245,11 @@ class AgenticRAGAPI:
             # Safety Filter (Red Flag Screening via SLM)
             self.safety_filter = SafetyFilter()
             
-            # Query Transformation Engine (Double-RAG Semantic Router)
-            self.query_transformer = QueryTransformer(use_cache=True)
+            # Query Transformation Engine — DEPRECATED (saves 1 Gemini call per query).
+            # The LocalOrchestrator already produces expanded_query + hyde_document.
+            # Kept as attribute for backward compat with api_orchestrator fallback.
+            self.query_transformer = None  # was: QueryTransformer(use_cache=True)
+            logger.info("QueryTransformer SKIPPED (Gemini quota optimization)")
 
             # Orchestrator — try local first, fallback to API
             logger.info("Attempting to initialize LocalOrchestrator...")
@@ -254,7 +259,7 @@ class AgenticRAGAPI:
                 logger.info(f"Local orchestrator type: {type(self.orchestrator)}")
                 logger.info(f"Local orchestrator model: {getattr(self.orchestrator, 'model_name', 'Unknown')}")
             except Exception as e:
-                logger.error(f"FAILED: Local orchestrator initialization failed: {e}")
+                logger.error("Failed to initialize local orchestrator: {error_msg}", error_msg=str(e))
                 logger.warning(f"Falling back to API orchestrator due to: {type(e).__name__}")
                 self.orchestrator = OrchestratorAgent(
                     memory_tool=memory_tool,
@@ -279,18 +284,60 @@ class AgenticRAGAPI:
             self.exercise_detector = get_exercise_detector()
             logger.info(f"ExerciseDetector initialized with {self.exercise_detector.get_exercise_count()} exercises")
 
-            # Semantic Bridge — parallel kinematic translator (Task B)
-            self.semantic_bridge_enabled = os.getenv(
-                "SEMANTIC_BRIDGE_ENABLED", "true"
-            ).lower() in {"1", "true", "yes", "on"}
+            # Semantic Bridge — DEPRECATED (saves 1 Gemini call per query).
+            # Replaced by zero-LLM KeywordExtractor for motion prompt generation.
+            self.semantic_bridge_enabled = False
             self.semantic_bridge: Optional[SemanticBridgeService] = None
-            if self.semantic_bridge_enabled:
-                try:
-                    self.semantic_bridge = SemanticBridgeService()
-                    logger.info("SemanticBridge initialized — parallel motion prompting enabled")
-                except Exception as sb_exc:
-                    logger.warning("SemanticBridge init failed (%s) — disabled", sb_exc)
-                    self.semantic_bridge = None
+            logger.info("SemanticBridge DISABLED (replaced by KeywordExtractor)")
+
+            # Keyword Extractor — zero-LLM motion prompt generator
+            self.keyword_extractor = KeywordExtractor(
+                exercise_detector=self.exercise_detector,
+            )
+
+            # Local conversation client (Ollama) — avoids Gemini for chat
+            self._local_conv_model = os.getenv("LOCAL_CONV_MODEL", "qwen2.5:3b")
+            self._local_conv_available = False
+            try:
+                from utils.ollama_client import OllamaClient
+                self._local_conv_client = OllamaClient(model_name=self._local_conv_model)
+                if self._local_conv_client.check_connection():
+                    # Check if the model is actually available
+                    available_models = self._local_conv_client.list_models()
+                    if any(self._local_conv_model in m for m in available_models):
+                        self._local_conv_available = True
+                        logger.info(
+                            "Local conversation agent ready: %s (0 Gemini calls for chat)",
+                            self._local_conv_model,
+                        )
+                    else:
+                        logger.warning(
+                            "Local conv model '%s' not found in Ollama (available: %s). "
+                            "Falling back to Gemini for conversation.",
+                            self._local_conv_model, available_models[:5],
+                        )
+                else:
+                    logger.warning("Ollama not reachable — conversation will use Gemini")
+            except Exception as _lc_exc:
+                logger.warning("Local conversation client init failed: %s", _lc_exc)
+                self._local_conv_available = False
+
+            # Knowledge Librarian — unified multi-collection retrieval agent
+            _motion_retriever = None
+            try:
+                from agents.tools.motion_candidate_retriever import MotionCandidateRetriever
+                _motion_retriever = MotionCandidateRetriever()
+            except Exception as mr_exc:
+                logger.warning("MotionCandidateRetriever init failed (%s) — Librarian motion layer disabled", mr_exc)
+
+            self.knowledge_librarian = KnowledgeLibrarian(
+                memory_tool=memory_tool,
+                document_tool=document_tool,
+                motion_retriever=_motion_retriever,
+                exercise_detector=self.exercise_detector,
+                keyword_extractor=self.keyword_extractor,
+            )
+            logger.info("KnowledgeLibrarian initialized — unified retrieval enabled")
 
             # Lightweight in-memory cache for orchestrator routing decisions.
             self._orchestrator_cache: Dict[str, Dict[str, Any]] = {}
@@ -314,7 +361,7 @@ class AgenticRAGAPI:
 
             logger.info("AgenticRAG API initialized successfully")
         except Exception as e:
-            logger.error(f"Failed to initialize AgenticRAG API: {e}")
+            logger.error("Failed to initialize AgenticRAG API: {error_msg}", error_msg=str(e))
             raise
 
     def get_motion_job_status(self, job_id: str, request_base_url: Optional[str] = None) -> Dict[str, Any]:
@@ -1000,75 +1047,214 @@ class AgenticRAGAPI:
             if constraints:
                 logger.info(f"Clinical Constraints extracted by orchestrator: {constraints}")
 
-            # ── Step 1.7: Fire Semantic Bridge (Task B) in parallel ────────
-            # This non-blocking call finishes in < 2s while Task A (RAG) runs.
-            # Since process_query is sync (called via asyncio.to_thread), we use
-            # concurrent.futures.ThreadPoolExecutor instead of asyncio.
+            # ── Step 1.7: Keyword Extraction (replaces SemanticBridge) ────────
+            # Zero-LLM: extracts exercise verb via dictionary + fuzzy matching.
+            # Only runs when intent is visualize_motion (strict gate).
             _bridge_future = None
             _bridge_started = False
             _bridge_executor = None
+            _keyword_motion_prompt: Optional[str] = None
             detected_exercise_name = action_plan.get("exercise_name") or action_plan.get("exercise")
-            if (
-                self.semantic_bridge is not None
-                and intent != "conversation"
-                and (exercise_related_query or detected_exercise_name or wants_visualization)
-            ):
-                try:
-                    from concurrent.futures import ThreadPoolExecutor as _BridgePool
-                    _bridge_executor = _BridgePool(max_workers=1, thread_name_prefix="semantic-bridge")
-                    _bridge_future = _bridge_executor.submit(
-                        self.semantic_bridge.translate,
-                        query,
-                        conversation_history=conversation_history,
+            if intent == "visualize_motion":
+                _keyword_motion_prompt = self.keyword_extractor.extract_and_prompt(query)
+                if _keyword_motion_prompt:
+                    logger.info(
+                        "KeywordExtractor motion prompt: '%s' (0 Gemini calls)",
+                        _keyword_motion_prompt,
                     )
-                    _bridge_started = True
-                    logger.info("SemanticBridge Task B fired (parallel thread)")
-                except Exception as _sb_err:
-                    logger.warning("SemanticBridge dispatch failed: %s", _sb_err)
+                else:
+                    logger.info(
+                        "KeywordExtractor: no verb found in '%s' — "
+                        "will rely on Librarian DIRECT_MATCH or HyDE",
+                        query[:50],
+                    )
+
+            # ── Step 1.8: Knowledge Librarian pre-fetch ─────────────────
+            # Fire the Librarian to retrieve structured facts from the best
+            # data layer.  Results enrich the RAG context and enable
+            # DIRECT_MATCH fast-tracking for motion generation.
+            librarian_result: Optional[Dict[str, Any]] = None
+            librarian_direct_match = False
+            try:
+                librarian_result = self.knowledge_librarian.retrieve(
+                    user_query=query,
+                    user_id=user_id,
+                    conversation_history=conversation_history,
+                    intent_hint=intent,
+                )
+                librarian_direct_match = bool(
+                    librarian_result and librarian_result.get("direct_match")
+                )
+                librarian_confidence = (librarian_result or {}).get("confidence_score", 0.0)
+                librarian_source = (librarian_result or {}).get("source_collection", "none")
+                perf["librarian_ms"] = (librarian_result or {}).get("elapsed_ms", 0.0)
+                retrieval_diagnostics["librarian_source"] = librarian_source
+                retrieval_diagnostics["librarian_confidence"] = librarian_confidence
+                retrieval_diagnostics["librarian_direct_match"] = librarian_direct_match
+                logger.info(
+                    "KnowledgeLibrarian: source=%s confidence=%.3f direct_match=%s [%.0fms]",
+                    librarian_source, librarian_confidence,
+                    librarian_direct_match, perf.get("librarian_ms", 0),
+                )
+            except Exception as _kl_err:
+                logger.warning("KnowledgeLibrarian pre-fetch failed: %s", _kl_err)
+                trace["errors"].append(f"KnowledgeLibrarian: {_kl_err}")
+
+            # ── Step 1.9: Gemini Gate — confidence-based API routing ──────
+            # When Librarian finds good local context (≥ 0.60), downstream
+            # RAG gets pre-digested facts.  When confidence is low, signal
+            # that Gemini should handle the query from scratch.
+            GEMINI_GATE_THRESHOLD = 0.60
+            librarian_confidence = (librarian_result or {}).get("confidence_score", 0.0)
+            gemini_gate_open = librarian_confidence < GEMINI_GATE_THRESHOLD
+            trace["gemini_gate"] = "open" if gemini_gate_open else "closed"
+            trace["librarian_slm_used"] = bool(
+                librarian_result and librarian_result.get("slm_classification_used")
+            )
+            if gemini_gate_open:
+                logger.info(
+                    "Gemini Gate OPEN: librarian_confidence=%.2f < %.2f — "
+                    "Gemini will handle from scratch",
+                    librarian_confidence, GEMINI_GATE_THRESHOLD,
+                )
+            else:
+                logger.info(
+                    "Gemini Gate CLOSED: librarian_confidence=%.2f ≥ %.2f — "
+                    "local context sufficient",
+                    librarian_confidence, GEMINI_GATE_THRESHOLD,
+                )
+
+            # ── Pre-LLM Motion Processing: Short-Circuits & Early Enqueue ──
+            # Moved up the pipeline to allow async generation to run in parallel with LLM
+            motion_metadata: Optional[MotionMetadata] = None
+            motion_job: Optional[MotionJobStatus] = None
+            motion_async_enabled = bool(self.motion_async_enabled or prefer_async_motion)
+            exercise_motion_prompt: Optional[str] = None
+            wants_visualization = self._query_requests_visualization(query)
+            is_multi_activity = self._is_multi_activity_request(query)
+
+            if intent == "visualize_motion" and wants_visualization and not is_multi_activity:
+                # Pre-LLM prompt resolution
+                exercise_motion_prompt = _keyword_motion_prompt or hyde_document or query
+
+            if librarian_direct_match and librarian_result and librarian_result.get("motion_metadata"):
+                # SHORT-CIRCUIT: Exact match in HumanML3D, bypass generation completely
+                motion_id = librarian_result["motion_metadata"].get("motion_id")
+                if motion_id:
+                    dm_text = librarian_result["motion_metadata"].get("text_description", "")
+                    logger.info("DIRECT_MATCH fast-track: Short-circuiting DART for motion_id=%s. Text='%s'", motion_id, dm_text[:60])
+                    trace["path_taken"] = "visualize_motion_path:direct_match"
+                    
+                    # Generate static URL skipping generation
+                    dart_base = os.getenv("DART_URL", "http://localhost:5001").rstrip("/")
+                    exact_match_url = f"{dart_base}/download/motion_{motion_id}.glb"
+                    frames_val = int(librarian_result["motion_metadata"].get("duration", 2.0) * 30)
+                    
+                    motion_metadata = MotionMetadata(
+                        motion_file=exact_match_url,
+                        frames=max(1, frames_val),
+                        fps=30,
+                        generation_time_ms=50.0  # Simulated short-circuit latency
+                    )
+                    perf["motion_ms"] = 50.0
+                    
+                    if dm_text:
+                        exercise_motion_prompt = dm_text
+            elif exercise_motion_prompt and motion_async_enabled:
+                # ASYNC EARLY WARMUP: Start DART before the 3s LLM operation
+                motion_start = time.time()
+                try:
+                    enqueue_start = time.time()
+                    job_id = self.motion_job_manager.enqueue(
+                        user_query=query,
+                        motion_prompt=exercise_motion_prompt,
+                        user_id=user_id,
+                        duration_seconds=resolved_motion_duration_seconds,
+                        enqueue_epoch_ms=_epoch_ms(),
+                        timeline_id=active_timeline_id,
+                    )
+                    perf["motion_enqueue_ms"] = (time.time() - enqueue_start) * 1000
+                    motion_job = MotionJobStatus(job_id=job_id, status="queued", video_url=None, error=None)
+                    logger.info("Async motion job queued PRE-LLM: %s", job_id)
+                except Exception as _qe:
+                    logger.error("Async queue failed, falling back sync motion POST-LLM: %s", _qe)
+                    trace["errors"].append(f"Motion queue error: {str(_qe)}")
 
             # ── Step 2: Branch by intent ─────────────────────────────────────
             text_answer = ""
             exercises   = []   # populated only through the structured RAG path
             exercise_motion_prompt: Optional[str] = None  # set below if query implies visualization
 
-            if intent == "conversation":
-                # Fast path: one LLM call with memory context only, no RAG.
-                logger.info("Intent=conversation → lightweight LLM (no RAG)")
-                trace["path_taken"] = "conversation_fast_path"
-                trace["llm_calls_count"] = 1
-                
+            if intent in ("conversation", "unknown"):
+                # Fast path: conversation uses LOCAL Ollama model (0 Gemini calls)
+                # Falls back to Gemini if local model is unavailable.
                 memory_ctx = tool_results.get("memory") or []
                 mem_text   = "\n".join(
                     str(m.get("document", m)) for m in memory_ctx
                 ) if memory_ctx else ""
                 
-                # Assemble system instruction with long-term memory context
-                sys_prompt = LLM_PROMPTS["system"]
-                if mem_text:
-                    sys_prompt += f"\n\nContext from previous sessions:\n{mem_text}"
-                
-                llm_messages = [{"role": "system", "content": sys_prompt}]
-                
-                # Inject active short-term conversation history
-                if conversation_history:
-                    for turn in conversation_history[-10:]:  # Keep last 10 turns
-                        llm_messages.append({
-                            "role": turn.get("role", "user"),
-                            "content": turn.get("content", "")
-                        })
-                
-                llm_messages.append({"role": "user", "content": query})
-                
-                _resp = self._conv_client.chat.completions.create(
-                    model=self.rag_pipeline.llm_config.model,
-                    messages=llm_messages,
-                    temperature=0.7,
-                    max_tokens=self._get_token_limit("conversation"),
-                    stream=stream,
-                )
-                if stream:
-                    return (chunk.choices[0].message.content for chunk in _resp if chunk.choices[0].message.content)
-                text_answer = _resp.choices[0].message.content.strip()
+                doc_ctx = tool_results.get("documents") or []
+                doc_text = "\n".join(
+                    str(d.get("document", d)) for d in doc_ctx
+                ) if doc_ctx else ""
+
+                if self._local_conv_available and not stream:
+                    # ── LOCAL PATH: Ollama (0 Gemini calls) ──────────────
+                    logger.info("Intent=%s → LOCAL %s (0 Gemini calls)", intent, self._local_conv_model)
+                    trace["path_taken"] = "conversation_local_path"
+                    trace["llm_calls_count"] = 0  # 0 Gemini calls
+
+                    # Build prompt for local model
+                    conv_prompt = LLM_PROMPTS["system"] + "\n\n"
+                    if mem_text:
+                        conv_prompt += f"Context from previous sessions:\n{mem_text}\n\n"
+                    if doc_text:
+                        conv_prompt += f"Context from user documents/files:\n{doc_text}\n\n"
+                    if conversation_history:
+                        for turn in conversation_history[-6:]:
+                            role = turn.get("role", "user")
+                            content = turn.get("content", "")
+                            conv_prompt += f"{role}: {content}\n"
+                    conv_prompt += f"user: {query}\nassistant:"
+
+                    text_answer = self._local_conv_client.generate(
+                        prompt=conv_prompt,
+                        temperature=0.7,
+                        max_tokens=800,
+                    )
+                    if text_answer.startswith("assistant:"):
+                        text_answer = text_answer[len("assistant:"):].strip()
+                else:
+                    # ── GEMINI FALLBACK: only when local is unavailable ──
+                    logger.info("Intent=%s → Gemini FALLBACK (local unavailable or streaming)", intent)
+                    trace["path_taken"] = "conversation_gemini_fallback"
+                    trace["llm_calls_count"] = 1
+
+                    sys_prompt = LLM_PROMPTS["system"]
+                    if mem_text:
+                        sys_prompt += f"\n\nContext from previous sessions:\n{mem_text}"
+                    if doc_text:
+                        sys_prompt += f"\n\nContext from user documents/files:\n{doc_text}"
+
+                    llm_messages = [{"role": "system", "content": sys_prompt}]
+                    if conversation_history:
+                        for turn in conversation_history[-10:]:
+                            llm_messages.append({
+                                "role": turn.get("role", "user"),
+                                "content": turn.get("content", "")
+                            })
+                    llm_messages.append({"role": "user", "content": query})
+
+                    _resp = self._conv_client.chat.completions.create(
+                        model=self.rag_pipeline.llm_config.model,
+                        messages=llm_messages,
+                        temperature=0.7,
+                        max_tokens=self._get_token_limit("conversation"),
+                        stream=stream,
+                    )
+                    if stream:
+                        return (chunk.choices[0].message.content for chunk in _resp if chunk.choices[0].message.content)
+                    text_answer = _resp.choices[0].message.content.strip()
 
             elif intent == "visualize_motion":
                 # Generate a text description + request motion animation from DART.
@@ -1080,7 +1266,9 @@ class AgenticRAGAPI:
                 exercise = action_plan.get("exercise_name") or query
                 
                 # Double-RAG flow guarantees hyde_document is the technical motion caption
-                exercise_motion_prompt = hyde_document
+                if not exercise_motion_prompt:
+                    exercise_motion_prompt = hyde_document
+
                 if constraints:
                     logger.info("Applying clinical constraints to visualize_motion path.")
                 
@@ -1117,12 +1305,27 @@ class AgenticRAGAPI:
                 trace["llm_calls_count"] = 2  # Query expansion + response generation
                 
                 rag_start = time.time()
+
+                # Enrich document context with Librarian-retrieved facts
+                doc_context = tool_results.get("documents") or []
+                if librarian_result and librarian_result.get("retrieved_facts"):
+                    for fact in librarian_result["retrieved_facts"]:
+                        doc_context.append({
+                            "document": fact,
+                            "source_type": f"librarian:{librarian_result.get('source_collection', 'unknown')}",
+                            "similarity": librarian_result.get("confidence_score", 0.0),
+                        })
+                    logger.info(
+                        "Librarian injected %d facts into RAG document_context",
+                        len(librarian_result["retrieved_facts"]),
+                    )
+
                 rag_result = self.rag_pipeline.generate_response(
                     query=query,
                     user_id=user_id,
                     conversation_history=conversation_history,
                     memory_context=tool_results.get("memory"),
-                    document_context=tool_results.get("documents"),
+                    document_context=doc_context,
                     web_context=tool_results.get("web_search"),
                     # Orchestrator already decided on retrieval — skip duplicates:
                     skip_web_search=True,
@@ -1190,49 +1393,10 @@ class AgenticRAGAPI:
                         "Visualization query had no structured exercises; using HyDE prompt for motion generation"
                     )
 
-            # ── Step 2a: Harvest Semantic Bridge result (Task B) ──────────
-            semantic_bridge_prompt: Optional[str] = None
-            if _bridge_future is not None:
-                try:
-                    # Task B should finish in <2s on warm runs, but on the first request 
-                    # after booting, SentenceTransformer takes ~8s to load into memory.
-                    semantic_bridge_prompt = _bridge_future.result(timeout=8.0)
-                    perf["semantic_bridge_ms"] = 0.0  # already accounted in parallel time
-                    logger.info(
-                        "SemanticBridge result: '%s'",
-                        (semantic_bridge_prompt or "")[:80],
-                    )
-                except Exception as _sbr_err:
-                    logger.warning("SemanticBridge harvest failed: %s", _sbr_err)
-                finally:
-                    # Clean up the thread pool
-                    if _bridge_executor is not None:
-                        try:
-                            _bridge_executor.shutdown(wait=False, cancel_futures=True)
-                        except Exception:
-                            pass
 
-            # Priority: semantic_bridge_prompt > exercise_motion_prompt (hyde_document)
-            if semantic_bridge_prompt and exercise_motion_prompt:
-                logger.info(
-                    "SemanticBridge overrides exercise_motion_prompt: '%s' → '%s'",
-                    (exercise_motion_prompt or "")[:40],
-                    (semantic_bridge_prompt or "")[:40],
-                )
-                exercise_motion_prompt = semantic_bridge_prompt
-            elif semantic_bridge_prompt and not exercise_motion_prompt and wants_visualization:
-                # Bridge produced a result but no motion prompt was set yet
-                exercise_motion_prompt = semantic_bridge_prompt
-                logger.info(
-                    "SemanticBridge set exercise_motion_prompt (was empty): '%s'",
-                    (semantic_bridge_prompt or "")[:60],
-                )
 
             # ── Step 2b: Call MotionGenerationTool if motion was requested ────
-            motion_metadata: Optional[MotionMetadata] = None
-            motion_job: Optional[MotionJobStatus] = None
-            motion_async_enabled = bool(self.motion_async_enabled or prefer_async_motion)
-            if exercise_motion_prompt:
+            if exercise_motion_prompt and motion_job is None and motion_metadata is None:
                 motion_start = time.time()
                 if motion_async_enabled:
                     try:
@@ -1372,6 +1536,15 @@ class AgenticRAGAPI:
             response.metadata["motion_duration_policy"] = self.motion_duration_policy
             response.metadata["timings_ms"] = perf
             response.metadata["timeline_id"] = active_timeline_id
+            if librarian_result:
+                response.metadata["librarian"] = {
+                    "source_collection": librarian_result.get("source_collection"),
+                    "confidence_score": librarian_result.get("confidence_score"),
+                    "direct_match": librarian_result.get("direct_match"),
+                    "facts_count": len(librarian_result.get("retrieved_facts", [])),
+                    "query_used": librarian_result.get("query_used"),
+                    "no_context_signal": librarian_result.get("no_context_signal"),
+                }
 
             logger.info(
                 f"✓ Query processed successfully | "
@@ -1386,7 +1559,7 @@ class AgenticRAGAPI:
             return response
 
         except Exception as e:
-            logger.error(f"Error processing query: {e}", exc_info=True)
+            logger.error("Error processing query: {error_msg}", error_msg=str(e), exc_info=True)
             trace["errors"].append(str(e))
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -1506,6 +1679,89 @@ if os.path.isdir(_eca_ui_dir):
 # API Routes
 # ===========================
 
+import tempfile
+from utils.document_loader import DocumentLoader
+
+@app.post("/documents/upload", summary="Upload a document to the Knowledge Base")
+async def upload_document(
+    user_id: str = Form("guest"),
+    file: UploadFile = File(...)
+):
+    """Process and store an uploaded document in the personal knowledge base."""
+    if api_instance is None:
+        raise HTTPException(status_code=500, detail="API not initialized")
+        
+    try:
+        content = await file.read()
+        
+        # Save to data/uploads folder as requested
+        uploads_dir = os.path.join(os.path.dirname(__file__), "..", "data", "uploads")
+        os.makedirs(uploads_dir, exist_ok=True)
+        file_path = os.path.join(uploads_dir, file.filename)
+        
+        with open(file_path, "wb") as f:
+            f.write(content)
+            
+        try:
+            loader = DocumentLoader()
+            # Fix: DocumentLoader uses load_file, not load_document
+            parsed_text = loader.load_file(file_path)
+            
+            doc_store = api_instance._document_tool_ref._document_store
+            doc_store.store_document(
+                user_id=user_id,
+                document_content=parsed_text,
+                filename=file.filename,
+                context_type="uploaded_document"
+            )
+            
+            return {
+                "success": True, 
+                "filename": file.filename, 
+                "message": "Document successfully uploaded and embedded."
+            }
+        except Exception as e:
+            logger.error(f"Failed to process document {file.filename}: {e}")
+            raise
+                
+    except Exception as e:
+        logger.error("Error uploading document {filename}: {error_msg}", filename=file.filename, error_msg=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/documents/{filename}", summary="Delete an uploaded document")
+async def delete_document(
+    filename: str,
+    user_id: str = Query("guest")
+):
+    """Delete a document from physical storage and the knowledge base."""
+    if api_instance is None:
+        raise HTTPException(status_code=500, detail="API not initialized")
+        
+    try:
+        # Delete from disk
+        file_path = os.path.join(os.path.dirname(__file__), "..", "data", "uploads", filename)
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            
+        # Delete from ChromaDB
+        doc_store = api_instance._document_tool_ref._document_store
+        docs = doc_store.get_user_documents(user_id)
+        
+        deleted = False
+        for doc in docs:
+            if doc.get("filename") == filename:
+                doc_store.delete_document(doc["id"], user_id)
+                deleted = True
+                
+        # Also clean up chunked parts if any
+        # (the loop above should catch all IDs with the matching filename)
+                
+        return {"success": True, "message": f"Document {filename} removed."}
+        
+    except Exception as e:
+        logger.error("Error deleting document {filename}: {error_msg}", filename=filename, error_msg=str(e), exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/query", summary="Process a query")
 async def process_query(request: QueryRequest):
@@ -1540,7 +1796,7 @@ async def process_query(request: QueryRequest):
             else:
                 logger.warning(f"Session {session_id} not found for user {request_user_id}")
         except Exception as exc:
-            logger.error(f"Failed to load session {session_id}: {exc}")
+            logger.error("Failed to load session {session}: {error_msg}", session=session_id, error_msg=str(exc))
     elif request.conversation_history:
         # Legacy stateless fallback: client manages its own history
         history = [turn.dict() for turn in request.conversation_history]
@@ -1580,7 +1836,7 @@ async def process_query(request: QueryRequest):
                 store.save_turn(session_id, "assistant", text_answer)
             logger.info(f"Auto-saved turns to session {session_id}")
         except Exception as exc:
-            logger.error(f"Failed to auto-save to session {session_id}: {exc}")
+            logger.error("Failed to auto-save to session {session}: {error_msg}", session=session_id, error_msg=str(exc))
 
     return _normalize_enums(_model_to_dict(response))
 

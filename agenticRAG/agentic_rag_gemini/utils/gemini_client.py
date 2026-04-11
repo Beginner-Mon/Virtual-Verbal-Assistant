@@ -253,7 +253,7 @@ class GeminiClient:
                     retry_count=_retry_count
                 )
             
-            logger.error(f"Error in Gemini chat completion: {type(e).__name__}: {str(e)}", exc_info=True)
+            logger.error("Error in Gemini chat completion: {error_type}: {error_msg}", error_type=type(e).__name__, error_msg=str(e), exc_info=True)
             raise
 
     def _yield_stream(self, response_it):

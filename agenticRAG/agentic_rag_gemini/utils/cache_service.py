@@ -316,11 +316,11 @@ class CacheService:
     # ------------------------------------------------------------------
     # F) Motion Generation Result Cache
     #    Cache key = f"{prompt}|{duration}|{num_steps}"
-    #    Stores the final relative video url (e.g. "/static/videos/...")
+    #    Stores the final motion dict (glb + mp4 urls)
     # ------------------------------------------------------------------
 
-    def get_motion_result(self, prompt: str, duration: float, num_steps: int) -> Optional[str]:
-        """Look up a ready-to-use motion video URL by its generation parameters."""
+    def get_motion_result(self, prompt: str, duration: float, num_steps: int) -> Optional[Dict[str, Any]]:
+        """Look up a ready-to-use motion dict by its generation parameters."""
         if not self._available:
             return None
         try:
@@ -329,20 +329,70 @@ class CacheService:
             data = self._redis.get(key)
             if data:
                 logger.debug(f"Motion result Cache HIT for: '{prompt[:40]}'")
-                return data.decode("utf-8")
+                import json
+                return json.loads(data.decode("utf-8"))
             return None
         except Exception as exc:
             logger.debug(f"Motion result cache read error: {exc}")
             return None
 
-    def set_motion_result(self, prompt: str, duration: float, num_steps: int, video_url: str) -> None:
-        """Store a generated motion video URL."""
+    def set_motion_result(self, prompt: str, duration: float, num_steps: int, result: Dict[str, Any]) -> None:
+        """Store a generated motion result dict."""
         if not self._available:
             return
         try:
+            import json
             key_str = f"{prompt}|{duration}|{num_steps}"
             key = f"mres:{self._hash(key_str)}"
-            self._redis.setex(key, self._motion_prompt_ttl, video_url.encode("utf-8"))
-            logger.debug(f"Motion result cached: '{prompt[:40]}' → {video_url}")
+            self._redis.setex(key, self._motion_prompt_ttl, json.dumps(result).encode("utf-8"))
+            logger.debug(f"Motion result cached: '{prompt[:40]}'")
         except Exception as exc:
             logger.debug(f"Motion result cache write error: {exc}")
+
+    # ------------------------------------------------------------------
+    # G) Hybrid Semantic Motion Cache (Exactness Layer)
+    #    Cache key = f"sem:{sem_hash}|action:{action_entity_key}"
+    # ------------------------------------------------------------------
+
+    def get_semantic_motion_cache(self, user_query: str, extracted_verb: str, vector_similarity: float) -> Optional[Any]:
+        """
+        Hybrid cache check requiring both high vector similarity AND exact entity match.
+        Mitigates Semantic Drift (e.g. 'Shoulder Stretch' vs 'Shoulder Roll').
+        """
+        if not self._available:
+            return None
+
+        # 1. Reject instantly if below strict threshold (0.98 for motions)
+        if vector_similarity < 0.98:
+            return None
+            
+        # 2. Extract action entity to form the Hybrid Key
+        action_entity_key = extracted_verb.lower().replace(" ", "_") if extracted_verb else "unknown"
+        
+        # 3. Formulate key: sem_hash | entity_key
+        try:
+            import hashlib
+            sem_hash = hashlib.sha256(user_query.lower().encode()).hexdigest()
+            hybrid_key = f"sem:{sem_hash}|action:{action_entity_key}"
+            
+            # 4. Redis lookup
+            data = self._redis.get(hybrid_key)
+            return pickle.loads(data) if data else None
+        except Exception as exc:
+            logger.debug(f"Hybrid motion cache read error: {exc}")
+            return None
+
+    def set_semantic_motion_cache(self, user_query: str, extracted_verb: str, value: Any) -> None:
+        """Store the hybrid motion cache payload."""
+        if not self._available:
+            return
+        
+        action_entity_key = extracted_verb.lower().replace(" ", "_") if extracted_verb else "unknown"
+        try:
+            import hashlib
+            sem_hash = hashlib.sha256(user_query.lower().encode()).hexdigest()
+            hybrid_key = f"sem:{sem_hash}|action:{action_entity_key}"
+            
+            self._redis.setex(hybrid_key, self._retrieval_ttl, pickle.dumps(value))
+        except Exception as exc:
+            logger.debug(f"Hybrid motion cache write error: {exc}")
