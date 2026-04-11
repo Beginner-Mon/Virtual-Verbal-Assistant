@@ -51,6 +51,7 @@ from agents.query_transform import QueryTransformer
 from agents.tools import MemoryTool, DocumentRetrievalTool, WebSearchTool
 from agents.tools.motion_generation_tool import MotionGenerationTool
 from agents.semantic_bridge import SemanticBridgeService
+from utils.llm_extractor import extract_action
 from agents.keyword_extractor import KeywordExtractor
 from agents.knowledge_librarian import KnowledgeLibrarian
 from memory.memory_manager import MemoryManager
@@ -1258,12 +1259,10 @@ class AgenticRAGAPI:
                 trace["path_taken"] = "visualize_motion_path"
                 trace["llm_calls_count"] = 1
                 
-                exercise = action_plan.get("exercise_name") or query
+                exercise = action_plan.get("exercise_name") or action_plan.get("exercise") or query
                 
-                # Double-RAG flow guarantees hyde_document is the technical motion caption
-                if not exercise_motion_prompt:
-                    exercise_motion_prompt = hyde_document
-
+                # Use strictly extracted verb logic so conversational queries don't pollute motion engine
+                exercise_motion_prompt = extract_action(exercise)
                 if constraints:
                     logger.info("Applying clinical constraints to visualize_motion path.")
                 
@@ -1373,7 +1372,8 @@ class AgenticRAGAPI:
                 is_multi_activity = self._is_multi_activity_request(query)
                 if exercises and wants_visualization and not is_multi_activity:
                     # Use cleanly extracted verb
-                    exercise_motion_prompt = action_plan.get("exercise_name") or action_plan.get("exercise") or query
+                    raw_extracted = action_plan.get("exercise_name") or action_plan.get("exercise") or query
+                    exercise_motion_prompt = extract_action(raw_extracted)
                     logger.info(
                         f"Visualization query detected → exercise_motion_prompt={exercise_motion_prompt!r}"
                     )
@@ -1384,7 +1384,8 @@ class AgenticRAGAPI:
                     )
                 elif (not exercises) and wants_visualization and not is_multi_activity:
                     # Use cleanly extracted verb
-                    exercise_motion_prompt = action_plan.get("exercise_name") or action_plan.get("exercise") or query
+                    raw_extracted = action_plan.get("exercise_name") or action_plan.get("exercise") or query
+                    exercise_motion_prompt = extract_action(raw_extracted)
                     logger.info(
                         "Visualization query had no structured exercises; using HyDE prompt for motion generation"
                     )
@@ -1419,8 +1420,8 @@ class AgenticRAGAPI:
                         trace["errors"].append(f"Motion queue error: {str(_qe)}")
 
                 if not motion_async_enabled or (motion_async_enabled and motion_job is None):
-                    # For kinematic motion search, we now pass the hyde_document instead of a vague prompt string
-                    motion_target = hyde_document if intent != "conversation" else exercise_motion_prompt
+                    # Pass the cleanly extracted motion prompt, fallback to hyde_document
+                    motion_target = exercise_motion_prompt if exercise_motion_prompt else hyde_document
                     if constraints:
                         motion_target = f"{motion_target}. Clinical constraints: {constraints}"
 
