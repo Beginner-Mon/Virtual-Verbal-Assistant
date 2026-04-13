@@ -22,6 +22,7 @@ MAIN_API_PORT = 8080
 SPEECH_LLM_PORT = int(os.getenv("SPEECH_LLM_PORT", "5000"))
 REDIS_HOST = "127.0.0.1"
 REDIS_PORT = 6379
+REDIS_CONTAINER_NAME = os.getenv("REDIS_CONTAINER_NAME", "agenticRAG")
 DART_HOST = "127.0.0.1"
 DART_PORT = 5001
 DART_START_TIMEOUT_SECONDS = 240
@@ -62,20 +63,22 @@ def kill_ports(ports: list[int]) -> None:
         except Exception:
             pass
 
-    # ── Kill all ports in parallel ──────────────────────────────────────────
     with ThreadPoolExecutor(max_workers=len(ports)) as pool:
         list(pool.map(_kill_one, ports))
 
 
 def cleanup_everything() -> None:
-    """Hard-reset all relevant ports and WSL processes before startup."""
+    """Hard-reset all relevant ports and WSL processes before startup.
+    NOTE: port 6379 (Redis) is intentionally excluded — Redis runs in Docker
+    and must not be killed here.
+    """
     print("[Stack] Performing global cleanup phase...")
 
-    # Port kills + WSL pkill run fully in parallel
     cleanup_futures: list = []
     with ThreadPoolExecutor(max_workers=4) as pool:
+        # 6379 deliberately omitted — Docker Redis must survive cleanup
         cleanup_futures.append(
-            pool.submit(kill_ports, [8000, 8080, 5000, 5001, 3000, 8501, 6379])
+            pool.submit(kill_ports, [8000, 8080, 5000, 3000, 8501])
         )
         cleanup_futures.append(
             pool.submit(
@@ -147,12 +150,10 @@ def start_process(name: str, command: list[str], cwd: Path, env: dict[str, str])
 def windows_to_wsl_path(path: Path) -> str:
     """Convert Windows path to WSL path without spawning a subprocess."""
     resolved = str(path.resolve())
-    # Fast pure-Python conversion: C:\foo\bar → /mnt/c/foo/bar
     if len(resolved) >= 2 and resolved[1] == ":":
         drive = resolved[0].lower()
         rest = resolved[2:].replace("\\", "/")
         return f"/mnt/{drive}{rest}"
-    # Fallback for UNC / already-Unix paths
     try:
         out = subprocess.check_output(
             ["wsl", "wslpath", "-a", resolved],
@@ -230,14 +231,6 @@ def python_has_modules(python_exe: str, modules: tuple[str, ...]) -> bool:
 
 
 def resolve_python_executable() -> str:
-    """
-    Resolve the best Python executable.
-
-    Optimisation: check whether sys.executable already has the required
-    modules first (zero extra subprocess spawns in the common case where
-    the user runs the script from the right environment).
-    """
-    # Fast-path: current interpreter already has everything we need
     if python_has_modules(sys.executable, REQUIRED_PY_MODULES):
         return sys.executable
 
@@ -327,6 +320,43 @@ def terminate_process(name: str, process: subprocess.Popen) -> None:
         process.wait(timeout=5)
 
 
+def ensure_redis_docker(container_name: str, port: int) -> bool:
+    """
+    Ensure the named Redis Docker container is running.
+    Returns True if Redis becomes reachable, False otherwise.
+    """
+    # Check if already reachable
+    if is_port_open(REDIS_HOST, port):
+        print(f"[Stack] Redis already up at {REDIS_HOST}:{port}, skipping.")
+        return True
+
+    print(f"[Stack] Redis not reachable — starting Docker container '{container_name}'...")
+
+    # Try `docker start` first (container exists but is stopped)
+    result = subprocess.run(
+        ["docker", "start", container_name],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    if result.returncode == 0:
+        print(f"[Stack] Docker container '{container_name}' started.")
+    else:
+        # Container doesn't exist at all — this is unexpected, warn and bail
+        print(f"[Stack] ⚠ Could not start Docker container '{container_name}': {result.stderr.strip()}")
+        print(f"[Stack] ⚠ Make sure your Redis Docker container is named '{container_name}'.")
+        print(f"[Stack]   Run: docker ps -a | findstr redis   to check container names.")
+        print(f"[Stack]   Override with env var: set REDIS_CONTAINER_NAME=<your-container-name>")
+        return False
+
+    if not wait_for_port(REDIS_HOST, port, 30, "Redis"):
+        print("[Stack] ⚠ Redis did not become available within 30s. Continuing anyway.")
+        return False
+
+    return True
+
+
 def main() -> int:
     health_probe_host = probe_host(API_HOST)
 
@@ -337,24 +367,27 @@ def main() -> int:
         f_conda = pool.submit(resolve_conda_executable)
         f_wsl   = pool.submit(resolve_wsl_ipv4)
 
-    py_exe   = f_py.result()
-    conda_exe = f_conda.result()
+    py_exe        = f_py.result()
+    conda_exe     = f_conda.result()
     dart_wsl_ipv4 = f_wsl.result()
 
     base_env = os.environ.copy()
     speech_llm_conda_env = os.getenv("SPEECH_LLM_CONDA_ENV", "tts")
-    speech_llm_python = os.getenv("SPEECH_LLM_PYTHON", "python")
-    base_env["MOTION_ASYNC_ENABLED"] = "true"
+    speech_llm_python    = os.getenv("SPEECH_LLM_PYTHON", "python")
+    base_env["MOTION_ASYNC_ENABLED"]    = "true"
+    base_env["REDIS_URL"]               = f"redis://127.0.0.1:{REDIS_PORT}/0"
+    base_env["CELERY_BROKER_URL"]       = f"redis://127.0.0.1:{REDIS_PORT}/0"
+    base_env["CELERY_RESULT_BACKEND"]   = f"redis://127.0.0.1:{REDIS_PORT}/0"
     base_env["API_PUBLIC_BASE_URL"] = os.getenv(
         "API_PUBLIC_BASE_URL",
         f"http://{API_HOST}:{API_PORT}",
     )
-    base_env["PYTHONUNBUFFERED"] = "1"
-    base_env["PYTHONIOENCODING"] = "utf-8"
-    base_env["PYTHONUTF8"] = "1"
+    base_env["PYTHONUNBUFFERED"]  = "1"
+    base_env["PYTHONIOENCODING"]  = "utf-8"
+    base_env["PYTHONUTF8"]        = "1"
     base_env = enrich_path_for_ffmpeg(base_env)
 
-    cleanup_everything()  # already parallelised internally
+    cleanup_everything()  # does NOT kill port 6379
 
     dart_probe_hosts = [DART_HOST]
     if dart_wsl_ipv4 and dart_wsl_ipv4 not in dart_probe_hosts:
@@ -370,10 +403,10 @@ def main() -> int:
 
     processes: list[tuple[str, subprocess.Popen]] = []
     log_threads: list[threading.Thread] = []
-    stop_event = threading.Event()
-    log_lock = threading.Lock()
+    stop_event  = threading.Event()
+    log_lock    = threading.Lock()
     log_tail: dict[str, deque[str]] = {}
-    exit_code = 0
+    exit_code   = 0
 
     def request_shutdown(signum=None, frame=None) -> None:
         if not stop_event.is_set():
@@ -419,19 +452,14 @@ def main() -> int:
             print(f"[Stack] DART via WSL IP: {dart_client_host}:{DART_PORT}")
 
         base_env["DART_HOST"] = dart_client_host
-        base_env["DART_URL"] = f"http://{dart_client_host}:{DART_PORT}"
+        base_env["DART_URL"]  = f"http://{dart_client_host}:{DART_PORT}"
 
         # ── Redis ────────────────────────────────────────────────────────────
-        if is_port_open(REDIS_HOST, REDIS_PORT):
-            print(f"[Stack] redis already up at {REDIS_HOST}:{REDIS_PORT}, skipping.")
-        else:
-            redis_proc = start_process("Redis", ["redis-server"], REPO_ROOT, base_env)
-            processes.append(("Redis", redis_proc))
+        # Redis runs in Docker — never launch a local redis-server.
+        # We simply ensure the existing container is started.
+        ensure_redis_docker(REDIS_CONTAINER_NAME, REDIS_PORT)
 
         # ── Services that can ALL start in parallel ──────────────────────────
-        # Worker, Beat, API, SpeechLLM, ECA_UI, Streamlit UI
-        # We launch them all immediately; only Orchestrator must wait for API.
-
         worker_proc = start_process(
             "Worker",
             [py_exe, "-m", "celery", "-A", "celery_app", "worker", "--loglevel=info", "-P", "solo"],
@@ -454,7 +482,6 @@ def main() -> int:
             api_proc = start_process("API", [py_exe, "api_server.py"], SERVICE_ROOT, base_env)
             processes.append(("API", api_proc))
 
-        # SpeechLLM – starts in parallel while we wait for the API below
         if is_port_open(health_probe_host, SPEECH_LLM_PORT):
             print(f"[Stack] SpeechLLM already up at {API_HOST}:{SPEECH_LLM_PORT}, skipping.")
         else:
@@ -468,7 +495,6 @@ def main() -> int:
             speech_proc = start_process("SpeechLLM", speech_cmd, SPEECH_LLM_ROOT, base_env)
             processes.append(("SpeechLLM", speech_proc))
 
-        # ECA UI – starts in parallel too
         if is_port_open(health_probe_host, ECA_UI_PORT):
             print(f"[Stack] ECA UI already up at {API_HOST}:{ECA_UI_PORT}.")
         else:
@@ -480,7 +506,6 @@ def main() -> int:
             )
             processes.append(("ECA_UI", eca_proc))
 
-        # Streamlit UI – starts in parallel
         if is_port_open(health_probe_host, UI_PORT):
             print(f"[Stack] Streamlit UI already up at {API_HOST}:{UI_PORT}, skipping.")
         else:
@@ -507,7 +532,6 @@ def main() -> int:
                 log_threads.append(t)
 
         # ── Wait for AgenticRAG API health, THEN start Orchestrator ─────────
-        # This is the only hard ordering constraint.
         api_ready = wait_for_service_ready(health_probe_host, API_PORT, 60, "AgenticRAG API")
         if not api_ready:
             print("[Stack] ⚠ AgenticRAG API did not become healthy within 60 s. Starting Orchestrator anyway.")

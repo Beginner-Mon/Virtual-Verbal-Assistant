@@ -1101,8 +1101,10 @@
                  role: m.role,
                  text: m.content || "",
                  motion: m.metadata?.motion || null,
-                 audioUrl: (m.metadata?.tts && m.metadata.tts.audio_url) ? m.metadata.tts.audio_url : null,
-                 time: m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""
+                  audioUrl: (m.metadata?.tts && m.metadata.tts.audio_url) ? 
+                    (m.metadata.tts.audio_url.startsWith('/') ? API_BASE_URL + m.metadata.tts.audio_url : m.metadata.tts.audio_url) 
+                    : null,
+                  time: m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""
              }));
              setMessages(mapped);
           } else {
@@ -1253,7 +1255,9 @@
                   ...msg,
                   text: msg.text || "",
                   motion: msg.motion || null,
-                  audioUrl: (replyData.tts && replyData.tts.audio_url) ? replyData.tts.audio_url : msg.audioUrl,
+                  audioUrl: (replyData.tts && replyData.tts.audio_url) ? 
+                    (replyData.tts.audio_url.startsWith('/') ? API_BASE_URL + replyData.tts.audio_url : replyData.tts.audio_url) 
+                    : msg.audioUrl,
                 }
               : msg
           )));
@@ -1297,7 +1301,9 @@
                         ...msg,
                         text: msg.text || "",
                         motion: finalMotionBadge || msg.motion || null,
-                        audioUrl: (finalData.tts && finalData.tts.audio_url) ? finalData.tts.audio_url : msg.audioUrl,
+                        audioUrl: (finalData.tts && finalData.tts.audio_url) ? 
+                          (finalData.tts.audio_url.startsWith('/') ? API_BASE_URL + finalData.tts.audio_url : finalData.tts.audio_url) 
+                          : msg.audioUrl,
                       }
                     : msg
                 )));
@@ -1307,14 +1313,17 @@
                 }
 
                 if (finalData.tts && finalData.tts.audio_url) {
-                  console.log("[ECA UI] Setting TTS audio URL from finalPromise:", finalData.tts.audio_url);
-                  playAudio(finalData.tts.audio_url);
+                  const resolvedUrl = finalData.tts.audio_url.startsWith('/') ? API_BASE_URL + finalData.tts.audio_url : finalData.tts.audio_url;
+                  console.log("[ECA UI] Setting TTS audio URL from finalPromise:", resolvedUrl);
+                  playAudio(resolvedUrl);
                 }
 
                 updateAssistantMessage({
                     text: finalData.text_answer || "",
                     motion: finalMotionBadge || null,
-                    audioUrl: (finalData.tts && finalData.tts.audio_url) ? finalData.tts.audio_url : null
+                    audioUrl: (finalData.tts && finalData.tts.audio_url) ? 
+                      (finalData.tts.audio_url.startsWith('/') ? API_BASE_URL + finalData.tts.audio_url : finalData.tts.audio_url) 
+                      : null
                 });
 
                 if (finalData.motion_error) {
@@ -1357,7 +1366,9 @@
              updateAssistantMessage({
                  text: replyData.text_answer || "",
                  motion: finalMotionBadge || null,
-                 audioUrl: (replyData.tts && replyData.tts.audio_url) ? replyData.tts.audio_url : null
+                 audioUrl: (replyData.tts && replyData.tts.audio_url) ? 
+                   (replyData.tts.audio_url.startsWith('/') ? API_BASE_URL + replyData.tts.audio_url : replyData.tts.audio_url) 
+                   : null
              });
           }
           setActiveTaskStage("");
