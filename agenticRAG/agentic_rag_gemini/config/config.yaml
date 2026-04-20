@@ -84,10 +84,11 @@ embedding:
   batch_size: 32
 
 vector_database:
-  type: "chromadb"  # "chromadb" or "qdrant" (set via VECTOR_DB_TYPE env var)
+  type: "pinecone"  # Pinecone-only backend (ChromaDB removed in LangChain migration)
   
+  # ChromaDB config preserved for reference but no longer used
   chromadb:
-    mode: "http"  # "local" (PersistentClient) or "http" (HttpClient)
+    mode: "http"
     persist_directory: "./data/vector_store"
     collection_name: "kinetichat_memory"
     host: "localhost"

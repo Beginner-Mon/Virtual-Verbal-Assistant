@@ -4,8 +4,8 @@ import os
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
-from memory.vector_store import VectorStore
-from memory.embedding_service import EmbeddingService
+from memory.vectorstore_provider import VectorStore
+from memory.embeddings_provider import EmbeddingService
 from utils.logger import get_logger
 from utils.document_loader import DocumentLoader
 

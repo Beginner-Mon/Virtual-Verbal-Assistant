@@ -56,15 +56,15 @@ from agents.keyword_extractor import KeywordExtractor
 from agents.knowledge_librarian import KnowledgeLibrarian
 from memory.memory_manager import MemoryManager
 from memory.document_store import DocumentStore
-from memory.vector_store import VectorStore
-from memory.embedding_service import EmbeddingService
+from memory.vectorstore_provider import VectorStore
+from memory.embeddings_provider import EmbeddingService
 from memory.session_store import SessionStore
 from retrieval.rag_pipeline import RAGPipeline
 from config import get_config
 from utils.logger import get_logger
 from utils.web_search import get_web_search_service
 from utils.exercise_detector import get_exercise_detector
-from utils.gemini_client import GeminiClientWrapper
+from utils.llm_provider import GeminiClientWrapper
 from utils.prompt_templates import LLM_PROMPTS
 from motion_jobs import MotionJobManager
 import asyncio
@@ -199,8 +199,8 @@ class AgenticRAGAPI:
 
         try:
             # Shared infrastructure
-            from memory.vector_store import VectorStore
-            from memory.embedding_service import EmbeddingService
+            from memory.vectorstore_provider import VectorStore
+            from memory.embeddings_provider import EmbeddingService
 
             vector_store = VectorStore()
             embedding_service = EmbeddingService()
@@ -2468,7 +2468,7 @@ async def health_check() -> Dict[str, Any]:
         checks["redis"] = {"status": "unreachable", "error": str(exc)}
 
     # 2. Vector Database (ChromaDB or Pinecone)
-    vector_db_type = os.getenv("VECTOR_DB_TYPE", "chromadb").strip().lower()
+    vector_db_type = os.getenv("VECTOR_DB_TYPE", "pinecone").strip().lower()
     if vector_db_type == "pinecone":
         try:
             from pinecone import Pinecone

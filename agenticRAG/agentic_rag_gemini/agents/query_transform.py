@@ -8,7 +8,7 @@ import json
 from typing import Dict, Any
 
 from utils.logger import get_logger
-from utils.gemini_client import GeminiClientWrapper
+from utils.llm_provider import GeminiClientWrapper
 from utils.cache_service import CacheService
 
 logger = get_logger(__name__)

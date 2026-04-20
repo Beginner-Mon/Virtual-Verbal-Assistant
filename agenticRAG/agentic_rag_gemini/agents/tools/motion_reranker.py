@@ -10,7 +10,7 @@ from typing import List, Optional
 
 from agents.tools.motion_candidate_retriever import MotionCandidate
 from utils.cache_service import CacheService
-from utils.gemini_client import GeminiClientWrapper
+from utils.llm_provider import GeminiClientWrapper
 from utils.logger import get_logger
 
 logger = get_logger(__name__)

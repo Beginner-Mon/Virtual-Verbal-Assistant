@@ -8,8 +8,8 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 import json
 
-from memory.vector_store import VectorStore
-from memory.embedding_service import EmbeddingService
+from memory.vectorstore_provider import VectorStore
+from memory.embeddings_provider import EmbeddingService
 from utils.document_loader import DocumentLoader
 from config import get_config
 from utils.logger import get_logger

@@ -8,10 +8,10 @@ can recall context from past sessions via fuzzy matching.
 from typing import List, Dict, Any, Optional
 
 from utils.logger import get_logger
-from utils.gemini_client import GeminiClientWrapper
+from utils.llm_provider import GeminiClientWrapper
 from utils.prompt_templates import SESSION_SUMMARY_PROMPTS
-from memory.embedding_service import EmbeddingService
-from memory.vector_store import VectorStore
+from memory.embeddings_provider import EmbeddingService
+from memory.vectorstore_provider import VectorStore
 
 logger = get_logger(__name__)
 
@@ -49,11 +49,16 @@ class SummarizeAgent:
         prompt = SESSION_SUMMARY_PROMPTS["summarize"].format(transcript=transcript)
 
         try:
-            summary = self.client.generate(
-                prompt=prompt,
-                system_instruction=SESSION_SUMMARY_PROMPTS["system"],
+            response = self.client.chat.completions.create(
+                model="gemini-2.5-flash",
+                messages=[
+                    {"role": "system", "content": SESSION_SUMMARY_PROMPTS["system"]},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=500,
             )
-            summary = summary.strip()
+            summary = response.choices[0].message.content.strip()
             logger.info(f"Generated session summary ({len(summary)} chars)")
             return summary
         except Exception as exc:

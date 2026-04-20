@@ -20,13 +20,13 @@ import concurrent.futures
 from typing import List, Dict, Any, Optional
 
 from memory.memory_manager import MemoryManager
-from memory.embedding_service import EmbeddingService
+from memory.embeddings_provider import EmbeddingService
 from memory.document_store import DocumentStore
-from memory.vector_store import VectorStore
+from memory.vectorstore_provider import VectorStore
 from config import get_config
 from utils.logger import get_logger
 from utils.validators import ResponseValidator
-from utils.gemini_client import GeminiClientWrapper
+from utils.llm_provider import GeminiClientWrapper
 from utils.web_search import get_web_search_service
 from utils.prompt_templates import QUERY_REFORMULATION_PROMPTS, REFLECTION_PROMPTS
 

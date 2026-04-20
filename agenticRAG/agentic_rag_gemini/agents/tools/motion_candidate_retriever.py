@@ -20,7 +20,7 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 # ── Vector DB selection ───────────────────────────────────────────
-VECTOR_DB_TYPE = os.getenv("VECTOR_DB_TYPE", "chromadb").strip().lower()
+VECTOR_DB_TYPE = os.getenv("VECTOR_DB_TYPE", "pinecone").strip().lower()
 
 # ── ChromaDB settings (legacy) ───────────────────────────────────
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")

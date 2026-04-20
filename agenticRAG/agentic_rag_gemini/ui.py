@@ -24,13 +24,13 @@ from agents.summarize_agent import SummarizeAgent
 from memory.memory_manager import MemoryManager
 from memory.document_store import DocumentStore
 from memory.session_store import SessionStore
-from memory.vector_store import VectorStore
-from memory.embedding_service import EmbeddingService
+from memory.vectorstore_provider import VectorStore
+from memory.embeddings_provider import EmbeddingService
 from retrieval.rag_pipeline import RAGPipeline
 from utils.document_loader import DocumentLoader
 from utils.logger import get_logger
 from utils.api_key_manager import get_api_key_manager
-from utils.gemini_client import GeminiClientWrapper
+from utils.llm_provider import GeminiClientWrapper
 from config import get_config
 
 logger = get_logger(__name__)

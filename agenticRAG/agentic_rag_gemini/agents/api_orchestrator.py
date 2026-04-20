@@ -27,7 +27,7 @@ from typing import Dict, List, Optional, Any
 from config import get_config
 from utils.logger import get_logger
 from utils.prompt_templates import ORCHESTRATOR_PROMPTS
-from utils.gemini_client import GeminiClientWrapper
+from utils.llm_provider import GeminiClientWrapper
 from agents.tools.memory_tool import MemoryTool
 from agents.tools.document_retrieval_tool import DocumentRetrievalTool
 from agents.tools.web_search_tool import WebSearchTool

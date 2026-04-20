@@ -42,12 +42,12 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 from utils.logger import get_logger
-from utils.gemini_client import GeminiClientWrapper
+from utils.llm_provider import GeminiClientWrapper
 
 logger = get_logger(__name__)
 
 # ── Vector DB settings ────────────────────────────────────────────
-VECTOR_DB_TYPE = os.getenv("VECTOR_DB_TYPE", "chromadb").strip().lower()
+VECTOR_DB_TYPE = os.getenv("VECTOR_DB_TYPE", "pinecone").strip().lower()
 # ChromaDB (legacy)
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8100"))

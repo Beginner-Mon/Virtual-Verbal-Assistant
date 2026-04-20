@@ -47,7 +47,7 @@ class EmbeddingConfig(BaseModel):
 
 class VectorDatabaseConfig(BaseModel):
     """Vector database configuration."""
-    type: str = Field(default="chromadb")
+    type: str = Field(default="pinecone")
     chromadb: Dict[str, Any] = Field(default_factory=dict)
     pinecone: Dict[str, Any] = Field(default_factory=dict)
 
