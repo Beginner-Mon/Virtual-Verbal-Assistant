@@ -12,7 +12,7 @@ from pathlib import Path
 import shutil
 
 
-REPO_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = Path(__file__).resolve().parent.parent
 SERVICE_ROOT = REPO_ROOT / "agenticRAG" / "agentic_rag_gemini"
 SPEECH_LLM_ROOT = REPO_ROOT / "SpeechLLm"
 DART_ROOT = REPO_ROOT / "text-to-motion" / "DART"
