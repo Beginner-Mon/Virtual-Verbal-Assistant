@@ -78,5 +78,4 @@ if __name__ == "__main__":
             print("Audio file not generated.")
 
     except Exception as e:
-        print("TTS Error:", e)elevenlabs_client.synthesize(
-            text=text_to_read
+        print("TTS Error:", e)
