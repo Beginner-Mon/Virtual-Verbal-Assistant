@@ -288,6 +288,74 @@ python -m visualize.vis_seq --add_floor 1 --translate_body 1 --vis_joint 1 --seq
 You can test with custom trajectories by setting `--input_path` to your custom control trajectories.
 If you have ground truth initial bodies and joint trajectories from dataset, you can modify the script to use initial bodies from dataset instead of the rest standing pose similar to the [inbetweening script](./mld/optim_mld.py).
 
+# MCP Server (Model Context Protocol)
+
+DART can be used as an **MCP server**, allowing AI assistants (Claude Desktop, Cursor, etc.) to generate 3D human motion directly via tool calls. The MCP server bridges to the DART REST API, so the DART conda environment stays untouched.
+
+## Setup
+
+```bash
+# 1. Create a Python 3.10+ venv for the MCP server (one-time)
+cd /path/to/DART
+python3.10 -m venv .venv-mcp
+source .venv-mcp/bin/activate
+pip install "mcp[cli]" httpx
+
+# 2. Start the DART REST API (Terminal 1)
+conda activate DART
+python api_server.py
+
+# 3. Run MCP server (Terminal 2)
+source .venv-mcp/bin/activate
+mcp dev mcp_server.py        # MCP Inspector (testing)
+# or
+python mcp_server.py          # stdio transport (production)
+```
+
+## Client Configuration
+
+Add the following to your MCP client config (Claude Desktop, Cursor, etc.):
+
+```json
+{
+  "mcpServers": {
+    "dart-motion": {
+      "command": ".venv-mcp/bin/python",
+      "args": ["mcp_server.py"],
+      "cwd": "/path/to/DART"
+    }
+  }
+}
+```
+
+> **Note:** Update `cwd` to the absolute path of your DART project directory.
+
+## Available Tools
+
+| Tool | Description |
+|---|---|
+| `generate_motion` | Generate a 3D motion from a text prompt. Returns a download URL for the GLB/NPZ file. |
+| `list_generated_motions` | Check server status and show the download URL pattern. |
+| `health_check` | Check if the DART API server is running and reachable. |
+
+### `generate_motion` Parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `text_prompt` | string | *(required)* | Motion description (e.g., `"walk forward"`, `"walk forward, sit down"`) |
+| `duration_seconds` | float | `null` | Desired clip duration (1.0–120.0 seconds) |
+| `guidance_scale` | float | `5.0` | Text faithfulness (1.0–12.0) |
+| `seed` | int | `null` | Random seed for reproducibility |
+| `respacing` | string | `""` | Inference speed: `""` (best quality), `"ddim5"` (~10× faster) |
+| `gender` | string | `"female"` | Body model: `"female"` or `"male"` |
+| `output_format` | string | `"glb"` | Output format: `"glb"` or `"npz"` |
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `DART_API_URL` | `http://localhost:5001` | Base URL of the DART REST API |
+
 # Training
 
 

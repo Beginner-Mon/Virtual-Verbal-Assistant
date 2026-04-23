@@ -183,3 +183,4 @@ mld_denoiser/
 mvae/
 smplh/
 outputs/
+.venv-mcp/

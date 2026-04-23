@@ -12,7 +12,7 @@ import trimesh
 # ==========================
 # CONFIG
 # ==========================
-INPUT_PATH = "outputs/motion_3bc51aec-de3.npz"
+INPUT_PATH = "outputs/motion_15bd8e25-cd8.npz"
 MODEL_PATH = "./data/smplx_lockedhead_20230207/models_lockedhead"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 GLB_MULTI_GEOMETRY_MODE = "middle"  # middle | animate
