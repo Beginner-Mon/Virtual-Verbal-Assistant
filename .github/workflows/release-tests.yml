@@ -1,8 +1,9 @@
 name: Release Unit Tests
 
 on:
-  release:
-    types: [published]
+  push:
+    branches:
+      - release
   workflow_dispatch:
 
 concurrency:
