@@ -97,12 +97,19 @@ def audio_dir(tmp_path):
 
 
 @pytest.fixture
-def force_coqui_fallback():
+def force_coqui_fallback(audio_dir):
     """
     Patch ElevenLabsClient.synthesize to always fail, forcing the TTSRouter
     to fall back to Coqui TTS.
+    Also patch CoquiClient.synthesize to prevent real ML inference during tests.
     """
-    with patch("src.services.elevenlabs_client.ElevenLabsClient.synthesize", side_effect=Exception("Forced fallback for testing")):
+    def fake_synthesize(text, language="en", speaker=None):
+        if language == "unsupported_lang":
+            raise ValueError("Unsupported language")
+        return str(audio_dir / "test.wav")
+
+    with patch("src.services.elevenlabs_client.ElevenLabsClient.synthesize", side_effect=Exception("Forced fallback for testing")), \
+         patch("src.services.coqui_client.CoquiClient.synthesize", side_effect=fake_synthesize):
         yield
 
 
