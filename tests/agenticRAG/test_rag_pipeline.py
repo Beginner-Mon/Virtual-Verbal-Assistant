@@ -8,7 +8,7 @@ from main import AgenticRAGSystem
 @pytest.fixture
 def mock_pinecone_index():
     """Provides a mock for the Pinecone Index to intercept VectorStore queries."""
-    with patch("memory.vector_store.Pinecone") as MockPinecone:
+    with patch("pinecone.Pinecone") as MockPinecone:
         mock_client = MagicMock()
         mock_index = MagicMock()
         
@@ -25,9 +25,9 @@ def mock_pinecone_index():
 @pytest.fixture
 def mock_firestore():
     """Provides a mock for Firebase Firestore to intercept SessionStore calls."""
-    with patch("memory.session_store.firestore") as mock_firestore_module:
+    with patch("firebase_admin.firestore.client") as mock_firestore_client:
         mock_db = MagicMock()
-        mock_firestore_module.client.return_value = mock_db
+        mock_firestore_client.return_value = mock_db
         yield mock_db
 
 
@@ -123,19 +123,18 @@ class TestSessionStoreIntegration:
         
         # Mock the document reference
         mock_doc_ref = MagicMock()
-        mock_collection = mock_firestore.collection.return_value
+        mock_collection = mock_firestore.collection.return_value.document.return_value.collection.return_value
         mock_collection.document.return_value = mock_doc_ref
         
         # Act
-        store.add_turn("session_123", "user", "Hello there")
+        store.create_session(first_message="Hello there")
         
         # Assert Usage
-        mock_firestore.collection.assert_called_with("chat_sessions")
+        # SessionStore uses: db.collection("users").document(user_id).collection("sessions").document(session_id).set()
         mock_doc_ref.set.assert_called()
         
         # Verify what was written
         written_data = mock_doc_ref.set.call_args[0][0]
         assert written_data["user_id"] == "test_user"
-        assert len(written_data["turns"]) == 1
-        assert written_data["turns"][0]["role"] == "user"
-        assert written_data["turns"][0]["content"] == "Hello there"
+        assert written_data["title"] == "Hello there"
+        assert written_data["messages"] == []
