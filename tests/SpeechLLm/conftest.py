@@ -2,10 +2,8 @@
 Shared fixtures for SpeechLLm unit tests.
 
 Handles:
-- Stubbing heavy third-party dependencies (ElevenLabs SDK, Coqui TTS, PyTorch)
-  only when they are not installed in the test environment.
-- Setting CWD to SpeechLLm root (required for configs/models.yaml at import time)
-- Providing mocked TTS services so tests run without API keys or GPU
+- Stubbing ElevenLabs to force fallback to Coqui for local integration testing.
+- Setting CWD to SpeechLLm root (required for configs/models.yaml at import time).
 """
 
 import importlib.util
@@ -19,18 +17,11 @@ from fastapi.testclient import TestClient
 
 
 # ---------------------------------------------------------------------------
-# Stub heavy third-party packages that may not be installed in the test
-# environment.  Only packages that cannot be found are replaced with
-# MagicMock stubs; if a package IS installed it is left untouched so
-# that other test suites (e.g. DART integration tests) are unaffected.
+# Stub ElevenLabs so we don't consume credits, forcing fallback to Coqui
 # ---------------------------------------------------------------------------
 
 _OPTIONAL_PACKAGES = {
     "elevenlabs": ["elevenlabs", "elevenlabs.client"],
-    "TTS":        ["TTS", "TTS.api"],
-    "torch":      ["torch"],
-    "sounddevice": ["sounddevice"],
-    "soundfile":  ["soundfile"],
 }
 
 for _top_pkg, _sub_mods in _OPTIONAL_PACKAGES.items():
@@ -41,10 +32,6 @@ for _top_pkg, _sub_mods in _OPTIONAL_PACKAGES.items():
 
 # ---------------------------------------------------------------------------
 # Session-scoped CWD + environment fixture
-#
-# api_server.py calls load_yaml("configs/models.yaml") and
-# ElevenLabsClient checks os.getenv("ELEVENLABS_API_KEY") at import time.
-# Both must be available before the module is first imported.
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(scope="session", autouse=True)
@@ -56,6 +43,7 @@ def _speechllm_env(request):
 
     original_key = os.environ.get("ELEVENLABS_API_KEY")
     os.environ["ELEVENLABS_API_KEY"] = "test_key_for_unit_tests"
+    os.environ["COQUI_USE_GPU"] = "false"
 
     yield
 
@@ -73,9 +61,6 @@ def _speechllm_env(request):
 def make_synthesis_result(**overrides) -> dict:
     """
     Build a realistic /synthesize response dict.
-
-    Call with no args for sensible defaults, or pass keyword overrides:
-        make_synthesis_result(language="vi", tts_provider="coqui")
     """
     defaults = {
         "message": "Synthesis complete",
@@ -83,7 +68,7 @@ def make_synthesis_result(**overrides) -> dict:
         "language": "en",
         "emotion": "neutral",
         "tts_time_sec": 0.123,
-        "tts_provider": "elevenlabs",
+        "tts_provider": "coqui",
         "request_id": None,
     }
     defaults.update(overrides)
@@ -101,18 +86,6 @@ def synthesis_result():
 
 
 @pytest.fixture
-def mock_tts_router():
-    """
-    Patch tts_router in api_server so /synthesize never calls
-    real ElevenLabs or Coqui services.
-    """
-    with patch("api_server.tts_router") as mock_router:
-        mock_router.synthesize.return_value = "data/temp_audio/test_audio.mp3"
-        mock_router.last_provider = "elevenlabs"
-        yield mock_router
-
-
-@pytest.fixture
 def audio_dir(tmp_path):
     """Create a temp audio directory pre-populated with sample test files."""
     d = tmp_path / "audio"
@@ -124,16 +97,24 @@ def audio_dir(tmp_path):
 
 
 @pytest.fixture
-def tts_client(mock_tts_router, audio_dir):
+def force_coqui_fallback():
     """
-    Provide a FastAPI TestClient with TTS services fully mocked.
+    Patch ElevenLabsClient.synthesize to always fail, forcing the TTSRouter
+    to fall back to Coqui TTS.
+    """
+    with patch("src.services.elevenlabs_client.ElevenLabsClient.synthesize", side_effect=Exception("Forced fallback for testing")):
+        yield
 
-    Patches:
-      - api_server.tts_router  (via mock_tts_router dependency)
-      - api_server.audio_dir   (via audio_dir tmp directory)
+
+@pytest.fixture
+def tts_client(audio_dir, force_coqui_fallback):
+    """
+    Provide a FastAPI TestClient that uses the real TTSRouter,
+    but with ElevenLabs forced to fail.
     """
     with patch("api_server.audio_dir", audio_dir):
         from api_server import app
 
         with TestClient(app) as client:
             yield client
+

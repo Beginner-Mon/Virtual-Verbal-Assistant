@@ -60,6 +60,17 @@ jobs:
           pip install pytest httpx pytest-asyncio
         shell: bash
 
+      - name: Install external tools (eSpeak NG & Ollama)
+        if: matrix.module_name == 'SpeechLLm' || matrix.module_name == 'AgenticRAG Gemini'
+        run: |
+          choco install espeak.install -y
+          choco install ollama -y
+          # Note: espeak is installed to 'C:\Program Files\eSpeak NG' by default
+          # and ollama is typically in 'C:\Users\runneradmin\AppData\Local\Programs\Ollama'
+          echo "C:\Program Files\eSpeak NG" >> $GITHUB_PATH
+          echo "C:\Users\runneradmin\AppData\Local\Programs\Ollama" >> $GITHUB_PATH
+        shell: bash
+
       # Run from repo root — pytest.ini and conftest.py handle paths
       - name: Run unit tests
         env:
