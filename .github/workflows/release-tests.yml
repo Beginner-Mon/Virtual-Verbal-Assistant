@@ -60,16 +60,18 @@ jobs:
           pip install pytest httpx pytest-asyncio
         shell: bash
 
-      - name: Install external tools (eSpeak NG & Ollama)
-        if: matrix.module_name == 'SpeechLLm' || matrix.module_name == 'AgenticRAG Gemini'
+      - name: Install eSpeak NG
+        if: matrix.module_name == 'SpeechLLm'
+        shell: powershell
         run: |
-          choco install espeak.install -y
-          choco install ollama -y
-          # Note: espeak is installed to 'C:\Program Files\eSpeak NG' by default
-          # and ollama is typically in 'C:\Users\runneradmin\AppData\Local\Programs\Ollama'
-          echo "C:\Program Files\eSpeak NG" >> $GITHUB_PATH
-          echo "C:\Users\runneradmin\AppData\Local\Programs\Ollama" >> $GITHUB_PATH
-        shell: bash
+          # Download espeak-ng MSI from GitHub releases
+          $url = "https://github.com/espeak-ng/espeak-ng/releases/download/1.51/espeak-ng-X64.msi"
+          Invoke-WebRequest -Uri $url -OutFile "espeak-ng.msi"
+          Start-Process msiexec.exe -ArgumentList '/i espeak-ng.msi /quiet /qn /norestart' -Wait
+          # Add to PATH for subsequent steps
+          echo "C:\Program Files\eSpeak NG" | Out-File -Append -FilePath $env:GITHUB_PATH
+          # Verify
+          & "C:\Program Files\eSpeak NG\espeak-ng.exe" --version
 
       # Run from repo root — pytest.ini and conftest.py handle paths
       - name: Run unit tests
