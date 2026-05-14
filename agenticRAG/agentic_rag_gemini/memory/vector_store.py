@@ -16,6 +16,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 import uuid
 import os
+from pathlib import Path
 
 from config import get_config
 from utils.logger import get_logger
@@ -94,14 +95,26 @@ class VectorStore:
             )
         else:
             persist_directory = chroma_config.get("persist_directory", "./data/vector_store")
+            persist_path = Path(str(persist_directory)).expanduser().resolve()
+            try:
+                persist_path.mkdir(parents=True, exist_ok=True)
+                probe_file = persist_path / ".persist_write_check"
+                probe_file.write_text("ok", encoding="utf-8")
+                probe_file.unlink(missing_ok=True)
+            except Exception as exc:
+                raise RuntimeError(
+                    "ChromaDB persist_directory is not writable: "
+                    f"{persist_path}. Please fix permissions or path configuration."
+                ) from exc
+
             self.client = chromadb.PersistentClient(
-                path=persist_directory,
+                path=str(persist_path),
                 settings=settings,
             )
-            self._chroma_endpoint = persist_directory
+            self._chroma_endpoint = str(persist_path)
             logger.info(
                 "Using ChromaDB PersistentClient mode path=%s",
-                persist_directory,
+                persist_path,
             )
         
         try:
@@ -775,6 +788,54 @@ class VectorStore:
                 
         except Exception as e:
             logger.error(f"Failed to reset collections: {e}")
+            return False
+
+    # ==================================================================
+    # delete_user_data
+    # ==================================================================
+
+    def delete_user_data(self, user_id: str) -> bool:
+        """Delete all data belonging to a specific user across all collections/namespaces."""
+        resolved_user_id = self._resolve_user_id(user_id)
+        try:
+            if self.db_type == "chromadb":
+                logger.info(f"Deleting ChromaDB collections for user: {resolved_user_id}")
+                
+                # User-specific collection names
+                coll_names = [
+                    self._collection_name("conversations", resolved_user_id),
+                    self._collection_name("documents", resolved_user_id),
+                    self._collection_name("chat_summaries", resolved_user_id)
+                ]
+                
+                for name in coll_names:
+                    try:
+                        self.client.delete_collection(name=name)
+                        logger.info(f"Deleted collection: {name}")
+                    except Exception as e:
+                        # Collection might not exist, which is fine
+                        logger.debug(f"Note: Could not delete collection {name} (may not exist): {e}")
+                
+                return True
+
+            elif self.db_type == "pinecone":
+                logger.info(f"Deleting Pinecone data for user: {resolved_user_id}")
+                # We delete by filter across all active namespaces
+                for ns in (_NS_CONVERSATIONS, _NS_DOCUMENTS, _NS_CHAT_SUMMARIES):
+                    try:
+                        self._pinecone_index.delete(
+                            filter={"user_id": {"$eq": resolved_user_id}},
+                            namespace=ns
+                        )
+                        logger.info(f"Cleared records for user {resolved_user_id} in namespace: {ns}")
+                    except Exception as e:
+                        logger.warning(f"Error clearing user {resolved_user_id} in Pinecone namespace {ns}: {e}")
+                
+                return True
+
+            return False
+        except Exception as e:
+            logger.error(f"Failed to delete user data for {resolved_user_id}: {e}")
             return False
 
     # ==================================================================

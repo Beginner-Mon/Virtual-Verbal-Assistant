@@ -23,6 +23,8 @@ def normalize_motion_description(prompt: str) -> str:
 
 def resolve_motion_duration_seconds(rag_data: Dict[str, Any], default_duration_seconds: float) -> float:
     raw = rag_data.get("duration_seconds")
+    if raw is None and isinstance(rag_data.get("metadata"), dict):
+        raw = (rag_data.get("metadata") or {}).get("motion_duration_seconds")
     if raw is None and isinstance(rag_data.get("motion_prompt"), dict):
         mp = rag_data.get("motion_prompt") or {}
         raw = mp.get("duration_seconds") or mp.get("duration_estimate_seconds")

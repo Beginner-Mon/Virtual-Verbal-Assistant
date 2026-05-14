@@ -96,15 +96,164 @@ const POLL_INTERVAL_MS = 1500;
 const NOT_FOUND_RETRY_LIMIT = 3;
 const POLL_TIMEOUT_MS = 600000;
 
+function joinApiBase(path) {
+  const base = normalizeApiBaseUrl(API_BASE_URL);
+  if (!path) {
+    return base;
+  }
+  const suffix = String(path).startsWith("/") ? path : `/${path}`;
+  return `${base}${suffix}`;
+}
+
+function normalizeMotionFileUrl(rawUrl) {
+  if (!rawUrl) {
+    return null;
+  }
+
+  const value = String(rawUrl).trim();
+  if (!value) {
+    return null;
+  }
+
+  // Already a proxy-friendly relative path.
+  if (value.startsWith("/download/")) {
+    return joinApiBase(value);
+  }
+
+  // Non-absolute paths are assumed to be API-relative.
+  if (!/^https?:\/\//i.test(value)) {
+    return joinApiBase(value);
+  }
+
+  try {
+    const artifactUrl = new URL(value);
+    const apiBase = new URL(joinApiBase("/"));
+
+    // Keep same-origin absolute URLs unchanged.
+    if (artifactUrl.origin.toLowerCase() === apiBase.origin.toLowerCase()) {
+      return value;
+    }
+
+    // For cross-origin DART URLs, route through API proxy when path is /download/*.
+    const marker = "/download/";
+    const idx = artifactUrl.pathname.toLowerCase().indexOf(marker);
+    if (idx >= 0) {
+      const proxiedPath = artifactUrl.pathname.substring(idx);
+      return joinApiBase(`${proxiedPath}${artifactUrl.search || ""}`);
+    }
+
+    return value;
+  } catch {
+    return value;
+  }
+}
+
+function normalizeExercises(exercises) {
+  if (!Array.isArray(exercises)) {
+    return [];
+  }
+
+  const normalized = [];
+  const seen = new Set();
+
+  for (const item of exercises) {
+    let name = "";
+    if (item && typeof item === "object") {
+      name = String(item.name || item.title || "").trim();
+    } else if (typeof item === "string") {
+      name = item.trim();
+    }
+
+    if (!name) {
+      continue;
+    }
+
+    const key = name.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    normalized.push({ name });
+  }
+
+  return normalized;
+}
+
+function extractExercisesFromText(answer, limit = 8) {
+  const text = String(answer || "").trim();
+  if (!text) {
+    return [];
+  }
+
+  const movementKeywords = /\b(stretch|tilt|squat|lunge|bridge|plank|raise|rotation|twist|extension|flexion|cat\s*-?\s*cow|bird\s*dog|dead\s*bug|glute|hamstring|mobility|hip\s*flexor|thoracic|pelvic|back)\b/i;
+
+  const lines = text.split(/\r?\n/);
+  const found = [];
+  const seen = new Set();
+
+  for (const line of lines) {
+    const match = line.match(/^\s*(?:\d+[\.)]|[-*])\s+(.+)$/);
+    if (!match) {
+      continue;
+    }
+
+    let candidate = String(match[1] || "").trim();
+    candidate = candidate.replace(/\[([^\]]+)\]\([^\)]+\)/g, "$1");
+    candidate = candidate.replace(/https?:\/\/\S+/g, "");
+    candidate = candidate.split(/\s*:\s*/, 1)[0].trim();
+    candidate = candidate.split(/\s+[\-–—]\s+/, 1)[0].trim();
+    candidate = candidate.replace(/\(.*?\)/g, "").trim();
+    candidate = candidate.replace(/[^A-Za-z0-9\s/+\-]/g, "").trim();
+
+    if (!candidate || candidate.length > 60) {
+      continue;
+    }
+
+    const lowered = candidate.toLowerCase();
+    if (lowered.startsWith("source") || lowered.includes("http") || lowered.includes("www")) {
+      continue;
+    }
+
+    // Avoid turning generic step labels into exercise chips.
+    if (!movementKeywords.test(candidate)) {
+      continue;
+    }
+
+    if (seen.has(lowered)) {
+      continue;
+    }
+
+    seen.add(lowered);
+    found.push({ name: candidate });
+
+    if (found.length >= limit) {
+      break;
+    }
+  }
+
+  return found;
+}
+
 function flattenTaskPayload(taskPayload) {
   const task = taskPayload || {};
   const isDirectAnswer = "text_answer" in task;
   const result = isDirectAnswer ? task : (task.result || {});
+  const selectedStrategy = String(
+    task.selected_strategy || result.selected_strategy || result?.orchestrator_decision?.intent || ""
+  ).trim().toLowerCase();
+  const answerText = result.text_answer || result.clinical_advice || "";
+  const explicitExercises = normalizeExercises(result.exercises);
+  const inferredExercises = (!explicitExercises.length && selectedStrategy === "exercise_recommendation")
+    ? extractExercisesFromText(answerText)
+    : [];
+  const normalizedExercises = explicitExercises.length > 0 ? explicitExercises : inferredExercises;
   
   const motionPayload = result.motion || {};
   const motionJob = result.motion_job || {};
   // In AnswerResponse, motion is a dict with motion_file_url directly.
-  const motionUrl = result.motion_file_url || motionPayload.motion_file_url || motionJob.motion_file_url || null;
+  const motionUrlRaw = result.motion_file_url || motionPayload.motion_file_url || motionJob.motion_file_url || null;
+  const motionUrl = normalizeMotionFileUrl(motionUrlRaw);
   const motionPrompt =
     result.exercise_motion_prompt ||
     motionPayload.text_prompt ||
@@ -120,9 +269,12 @@ function flattenTaskPayload(taskPayload) {
     task_id: task.task_id || task.request_id,
     status: task.status || "processing",
     progress_stage: task.progress_stage || "queued",
+    selected_strategy: selectedStrategy || null,
+    intent: selectedStrategy || null,
     error: task.error || (task.errors ? JSON.stringify(task.errors) : null),
     text_answer: result.text_answer || "",
     clinical_advice: result.text_answer || "",
+    exercises: normalizedExercises,
     motion_duration_seconds: result.motion_duration_seconds ?? motionPayload.duration_seconds ?? null,
     motion_error: result.motion_error || task.error || null,
     tts: ttsObj,
@@ -340,6 +492,11 @@ async function removeDocument(userId, filename) {
   return response.data;
 }
 
+async function clearMemory(userId) {
+  const response = await axios.delete(`${API_BASE_URL}/memory/${encodeURIComponent(userId)}`);
+  return response.data;
+}
+
 // Make it globally available for Babel/React script
 window.askEca = askEca;
 window.pollTaskStatus = pollTaskStatus;
@@ -351,3 +508,4 @@ window.getSession = getSession;
 window.deleteSession = deleteSession;
 window.uploadDocument = uploadDocument;
 window.removeDocument = removeDocument;
+window.clearMemory = clearMemory;

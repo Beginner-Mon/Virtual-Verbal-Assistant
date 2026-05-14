@@ -1,5 +1,4 @@
 from pathlib import Path
-from TTS.api import TTS
 import uuid
 import os
 import torch
@@ -14,6 +13,9 @@ class CoquiClient:
     """
 
     def __init__(self, config: dict):
+
+        self._configure_espeak_backend()
+        self._tts_cls = None
 
         self.language_models = config.get("language_models", {
             "en": "tts_models/en/vctk/vits",
@@ -46,6 +48,47 @@ class CoquiClient:
         self.speakers_map = {}
 
         print("[Coqui] Client initialized (lazy model loading).")
+
+    def _get_tts_class(self):
+        """Import TTS class lazily after environment setup is complete."""
+        if self._tts_cls is None:
+            from TTS.api import TTS  # local import on purpose
+            self._tts_cls = TTS
+        return self._tts_cls
+
+    def _configure_espeak_backend(self) -> None:
+        """Ensure phonemizer can find eSpeak backend on Windows.
+
+        Coqui's VITS models rely on phonemizer + eSpeak. On Windows, the
+        installer often places DLLs outside PATH, which makes runtime fail with
+        "No espeak backend found". We proactively wire known install locations.
+        """
+        if os.name != "nt":
+            return
+
+        existing = os.getenv("PHONEMIZER_ESPEAK_LIBRARY")
+        if existing and os.path.exists(existing):
+            return
+
+        candidates = [
+            r"C:\Program Files\eSpeak NG\libespeak-ng.dll",
+            r"C:\Program Files (x86)\eSpeak NG\libespeak-ng.dll",
+            r"C:\Program Files\eSpeak\libespeak-ng.dll",
+            r"C:\Program Files (x86)\eSpeak\libespeak-ng.dll",
+        ]
+
+        for dll_path in candidates:
+            if not os.path.exists(dll_path):
+                continue
+
+            os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = dll_path
+            bin_dir = os.path.dirname(dll_path)
+            current_path = os.environ.get("PATH", "")
+            if bin_dir not in current_path:
+                os.environ["PATH"] = f"{bin_dir}{os.pathsep}{current_path}" if current_path else bin_dir
+
+            print(f"[Coqui] Using eSpeak backend: {dll_path}")
+            return
 
     # -----------------------------
     # Utilities
@@ -83,7 +126,8 @@ class CoquiClient:
         model_name = self.language_models[language]
         print(f"[Coqui] Loading model for '{language}': {model_name}")
 
-        tts = TTS(model_name=model_name, gpu=self.use_gpu)
+        tts_cls = self._get_tts_class()
+        tts = tts_cls(model_name=model_name, gpu=self.use_gpu)
 
         self.loaded_models[language] = tts
 

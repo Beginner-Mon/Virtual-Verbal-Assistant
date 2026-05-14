@@ -32,13 +32,19 @@ from utils.logger import get_logger
 from utils.ollama_client import OllamaClient
 from utils.cache_service import CacheService, normalize_query
 from prompts.orchestrator_prompts import ORCHESTRATOR_PROMPT
+from agents.intents import (
+    LOCAL_AGENT_NAMES,
+    LOCAL_VALID_INTENT_STRINGS,
+    is_known_local_agent,
+    is_known_local_intent,
+)
 
 
 logger = get_logger(__name__)
 
 
 class LocalOrchestrator:
-    """Local Qwen2.5-3B orchestrator for agent routing."""
+    """Can be changed to Qwen2.5-3B orchestrator for agent routing."""
     
     def __init__(self, model_name: str = "qwen:0.5b"):
         """Initialize local orchestrator.
@@ -141,6 +147,22 @@ class LocalOrchestrator:
                     "needs_web_search": False,
                     "confidence": 0.95,
                     "path": "regex_pre_router",
+                }
+
+            # 1d. Clear context / reset memory patterns
+            if re.match(
+                r"^(forget everything|clear (my )?(history|memory|context)|"
+                r"start over|reset|new conversation|"
+                r"quên hết|xóa (lịch sử|bộ nhớ)|bắt đầu lại|làm mới)\b",
+                clean_q,
+            ):
+                logger.info("[LocalOrchestrator] ⚡ Pre-Router → clear_context: '%s'", clean_q)
+                return {
+                    "intent": "clear_context",
+                    "confidence": 0.95,
+                    "needs_memory": False,
+                    "needs_retrieval": False,
+                    "path": "regex_pre_router"
                 }
 
             # ── 2. Check Cache (per-user)
@@ -279,27 +301,21 @@ class LocalOrchestrator:
                 )
                 return self._get_fallback_response()
             
-            # Validate intent
-            valid_intents = [
-                "ask_exercise_info", "visualize_motion", "greeting", 
-                "followup_question", "resume_conversation", "general_fitness_question",
-                "exercise_recommendation", "conversation", "knowledge_query", "unknown"
-            ]
-            
-            if parsed["intent"] not in valid_intents:
+            # Validate intent against the canonical local-router vocabulary
+            # (see agents.intents.LOCAL_VALID_INTENT_STRINGS).
+            if not is_known_local_intent(parsed["intent"]):
                 logger.warning(
                     f"[LocalOrchestrator._parse_response] ✗ Invalid intent '{parsed['intent']}' "
-                    f"— valid: {valid_intents}"
+                    f"— valid: {sorted(LOCAL_VALID_INTENT_STRINGS)}"
                 )
                 return self._get_fallback_response()
-            
-            # Validate agents list
-            valid_agents = ["retrieval_agent", "motion_agent", "web_search_agent", "memory_agent"]
+
+            # Validate agents list against the canonical agent vocabulary.
             for agent in parsed["agents"]:
-                if agent not in valid_agents:
+                if not is_known_local_agent(agent):
                     logger.warning(
                         f"[LocalOrchestrator._parse_response] ✗ Invalid agent '{agent}' "
-                        f"— valid: {valid_agents}"
+                        f"— valid: {sorted(LOCAL_AGENT_NAMES)}"
                     )
                     return self._get_fallback_response()
             

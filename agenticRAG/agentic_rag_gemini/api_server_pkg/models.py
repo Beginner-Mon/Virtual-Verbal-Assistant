@@ -84,10 +84,18 @@ class MotionJobStatus(BaseModel):
     status: str = Field(..., description="queued | processing | completed | failed")
     motion_file_url: Optional[str] = Field(None, description="Absolute GLB URL when completed")
     video_url: Optional[str] = Field(None, description="Rendered video or artifact URL when completed")
+    frames: Optional[int] = Field(None, description="Frame count from completed motion job")
+    fps: Optional[int] = Field(None, description="Frames-per-second from completed motion job")
+    duration_seconds: Optional[float] = Field(None, description="Duration reported by completed motion job")
     error: Optional[str] = Field(None, description="Error details for failed jobs")
     stage: Optional[str] = Field(None, description="Current worker stage for queue processing")
     timings_ms: Optional[Dict[str, float]] = Field(None, description="Worker and queue timing buckets in ms")
     timeline_id: Optional[str] = Field(None, description="Timeline correlation identifier")
+    selected_strategy: Optional[str] = Field(None, description="Strategy selected by motion worker")
+    selected_candidate: Optional[Dict[str, Any]] = Field(None, description="Top candidate details selected by worker")
+    enqueue_epoch_ms: Optional[int] = Field(None, description="Queue enqueue timestamp (epoch ms)")
+    worker_started_epoch_ms: Optional[int] = Field(None, description="Worker start timestamp (epoch ms)")
+    worker_finished_epoch_ms: Optional[int] = Field(None, description="Worker finish timestamp (epoch ms)")
 
 
 class QueryResponse(BaseModel):

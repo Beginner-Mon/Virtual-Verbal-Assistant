@@ -20,8 +20,7 @@ Tools (injected via __init__):
 
 import json
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from enum import Enum
+from concurrent.futures import as_completed
 from typing import Dict, List, Optional, Any
 
 from config import get_config
@@ -33,6 +32,17 @@ from agents.tools.document_retrieval_tool import DocumentRetrievalTool
 from agents.tools.web_search_tool import WebSearchTool
 from agents.tools.motion_candidate_retriever import MotionCandidateRetriever
 from agents.query_transform import QueryTransformer
+from agents.intents import (
+    ACTION_DEFAULT_TOOLS,
+    INTENT_SKIP_CONTENT_TOOLS,
+    ActionType,
+    IntentType,
+    parse_action,
+    parse_intent,
+)
+from agents.double_rag import DoubleRAGAgent
+from core.tracing import AgentTrace, TraceStage
+from core.resource_guard import shared_tool_executor
 
 
 logger = get_logger(__name__)
@@ -60,36 +70,9 @@ def clean_json_response(response_text: str) -> str:
     return response_text
 
 
-class ActionType(Enum):
-    """Types of actions the orchestrator can take."""
-    RETRIEVE_MEMORY = "retrieve_memory"
-    CALL_LLM = "call_llm"
-    GENERATE_MOTION = "generate_motion"
-    HYBRID = "hybrid"
-    CLARIFY = "clarify"
-
-
-class IntentType(Enum):
-    """High-level user intent classification.
-
-    Values
-    ------
-    CONVERSATION
-        General chat or follow-up (e.g. "Thanks!", "Tell me more").
-    KNOWLEDGE_QUERY
-        User asks for an explanation or factual answer
-        (e.g. "What muscles does chin tuck work?").
-    EXERCISE_RECOMMENDATION
-        User asks for a list or set of exercises
-        (e.g. "Give me some stretches for neck pain").
-    VISUALIZE_MOTION
-        User wants to see a specific exercise animated
-        (e.g. "Visualize chin tuck", "Show me how to do a squat").
-    """
-    CONVERSATION           = "conversation"
-    KNOWLEDGE_QUERY        = "knowledge_query"
-    EXERCISE_RECOMMENDATION = "exercise_recommendation"
-    VISUALIZE_MOTION       = "visualize_motion"
+# IntentType / ActionType are imported from agents.intents (single source of truth).
+# They are re-exported here for backward compatibility with callers and tests that
+# do ``from agents.api_orchestrator import IntentType, ActionType``.
 
 
 # System prompt for the UNIFIED intent + analysis call (replaces two separate LLM calls).
@@ -140,26 +123,18 @@ Respond with valid JSON only, no extra text:
 {"intent": "<intent_value>"}"""
 
 
-# Maps each ActionType to the set of tool names that should be invoked.
-# NOTE: tool selection is also gated by intent via _select_tools().
+# Action → tool list and intent skip-set come from agents.intents (single source of truth).
 _ACTION_TOOL_MAP: Dict[ActionType, List[str]] = {
-    ActionType.RETRIEVE_MEMORY: ["memory"],
-    ActionType.CALL_LLM:        ["memory", "documents", "web_search"],
-    ActionType.GENERATE_MOTION: [],
-    ActionType.HYBRID:          ["memory", "documents", "web_search"],
-    ActionType.CLARIFY:         [],
+    action: list(tools) for action, tools in ACTION_DEFAULT_TOOLS.items()
 }
 
 # CONVERSATION skips heavy documents/web but still needs memory
 # for cross-session context (e.g. "Remember yesterday?").
 _INTENT_SKIP_ALL_TOOLS: set = set()
 
-# VISUALIZE_MOTION and CONVERSATION skip doc/web retrieval but still benefit 
+# VISUALIZE_MOTION and CONVERSATION skip doc/web retrieval but still benefit
 # from memory context (user history, preferences).
-_INTENT_SKIP_CONTENT_TOOLS: set = {
-    IntentType.VISUALIZE_MOTION,
-    IntentType.CONVERSATION,
-}
+_INTENT_SKIP_CONTENT_TOOLS: set = set(INTENT_SKIP_CONTENT_TOOLS)
 
 
 class OrchestratorDecision:
@@ -203,6 +178,7 @@ class OrchestratorAgent:
         web_search_tool: Optional[WebSearchTool] = None,
         config=None,
         client=None,
+        double_rag: Optional[DoubleRAGAgent] = None,
     ):
         """Initialize the orchestrator agent.
 
@@ -212,6 +188,9 @@ class OrchestratorAgent:
             web_search_tool:  WebSearchTool wrapping WebSearchService.
             config:           Configuration object. Loads default if None.
             client:           Shared GeminiClientWrapper. Creates new if None.
+            double_rag:       Optional pre-built DoubleRAGAgent. If None and a
+                              ``document_tool`` is provided, a default agent is
+                              constructed lazily from the document tool.
         """
         self.config = config or get_config().orchestrator
         self.client = client or GeminiClientWrapper()
@@ -220,15 +199,74 @@ class OrchestratorAgent:
         self._memory_tool = memory_tool
         self._document_tool = document_tool
         self._web_search_tool = web_search_tool
-        self._motion_retriever = MotionCandidateRetriever()
         self._query_transformer = QueryTransformer(use_cache=True)
+
+        # Double-RAG agent: lazily wired when a document tool is available so the
+        # orchestrator only needs to call self._double_rag.run(...).
+        self._double_rag: Optional[DoubleRAGAgent] = double_rag
+        if self._double_rag is None and document_tool is not None:
+            self._double_rag = DoubleRAGAgent(
+                document_tool=document_tool,
+                motion_retriever=MotionCandidateRetriever(),
+                client=self.client,
+            )
 
         logger.info(
             f"Initialized OrchestratorAgent | model={self.config.model} | "
             f"tools=[memory={'✓' if memory_tool else '✗'}, "
             f"docs={'✓' if document_tool else '✗'}, "
-            f"web={'✓' if web_search_tool else '✗'}]"
+            f"web={'✓' if web_search_tool else '✗'}, "
+            f"double_rag={'✓' if self._double_rag else '✗'}]"
         )
+
+    @staticmethod
+    def _query_needs_personal_memory(query: str) -> bool:
+        """Detect whether memory retrieval is needed for personal-context advice."""
+        q = (query or "").strip().lower()
+        if not q:
+            return False
+
+        personal_markers = (
+            "my ", "for me", "for my", "my history", "my record", "my context",
+            "my condition", "my injury", "my pain", "remember", "last time",
+            "previously", "based on my", "given my", "tôi", "của tôi", "lần trước", "nhớ",
+        )
+        if any(marker in q for marker in personal_markers):
+            return True
+
+        return bool(
+            re.search(r"\b(i have|i had|i feel|my|i'm|i am)\b", q)
+            and re.search(r"\b(pain|injury|exercise|workout|rehab|stretch|mobility|posture)\b", q)
+        )
+
+    def _compute_intent_gates(
+        self,
+        intent: IntentType,
+        query: str,
+        requested_actions: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, bool]:
+        """Compute canonical tool/action gates based on intent and query."""
+        requested_actions = requested_actions or {}
+
+        use_documents = intent in {IntentType.KNOWLEDGE_QUERY, IntentType.EXERCISE_RECOMMENDATION}
+        use_memory = (
+            intent in {
+                IntentType.CONVERSATION,
+                IntentType.KNOWLEDGE_QUERY,
+                IntentType.EXERCISE_RECOMMENDATION,
+            }
+            and self._query_needs_personal_memory(query)
+        )
+        generate_motion = intent == IntentType.VISUALIZE_MOTION
+        use_web_search = bool(requested_actions.get("use_web_search", False)) and use_documents
+
+        return {
+            "use_memory": use_memory,
+            "use_documents": use_documents,
+            "use_web_search": use_web_search,
+            "generate_motion": generate_motion,
+            "needs_rag": use_documents,
+        }
 
     # ──────────────────────────────────────────────────────────────────────
     # Intent classification
@@ -285,21 +323,8 @@ class OrchestratorAgent:
             raw  = response.choices[0].message.content
             data = json.loads(clean_json_response(raw))
 
-            intent_str = data.get("intent", "knowledge_query")
-            try:
-                intent = IntentType(intent_str)
-            except ValueError:
-                intent = IntentType.KNOWLEDGE_QUERY
-
-            action_str = data.get("action", "call_llm")
-            action_map = {
-                "call_llm":        ActionType.CALL_LLM,
-                "generate_motion": ActionType.GENERATE_MOTION,
-                "hybrid":          ActionType.HYBRID,
-                "clarify":         ActionType.CLARIFY,
-                "retrieve_memory": ActionType.RETRIEVE_MEMORY,
-            }
-            action = action_map.get(action_str, ActionType.CALL_LLM)
+            intent = parse_intent(data.get("intent"), default=IntentType.KNOWLEDGE_QUERY)
+            action = parse_action(data.get("action"), default=ActionType.CALL_LLM)
 
             result = {
                 "intent":          intent,
@@ -422,108 +447,141 @@ class OrchestratorAgent:
         user_id: str,
         conversation_history: Optional[List[Dict[str, str]]] = None,
         user_context: Optional[Dict[str, Any]] = None,
+        trace: Optional[AgentTrace] = None,
     ) -> Dict[str, Any]:
-        """Main entry point: single unified LLM call → parallel tool execution → action plan.
+        """Single LLM-call routing → Double-RAG → parallel tool exec → action plan.
 
-        New pipeline (2 LLM calls max, down from 7):
-        1. classify_intent_and_analyze()  — single LLM call (was 2)
-        2. _run_tools() concurrently      — I/O only, no LLM
-        3. RAGPipeline (caller)           — 1 LLM call for answer generation
-        Optional voice_prompt             — no LLM (keyword matching)
+        Pipeline (≤ 2 LLM calls inside this method):
+            1. classify_intent_and_analyze (1 LLM call)
+            2. Query transform (HyDE) — local, no LLM
+            3. DoubleRAGAgent.run (0–1 LLM call for constraint extraction)
+            4. _run_tools concurrently — I/O only, no LLM
 
         Args:
             query:                User query text.
             user_id:              Unique user identifier.
             conversation_history: Previous conversation turns.
-            user_context:         Extra user context dict.
+            user_context:         Extra user context dict (currently unused).
+            trace:                Optional ``AgentTrace`` for telemetry.
 
         Returns:
-            Dict with keys:
-              user_id, query, intent, decision, actions, parameters,
-              expanded_query, needs_rag, tool_results
+            Action-plan dict consumed by ``api_server_pkg.app``. Keys:
+            ``user_id, query, intent, action, actions, parameters,
+            expanded_query, hyde_document, double_rag_meta, needs_rag,
+            exercise_name, tool_results``.
         """
-        # ── Step 1: Single unified LLM call ─────────────────────────────────
-        analysis = self.classify_intent_and_analyze(query, conversation_history)
-        intent   = analysis["intent"]
-        action   = analysis["action"]
+        # ── Step 1: Single unified LLM call ────────────────────────────────
+        with TraceStage(trace, "orchestrator.classify_and_analyze"):
+            analysis = self.classify_intent_and_analyze(query, conversation_history)
+        if trace is not None:
+            trace.increment_llm_calls(1)
+            trace.add_decision(
+                "orchestrator.classify_and_analyze",
+                intent=analysis["intent"].value,
+                action=analysis["action"].value,
+                confidence=analysis["confidence"],
+                needs_rag=analysis["needs_rag"],
+            )
 
-        # ── Step 1.5: Query Transformation (Double-RAG Engine) ──────────────
+        intent = analysis["intent"]
+        action = analysis["action"]
+
+        gates = self._compute_intent_gates(
+            intent=intent,
+            query=query,
+            requested_actions={
+                "use_web_search": bool(analysis.get("needs_rag", True)),
+            },
+        )
+        analysis["needs_rag"] = gates["needs_rag"]
+        analysis["generate_motion"] = gates["generate_motion"]
+
+        if action in (ActionType.GENERATE_MOTION, ActionType.HYBRID) and not gates["generate_motion"]:
+            action = ActionType.CALL_LLM
+
+        # ── Step 1.5: Query Transformation (HyDE) ──────────────────────────
         expanded_query = analysis["expanded_query"]
         hyde_document = query
         if analysis["needs_rag"] or action == ActionType.GENERATE_MOTION:
-            transform_res = self._query_transformer.transform_query(query)
+            with TraceStage(trace, "orchestrator.query_transform"):
+                transform_res = self._query_transformer.transform_query(query)
             expanded_query = transform_res.get("expanded_query", query)
-            hyde_document  = transform_res.get("hyde_document", query)
+            hyde_document = transform_res.get("hyde_document", query)
 
-        # ── Step 2: Multi-Stage Orchestration (Double-RAG) ───────────────────
-        # If we need clinical knowledge and motion execution, execute Double-RAG
-        double_rag_results = {}
-        if self._document_tool and (action == ActionType.GENERATE_MOTION or analysis["needs_rag"]):
-            # 1. Clinical Dispatch
-            clinical_docs = self._document_tool.search_documents(expanded_query)
-            
-            # 2. Constraint Extraction
-            constraints = self._extract_constraints(clinical_docs)
-            logger.info(f"Extracted Constraints: {constraints}")
-            
-            # 3. Conditioned Motion Search
-            conditioned_query = f"{hyde_document} Constraints: {constraints}"
-            motion_candidates = self._motion_retriever.retrieve_top_k(conditioned_query, k=1)
-            
-            if motion_candidates:
-                hyde_document = motion_candidates[0].text_description
-            
-            double_rag_results = {
-                "clinical_docs": clinical_docs,
-                "constraints": constraints,
-                "motion_candidates": motion_candidates
-            }
+        # ── Step 2: Double-RAG (clinical → constraints → motion match) ────
+        double_rag_constraints = ""
+        clinical_docs: List[Dict[str, Any]] = []
+        if self._double_rag is not None and (
+            action == ActionType.GENERATE_MOTION or analysis["needs_rag"]
+        ):
+            with TraceStage(trace, "orchestrator.double_rag"):
+                dr_result = self._double_rag.run(
+                    expanded_query=expanded_query,
+                    hyde_document=hyde_document,
+                    user_id=user_id,
+                    trace=trace,
+                )
+            clinical_docs = dr_result.clinical_docs
+            double_rag_constraints = dr_result.constraints
+            if dr_result.refined_hyde_document:
+                hyde_document = dr_result.refined_hyde_document
 
-        # ── Step 3: Select and run remaining tools concurrently ──────────────
+        # ── Step 3: Select and run remaining tools concurrently ───────────
         decision = OrchestratorDecision(
             action=action,
             confidence=analysis["confidence"],
             reasoning=analysis["reasoning"],
             parameters={
-                "use_memory":      True,        # always try memory
-                "use_documents":   analysis["needs_rag"],
-                "generate_motion": analysis["generate_motion"],
+                "use_memory":      gates["use_memory"],
+                "use_documents":   gates["use_documents"],
+                "use_web_search":  gates["use_web_search"],
+                "generate_motion": gates["generate_motion"],
                 "motion_type":     analysis["motion_type"],
             },
         )
         selected_tools = self._select_tools(decision, intent)
-        # We drop document_tool from concurrent tool run if we already did Double-RAG
-        if "documents" in selected_tools and double_rag_results:
+        # Drop document_tool from concurrent run if Double-RAG already retrieved.
+        if "documents" in selected_tools and clinical_docs:
             selected_tools.remove("documents")
-            
-        tool_results = self._run_tools(selected_tools, expanded_query, user_id)
-        
-        # Merge clinical documents back into tool_results for RAG pipeline
-        if double_rag_results.get("clinical_docs"):
-            tool_results["documents"] = double_rag_results["clinical_docs"]
 
-        # ── Step 4: Assemble action plan ─────────────────────────────────────
+        with TraceStage(trace, "orchestrator.run_tools"):
+            tool_results = self._run_tools(selected_tools, expanded_query, user_id)
+        if trace is not None:
+            for _name in tool_results.keys():
+                trace.add_decision("orchestrator.tool_used", tool=_name)
+
+        # Merge clinical documents back into tool_results for the RAG pipeline.
+        if clinical_docs:
+            tool_results["documents"] = clinical_docs
+
+        # ── Step 4: Assemble action plan ──────────────────────────────────
         action_plan = {
             "user_id":         user_id,
             "query":           query,
             "intent":          intent.value if hasattr(intent, "value") else str(intent),
             "action":          action.value if hasattr(action, "value") else str(action),
-            "decision":        decision.to_dict() if hasattr(decision, 'to_dict') else {},
+            "decision":        decision.to_dict() if hasattr(decision, "to_dict") else {},
             "actions": {
                 "retrieve_memory": "memory" in selected_tools,
                 "call_llm":        action in (ActionType.CALL_LLM, ActionType.HYBRID, ActionType.RETRIEVE_MEMORY),
-                "generate_motion": analysis.get("generate_motion", False) or intent == IntentType.VISUALIZE_MOTION,
+                "generate_motion": gates["generate_motion"],
+                "use_memory":     "memory" in selected_tools,
+                "use_documents":  gates["use_documents"],
+                "use_web_search": "web_search" in selected_tools,
             },
             "parameters":      getattr(decision, "parameters", {}),
             "expanded_query":  expanded_query,
-            "hyde_document":   hyde_document,  # Expose to api_server for DART mapping
+            "hyde_document":   hyde_document,
             "double_rag_meta": {
-                "constraints": double_rag_results.get("constraints", "")
+                "constraints": double_rag_constraints,
             },
-            "needs_rag":       analysis.get("needs_rag", True),
+            "needs_rag":       gates["needs_rag"],
             "exercise_name":   analysis.get("exercise_name"),
             "tool_results":    tool_results,
         }
+
+        if trace is not None:
+            trace.finish(intent=action_plan["intent"], action=action_plan["action"])
 
         logger.info(
             f"Action plan ready | intent={intent.value} | "
@@ -531,37 +589,6 @@ class OrchestratorAgent:
             f"tools_run={list(tool_results.keys())}"
         )
         return action_plan
-
-    def _extract_constraints(self, clinical_docs: List[Dict[str, Any]]) -> str:
-        """Extract safety constraints and targeted muscles from clinical documents."""
-        if not clinical_docs:
-            return "No specific constraints."
-            
-        clincal_text = "\\n".join([doc.get("document", "") for doc in clinical_docs[:3]])
-        
-        prompt = f'''You are a clinical expert. Extract the key physical constraints, safety warnings, and targeted muscles from the provided clinical text.
-Ensure the output is extremely brief, no more than 2 sentences. Focus ONLY on biomechanical rules and limitations.
-
-Clinical Text:
-{clincal_text}'''
-
-        try:
-            response = self.client.chat.completions.create(
-                model=self.config.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_tokens=150
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            logger.error(f"Failed to extract constraints: {e}")
-            return "General safe range of motion."
-
-
-
-    # ──────────────────────────────────────────────────────────────────────
-    # Tool selection
-    # ──────────────────────────────────────────────────────────────────────
 
     def _select_tools(
         self,
@@ -594,6 +621,14 @@ Clinical Text:
         elif intent in _INTENT_SKIP_CONTENT_TOOLS:
             # visualize_motion: skip doc/web search but keep memory context.
             candidates = [t for t in candidates if t == "memory"]
+
+        params = decision.parameters or {}
+        if not bool(params.get("use_memory", False)):
+            candidates = [t for t in candidates if t != "memory"]
+        if not bool(params.get("use_documents", True)):
+            candidates = [t for t in candidates if t != "documents"]
+        if not bool(params.get("use_web_search", False)):
+            candidates = [t for t in candidates if t != "web_search"]
 
         available = {
             "memory":     self._memory_tool is not None,
@@ -636,39 +671,39 @@ Clinical Text:
         if not selected_tools:
             return {}
 
-        # Build future → tool-name mapping
+        # Use the process-wide bounded executor instead of spawning one per request.
+        executor = shared_tool_executor()
         futures: Dict = {}
-        with ThreadPoolExecutor(max_workers=len(selected_tools)) as executor:
-            if "memory" in selected_tools:
-                futures[executor.submit(
-                    self._memory_tool.retrieve_memory,
-                    user_id=user_id,
-                    query=query,
-                )] = "memory"
 
-            if "documents" in selected_tools:
-                futures[executor.submit(
-                    self._document_tool.search_documents,
-                    query=query,
-                    user_id=user_id,
-                )] = "documents"
+        if "memory" in selected_tools and self._memory_tool is not None:
+            futures[executor.submit(
+                self._memory_tool.retrieve_memory,
+                user_id=user_id,
+                query=query,
+            )] = "memory"
 
-            if "web_search" in selected_tools:
-                futures[executor.submit(
-                    self._web_search_tool.search_web,
-                    query=query,
-                )] = "web_search"
+        if "documents" in selected_tools and self._document_tool is not None:
+            futures[executor.submit(
+                self._document_tool.search_documents,
+                query=query,
+                user_id=user_id,
+            )] = "documents"
 
-            # Collect results as they complete
-            results: Dict[str, Any] = {}
-            for future in as_completed(futures):
-                tool_name = futures[future]
-                try:
-                    results[tool_name] = future.result()
-                    logger.debug(f"Tool '{tool_name}' completed successfully")
-                except Exception as exc:
-                    logger.error(f"Tool '{tool_name}' failed: {exc}")
-                    # Exclude failed tool from results (don't propagate exception)
+        if "web_search" in selected_tools and self._web_search_tool is not None:
+            futures[executor.submit(
+                self._web_search_tool.search_web,
+                query=query,
+            )] = "web_search"
+
+        results: Dict[str, Any] = {}
+        for future in as_completed(futures):
+            tool_name = futures[future]
+            try:
+                results[tool_name] = future.result()
+                logger.debug(f"Tool '{tool_name}' completed successfully")
+            except Exception as exc:
+                logger.error(f"Tool '{tool_name}' failed: {exc}")
+                # Exclude failed tool from results (don't propagate exception)
 
         return results
 
@@ -726,17 +761,7 @@ Clinical Text:
         return "\n".join(prompt_parts)
 
     def _parse_decision(self, decision_data: Dict[str, Any]) -> OrchestratorDecision:
-        action_map = {
-            "retrieve_memory": ActionType.RETRIEVE_MEMORY,
-            "call_llm":        ActionType.CALL_LLM,
-            "generate_motion": ActionType.GENERATE_MOTION,
-            "hybrid":          ActionType.HYBRID,
-            "clarify":         ActionType.CLARIFY,
-        }
-        action = action_map.get(
-            decision_data.get("action", "call_llm"),
-            ActionType.CALL_LLM,
-        )
+        action = parse_action(decision_data.get("action"), default=ActionType.CALL_LLM)
         return OrchestratorDecision(
             action=action,
             confidence=float(decision_data.get("confidence", 0.7)),

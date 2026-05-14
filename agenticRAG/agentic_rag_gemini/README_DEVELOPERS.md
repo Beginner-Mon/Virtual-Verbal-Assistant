@@ -1084,6 +1084,70 @@ python -c "from utils.web_search import WebSearchService; s = WebSearchService()
 
 ---
 
+## Architectural Refactoring (2026-05)
+
+In May 2026, the system underwent a significant refactoring to improve modularity, observability, and resilience. The following changes were introduced:
+
+### New Modules
+
+| Module | Purpose |
+|--------|---------|
+| `agents/intents.py` | Single source of truth for `IntentType` and `ActionType` enums with parsers and local intent/agent vocabularies |
+| `agents/tools/base.py` | Abstract `Tool` interface with `ToolContext` and `ToolResult` dataclasses for uniform tool execution |
+| `agents/tools/registry.py` | `ToolRegistry` with adapters for legacy tools (MemoryTool, DocumentRetrievalTool, WebSearchTool) |
+| `agents/double_rag.py` | `DoubleRAGAgent` encapsulating multi-stage RAG: clinical dispatch → constraint extraction → conditioned motion search |
+| `core/tracing.py` | Lightweight per-request `AgentTrace` with decision recording, timing, and serialization |
+| `core/resource_guard.py` | Process-wide resource guards: shared `ThreadPoolExecutor` and singleton embedder cache |
+| `memory/vector_backend.py` | Unified vector store backend abstraction for ChromaDB and Pinecone with hybrid router |
+| `core/circuit_breaker.py` | Thread-safe in-memory `CircuitBreaker` with closed/open/half_open states for downstream service protection |
+
+### Orchestrator Updates
+
+**`agents/api_orchestrator.py`**:
+- Now imports canonical intents/actions from `agents.intents`
+- Delegates Double-RAG logic to `agents.double_rag.DoubleRAGAgent`
+- Uses shared executor from `core.resource_guard` for concurrent tool execution
+- Supports optional `AgentTrace` parameter for per-request telemetry
+- Removed inline `_extract_constraints` method (moved to DoubleRAGAgent)
+
+**`agents/local_orchestrator.py`**:
+- Replaced hardcoded intent/agent validation with imports from `agents.intents`
+- Uses `is_known_local_intent()` and `is_known_local_agent()` for validation
+
+**`orchestration/pipeline_orchestrator.py`**:
+- Added `CircuitBreaker` for DART and SpeechLLM downstream services
+- Removed deadlock-prone `process_query_sync()` method
+- Updated DART call to accept both new (`str`) and legacy (`dict`) motion prompt contracts
+- Wrapped downstream calls with circuit breaker logic to prevent cascading failures
+
+### Request ID Propagation
+
+**`api_server_pkg/app.py`**:
+- Added `request_id` and `agent_trace` parameters to `api_instance.process_query()`
+- `/query` endpoint now reads `X-Request-ID` header (or generates one) and echoes it in response
+- `AgentTrace` is propagated through `_get_orchestrator_decision()` to API orchestrator
+- When `AGENTIC_TRACE=1` env var is set, JSON responses include `agent_trace` field with per-stage timings and decisions
+- Background task flow (`_run_query_task`) also propagates request ID for log correlation
+
+### Architectural Benefits
+
+- **Single Source of Truth**: Intent/action vocabulary centralized in `agents.intents.py`
+- **Modularity**: Double-RAG logic extracted into dedicated agent; tool execution abstracted via registry
+- **Observability**: Per-request tracing enables detailed inspection of agent decisions and timings
+- **Resilience**: Circuit breakers prevent cascading failures from flaky downstream services
+- **Resource Management**: Shared thread pools and embedder caching prevent resource exhaustion
+- **Correlation**: Request ID propagation enables end-to-end tracing across service boundaries
+
+### Environment Variables
+
+| Variable | Purpose |
+|----------|---------|
+| `AGENTIC_TRACE=1` | Enable inclusion of `agent_trace` field in API responses |
+| `SHARED_TOOL_EXECUTOR_MAX_WORKERS` | Max concurrent tool execution threads (default: 16) |
+| `SHARED_EMBEDDER_CACHE_MAX_SIZE` | Max embedder instances in cache (default: 4) |
+
+---
+
 ## Resolved Issues & Fixes
 
 ### ✅ Orchestrator Latency Fix

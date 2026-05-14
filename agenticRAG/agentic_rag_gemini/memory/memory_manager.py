@@ -11,6 +11,7 @@ import json
 from memory.vector_store import VectorStore
 from memory.embedding_service import EmbeddingService
 from utils.document_loader import DocumentLoader
+from utils.entity_tags import encode_entity_tags, extract_entity_tags
 from config import get_config
 from utils.logger import get_logger
 
@@ -73,12 +74,14 @@ class MemoryManager:
         embedding = self.embedding_service.embed_texts(interaction_text)
         
         # Prepare metadata
+        interaction_tags = extract_entity_tags(f"{user_message} {assistant_response}")
         interaction_metadata = {
             "user_id": user_id,
             "type": "interaction",
             "timestamp": datetime.now().isoformat(),
             "user_message": user_message,
-            "assistant_response": assistant_response
+            "assistant_response": assistant_response,
+            "entity_tags": encode_entity_tags(interaction_tags),
         }
         
         if metadata:
@@ -127,10 +130,12 @@ class MemoryManager:
         embedding = self.embedding_service.embed_texts(content)
         
         # Prepare metadata
+        context_tags = extract_entity_tags(content)
         context_metadata = {
             "user_id": user_id,
             "type": context_type,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "entity_tags": encode_entity_tags(context_tags),
         }
         
         if metadata:
@@ -346,6 +351,26 @@ class MemoryManager:
         """
         self.conversation_counts = {}
         logger.info("Cleared all in-memory state from MemoryManager")
+
+    def clear_user_memory(self, user_id: str) -> bool:
+        """Clear all persistent and in-memory data for a specific user.
+        
+        Args:
+            user_id: User identifier
+            
+        Returns:
+            Success status
+        """
+        logger.info(f"Clearing memory for user: {user_id}")
+        
+        # 1. Clear persistent vector data
+        persistent_cleared = self.vector_store.delete_user_data(user_id)
+        
+        # 2. Reset in-memory tracking
+        if user_id in self.conversation_counts:
+            self.conversation_counts[user_id] = 0
+            
+        return persistent_cleared
 
     def load_documents_from_file(
         self,

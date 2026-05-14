@@ -112,6 +112,20 @@ async function initializeServiceEndpoints() {
     }
 }
 
+async function checkDartHealthViaOrchestrator() {
+    // Orchestrator health is same-origin-ish for local dev and can reach DART
+    // even when direct browser -> WSL DART fetch is blocked.
+    const response = await fetch(SERVICES.orchestrator.healthUrl, { cache: 'no-store' });
+    if (!response.ok) {
+        throw new Error(`Orchestrator health HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    const dartStatus = String(data?.services?.dart || '').toLowerCase();
+    const isOk = dartStatus === 'ok';
+    return { isOk, dartStatus, raw: data };
+}
+
 // ==============================
 // Health Checks
 // ==============================
@@ -141,6 +155,38 @@ async function checkHealth(serviceKey) {
             addLog('error', service.name, `Unexpected response: ${JSON.stringify(data)}`);
         }
     } catch (err) {
+        // Special fallback for DART in Windows+WSL setups:
+        // browser direct fetch can fail while orchestrator can still reach DART.
+        if (serviceKey === 'dart') {
+            try {
+                const start = performance.now();
+                const viaOrchestrator = await checkDartHealthViaOrchestrator();
+                const elapsed = Math.round(performance.now() - start);
+                if (viaOrchestrator.isOk) {
+                    dot.className = 'status-dot online';
+                    label.textContent = `✅ Healthy via Orchestrator (${elapsed}ms)`;
+                    addLog(
+                        'success',
+                        service.name,
+                        `Health check passed via orchestrator proxy in ${elapsed}ms (direct browser fetch failed: ${err.message})`
+                    );
+                    return;
+                }
+
+                dot.className = 'status-dot offline';
+                label.textContent = `⚠️ DART status via orchestrator: ${viaOrchestrator.dartStatus || 'unknown'}`;
+                addLog(
+                    'error',
+                    service.name,
+                    `Direct health failed (${err.message}); orchestrator reports DART=${viaOrchestrator.dartStatus || 'unknown'}`
+                );
+                return;
+            } catch (fallbackErr) {
+                // Continue to existing file:// fallback path below.
+                addLog('error', service.name, `DART fallback via orchestrator failed: ${fallbackErr.message}`);
+            }
+        }
+
         // When opened via file://, browsers often block cross-origin JSON reads.
         // Fallback to no-cors to detect basic reachability.
         const isFileProtocol = window.location.protocol === 'file:';
@@ -339,8 +385,14 @@ async function testPipeline() {
 
         showPipelineResult(container, data, elapsed, response.status);
 
+        const motionFramesRaw = Number(data.motion?.num_frames || data.motion?.frames || 0) || 0;
+        const motionFps = Math.max(1, Number(data.motion?.fps || 30) || 30);
+        const motionDuration = Number(data.motion?.duration_seconds || 0) || 0;
+        const motionFrames = motionFramesRaw > 0
+            ? motionFramesRaw
+            : (motionDuration > 0 ? Math.max(1, Math.round(motionDuration * motionFps)) : 0);
         const motionInfo = data.motion
-            ? ` | 🏃 Motion: ${data.motion.num_frames} frames (${data.motion.duration_seconds}s)`
+            ? ` | 🏃 Motion: ${motionFrames} frames (${motionDuration || '—'}s)`
             : ' | No motion';
         const errorsInfo = data.errors ? ` | ⚠️ Errors: ${Object.keys(data.errors).join(', ')}` : '';
         addLog('success', 'Pipeline', `Completed in ${elapsed}ms${motionInfo}${errorsInfo}`);
@@ -504,6 +556,12 @@ function showPipelineResult(container, data, elapsed, status) {
     const motion = data.motion;
     const errors = data.errors;
     const fileUrl = joinUrl(SERVICES.dart.baseUrl, motion?.motion_file_url);
+    const motionFps = Math.max(1, Number(motion?.fps || 30) || 30);
+    const motionDuration = Number(motion?.duration_seconds || 0) || 0;
+    const motionFramesRaw = Number(motion?.num_frames || motion?.frames || 0) || 0;
+    const motionFrames = motionFramesRaw > 0
+        ? motionFramesRaw
+        : (motionDuration > 0 ? Math.max(1, Math.round(motionDuration * motionFps)) : 0);
 
     const errBanner = errors
         ? `<div class="result-card-section result-error-banner">
@@ -516,8 +574,8 @@ function showPipelineResult(container, data, elapsed, status) {
         <div class="result-card-section">
             <div class="result-card-label">🏃 DART Motion (<code>${escapeHtml(motion.text_prompt || '')}</code>)</div>
             <div class="result-card-row" style="gap:12px;margin-top:4px">
-                <span class="chip">🎬 ${motion.num_frames} frames</span>
-                <span class="chip">⏱ ${motion.duration_seconds}s @ ${motion.fps}fps</span>
+                <span class="chip">🎬 ${motionFrames || '—'} frames</span>
+                <span class="chip">⏱ ${motionDuration || '—'}s @ ${motionFps}fps</span>
                 ${fileUrl ? `<a class="chip chip-link" href="${fileUrl}" target="_blank">📥 Download NPZ</a>` : ''}
             </div>
         </div>` : `

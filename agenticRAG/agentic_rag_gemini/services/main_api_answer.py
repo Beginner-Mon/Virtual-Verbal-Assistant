@@ -25,6 +25,38 @@ logger = get_logger(__name__)
 SETTINGS = get_main_api_settings()
 
 
+def _classify_query_sla_class(
+    selected_strategy: str,
+    rag_data: Optional[Dict[str, Any]],
+    motion_prompt: Optional[str],
+    motion: Optional[MotionMetadata],
+    motion_job: Optional[MotionJobStatus],
+) -> str:
+    strategy = str(selected_strategy or "").strip().lower()
+    metadata = (rag_data or {}).get("metadata") or {}
+    librarian = metadata.get("librarian") if isinstance(metadata, dict) else {}
+    librarian_direct_match = bool((librarian or {}).get("direct_match")) if isinstance(librarian, dict) else False
+
+    has_motion_signal = bool(motion_prompt or motion is not None or motion_job is not None)
+    is_visualize = strategy == "visualize_motion" or has_motion_signal
+
+    if not is_visualize:
+        return "common_qna"
+
+    if librarian_direct_match or (motion is not None and motion_job is None):
+        return "known_motion"
+
+    return "novel_motion"
+
+
+def _sla_threshold_ms(query_class: str) -> float:
+    if query_class == "known_motion":
+        return SETTINGS.sla_known_motion_ms
+    if query_class == "novel_motion":
+        return SETTINGS.sla_novel_motion_ms
+    return SETTINGS.sla_common_qna_ms
+
+
 async def get_answer_impl(request: AnswerRequest) -> AnswerResponse:
     """Main /answer orchestration logic."""
     t_start = time.perf_counter()
@@ -41,6 +73,17 @@ async def get_answer_impl(request: AnswerRequest) -> AnswerResponse:
             "agentic_rag_url": SETTINGS.agentic_rag_url,
             "dart_url": SETTINGS.dart_url,
             "tts_url": SETTINGS.tts_url,
+            "rollout_flags": {
+                "hybrid_retrieval": SETTINGS.rollout_hybrid_retrieval_enabled,
+                "motion_translator": SETTINGS.rollout_motion_translator_enabled,
+                "early_async_motion": SETTINGS.rollout_early_async_motion_enabled,
+                "dart_fast_draft": SETTINGS.rollout_dart_fast_draft_enabled,
+            },
+            "sla_targets_ms": {
+                "common_qna": SETTINGS.sla_common_qna_ms,
+                "known_motion": SETTINGS.sla_known_motion_ms,
+                "novel_motion": SETTINGS.sla_novel_motion_ms,
+            },
         },
         "timings_ms": {},
         "services": {
@@ -212,12 +255,23 @@ async def get_answer_impl(request: AnswerRequest) -> AnswerResponse:
         if rag_data:
             selected_strategy = rag_data.get("orchestrator_decision", {}).get("intent", "unknown")
 
+        query_sla_class = _classify_query_sla_class(
+            selected_strategy=selected_strategy,
+            rag_data=rag_data,
+            motion_prompt=motion_prompt,
+            motion=motion,
+            motion_job=motion_job,
+        )
+        query_sla_threshold_ms = _sla_threshold_ms(query_sla_class)
+
         pending_services: List[str] = []
         status = "completed"
         progress_stage = "completed"
         if rag_data and SETTINGS.async_enrichment:
             if motion is None and motion_job is not None:
-                # Early Warmup already handling it
+                # Early warmup already queued a motion job on AgenticRAG.
+                pending_services.append("dart")
+                progress_stage = "motion_generation"
                 debug_payload["services"]["dart"] = {
                     "status": "pending",
                     "mode": "async",
@@ -269,6 +323,7 @@ async def get_answer_impl(request: AnswerRequest) -> AnswerResponse:
                         "text_answer": text_answer,
                         "exercises": exercises,
                         "motion": motion,
+                        "motion_job": motion_job,
                         "tts": tts,
                         "errors": errors if errors else None,
                         "started_at": time.time(),
@@ -280,7 +335,7 @@ async def get_answer_impl(request: AnswerRequest) -> AnswerResponse:
                         request_id=request_id,
                         text_answer=text_answer,
                         user_id=request.user_id,
-                        motion_prompt=motion_prompt if motion is None else None,
+                        motion_prompt=motion_prompt if (motion is None and motion_job is None) else None,
                         motion_duration_seconds=motion_duration_seconds,
                         motion_format=request.motion_format,
                         rag_data=rag_data,
@@ -288,12 +343,20 @@ async def get_answer_impl(request: AnswerRequest) -> AnswerResponse:
                         downstream_timeout=SETTINGS.downstream_timeout,
                         dart_url=SETTINGS.dart_url,
                         tts_url=SETTINGS.tts_url,
-                        semantic_bridge_prompt=semantic_bridge_prompt if motion is None else None,
+                        semantic_bridge_prompt=semantic_bridge_prompt if (motion is None and motion_job is None) else None,
+                        agentic_rag_url=SETTINGS.agentic_rag_url,
+                        adopted_motion_job=motion_job.model_dump() if motion_job is not None else None,
                     )
                 )
 
     generation_time_ms = (time.perf_counter() - t_start) * 1000
     debug_payload["timings_ms"]["total"] = round(generation_time_ms, 1)
+    debug_payload["sla"] = {
+        "query_class": query_sla_class if rag_data else "common_qna",
+        "target_ms": query_sla_threshold_ms if rag_data else SETTINGS.sla_common_qna_ms,
+        "first_response_ms": round(generation_time_ms, 1),
+        "pass": bool(generation_time_ms <= (query_sla_threshold_ms if rag_data else SETTINGS.sla_common_qna_ms)),
+    }
     debug_payload["final_state"] = {
         "status": status if rag_data else "completed",
         "progress_stage": progress_stage if rag_data else "completed",
@@ -305,7 +368,9 @@ async def get_answer_impl(request: AnswerRequest) -> AnswerResponse:
         f"[{request.user_id}] Completed in {generation_time_ms:.0f}ms  "
         f"rag={'ok' if rag_data else 'ERROR'}  dart={'ok' if motion or motion_job else 'pending/none'}  "
         f"tts={'ok' if tts else ('pending' if SETTINGS.async_enrichment and rag_data else 'none/ERROR')} "
-        f"status={status if rag_data else 'completed'}"
+        f"status={status if rag_data else 'completed'} "
+        f"sla_class={debug_payload['sla']['query_class']} "
+        f"sla_pass={debug_payload['sla']['pass']}"
     )
 
     return AnswerResponse(
@@ -341,6 +406,7 @@ async def get_answer_status_impl(request_id: str) -> AnswerResponse:
         text_answer=job.get("text_answer", ""),
         exercises=job.get("exercises", []),
         motion=job.get("motion"),
+        motion_job=job.get("motion_job"),
         tts=job.get("tts"),
         generation_time_ms=round((time.time() - job.get("started_at", time.time())) * 1000, 1),
         errors=job.get("errors"),
