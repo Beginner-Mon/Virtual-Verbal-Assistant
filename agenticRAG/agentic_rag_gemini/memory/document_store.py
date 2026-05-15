@@ -8,6 +8,7 @@ from memory.vector_store import VectorStore
 from memory.embedding_service import EmbeddingService
 from utils.logger import get_logger
 from utils.document_loader import DocumentLoader
+from utils.entity_tags import encode_entity_tags, extract_entity_tags
 
 logger = get_logger(__name__)
 
@@ -89,6 +90,7 @@ class DocumentStore:
         embedding = self.embedding_service.embed_texts(document_content)
         
         # Prepare metadata
+        doc_tags = extract_entity_tags(document_content)
         document_metadata = {
             "user_id": user_id,
             "filename": filename,
@@ -98,7 +100,8 @@ class DocumentStore:
             "document_type": "uploaded_knowledge",
             "chunk_number": 0,
             "total_chunks": 1,
-            "chunk_type": "single"
+            "chunk_type": "single",
+            "entity_tags": encode_entity_tags(doc_tags),
         }
         
         # Store in documents collection
@@ -149,6 +152,7 @@ class DocumentStore:
             # Calculate chunk position in original document
             start_pos = document_content.find(chunk[:50])  # Use first 50 chars to find position
             end_pos = start_pos + len(chunk)
+            chunk_tags = extract_entity_tags(chunk)
             
             chunk_metadata = {
                 "user_id": user_id,
@@ -162,7 +166,8 @@ class DocumentStore:
                 "chunk_type": "chunked",
                 "start_position": start_pos,
                 "end_position": end_pos,
-                "parent_document": filename
+                "parent_document": filename,
+                "entity_tags": encode_entity_tags(chunk_tags),
             }
             
             documents.append(chunk)

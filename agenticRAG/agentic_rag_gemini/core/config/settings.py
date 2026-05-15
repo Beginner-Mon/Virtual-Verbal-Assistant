@@ -47,6 +47,13 @@ class MainAPISettings:
     motion_default_duration_seconds: float
     downstream_timeout: float
     downstream_session_timeout: float
+    rollout_hybrid_retrieval_enabled: bool
+    rollout_motion_translator_enabled: bool
+    rollout_early_async_motion_enabled: bool
+    rollout_dart_fast_draft_enabled: bool
+    sla_common_qna_ms: float
+    sla_known_motion_ms: float
+    sla_novel_motion_ms: float
 
 
 _SETTINGS: MainAPISettings | None = None
@@ -75,5 +82,12 @@ def get_main_api_settings() -> MainAPISettings:
         motion_default_duration_seconds=_env_float("MOTION_DEFAULT_DURATION_SECONDS", 5.33),
         downstream_timeout=_env_float("DOWNSTREAM_TIMEOUT", 90.0),
         downstream_session_timeout=_env_float("DOWNSTREAM_SESSION_TIMEOUT", 15.0),
+        rollout_hybrid_retrieval_enabled=_env_bool("FEATURE_HYBRID_RETRIEVAL", False),
+        rollout_motion_translator_enabled=_env_bool("FEATURE_MOTION_TRANSLATOR", False),
+        rollout_early_async_motion_enabled=_env_bool("FEATURE_EARLY_ASYNC_MOTION", False),
+        rollout_dart_fast_draft_enabled=_env_bool("FEATURE_DART_FAST_DRAFT", False),
+        sla_common_qna_ms=_env_float("SLA_COMMON_QNA_MS", 4000.0),
+        sla_known_motion_ms=_env_float("SLA_KNOWN_MOTION_MS", 8000.0),
+        sla_novel_motion_ms=_env_float("SLA_NOVEL_MOTION_MS", 15000.0),
     )
     return _SETTINGS

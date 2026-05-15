@@ -23,6 +23,17 @@ async def get_info() -> Dict[str, Any]:
         "version": "2.1.0",
         "async_enrichment": SETTINGS.async_enrichment,
         "include_debug": SETTINGS.include_debug,
+        "rollout_flags": {
+            "hybrid_retrieval": SETTINGS.rollout_hybrid_retrieval_enabled,
+            "motion_translator": SETTINGS.rollout_motion_translator_enabled,
+            "early_async_motion": SETTINGS.rollout_early_async_motion_enabled,
+            "dart_fast_draft": SETTINGS.rollout_dart_fast_draft_enabled,
+        },
+        "sla_targets_ms": {
+            "common_qna": SETTINGS.sla_common_qna_ms,
+            "known_motion": SETTINGS.sla_known_motion_ms,
+            "novel_motion": SETTINGS.sla_novel_motion_ms,
+        },
         "upstream_services": {
             "agenticrag": f"{SETTINGS.agentic_rag_url}/query",
             "dart": f"{SETTINGS.dart_url}/generate",

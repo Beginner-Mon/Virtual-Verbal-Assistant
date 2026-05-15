@@ -234,37 +234,128 @@ memory:
 
 ### 3.6 File Structure
 
+> **Note (2026-05):** The AgenticRAG service has been modularised. `api_server.py` at the
+> package root is now a thin compatibility shim that re-exports from `api_server_pkg/app.py`
+> (the actual FastAPI app, ~132 KB). FastAPI route handlers live under `routers/` and the
+> Orchestrator (port 8080) service helpers live under `services/`. The legacy single-file
+> structure described in earlier revisions of this document no longer matches the codebase.
+
 ```
 agentic_rag_gemini/
-├── api_server.py              # FastAPI REST API  ← START HERE
-├── main_api.py                # Orchestrator (multi-service) entry point ← port 8080
+├── api_server.py              # Shim → api_server_pkg.app  ← START HERE (port 8000)
+├── api_server_pkg/            # Actual FastAPI app implementation
+│   ├── app.py                 # Main FastAPI app (lifespan, mounting, /query, etc.)
+│   ├── helpers.py             # Shared request/response helpers
+│   ├── models.py              # Internal Pydantic models
+│   └── state.py               # Global app state container
+├── main_api.py                # Orchestrator entry point ← port 8080
 ├── main.py                    # CLI interactive entry point
-├── run_ui.py                  # Streamlit UI launcher
-├── ui.py                      # Streamlit web interface
-├── config/
-│   └── config.yaml            # All tuneable settings
+├── models.py                  # Shared Pydantic: VoicePrompt, MotionPrompt
+├── run_ui.py / ui.py          # Legacy Streamlit web interface (early prototype)
+│
+├── routers/                   # FastAPI routers mounted by api_server_pkg.app
+│   ├── answer.py              # /answer endpoint (Orchestrator-side)
+│   ├── health.py              # /health, downstream pings
+│   ├── sessions.py            # Chat session CRUD (Firestore-backed)
+│   └── compatibility.py       # Legacy endpoint shims
+│
+├── services/                  # Orchestrator service layer (used by main_api.py)
+│   ├── main_api_answer.py     # /answer pipeline glue
+│   ├── main_api_downstream.py # call_agenticrag, generate_motion_from_dart, TTS, language detection, duration resolution
+│   ├── main_api_enrichment.py # run_async_enrichment (background DART/TTS)
+│   ├── main_api_health.py     # check_services_health
+│   └── main_api_payloads.py   # Request/response payload shaping
+│
+├── orchestration/
+│   └── pipeline_orchestrator.py   # End-to-end pipeline coordinator
+│
 ├── agents/
-│   └── orchestrator.py        # Query routing logic
+│   ├── api_orchestrator.py    # Cloud (Gemini) orchestrator: ActionType, OrchestratorDecision
+│   ├── local_orchestrator.py  # Local-LLM (Ollama) orchestrator variant
+│   ├── knowledge_librarian.py # Clinical RAG agent (Double-RAG: clinical dispatch)
+│   ├── semantic_bridge.py     # HyDE + clinical→motion constraint mapping
+│   ├── keyword_extractor.py   # Lightweight keyword/intent extraction
+│   ├── query_transform.py     # Query rewriting / HyDE generation
+│   ├── safety_filter.py       # Output safety checks
+│   ├── summarize_agent.py     # Conversation summarisation
+│   ├── response_templates.py  # Structured response templates
+│   └── tools/
+│       ├── memory_tool.py
+│       ├── document_retrieval_tool.py
+│       ├── fuzzy_document_retriever.py
+│       ├── web_search_tool.py
+│       ├── motion_candidate_retriever.py    # Motion RAG candidate search
+│       ├── motion_reranker.py                # Motion candidate reranking
+│       └── motion_generation_tool.py         # Calls DART /generate
+│
 ├── retrieval/
-│   └── rag_pipeline.py        # Core RAG + response generation
-│                              #   (RateLimiter, parallel web search, iterative retry)
+│   └── rag_pipeline.py        # Core RAG + response generation (54 KB)
+│                              #   RateLimiter, parallel web search, iterative retry
+│
 ├── memory/
-│   ├── memory_manager.py      # Conversation memory
-│   ├── document_store.py      # Document chunking + search
-│   ├── vector_store.py        # ChromaDB wrapper (FIXED similarity)
-│   └── embedding_service.py   # Sentence-transformer embeddings
+│   ├── memory_manager.py      # Conversation memory (per-user)
+│   ├── document_store.py      # Document chunking + ChromaDB-backed search
+│   ├── vector_store.py        # ChromaDB wrapper (dual-collection)
+│   ├── session_store.py       # Chat sessions — Firebase Firestore persistence,
+│   │                          #   falls back to local JSON if Firestore unavailable
+│   ├── embedding_service.py   # Sentence-transformer embeddings (384-dim)
+│   └── chat_history/          # Local fallback chat history
+│
+├── stores/
+│   └── main_api_stores.py     # In-memory Orchestrator stores (request_id, history)
+│
+├── schemas/
+│   └── main_api.py            # Orchestrator-facing Pydantic schemas (AnswerRequest/Response)
+│
+├── prompts/
+│   └── orchestrator_prompts.py    # Orchestrator LLM prompt templates
+│
+├── core/config/               # Internal config helpers
+│
+├── config/
+│   ├── config.yaml            # All tuneable settings
+│   ├── __init__.py            # Config loader
+│   └── local_orchestrator_config.py
+│
 ├── utils/
-│   ├── gemini_client.py       # Gemini API wrapper
-│   ├── document_loader.py     # PDF/Word/Image text extraction
+│   ├── gemini_client.py       # Gemini API wrapper (OpenAI-compatible)
+│   ├── ollama_client.py       # Local LLM client (used by local_orchestrator)
+│   ├── api_key_manager.py     # Multi-key rotation for Gemini free tier
+│   ├── cache_service.py       # Response/embedding cache layer
+│   ├── document_loader.py     # PDF / Word / Image (OCR) text extraction
+│   ├── exercise_detector.py   # Extracts named exercises from text
+│   ├── llm_extractor.py       # Generic structured-extraction helper
+│   ├── entity_tags.py         # Entity tagging utilities
 │   ├── validators.py          # Response quality validation
 │   ├── prompt_templates.py    # LLM prompt templates
 │   ├── web_search.py          # DuckDuckGo web search fallback
 │   └── logger.py              # Logging setup
-├── data/
-│   └── vector_store/          # Persistent ChromaDB files
+│
+├── celery_app.py              # Celery app — async motion + cleanup beat
+├── motion_jobs.py             # MotionJobManager: enqueue + Celery AsyncResult polling
+├── tasks/
+│   ├── motion_tasks.py        # render_motion_job worker (DART call + ffmpeg render)
+│   └── cleanup_tasks.py       # Periodic cleanup of expired motion artefacts
+├── cleanup_motion_videos.py   # Manual one-shot cleanup script
+│
+├── firebase-service-account.json   # GCP credentials for Firestore session store
+├── .env / .env.example        # GEMINI_API_KEY, FIRESTORE_PROJECT_ID, REDIS_URL, ...
+├── setup.ps1 / setup.sh       # Environment bootstrap helpers
+│
+├── tests/                     # Pytest suite
+├── test_auditor.py            # Standalone audit script for response quality
+├── test_sbr.py                # Standalone safety/bias regression script
+│
+├── data/                      # Persistent ChromaDB files (created at runtime)
 └── logs/
     └── agentic_rag.log
 ```
+
+**Key entry points:**
+
+- **`api_server.py`** — AgenticRAG service on port 8000 (delegates to `api_server_pkg.app`).
+- **`main_api.py`** — Orchestrator gateway on port 8080 (uses `services/` + `routers/`).
+- **`celery_app.py` + `tasks/motion_tasks.py`** — async motion worker (started by `run_stack.ps1`).
 
 ### 3.7 AgenticRAG API
 
@@ -575,8 +666,18 @@ text-to-motion/DART/
 │   └── outputs/                    # Generated motion files (.npz)
 ├── demos/                     # Pre-built demo scripts (.sh)
 ├── visualize/                 # PyRender visualization
+├── visualize_motion.py        # Standalone NPZ → render script
+├── to_glb.py / topkl.py / rotate.py   # Format-conversion utilities
+├── seele.vrm                  # Bundled VRM avatar asset (~29 MB)
+├── FlowMDM/                   # Bundled FlowMDM research repo — NOT wired into api_server.py
+├── VolSMPL/                   # Bundled VolSMPL research repo — NOT wired into api_server.py
 └── environment.yml            # Conda environment (DART env)
 ```
+
+> **Note on `FlowMDM/` and `VolSMPL/`:** These directories contain auxiliary motion-generation
+> research code that is **not currently called by `api_server.py`**. They are kept in-tree for
+> experimentation and future swap-in. Treat them as reference material, not part of the active
+> service path.
 
 ### 4.9 Training Pipeline (for retraining)
 
@@ -844,9 +945,39 @@ Virtual-Verbal-Assistant/
 │   ├── src/                           # Pipeline stages (STT, LLM, TTS, emotion)
 │   └── configs/                       # Model paths and sample rates
 │
-└── test-ui/
-    └── index.html                     # Browser-based test interface
+├── ECA_UI/                            # **Official** frontend (port 3000-style static)
+│   ├── index.html                     # Vanilla HTML/JS production UI
+│   ├── api.js                         # Axios-based API client
+│   └── eca-react/                     # React variant (Vite + JSX)
+│       ├── index.html
+│       └── src/{components,data,styles,main.jsx}
+│
+├── test-ui/                           # API testing UI (latency + raw responses)
+│   ├── index.html                     # Tabs: AgenticRAG | DART | Full Pipeline | NPZ Runner
+│   ├── app.js
+│   └── styles.css
+│
+├── agenticRAG/agentic_rag_gemini/ui.py    # **Legacy** Streamlit UI (early prototype only)
+│
+├── run_stack.py / run_stack.ps1       # One-command stack launcher (Redis + Celery + API)
+├── check_ports.py / clear_port.py     # Port utilities
+├── docker-compose.yml                 # Redis container helper
+├── chroma_data/  memory/  static/  logs/   # Runtime state (created at runtime)
+└── scratch/                           # Ad-hoc experimentation
 ```
+
+### 8.1 UI Variants — Official vs. Test vs. Legacy
+
+| UI | Path | Purpose | Talks to |
+|----|------|---------|----------|
+| **Official** | `ECA_UI/` | Production-facing frontend with Axios client, polling, motion playback | Orchestrator `:8080` |
+| **Test API** | `test-ui/` | Manual API testing — measures latency, shows raw responses | All three services directly (`:8000`, `:5001`, `:8080`) |
+| **Legacy** | `agenticRAG/agentic_rag_gemini/ui.py` | Early Streamlit prototype from initial AgenticRAG dev. Includes its own `memory/` + `chroma_data/` snapshots. **Not part of the official stack** — kept for historical reference only. | AgenticRAG `:8000` |
+
+> The `memory/` and `chroma_data/` directories that exist at the repo root and inside
+> `agenticRAG/agentic_rag_gemini/` originate from the legacy Streamlit prototype.
+> The official runtime persists conversation state via `memory/session_store.py` (Firestore)
+> and ChromaDB under `data/vector_store/`.
 
 ---
 
@@ -856,14 +987,27 @@ Virtual-Verbal-Assistant/
 
 **Key packages:**
 ```
-google-generativeai       # Gemini API
+google-generativeai       # Gemini API (cloud orchestrator path)
 chromadb                  # Vector database (PersistentClient)
 sentence-transformers     # all-MiniLM-L6-v2 embeddings
-fastapi + uvicorn         # API server
+fastapi + uvicorn         # API server (api_server_pkg/app.py)
 pypdf + python-docx       # Document loading
 pytesseract + pillow      # OCR for images/scanned PDFs
-streamlit                 # Web UI (optional)
+celery + redis            # Async motion job queue (tasks/motion_tasks.py)
+firebase-admin            # Firestore-backed session persistence (memory/session_store.py)
+ollama                    # Local-LLM orchestrator path (utils/ollama_client.py)
+duckduckgo-search         # Web search fallback (utils/web_search.py)
+streamlit                 # Legacy Streamlit UI (ui.py) — optional
 ```
+
+**External runtime services:**
+
+- **Redis** on `127.0.0.1:6379` — Celery broker/backend. Required only when running the async
+  motion stack via `run_stack.ps1`. Falls back gracefully if absent (sync path still works).
+- **FFmpeg** in `PATH` — used by `tasks/motion_tasks.py` to render NPZ → MP4.
+- **Firebase Firestore** (optional) — set `GOOGLE_APPLICATION_CREDENTIALS` to
+  `firebase-service-account.json` and `FIRESTORE_PROJECT_ID` in `.env`. If unavailable,
+  `session_store.py` falls back to local JSON under `memory/chat_history/`.
 
 ### DART (`DART` conda env on WSL/Linux)
 
@@ -938,6 +1082,21 @@ taskkill /PID <PID> /F
 ---
 
 ## Changelog
+
+### 2026-05-08 — Document Sync With Modularised Codebase
+- **§3.6 file structure** rewritten to match the actual `agentic_rag_gemini/` layout:
+  `api_server_pkg/`, `routers/`, `services/`, `orchestration/`, `stores/`, `schemas/`,
+  `prompts/`, expanded `agents/` (10+ agents incl. `knowledge_librarian`, `semantic_bridge`,
+  dual orchestrators) and `agents/tools/` (motion candidate retriever, reranker, generation).
+- **Async motion stack** now documented: `celery_app.py`, `motion_jobs.py`, `tasks/motion_tasks.py`,
+  `tasks/cleanup_tasks.py`.
+- **Firebase Firestore** session persistence (`memory/session_store.py`) added to dependency
+  list with credentials/env-var notes.
+- **§4.8 DART** clarified that bundled `FlowMDM/` and `VolSMPL/` directories are NOT wired
+  into `api_server.py` (research code, not active service path).
+- **§8.1 UI variants** added: explicit Official (`ECA_UI/`) vs. Test (`test-ui/`) vs. Legacy
+  Streamlit (`agenticRAG/agentic_rag_gemini/ui.py`) distinction, with note that the legacy
+  prototype is the source of the root-level `memory/` and `chroma_data/` snapshots.
 
 ### 2026-03-19 — Language + Duration Contract Update
 - **Language Detection:** Added query language classification with normalized codes: `en`, `vi`, `jp`, `other`.

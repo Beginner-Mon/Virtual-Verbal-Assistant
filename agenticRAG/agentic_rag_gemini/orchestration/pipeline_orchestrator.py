@@ -15,6 +15,7 @@ from pathlib import Path
 
 import httpx
 
+from core.circuit_breaker import CircuitBreaker
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -74,6 +75,9 @@ class PipelineOrchestrator:
             config: Configuration dictionary with service URLs and timeouts
         """
         self.config = {**DEFAULT_CONFIG, **(config or {})}
+        # Per-downstream circuit breakers — trip after 3 consecutive failures, cool down 60s.
+        self._dart_breaker = CircuitBreaker(name="dart", failure_threshold=3, cool_down_seconds=60.0)
+        self._speech_breaker = CircuitBreaker(name="speechllm", failure_threshold=3, cool_down_seconds=60.0)
         logger.info(
             f"Pipeline Orchestrator initialized with config: {self._sanitize_config()}"
         )
@@ -115,7 +119,13 @@ class PipelineOrchestrator:
                     return result
 
                 result.text_answer = rag_response.get("text_answer", "")
-                motion_prompt = rag_response.get("motion_prompt")
+                # Newer api_server contract uses ``exercise_motion_prompt`` (str), legacy
+                # contract used ``motion_prompt`` (dict). Accept either to avoid silent
+                # drops when api_server_pkg is upgraded ahead of this orchestrator.
+                motion_prompt = (
+                    rag_response.get("exercise_motion_prompt")
+                    or rag_response.get("motion_prompt")
+                )
                 voice_prompt = rag_response.get("voice_prompt")
 
                 logger.info(f"[{user_id}] Step 1 complete: {result.text_answer[:100]}...")
@@ -123,38 +133,58 @@ class PipelineOrchestrator:
                 # Wrap each task with its own individual timeout so they
                 # fail independently — SpeechLLm is fast (4s), DART is slow (10s).
                 async def run_speechllm():
-                    if voice_prompt:
-                        try:
-                            return await asyncio.wait_for(
-                                self._call_speechllm(client, voice_prompt),
-                                timeout=self.config["service_timeout_seconds"],
-                            )
-                        except asyncio.TimeoutError:
-                            logger.warning(f"[{user_id}] SpeechLLm timed out after {self.config['service_timeout_seconds']}s")
-                            return None
-                        except Exception as e:
-                            logger.warning(f"[{user_id}] SpeechLLm error: {e}")
-                            return None
-                    return None
+                    if not voice_prompt:
+                        return None
+                    if not self._speech_breaker.allow():
+                        logger.warning(
+                            f"[{user_id}] SpeechLLm circuit breaker OPEN — skipping voice"
+                        )
+                        result.errors["speechllm"] = "circuit_breaker_open"
+                        return None
+                    try:
+                        out = await asyncio.wait_for(
+                            self._call_speechllm(client, voice_prompt),
+                            timeout=self.config["service_timeout_seconds"],
+                        )
+                        self._speech_breaker.record_success()
+                        return out
+                    except asyncio.TimeoutError:
+                        logger.warning(f"[{user_id}] SpeechLLm timed out after {self.config['service_timeout_seconds']}s")
+                        self._speech_breaker.record_failure()
+                        return None
+                    except Exception as e:
+                        logger.warning(f"[{user_id}] SpeechLLm error: {e}")
+                        self._speech_breaker.record_failure()
+                        return None
 
                 async def run_dart():
-                    if motion_prompt:
-                        try:
-                            return await asyncio.wait_for(
-                                self._call_dart(client, motion_prompt),
-                                timeout=self.config["dart_timeout_seconds"],
-                            )
-                        except asyncio.TimeoutError:
-                            logger.warning(
-                                f"[{user_id}] DART timed out after {self.config['dart_timeout_seconds']}s — skipping motion"
-                            )
-                            result.errors["dart"] = f"DART timed out after {self.config['dart_timeout_seconds']}s"
-                            return None
-                        except Exception as e:
-                            logger.warning(f"[{user_id}] DART error: {e}")
-                            result.errors["dart"] = str(e)
-                            return None
-                    return None
+                    if not motion_prompt:
+                        return None
+                    if not self._dart_breaker.allow():
+                        logger.warning(
+                            f"[{user_id}] DART circuit breaker OPEN — skipping motion"
+                        )
+                        result.errors["dart"] = "circuit_breaker_open"
+                        return None
+                    try:
+                        out = await asyncio.wait_for(
+                            self._call_dart(client, motion_prompt),
+                            timeout=self.config["dart_timeout_seconds"],
+                        )
+                        self._dart_breaker.record_success()
+                        return out
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            f"[{user_id}] DART timed out after {self.config['dart_timeout_seconds']}s — skipping motion"
+                        )
+                        result.errors["dart"] = f"DART timed out after {self.config['dart_timeout_seconds']}s"
+                        self._dart_breaker.record_failure()
+                        return None
+                    except Exception as e:
+                        logger.warning(f"[{user_id}] DART error: {e}")
+                        result.errors["dart"] = str(e)
+                        self._dart_breaker.record_failure()
+                        return None
 
                 tts_response, motion_response = await asyncio.gather(
                     run_speechllm(), run_dart()
@@ -282,29 +312,35 @@ class PipelineOrchestrator:
     async def _call_dart(
         self,
         client: httpx.AsyncClient,
-        motion_prompt: Dict[str, Any],
+        motion_prompt: Any,
     ) -> Optional[Dict[str, Any]]:
         """Call DART API.
 
-        Args:
-            client: AsyncHTTP client
-            motion_prompt: Motion prompt from AgenticRAG
-
-        Returns:
-            Response dictionary or None on error
+        ``motion_prompt`` accepts both shapes:
+            - new contract: ``str`` (e.g. ``"a person performs chin tuck"``)
+            - legacy contract: ``dict`` with ``description`` / ``duration_seconds`` /
+              ``num_frames`` / ``fps`` keys.
         """
         try:
             url = f"{self.config['dart_url']}/generate"
 
-            # Prefer explicit duration in seconds.
-            duration_seconds = float(
-                motion_prompt.get("duration_seconds")
-                or motion_prompt.get("duration_estimate_seconds")
-                or max(2.0, float(motion_prompt.get("num_frames", 160)) / 30.0)
-            )
+            # Normalise the motion prompt into ``text_prompt`` + ``duration_seconds``.
+            if isinstance(motion_prompt, str):
+                text_prompt = motion_prompt
+                duration_seconds = max(2.0, 160.0 / 30.0)
+            elif isinstance(motion_prompt, dict):
+                text_prompt = motion_prompt.get("description") or motion_prompt.get("text_prompt") or "walk"
+                duration_seconds = float(
+                    motion_prompt.get("duration_seconds")
+                    or motion_prompt.get("duration_estimate_seconds")
+                    or max(2.0, float(motion_prompt.get("num_frames", 160)) / 30.0)
+                )
+            else:
+                logger.warning(f"Unexpected motion_prompt type: {type(motion_prompt).__name__}")
+                return None
 
             payload = {
-                "text_prompt": motion_prompt.get("description", "walk"),
+                "text_prompt": text_prompt,
                 "duration_seconds": duration_seconds,
                 "guidance_scale": 5.0,
                 "num_steps": 50,
@@ -315,7 +351,7 @@ class PipelineOrchestrator:
             response = await client.post(
                 url,
                 json=payload,
-                timeout=self.config["service_timeout_seconds"],
+                timeout=self.config["dart_timeout_seconds"],
             )
             response.raise_for_status()
 
@@ -331,40 +367,13 @@ class PipelineOrchestrator:
             logger.error(f"DART request failed: {e}")
             raise
 
-    def process_query_sync(
-        self,
-        query: str,
-        user_id: str = "default",
-        conversation_history: Optional[list] = None,
-    ) -> PipelineResult:
-        """Synchronous wrapper for process_query.
-
-        Use this if not in an async context.
-
-        Args:
-            query: User query text
-            user_id: User identifier
-            conversation_history: Previous conversation turns
-
-        Returns:
-            PipelineResult with all outputs
-        """
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # Already in async context, need to create new loop or use run_in_executor
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(
-                        asyncio.run,
-                        self.process_query(query, user_id, conversation_history),
-                    )
-                    return future.result()
-            else:
-                return asyncio.run(self.process_query(query, user_id, conversation_history))
-        except RuntimeError:
-            # No event loop, create one
-            return asyncio.run(self.process_query(query, user_id, conversation_history))
+    # Note (2026-05): the legacy ``process_query_sync`` was removed because it
+    # spawned a ThreadPoolExecutor + ``asyncio.run`` inside a running event loop
+    # — a known deadlock-prone anti-pattern that would hang the gateway under
+    # load on CPU-only deployments.  Callers MUST now ``await process_query``.
+    # If you absolutely need a sync entry point (e.g. a CLI script), use:
+    #     asyncio.run(orch.process_query(query, user_id))
+    # at the *top* of your script, never from inside another coroutine.
 
 
 # ===========================

@@ -69,6 +69,7 @@ from utils.prompt_templates import LLM_PROMPTS
 from motion_jobs import MotionJobManager
 import asyncio
 from agents.response_templates import ResponseTemplateGenerator
+from core.tracing import AgentTrace, is_tracing_enabled, new_trace
 
 # Initialize logger
 logger = get_logger(__name__)
@@ -221,6 +222,10 @@ class AgenticRAGAPI:
             document_tool   = DocumentRetrievalTool(document_store)
             web_search_tool = WebSearchTool(web_service)
 
+            # Keep direct handles for intent paths that need manager-level operations.
+            self.memory_manager = memory_manager
+            self.document_store = document_store
+
             # Save tool references for orchestrator integrations and future extensions.
             self._memory_tool_ref     = memory_tool
             self._document_tool_ref   = document_tool
@@ -309,23 +314,46 @@ class AgenticRAGAPI:
                 self._local_conv_client = OllamaClient(model_name=self._local_conv_model)
                 if self._local_conv_client.check_connection():
                     # Check if the model is actually available
-                    available_models = self._local_conv_client.list_models()
-                    if any(self._local_conv_model in m for m in available_models):
+                    requested_model = str(self._local_conv_model or "").strip()
+                    available_models = [str(m).strip() for m in self._local_conv_client.list_models()]
+                    requested_model_lower = requested_model.lower()
+                    matched_model = next(
+                        (
+                            m for m in available_models
+                            if requested_model_lower and requested_model_lower in m.lower()
+                        ),
+                        None,
+                    )
+
+                    if not matched_model:
+                        # Backward-compatible fallback for callers that pass a full
+                        # model string when Ollama reports a shorter alias.
+                        matched_model = next(
+                            (
+                                m for m in available_models
+                                if requested_model_lower and m.lower() in requested_model_lower
+                            ),
+                            None,
+                        )
+
+                    if matched_model:
+                        # Preserve Ollama's canonical model casing in logs/telemetry.
+                        self._local_conv_model = matched_model
                         self._local_conv_available = True
                         logger.info(
-                            "Local conversation agent ready: %s (0 Gemini calls for chat)",
+                            "Local conversation agent ready: {} (0 Gemini calls for chat)",
                             self._local_conv_model,
                         )
                     else:
                         logger.warning(
-                            "Local conv model '%s' not found in Ollama (available: %s). "
+                            "Local conv model '{}' not found in Ollama (available: {}). "
                             "Falling back to Gemini for conversation.",
                             self._local_conv_model, available_models[:5],
                         )
                 else:
                     logger.warning("Ollama not reachable — conversation will use Gemini")
             except Exception as _lc_exc:
-                logger.warning("Local conversation client init failed: %s", _lc_exc)
+                logger.warning("Local conversation client init failed: {}", _lc_exc)
                 self._local_conv_available = False
 
             # Knowledge Librarian — unified multi-collection retrieval agent
@@ -418,6 +446,7 @@ class AgenticRAGAPI:
         "ask_exercise_info":        "knowledge_query",
         "general_fitness_question": "knowledge_query",
         "visualize_motion":         "visualize_motion",
+        "clear_context":            "clear_context",
         "unknown":                  "knowledge_query",
         # Pass-through (already canonical):
         "conversation":             "conversation",
@@ -543,6 +572,109 @@ class AgenticRAGAPI:
         )
         return self._query_is_exercise_related(q) and any(marker in q for marker in recommendation_markers)
 
+    def _query_needs_personal_memory(self, query: str) -> bool:
+        """Detect when user asks for advice tied to personal history/state."""
+        q = (query or "").strip().lower()
+        if not q:
+            return False
+
+        personal_markers = (
+            "my ", "for me", "for my", "my history", "my record", "my records",
+            "my context", "my profile", "my condition", "my injury", "my pain",
+            "my shoulder", "my neck", "my back", "my knee", "my hip", "my ankle",
+            "remember", "previously", "last time", "based on my", "given my",
+            "tôi", "của tôi", "lần trước", "hồ sơ của tôi", "nhớ",
+        )
+        if any(marker in q for marker in personal_markers):
+            return True
+
+        if self._query_is_exercise_related(q):
+            return bool(
+                re.search(r"\b(i have|i had|i feel|i am|i'm|my)\b", q)
+                or re.search(r"\b(tôi|mình|của tôi)\b", q)
+            )
+
+        return False
+
+    def _compute_intent_gates(
+        self,
+        intent: str,
+        query: str,
+        requested_actions: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, bool]:
+        """Compute canonical action gates from intent + personal-context signal."""
+        normalized_intent = str(intent or "unknown").strip().lower()
+        requested_actions = requested_actions or {}
+
+        generate_motion = normalized_intent == "visualize_motion"
+        use_documents = normalized_intent in {"knowledge_query", "exercise_recommendation"}
+        use_memory = normalized_intent in {
+            "conversation",
+            "knowledge_query",
+            "exercise_recommendation",
+            "unknown",
+        } and self._query_needs_personal_memory(query)
+
+        use_web_search = bool(requested_actions.get("use_web_search", False)) and use_documents
+
+        if normalized_intent == "clear_context":
+            generate_motion = False
+            use_documents = False
+            use_memory = False
+            use_web_search = False
+
+        return {
+            "generate_motion": generate_motion,
+            "use_documents": use_documents,
+            "use_memory": use_memory,
+            "use_web_search": use_web_search,
+            "needs_rag": use_documents,
+        }
+
+    def _apply_intent_gates_to_action_plan(self, action_plan: Dict[str, Any], query: str) -> Dict[str, Any]:
+        """Apply canonical intent gates so all orchestrator paths behave consistently."""
+        if not isinstance(action_plan, dict):
+            return action_plan
+
+        raw_intent = action_plan.get("intent", "knowledge_query")
+        if isinstance(raw_intent, Enum):
+            raw_intent = raw_intent.value
+        normalized_intent = self._INTENT_CANONICAL_MAP.get(
+            str(raw_intent or "knowledge_query"),
+            str(raw_intent or "knowledge_query"),
+        )
+
+        known_intents = {
+            "conversation",
+            "knowledge_query",
+            "exercise_recommendation",
+            "visualize_motion",
+            "clear_context",
+            "unknown",
+        }
+        if normalized_intent not in known_intents:
+            normalized_intent = "knowledge_query"
+
+        actions = action_plan.get("actions") or {}
+        gates = self._compute_intent_gates(
+            intent=normalized_intent,
+            query=query,
+            requested_actions=actions,
+        )
+
+        merged_actions = dict(actions)
+        merged_actions["generate_motion"] = gates["generate_motion"]
+        merged_actions["use_memory"] = gates["use_memory"]
+        merged_actions["use_documents"] = gates["use_documents"]
+        merged_actions["use_web_search"] = gates["use_web_search"]
+        merged_actions["retrieve_memory"] = gates["use_memory"]
+
+        action_plan["intent"] = normalized_intent
+        action_plan["actions"] = merged_actions
+        action_plan["needs_rag"] = gates["needs_rag"]
+
+        return action_plan
+
     def _extract_exercises_from_text_answer(self, text: str, max_items: int = 8) -> List[Dict[str, str]]:
         """Best-effort extraction from numbered/bulleted exercise lists in plain text."""
         if not text:
@@ -605,34 +737,31 @@ class AgenticRAGAPI:
 
         if direct_motion:
             intent = "visualize_motion"
-            generate_motion = True
-            needs_rag = False
-            use_memory = False
             agents = ["motion_agent"]
         elif is_conversation:
             intent = "conversation"
-            generate_motion = False
-            needs_rag = False
-            use_memory = False
             agents = ["memory_agent"]
         else:
             intent = "knowledge_query"
-            generate_motion = False
-            needs_rag = True
-            use_memory = False
             agents = ["retrieval_agent"]
+
+        gates = self._compute_intent_gates(
+            intent=intent,
+            query=query,
+            requested_actions={"use_web_search": False},
+        )
 
         return {
             "intent": intent,
             "actions": {
-                "generate_motion": generate_motion,
-                "use_memory": use_memory,
-                "use_documents": needs_rag,
-                "use_web_search": False,
+                "generate_motion": gates["generate_motion"],
+                "use_memory": gates["use_memory"],
+                "use_documents": gates["use_documents"],
+                "use_web_search": gates["use_web_search"],
             },
             "tool_results": {},
             "expanded_query": query,
-            "needs_rag": needs_rag,
+            "needs_rag": gates["needs_rag"],
             "exercise": detected_exercise,
             "exercise_name": detected_exercise,
             "agents": agents,
@@ -673,10 +802,13 @@ class AgenticRAGAPI:
         query: str,
         user_id: str,
         conversation_history: Optional[List[Dict[str, str]]] = None,
+        agent_trace: Optional[AgentTrace] = None,
     ) -> Dict[str, Any]:
         """Get decision from orchestrator (local or API).
-        
+
         Returns standardized decision format for both local and API orchestrators.
+        ``agent_trace`` is forwarded to the API orchestrator (the local path is
+        too tightly coupled to Ollama JSON to instrument here without rework).
         """
         logger.info(f"_get_orchestrator_decision called with orchestrator type: {type(self.orchestrator).__name__}")
 
@@ -787,6 +919,26 @@ class AgenticRAGAPI:
                 decision["needs_motion"] = True
                 decision["needs_retrieval"] = False
 
+            gates = self._compute_intent_gates(
+                intent=decision["intent"],
+                query=query,
+                requested_actions={
+                    "use_web_search": decision.get("needs_web_search", False),
+                },
+            )
+            decision["needs_motion"] = gates["generate_motion"]
+            decision["needs_retrieval"] = gates["use_documents"]
+            decision["needs_memory"] = gates["use_memory"]
+            decision["needs_web_search"] = gates["use_web_search"]
+
+            exercise_value = (
+                decision.get("exercise")
+                or decision.get("exercise_name")
+                or detected_exercise
+            )
+            agents_value = decision.get("agents") or []
+            confidence_value = float(decision.get("confidence", 0.5) or 0.5)
+
             # Convert to format expected by existing code
             result = {
                 "intent": decision["intent"],
@@ -798,11 +950,13 @@ class AgenticRAGAPI:
                 },
                 "tool_results": {},  # Will be populated later
                 "expanded_query": query,
-                "needs_rag": decision["needs_retrieval"],
-                "exercise": decision["exercise"],
-                "agents": decision["agents"],
-                "confidence": decision["confidence"]
+                "needs_rag": gates["needs_rag"],
+                "exercise": exercise_value,
+                "exercise_name": exercise_value,
+                "agents": agents_value,
+                "confidence": confidence_value,
             }
+            result = self._apply_intent_gates_to_action_plan(result, query)
             logger.info(f"Converted result for API compatibility: {result}")
             if use_cache:
                 self._orchestrator_cache[cache_key] = {"ts": time.time(), "decision": result}
@@ -812,7 +966,12 @@ class AgenticRAGAPI:
             # API orchestrator returns the existing format
             # Note: API orchestrator doesn't support detected_exercise parameter yet
             api_result = self._run_with_timeout(
-                lambda: self.orchestrator.process_query(query, user_id, conversation_history),
+                lambda: self.orchestrator.process_query(
+                    query,
+                    user_id,
+                    conversation_history,
+                    trace=agent_trace,
+                ),
                 timeout_seconds=self.orchestrator_decision_timeout_seconds,
                 label="APIOrchestrator.process_query",
             )
@@ -822,6 +981,8 @@ class AgenticRAGAPI:
                     detected_exercise=detected_exercise,
                     reason="api_orchestrator_timeout_or_error",
                 )
+            else:
+                api_result = self._apply_intent_gates_to_action_plan(api_result, query)
             if use_cache:
                 self._orchestrator_cache[cache_key] = {"ts": time.time(), "decision": api_result}
             return api_result
@@ -835,6 +996,8 @@ class AgenticRAGAPI:
         motion_duration_seconds: Optional[float] = None,
         prefer_async_motion: bool = False,
         timeline_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        agent_trace: Optional[AgentTrace] = None,
     ) -> Any:
         """Process a user query through the intent-branched pipeline.
 
@@ -928,6 +1091,7 @@ class AgenticRAGAPI:
                 query=query,
                 user_id=user_id,
                 conversation_history=conversation_history,
+                agent_trace=agent_trace,
             )
             orch_time = time.time() - orch_start
             perf["orchestrator_ms"] = orch_time * 1000
@@ -989,16 +1153,59 @@ class AgenticRAGAPI:
                 actions["use_documents"] = True
                 retrieval_diagnostics["route_override"] = "low_confidence_exercise_recommendation"
 
+            action_plan["actions"] = actions
+            action_plan = self._apply_intent_gates_to_action_plan(action_plan, query)
+            actions = action_plan.get("actions") or {}
+            intent = action_plan.get("intent", intent)
+            generate_motion = bool(actions.get("generate_motion", False))
+
             retrieval_diagnostics["final_intent"] = intent
+            retrieval_diagnostics["personal_memory_signal"] = self._query_needs_personal_memory(query)
+            retrieval_diagnostics["gates"] = {
+                "use_memory": bool(actions.get("use_memory", False)),
+                "use_documents": bool(actions.get("use_documents", False)),
+                "use_web_search": bool(actions.get("use_web_search", False)),
+                "generate_motion": generate_motion,
+            }
             trace["retrieval_diagnostics"] = retrieval_diagnostics
 
             tool_results = action_plan.get("tool_results") or {}
+            
+            # ── Step 1.2: Tool Execution Recovery (Local Path) ───────────────
+            # If tool_results is empty (detected in LocalOrchestrator path),
+            # we must run the tools manually before proceeding.
+            if not tool_results and trace["orchestrator_type"] == "LocalOrchestrator":
+                logger.info("LocalOrchestrator path detected with empty tool_results. Running tools concurrently...")
+                _tools_to_run = []
+                if actions.get("use_memory"): _tools_to_run.append("memory")
+                if actions.get("use_documents"): _tools_to_run.append("documents")
+                if actions.get("use_web_search"): _tools_to_run.append("web_search")
+
+                if _tools_to_run:
+                    from concurrent.futures import ThreadPoolExecutor, as_completed
+                    with ThreadPoolExecutor(max_workers=len(_tools_to_run)) as executor:
+                        _futures = {}
+                        if "memory" in _tools_to_run:
+                            _futures[executor.submit(self._memory_tool_ref.retrieve_memory, user_id=user_id, query=query)] = "memory"
+                        if "documents" in _tools_to_run:
+                            _futures[executor.submit(self._document_tool_ref.search_documents, query=query, user_id=user_id)] = "documents"
+                        if "web_search" in _tools_to_run:
+                            _futures[executor.submit(self._web_search_tool_ref.search_web, query=query)] = "web_search"
+                        
+                        for _fut in as_completed(_futures):
+                            _t_name = _futures[_fut]
+                            try:
+                                tool_results[_t_name] = _fut.result()
+                                logger.debug(f"Tool '{_t_name}' recovery successful")
+                            except Exception as _t_exc:
+                                logger.error(f"Tool '{_t_name}' recovery failed: {_t_exc}")
+            
             expanded_query  = action_plan.get("expanded_query") or query
             needs_rag = bool(action_plan.get("needs_rag", True))
             
             trace["intent"] = intent
-            trace["tools_selected"] = action_plan.get("agents", [])
-            trace["tools_executed"] = action_plan.get("agents", [])
+            trace["tools_selected"] = list(tool_results.keys())
+            trace["tools_executed"] = list(tool_results.keys())
             
             # Count tool results
             trace["memory_results_count"] = len(tool_results.get("memory", []))
@@ -1083,6 +1290,12 @@ class AgenticRAGAPI:
                     retrieval_diagnostics["librarian_source"] = librarian_source
                     retrieval_diagnostics["librarian_confidence"] = librarian_confidence
                     retrieval_diagnostics["librarian_direct_match"] = librarian_direct_match
+                    retrieval_diagnostics["librarian_entity_tags"] = (
+                        librarian_result.get("entity_tags", []) if librarian_result else []
+                    )
+                    retrieval_diagnostics["librarian_entity_spoke_used"] = bool(
+                        librarian_result.get("entity_spoke_used", False) if librarian_result else False
+                    )
                     logger.info(
                         "KnowledgeLibrarian: source=%s confidence=%.3f direct_match=%s [%.0fms]",
                         librarian_source, librarian_confidence,
@@ -1179,7 +1392,20 @@ class AgenticRAGAPI:
             exercises   = []   # populated only through the structured RAG path
             exercise_motion_prompt: Optional[str] = None  # set below if query implies visualization
 
-            if intent in ("conversation", "unknown"):
+            if intent == "clear_context":
+                # CLEAR MEMORY: Triggered by user request (regex short-circuit)
+                logger.info(f"Intent=clear_context → Clearing memory for user: {user_id}")
+                trace["path_taken"] = "clear_context_path"
+                trace["llm_calls_count"] = 0
+                
+                success = self.memory_manager.clear_user_memory(user_id)
+                if success:
+                    text_answer = "Memory cleared. I've forgotten our previous context and your saved preferences. Let's start fresh!"
+                else:
+                    text_answer = "I attempted to clear my memory, but there was an internal issue. Please try again or contact support."
+                    trace["errors"].append("clear_user_memory failed")
+
+            elif intent in ("conversation", "unknown"):
                 # Fast path: conversation uses LOCAL Ollama model (0 Gemini calls)
                 # Falls back to Gemini if local model is unavailable.
                 memory_ctx = tool_results.get("memory") or []
@@ -1194,7 +1420,7 @@ class AgenticRAGAPI:
 
                 if self._local_conv_available and not stream:
                     # ── LOCAL PATH: Ollama (0 Gemini calls) ──────────────
-                    logger.info("Intent=%s → LOCAL %s (0 Gemini calls)", intent, self._local_conv_model)
+                    logger.info("Intent={} → LOCAL {} (0 Gemini calls)", intent, self._local_conv_model)
                     trace["path_taken"] = "conversation_local_path"
                     trace["llm_calls_count"] = 0  # 0 Gemini calls
 
@@ -1222,7 +1448,7 @@ class AgenticRAGAPI:
                         text_answer = text_answer[len("assistant:"):].strip()
                 else:
                     # ── GEMINI FALLBACK: only when local is unavailable ──
-                    logger.info("Intent=%s → Gemini FALLBACK (local unavailable or streaming)", intent)
+                    logger.info("Intent={} → Gemini FALLBACK (local unavailable or streaming)", intent)
                     trace["path_taken"] = "conversation_gemini_fallback"
                     trace["llm_calls_count"] = 1
 
@@ -1541,6 +1767,8 @@ class AgenticRAGAPI:
                     "facts_count": len(librarian_result.get("retrieved_facts", [])),
                     "query_used": librarian_result.get("query_used"),
                     "no_context_signal": librarian_result.get("no_context_signal"),
+                    "entity_tags": librarian_result.get("entity_tags", []),
+                    "entity_spoke_used": librarian_result.get("entity_spoke_used", False),
                 }
 
             logger.info(
@@ -1761,15 +1989,22 @@ async def delete_document(
 
 
 @app.post("/query", summary="Process a query")
-async def process_query(request: QueryRequest):
+async def process_query(request: QueryRequest, http_request: Request):
     """Process a user query through the AgenticRAG pipeline.
-    
+
     Returns:
         - If streaming (request.stream=True): StreamingResponse with text chunks (text/plain)
         - Otherwise: QueryResponse with full metadata (application/json)
-    
+
+    Tracing:
+        Reads ``X-Request-ID`` from the incoming request (or generates one) and
+        echoes it back via the ``X-Request-ID`` response header.  When the env
+        var ``AGENTIC_TRACE=1`` is set, the JSON response also includes an
+        ``agent_trace`` field with per-stage timings and decisions.
+
     Args:
-        request: Query request with user query and optional history
+        request:      Query request with user query and optional history
+        http_request: Underlying FastAPI ``Request`` (for headers + tracing)
     """
     if api_instance is None:
         raise HTTPException(status_code=500, detail="API not initialized")
@@ -1778,6 +2013,11 @@ async def process_query(request: QueryRequest):
     history = None
     session_id = request.session_id
     request_user_id = (request.user_id or "guest").strip() or "guest"
+
+    # ── Request correlation: reuse upstream X-Request-ID or mint a new one ─
+    incoming_request_id = (http_request.headers.get("x-request-id") or "").strip()
+    agent_trace = new_trace(request_id=incoming_request_id or None, user_id=request_user_id)
+    request_id = agent_trace.request_id
 
     if session_id:
         # Server-managed history: load from SessionStore on disk
@@ -1789,9 +2029,9 @@ async def process_query(request: QueryRequest):
                     {"role": m["role"], "content": m["content"]}
                     for m in session_data.get("messages", [])
                 ]
-                logger.info(f"Loaded {len(history)} turns from session {session_id}")
+                logger.info(f"[{request_id}] Loaded {len(history)} turns from session {session_id}")
             else:
-                logger.warning(f"Session {session_id} not found for user {request_user_id}")
+                logger.warning(f"[{request_id}] Session {session_id} not found for user {request_user_id}")
         except Exception as exc:
             logger.error("Failed to load session {session}: {error_msg}", session=session_id, error_msg=str(exc))
     elif request.conversation_history:
@@ -1800,7 +2040,7 @@ async def process_query(request: QueryRequest):
 
     if request.stream:
         # For streaming, we run it in a thread and wrap the generator.
-        # Since the generator yielded by process_query is sync, 
+        # Since the generator yielded by process_query is sync,
         # StreamingResponse can handle it directly.
         # NOTE: Streaming returns plain text chunks, not JSON.
         generator = api_instance.process_query(
@@ -1809,8 +2049,14 @@ async def process_query(request: QueryRequest):
             history,
             stream=True,
             motion_duration_seconds=request.motion_duration_seconds,
+            request_id=request_id,
+            agent_trace=agent_trace,
         )
-        return StreamingResponse(generator, media_type="text/plain")
+        return StreamingResponse(
+            generator,
+            media_type="text/plain",
+            headers={"X-Request-ID": request_id},
+        )
 
     # For non-streaming requests, return full QueryResponse with all metadata
     response = await asyncio.to_thread(
@@ -1820,6 +2066,10 @@ async def process_query(request: QueryRequest):
         history,
         False,
         request.motion_duration_seconds,
+        False,
+        None,
+        request_id,
+        agent_trace,
     )
 
     # Auto-save turns to SessionStore if session_id was given
@@ -1831,11 +2081,16 @@ async def process_query(request: QueryRequest):
             text_answer = response_payload.get("text_answer", "")
             if text_answer:
                 store.save_turn(session_id, "assistant", text_answer)
-            logger.info(f"Auto-saved turns to session {session_id}")
+            logger.info(f"[{request_id}] Auto-saved turns to session {session_id}")
         except Exception as exc:
             logger.error("Failed to auto-save to session {session}: {error_msg}", session=session_id, error_msg=str(exc))
 
-    return _normalize_enums(_model_to_dict(response))
+    payload = _normalize_enums(_model_to_dict(response))
+    if isinstance(payload, dict):
+        payload.setdefault("request_id", request_id)
+        if is_tracing_enabled():
+            payload["agent_trace"] = agent_trace.to_dict()
+    return JSONResponse(content=payload, headers={"X-Request-ID": request_id})
 
 
 async def _run_query_task(task_id: str, request_payload: QueryRequest, request: Request) -> None:
@@ -1916,6 +2171,9 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
             TASK_STORE[task_id] = state
 
         pipeline_start_perf = time.perf_counter()
+        # Reuse the upstream X-Request-ID for log correlation; mint one when missing.
+        task_request_id = (request.headers.get("x-request-id") or "").strip()
+        task_trace = new_trace(request_id=task_request_id or None, user_id=request_user_id)
         raw_response = await asyncio.to_thread(
             api_instance.process_query,
             request_payload.query,
@@ -1925,6 +2183,8 @@ async def _run_query_task(task_id: str, request_payload: QueryRequest, request: 
             request_payload.motion_duration_seconds,
             True,
             timeline.get("timeline_id"),
+            task_trace.request_id,
+            task_trace,
         )
         timeline.setdefault("timings_ms", {})["agentic_pipeline_ms"] = round(
             (time.perf_counter() - pipeline_start_perf) * 1000,
@@ -2314,6 +2574,24 @@ async def delete_session(user_id: str, session_id: str) -> Dict[str, Any]:
     return {"deleted": True, "session_id": session_id, "user_id": user_id}
 
 
+@app.delete("/memory/{user_id}", summary="Completely clear user memory and context")
+async def clear_user_memory(user_id: str):
+    """Completely wipe user memory, physical context, and document embeddings."""
+    try:
+        if not api_instance:
+             raise HTTPException(status_code=503, detail="API Instance loading")
+             
+        # Call the MemoryManager to clear data for this user
+        success = api_instance.memory_manager.clear_user_memory(user_id)
+        if not success:
+            return {"status": "partial", "message": "Memory clearing command sent, but some components may not have cleared fully."}
+            
+        return {"status": "success", "message": f"Memory for user {user_id} cleared successfully."}
+    except Exception as e:
+        logger.error(f"Error clearing memory for user {user_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/sessions/{user_id}/{session_id}/summarize", summary="Summarize session to vector DB")
 async def summarize_session(user_id: str, session_id: str) -> Dict[str, Any]:
     """Summarize a chat session and store the summary in the vector database.
@@ -2581,6 +2859,17 @@ async def get_info() -> Dict[str, Any]:
         "service": "AgenticRAG API",
         "version": "1.1.0",
         "description": "REST API for Agentic Retrieval-Augmented Generation with Session Management",
+        "rollout_flags": {
+            "hybrid_retrieval": os.getenv("FEATURE_HYBRID_RETRIEVAL", "false").strip().lower() in {"1", "true", "yes", "on"},
+            "motion_translator": os.getenv("FEATURE_MOTION_TRANSLATOR", "false").strip().lower() in {"1", "true", "yes", "on"},
+            "early_async_motion": os.getenv("FEATURE_EARLY_ASYNC_MOTION", "false").strip().lower() in {"1", "true", "yes", "on"},
+            "dart_fast_draft": os.getenv("FEATURE_DART_FAST_DRAFT", "false").strip().lower() in {"1", "true", "yes", "on"},
+        },
+        "motion_thresholds": {
+            "direct_hit_similarity": float(os.getenv("MOTION_DIRECT_HIT_THRESHOLD", "0.95")),
+            "duration_policy": os.getenv("MOTION_DURATION_POLICY", "strict"),
+            "default_duration_seconds": _env_float("MOTION_DEFAULT_DURATION_SECONDS", 2.5),
+        },
         "endpoints": {
             "POST /query": "Process a user query (supports session_id for server-managed history)",
             "POST /process_query": "Submit async query task and return task envelope",
@@ -2591,6 +2880,7 @@ async def get_info() -> Dict[str, Any]:
             "GET /sessions/{user_id}": "List all sessions for a user",
             "GET /sessions/{user_id}/{session_id}": "Get full session with messages",
             "DELETE /sessions/{user_id}/{session_id}": "Delete a chat session",
+            "DELETE /memory/{user_id}": "Completely clear user memory and context",
             "POST /sessions/{user_id}/{session_id}/summarize": "Summarize session to vector DB",
             "GET /health": "Health check",
             "GET /info": "Service information",

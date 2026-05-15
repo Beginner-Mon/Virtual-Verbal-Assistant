@@ -39,6 +39,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
+from utils.entity_tags import decode_entity_tags, extract_entity_tags
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -57,6 +58,14 @@ GEMINI_GATE_THRESHOLD = float(
 # Fact summarization limits
 MAX_FACTS = int(os.getenv("LIBRARIAN_MAX_FACTS", "5"))
 MAX_FACT_LENGTH = int(os.getenv("LIBRARIAN_MAX_FACT_LENGTH", "200"))
+ENTITY_TAG_MAX = int(os.getenv("LIBRARIAN_ENTITY_TAG_MAX", "6"))
+ENTITY_TAG_BOOST = float(os.getenv("LIBRARIAN_ENTITY_TAG_BOOST", "0.08"))
+ENTITY_TAG_STRICT_FILTER = (
+    os.getenv("LIBRARIAN_ENTITY_TAG_STRICT", "false").strip().lower() in {"1", "true", "yes", "on"}
+)
+ENTITY_TAG_SPOKE_ENABLED = (
+    os.getenv("LIBRARIAN_ENTITY_TAG_SPOKE", "true").strip().lower() in {"1", "true", "yes", "on"}
+)
 
 # ── MedQuAD collection (scaffolding — not yet populated) ─────────
 MEDQUAD_COLLECTION_NAME = "medquad_library"
@@ -100,6 +109,20 @@ Query: "{query}"
 
 JSON output (only):
 {{"category": "", "entity": ""}}"""
+
+_ENTITY_TAG_PROMPT = """Extract up to 6 concise retrieval tags for this rehab query.
+
+Rules:
+- lowercase tags only
+- 1-2 words per tag (use underscore for multiword tags)
+- prefer body_part, condition, intent, goal tags
+- no punctuation
+
+source_hint: {source_hint}
+query: {query}
+
+JSON only:
+{{"tags": ["tag1", "tag2"]}}"""
 
 
 class KnowledgeLibrarian:
@@ -165,6 +188,37 @@ class KnowledgeLibrarian:
         except Exception:
             logger.info("KnowledgeLibrarian: SLM client init failed — keyword-only routing")
 
+        # Entity spoke: optional lightweight tag extractor using qwen:0.5b.
+        # Falls back to deterministic local tag extraction if unavailable.
+        self._entity_spoke_enabled = ENTITY_TAG_SPOKE_ENABLED
+        self._entity_slm_model = os.getenv("LIBRARIAN_ENTITY_TAG_MODEL", "qwen:0.5b")
+        self._entity_slm_client = None
+        self._entity_slm_available = False
+        if self._entity_spoke_enabled:
+            try:
+                from utils.ollama_client import OllamaClient
+
+                self._entity_slm_client = OllamaClient(model_name=self._entity_slm_model)
+                self._entity_slm_client.timeout = 4
+                if self._entity_slm_client.check_connection():
+                    available = self._entity_slm_client.list_models()
+                    if any(self._entity_slm_model in m for m in available):
+                        self._entity_slm_available = True
+                        logger.info(
+                            "KnowledgeLibrarian: entity spoke ready (%s)",
+                            self._entity_slm_model,
+                        )
+                    else:
+                        logger.warning(
+                            "KnowledgeLibrarian: entity model %s not found (available: %s) — local tag extractor only",
+                            self._entity_slm_model,
+                            available[:5],
+                        )
+                else:
+                    logger.info("KnowledgeLibrarian: entity spoke disabled (Ollama unavailable)")
+            except Exception:
+                logger.info("KnowledgeLibrarian: entity spoke init failed — local tag extractor only")
+
         # MedQuAD: lazy-loaded ChromaDB collection (scaffolding)
         self._medquad_collection = None
         self._medquad_embedder = None
@@ -172,12 +226,13 @@ class KnowledgeLibrarian:
 
         logger.info(
             "KnowledgeLibrarian initialized | memory=%s doc=%s motion=%s "
-            "keyword_extractor=%s slm=%s medquad=%s",
+            "keyword_extractor=%s slm=%s entity_spoke=%s medquad=%s",
             self._memory_tool is not None,
             self._document_tool is not None,
             self._motion_retriever is not None,
             self._keyword_extractor is not None,
             self._slm_available,
+            self._entity_slm_available,
             self._medquad_collection is not None,
         )
 
@@ -256,6 +311,7 @@ class KnowledgeLibrarian:
 
         # ── Step 2: Query Refinement ─────────────────────────────
         refined_query = self._refine_query(user_query)
+        query_tags = self._extract_query_entity_tags(refined_query, source)
 
         # ── Step 3: Fact Extraction (delegate to appropriate tool) ──
         raw_results, motion_metadata = self._extract_facts(
@@ -264,6 +320,7 @@ class KnowledgeLibrarian:
             user_id=user_id,
             conversation_history=conversation_history,
         )
+        raw_results = self._apply_entity_tag_rerank(raw_results, query_tags)
 
         # ── Step 4: Confidence Scoring ───────────────────────────
         best_score = 0.0
@@ -315,6 +372,8 @@ class KnowledgeLibrarian:
             "keyword_match": keyword_match,
             "no_context_signal": None,
             "slm_classification_used": slm_used,
+            "entity_tags": query_tags,
+            "entity_spoke_used": bool(self._entity_spoke_enabled and self._entity_slm_available),
             "elapsed_ms": round(elapsed_ms, 1),
         }
 
@@ -323,14 +382,14 @@ class KnowledgeLibrarian:
             output["no_context_signal"] = "NO_LOCAL_CONTEXT_FOUND"
             logger.info(
                 "KnowledgeLibrarian: NO_LOCAL_CONTEXT_FOUND for '%s' "
-                "(best_score=%.3f < threshold=%.2f) [%.0fms]",
-                user_query[:50], best_score, RAG_CONFIDENCE_THRESHOLD, elapsed_ms,
+                "(best_score=%.3f < threshold=%.2f tags=%s) [%.0fms]",
+                user_query[:50], best_score, RAG_CONFIDENCE_THRESHOLD, query_tags, elapsed_ms,
             )
         else:
             logger.info(
-                "KnowledgeLibrarian: %s → %d facts (score=%.3f, direct=%s, keyword=%s, slm=%s) [%.0fms]",
+                "KnowledgeLibrarian: %s → %d facts (score=%.3f, direct=%s, keyword=%s, slm=%s, tags=%s) [%.0fms]",
                 source, len(retrieved_facts), best_score,
-                direct_match, keyword_match, slm_used, elapsed_ms,
+                direct_match, keyword_match, slm_used, query_tags, elapsed_ms,
             )
 
         return output
@@ -467,6 +526,86 @@ class KnowledgeLibrarian:
 
         return stripped if len(stripped) >= 2 else q
 
+    def _extract_query_entity_tags(self, query: str, source_hint: str) -> List[str]:
+        """Extract retrieval tags using local rules + optional qwen:0.5b spoke."""
+        deterministic_tags = extract_entity_tags(query, max_tags=ENTITY_TAG_MAX)
+        if deterministic_tags:
+            return deterministic_tags
+
+        if not (self._entity_spoke_enabled and self._entity_slm_available and self._entity_slm_client):
+            return deterministic_tags
+
+        try:
+            prompt = _ENTITY_TAG_PROMPT.format(
+                source_hint=str(source_hint or "unknown"),
+                query=query[:220],
+            )
+            raw = self._entity_slm_client.generate(
+                prompt=prompt,
+                format="json",
+                temperature=0.0,
+                max_tokens=48,
+            )
+            parsed = json.loads(raw)
+            candidate_tags = parsed.get("tags", []) if isinstance(parsed, dict) else []
+            normalized: List[str] = []
+            seen: set[str] = set()
+            for raw_tag in candidate_tags:
+                tag = str(raw_tag or "").strip().lower()
+                tag = re.sub(r"[^a-z0-9_\-\s]", "", tag)
+                tag = re.sub(r"\s+", "_", tag).strip("_")
+                if not tag or tag in seen:
+                    continue
+                seen.add(tag)
+                normalized.append(tag)
+                if len(normalized) >= ENTITY_TAG_MAX:
+                    break
+
+            if normalized:
+                logger.debug("KnowledgeLibrarian entity spoke tags: %s", normalized)
+            return normalized
+        except Exception as exc:
+            logger.debug("KnowledgeLibrarian entity spoke failed: %s", exc)
+            return deterministic_tags
+
+    def _apply_entity_tag_rerank(
+        self,
+        raw_results: List[Dict[str, Any]],
+        query_tags: List[str],
+    ) -> List[Dict[str, Any]]:
+        """Boost relevance when query tags overlap stored metadata entity tags."""
+        if not raw_results or not query_tags:
+            return raw_results
+
+        query_tag_set = set(query_tags)
+        overlap_found = False
+
+        reranked: List[Dict[str, Any]] = []
+        for result in raw_results:
+            item = dict(result)
+            metadata = item.get("metadata") or {}
+            metadata_tags = decode_entity_tags(metadata.get("entity_tags"))
+            overlap = sorted(query_tag_set.intersection(metadata_tags))
+            item["entity_tag_overlap"] = overlap
+
+            similarity = float(item.get("similarity") or item.get("score") or 0.0)
+            if overlap:
+                overlap_found = True
+                boosted = min(0.9999, similarity + (ENTITY_TAG_BOOST * len(overlap)))
+                item["similarity"] = boosted
+                if "score" in item:
+                    item["score"] = boosted
+            reranked.append(item)
+
+        if ENTITY_TAG_STRICT_FILTER and overlap_found:
+            reranked = [item for item in reranked if item.get("entity_tag_overlap")]
+
+        reranked.sort(
+            key=lambda entry: float(entry.get("similarity") or entry.get("score") or 0.0),
+            reverse=True,
+        )
+        return reranked
+
     # ──────────────────────────────────────────────────────────────
     # Step 3: Fact Extraction
     # ──────────────────────────────────────────────────────────────
@@ -533,6 +672,12 @@ class KnowledgeLibrarian:
                 "score": candidate.score,
                 "motion_id": candidate.motion_id,
                 "duration": candidate.duration,
+                "metadata": {
+                    "entity_tags": extract_entity_tags(
+                        candidate.text_description,
+                        max_tags=ENTITY_TAG_MAX,
+                    ),
+                },
                 "strategy": "vector",
             }
             results.append(entry)
@@ -678,6 +823,7 @@ class KnowledgeLibrarian:
                         "topic": meta.get("topic", ""),
                         "split": meta.get("split", ""),
                         "source": "medquad_nih",
+                        "entity_tags": extract_entity_tags(doc, max_tags=ENTITY_TAG_MAX),
                     },
                     "strategy": "vector",
                 })
@@ -792,8 +938,12 @@ class KnowledgeLibrarian:
             "exercise_detector": self._exercise_detector is not None,
             "keyword_extractor": self._keyword_extractor is not None,
             "slm_available": self._slm_available,
+            "entity_spoke_enabled": self._entity_spoke_enabled,
+            "entity_spoke_available": self._entity_slm_available,
             "medquad_collection": self._medquad_collection is not None,
             "confidence_threshold": RAG_CONFIDENCE_THRESHOLD,
             "direct_match_threshold": DIRECT_MATCH_THRESHOLD,
             "gemini_gate_threshold": GEMINI_GATE_THRESHOLD,
+            "entity_tag_boost": ENTITY_TAG_BOOST,
+            "entity_tag_strict_filter": ENTITY_TAG_STRICT_FILTER,
         }

@@ -876,11 +876,25 @@
 
     // ── BUBBLE ────────────────────────────────────────────────────────────────────
 
-    function Bubble({ msg }) {
+    function Bubble({ msg, onExerciseClick }) {
       const isUser = msg.role === "user";
       const motionLabel = typeof msg.motion === "string"
         ? msg.motion
         : (msg.motion?.label || msg.motion?.prompt || null);
+      const exerciseNames = Array.from(
+        new Set(
+          (Array.isArray(msg.exercises) ? msg.exercises : [])
+            .map((exercise) => {
+              if (typeof exercise === "string") return exercise.trim();
+              if (exercise && typeof exercise === "object") {
+                return String(exercise.name || exercise.title || "").trim();
+              }
+              return "";
+            })
+            .filter(Boolean)
+        )
+      );
+      const canShowExerciseButtons = !isUser && msg.showExerciseButtons === true && exerciseNames.length > 0;
 
       if (msg.audioUrl && !isUser) {
          console.log("[Bubble Render] Rendering audio tag with URL:", msg.audioUrl);
@@ -912,7 +926,24 @@
               boxShadow: isUser ? "0 2px 10px rgba(0,122,255,0.22)" : "none",
             }}>
               {isUser ? (
-                msg.text
+                <div>
+                  {msg.text}
+                  {msg.attachments && msg.attachments.length > 0 && (
+                    <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {msg.attachments.map(file => (
+                        <div key={file} style={{
+                          display: "flex", alignItems: "center", gap: 4,
+                          background: "rgba(255,255,255,0.2)", borderRadius: 8, padding: "3px 8px",
+                          fontSize: 11, fontWeight: 600, color: "#fff",
+                          border: "1px solid rgba(255,255,255,0.3)"
+                        }}>
+                          <span>📄</span>
+                          <span>{file}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               ) : (
                 msg.isStreamingText ? (
                   <div style={{ whiteSpace: "pre-wrap" }}>{msg.text}</div>
@@ -940,6 +971,35 @@
             {msg.audioUrl && !isUser && (
               <div style={{ marginTop: 8, minWidth: 240, width: "100%" }}>
                 <audio ref={audioRef} controls src={msg.audioUrl} style={{ width: "100%", display: "block", outline: "none", borderRadius: 8, background: "#F2F2F7" }} autoPlay={msg.autoPlay} />
+              </div>
+            )}
+
+            {canShowExerciseButtons && (
+              <div style={{
+                marginTop: 8,
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 6,
+              }}>
+                {exerciseNames.map((exerciseName, idx) => (
+                  <button
+                    key={`${msg.id}-exercise-${idx}-${exerciseName}`}
+                    onClick={() => onExerciseClick && onExerciseClick(`Show me ${exerciseName}`)}
+                    style={{
+                      padding: "6px 10px",
+                      borderRadius: 10,
+                      background: "var(--chip-bg)",
+                      color: "#007AFF",
+                      fontSize: 12.5,
+                      fontWeight: 600,
+                      letterSpacing: -0.1,
+                      border: "1px solid var(--divider)",
+                    }}
+                    title={`Show motion for ${exerciseName}`}
+                  >
+                    {`📘 ${exerciseName}`}
+                  </button>
+                ))}
               </div>
             )}
 
@@ -1166,6 +1226,23 @@
         };
       };
 
+      const shouldShowExerciseButtons = (payload) => {
+        const exercises = Array.isArray(payload?.exercises) ? payload.exercises : [];
+        if (exercises.length < 2) {
+          return false;
+        }
+
+        // Hide chips when a concrete motion clip is already being generated/shown.
+        // For recommendation/list queries, backend may classify intent inconsistently,
+        // so we rely on the shape of returned data first.
+        const hasMotion = Boolean(payload?.motion?.motion_file_url);
+        if (hasMotion) {
+          return false;
+        }
+
+        return true;
+      };
+
       const send = async (text) => {
         if (!text.trim()) return;
         const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -1176,12 +1253,15 @@
         setMotionError("");
         setActiveTaskId(null);
 
+        const currentAttachments = [...uploadedDocs];
+
         setMessages(m => [
           ...m, 
-          { id: userMessageId, role: "user", text, motion: null, time: now },
-          { id: assistantMessageId, role: "assistant", text: "", isStreamingText: false, motion: null, time: now, autoPlay: true }
+          { id: userMessageId, role: "user", text, attachments: currentAttachments, motion: null, time: now },
+          { id: assistantMessageId, role: "assistant", text: "", isStreamingText: false, motion: null, exercises: [], showExerciseButtons: false, time: now, autoPlay: true }
         ]);
         setInput("");
+        setUploadedDocs([]);
         if (textRef.current) textRef.current.style.height = "auto";
 
         setThinking(true);
@@ -1230,6 +1310,13 @@
               }
             }
 
+            if (Array.isArray(progress?.exercises)) {
+              updateAssistantMessage({
+                exercises: progress.exercises,
+                showExerciseButtons: shouldShowExerciseButtons(progress),
+              });
+            }
+
             if (progress?.motion && progress.motion.motion_file_url) {
               const motionBadge = toMotionBadge(progress.motion);
               setMotionUrl(progress.motion.motion_file_url);
@@ -1248,6 +1335,7 @@
           if (replyData.task_id) {
             setActiveTaskId(replyData.task_id);
           }
+          const replyShowExerciseButtons = shouldShowExerciseButtons(replyData);
 
           setMessages(msgs => msgs.map((msg) => (
             msg.id === assistantMessageId
@@ -1255,8 +1343,12 @@
                   ...msg,
                   text: msg.text || "",
                   motion: msg.motion || null,
-                  audioUrl: (replyData.tts && replyData.tts.audio_url) ? 
-                    (replyData.tts.audio_url.startsWith('/') ? API_BASE_URL + replyData.tts.audio_url : replyData.tts.audio_url) 
+                  exercises: (Array.isArray(replyData.exercises) && replyData.exercises.length > 0)
+                    ? replyData.exercises
+                    : (msg.exercises || []),
+                  showExerciseButtons: replyShowExerciseButtons,
+                  audioUrl: (replyData.tts && replyData.tts.audio_url) ?
+                    (replyData.tts.audio_url.startsWith('/') ? API_BASE_URL + replyData.tts.audio_url : replyData.tts.audio_url)
                     : msg.audioUrl,
                 }
               : msg
@@ -1295,14 +1387,19 @@
                 }
 
                 const finalMotionBadge = toMotionBadge(finalData.motion);
+                const finalShowExerciseButtons = shouldShowExerciseButtons(finalData);
                 setMessages(msgs => msgs.map((msg) => (
                   msg.id === assistantMessageId
                     ? {
                         ...msg,
                         text: msg.text || "",
                         motion: finalMotionBadge || msg.motion || null,
-                        audioUrl: (finalData.tts && finalData.tts.audio_url) ? 
-                          (finalData.tts.audio_url.startsWith('/') ? API_BASE_URL + finalData.tts.audio_url : finalData.tts.audio_url) 
+                        exercises: (Array.isArray(finalData.exercises) && finalData.exercises.length > 0)
+                          ? finalData.exercises
+                          : (msg.exercises || []),
+                        showExerciseButtons: finalShowExerciseButtons,
+                        audioUrl: (finalData.tts && finalData.tts.audio_url) ?
+                          (finalData.tts.audio_url.startsWith('/') ? API_BASE_URL + finalData.tts.audio_url : finalData.tts.audio_url)
                           : msg.audioUrl,
                       }
                     : msg
@@ -1321,10 +1418,11 @@
                 updateAssistantMessage({
                     text: finalData.text_answer || "",
                     motion: finalMotionBadge || null,
-                    audioUrl: (finalData.tts && finalData.tts.audio_url) ? 
-                      (finalData.tts.audio_url.startsWith('/') ? API_BASE_URL + finalData.tts.audio_url : finalData.tts.audio_url) 
+                    audioUrl: (finalData.tts && finalData.tts.audio_url) ?
+                      (finalData.tts.audio_url.startsWith('/') ? API_BASE_URL + finalData.tts.audio_url : finalData.tts.audio_url)
                       : null
                 });
+
 
                 if (finalData.motion_error) {
                   setMotionError(String(finalData.motion_error));
@@ -1364,10 +1462,13 @@
           if (!replyData.finalPromise) {
              const finalMotionBadge = toMotionBadge(replyData.motion);
              updateAssistantMessage({
-                 text: replyData.text_answer || "",
                  motion: finalMotionBadge || null,
-                 audioUrl: (replyData.tts && replyData.tts.audio_url) ? 
-                   (replyData.tts.audio_url.startsWith('/') ? API_BASE_URL + replyData.tts.audio_url : replyData.tts.audio_url) 
+                 exercises: (Array.isArray(replyData.exercises) && replyData.exercises.length > 0)
+                   ? replyData.exercises
+                   : [],
+                 showExerciseButtons: replyShowExerciseButtons,
+                 audioUrl: (replyData.tts && replyData.tts.audio_url) ?
+                   (replyData.tts.audio_url.startsWith('/') ? API_BASE_URL + replyData.tts.audio_url : replyData.tts.audio_url)
                    : null
              });
           }
@@ -1434,6 +1535,40 @@
           setActiveTaskStage("failed");
         } finally {
           setGenerating(false);
+        }
+      };
+
+      const handleClearMemory = async () => {
+        if (!window.confirm("Are you sure you want to clear ALL memory? This will forget your conversation history, physical context, and document knowledge. This action cannot be undone.")) {
+          return;
+        }
+        
+        try {
+          setGenerating(true);
+          setActiveTaskStage("clearing_memory");
+          
+          await window.clearMemory(USER_ID);
+          
+          // Clear UI state
+          setMessages(INIT);
+          setActiveSession(null);
+          setClinicalAdvice("");
+          setMotionUrl(null);
+          setMotionMeta(null);
+          setMotionError("");
+          setActiveTaskId(null);
+          
+          // Refresh sessions list (which should now be empty)
+          const historySessions = await window.listSessions(USER_ID);
+          setSessions(historySessions);
+          
+          alert("Memory cleared successfully.");
+        } catch (error) {
+          console.error("Failed to clear memory:", error);
+          alert("Failed to clear memory: " + (error.message || "Unknown error"));
+        } finally {
+          setGenerating(false);
+          setActiveTaskStage("");
         }
       };
 
@@ -1534,6 +1669,24 @@
                 </div>
               ))}
 
+              {/* Clear memory button */}
+              <div style={{ marginTop: 12 }}>
+                <button 
+                  onClick={handleClearMemory}
+                  style={{
+                    width: "100%", padding: "8px 0", 
+                    background: "rgba(255, 59, 48, 0.1)",
+                    borderRadius: 10, color: "#FF3B30", fontSize: 13, fontWeight: 600,
+                    letterSpacing: -0.2, transition: "background 0.12s",
+                    border: "1px solid rgba(255, 59, 48, 0.2)"
+                  }}
+                  onMouseOver={(e) => e.currentTarget.style.background = "rgba(255, 59, 48, 0.15)"}
+                  onMouseOut={(e) => e.currentTarget.style.background = "rgba(255, 59, 48, 0.1)"}
+                >
+                  Clear Memory
+                </button>
+              </div>
+
               {/* Dark mode toggle */}
               <div style={{ marginTop: 12, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                 <span style={{ fontSize: 12.5, color: "var(--text-label)", fontWeight: 500 }}>Dark Mode</span>
@@ -1591,7 +1744,7 @@
 
             {/* Messages */}
             <div style={{ flex: 1, overflowY: "auto", padding: "24px 20px" }}>
-              {messages.map(msg => <Bubble key={msg.id} msg={msg} />)}
+              {messages.map(msg => <Bubble key={msg.id} msg={msg} onExerciseClick={send} />)}
 
               {(thinking || generatingMotion) && activeTaskStage && (
                 <div style={{
