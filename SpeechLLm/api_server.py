@@ -11,15 +11,14 @@ from pydantic import BaseModel
 import uvicorn
 import yaml
 
-from src.services.elevenlabs_client import ElevenLabsClient
-from src.services.coqui_client import CoquiClient
+from src.services.vieneu_client import VieNeuClient
 from src.services.tts_router import TTSRouter
 
 
 # =========================
 # App Init
 # =========================
-app = FastAPI(title="SpeechLLM ElevenLabs TTS API")
+app = FastAPI(title="SpeechLLM VieNeu TTS API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -75,11 +74,10 @@ def clean_text_for_tts(text: str) -> str:
 # Services Init
 # =========================
 model_config = load_yaml("configs/models.yaml")
-elevenlabs_client = ElevenLabsClient(**model_config["elevenlabs"])
-coqui_client = CoquiClient(model_config["coqui"])
-tts_router = TTSRouter(eleven_client=elevenlabs_client, coqui_client=coqui_client)
+vieneu_client = VieNeuClient(model_config["vieneu"])
+tts_router = TTSRouter(vieneu_client=vieneu_client)
 
-audio_dir = Path(model_config["elevenlabs"].get("output_dir", "data/temp_audio"))
+audio_dir = Path(model_config["vieneu"].get("output_dir", "data/temp_audio"))
 audio_dir.mkdir(parents=True, exist_ok=True)
 
 

@@ -1,29 +1,14 @@
 class TTSRouter:
-	"""Routes TTS requests to ElevenLabs with Coqui fallback."""
+    """Routes TTS requests to VieNeu (primary, with extensible fallback)."""
 
-	def __init__(self, eleven_client=None, coqui_client=None):
-		self.eleven = eleven_client
-		self.coqui = coqui_client
-		self.last_provider = None
+    def __init__(self, vieneu_client=None):
+        self.vieneu = vieneu_client
+        self.last_provider = None
 
-	def synthesize(self, text: str, language: str = "en") -> str:
-		# Prefer ElevenLabs in normal operation.
-		if self.eleven:
-			try:
-				audio_path = self.eleven.synthesize(text)
-				self.last_provider = "elevenlabs"
-				return audio_path
-			except Exception as e:
-				error_msg = str(e).lower()
-				# Fall back to Coqui when quota/credits are exhausted.
-				if "quota_exceeded" in error_msg or "credits" in error_msg:
-					print("[TTS Router] ElevenLabs credits exhausted. Falling back to Coqui.")
-				else:
-					print(f"[TTS Router] ElevenLabs failed, trying Coqui: {e}")
+    def synthesize(self, text: str, language: str = "vi") -> str:
+        if self.vieneu:
+            audio_path = self.vieneu.synthesize(text, language=language)
+            self.last_provider = "vieneu"
+            return audio_path
 
-		if self.coqui:
-			audio_path = self.coqui.synthesize(text, language=language)
-			self.last_provider = "coqui"
-			return audio_path
-
-		raise RuntimeError("All TTS providers failed (ElevenLabs and Coqui unavailable).")
+        raise RuntimeError("No TTS provider available (VieNeu not configured).")

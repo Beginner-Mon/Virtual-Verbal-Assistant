@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(Get-ChildItem *)",
-      "Bash(Test-Path *)"
+      "Bash(Test-Path *)",
+      "Bash(Select-Object FullName)"
     ]
   }
 }
