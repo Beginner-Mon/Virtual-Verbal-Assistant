@@ -39,6 +39,11 @@ chroma_data/
 .env
 .env.*
 !.env.example
+**/firebase-service-account.json
+**/service-account*.json
+*.pem
+*.key
+!*.pub.key
 
 # Local tooling state (per-machine, not project state)
 .agents/

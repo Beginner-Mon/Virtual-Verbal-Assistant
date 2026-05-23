@@ -1,7 +1,9 @@
-"""Memory module for Agentic RAG system."""
+"""Memory utilities — Phase 2.5: only EmbeddingService + DocumentStore survive.
 
-from memory.vector_store import VectorStore
+VectorStore / MemoryManager / SessionStore (ChromaDB + Firebase backends) were
+removed; langgraph_agents owns vector + memory + session now.
+"""
+
 from memory.embedding_service import EmbeddingService
-from memory.memory_manager import MemoryManager
 
-__all__ = ["VectorStore", "EmbeddingService", "MemoryManager"]
+__all__ = ["EmbeddingService"]
