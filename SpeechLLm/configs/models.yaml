@@ -14,3 +14,4 @@ vieneu:
   device: cpu
   output_dir: data/temp_audio
   model_path: "models/vieneu-tts-v2-turbo.gguf"
+  voice_path: ""  # path to reference .wav for voice cloning, e.g. "voices/my_voice.wav"

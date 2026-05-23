@@ -34,3 +34,16 @@ text-to-motion/DART/data_loaders/humanml/data/__pycache__/
 
 # Local Chroma volume data
 chroma_data/
+
+# Secrets — NEVER commit env files (API keys, DSNs)
+.env
+.env.*
+!.env.example
+
+# Local tooling state (per-machine, not project state)
+.agents/
+.claude/worktrees/
+.claude/settings.local.json
+.claude/skills/
+.claude/karpathy-guidelines.md
+skills-lock.json

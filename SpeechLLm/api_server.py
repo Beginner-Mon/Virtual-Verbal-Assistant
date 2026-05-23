@@ -47,6 +47,7 @@ class TTSRequest(BaseModel):
 
     language: Optional[str] = "en"
     user_id: Optional[str] = None
+    voice_path: Optional[str] = None  # path to reference .wav for voice cloning
 
 
 # =========================
@@ -119,6 +120,7 @@ async def synthesize(req: TTSRequest):
             tts_router.synthesize,
             clean_text,
             language,
+            req.voice_path,
         )
 
         tts_time = time.time() - start_time

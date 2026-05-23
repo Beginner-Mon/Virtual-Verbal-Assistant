@@ -1,0 +1,72 @@
+# LangGraph Agent Configuration
+# Separate file to avoid merge conflicts with existing config/config.yaml
+
+langgraph:
+  llm:
+    provider: "gemini"
+    manager_model: "gemini-2.5-flash"
+    reasoning_model: "gemini-2.5-flash"
+    conversation_model: "gemini-2.5-flash"
+    temperature:
+      manager: 0.0
+      reasoning: 0.7
+      conversation: 0.7
+    max_tokens:
+      manager: 1024
+      reasoning: 4096
+      conversation: 4096
+
+  memory:
+    redis_url: "redis://localhost:6379"
+    stm_profile_ttl: 86400     # 24h
+    stm_session_ttl: 7200      # 2h
+    stm_patterns_ttl: 604800   # 7d
+    ltm_top_k: 5
+    ltm_similarity_threshold: 0.3
+
+  retrieval:
+    top_k: 5
+    min_context_threshold: 2
+    quality_threshold: 0.4
+    web_search_enabled: true
+    web_search_max_results: 3
+    web_search_timeout: 8
+    source_weights:
+      document: 1.0
+      conversation: 0.9
+      web_search: 0.75
+
+  services:
+    kimodo:
+      url: "http://localhost:5001"
+      endpoint: "/generate"
+      timeout: 30
+      circuit_breaker:
+        failure_threshold: 3
+        cool_down_seconds: 60
+    vieneu_tts:
+      url: "http://localhost:5000"
+      endpoint: "/synthesize"
+      timeout: 15
+      circuit_breaker:
+        failure_threshold: 3
+        cool_down_seconds: 60
+
+  celery:
+    broker_url: "redis://localhost:6379/1"
+    result_backend: "redis://localhost:6379/1"
+    task_time_limit: 300
+    task_soft_time_limit: 240
+
+  postgres:
+    dsn: "postgresql://vva:vva_dev@localhost:5432/vva"
+    pool_min: 2
+    pool_max: 10
+
+  persona:
+    default: "eca_default"
+    personas_dir: "langgraph_agents/personas"
+    styling_model: "gemini-2.5-flash"
+    styling_temperature: 0.7
+    styling_max_tokens: 4096
+    voices_dir: "voices"

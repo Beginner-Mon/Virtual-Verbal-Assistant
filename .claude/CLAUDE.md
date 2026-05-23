@@ -23,10 +23,10 @@ Infrastructure             Redis (Celery broker), Firebase (sessions), Docker (C
 
 Key files: `agents/api_orchestrator.py` (780 lines, main orchestrator), `retrieval/rag_pipeline.py` (759 lines), `memory/vector_store.py` (912 lines), `text-to-motion/DART/mcp_server.py` (production-ready FastMCP server).
 
-## Active Plan: LangGraph Re-Architecture (v2.1)
+## Active Plan: LangGraph Re-Architecture (v2.2)
 
 **Full plan**: `.claude/plans/purrfect-herding-kahn.md`
-**Worklogs**: `docs/worklogs/19-05-2026.md` (planning session), `docs/worklogs/20-05-2026.md` (N's second review)
+**Worklogs**: `docs/worklogs/19-05-2026.md` (planning), `docs/worklogs/20-05-2026.md` (N's reviews + v2.2)
 **Branch**: `feature/langgraph-rewrite` (to be created from `develop`)
 
 ### Target Architecture
@@ -40,38 +40,55 @@ Replace custom orchestrator with **LangGraph multi-agent supervisor**:
 | Retrieval | pgvector search + web fallback, HyDE | 0-1 |
 | Reasoning | Clinical analysis, constraint extraction (heavy model) | 1 |
 | Validator | Validate sub-agent outputs + build raw_answer + fallback | 0 |
-| Conversation | Apply persona MD styling, stream via WebSocket | 1 |
-| Dispatch | Fire Celery tasks for motion/speech | 0 |
+| Conversation | Apply persona MD styling, stream via SSE | 1 |
+| Dispatch | Approval gate (motion) + fire Celery tasks | 0 |
 
-### Key Decisions (ADRs from 19-05-2026, updated 20-05-2026)
+### Key Decisions (v2.2)
 
-- **LangGraph**: Accepted. Node logic is pure Python (zero LangGraph imports inside nodes). Lock-in at control flow + state persistence layer; business logic fully portable. Full migration ~1 week.
-- **PostgreSQL (pgvector)**: Replaces Firebase + ChromaDB. Single DB for structured + vector data. Docker memory limit 2GB.
-- **Redis**: Kept for short-term memory + Celery broker + task result persistence (reconnect recovery).
-- **Celery**: Kept for async background tasks (motion, TTS, doc indexing). LangGraph = sync graph only.
-- **DART/TTS**: Direct REST calls (httpx). NO MCP for internal services. DART and Ollama mutually exclusive (RAM).
-- **MCP**: Deferred to future phase. Only for third-party external tool extensions.
-- **Streaming**: Single WebSocket connection with reconnect recovery. Task results persisted in Redis for fallback delivery.
-- **Error routing**: 3 severity levels (CRITICAL/RECOVERABLE/IGNORABLE). `error_handler` node for graceful degradation.
-- **LLM**: API-primary (Claude likely). Local Ollama not ruled out. Final decision pending.
-- **Manager vs Reasoning**: Separate nodes. Merge if Phase 1 profiling shows Manager >500ms.
+- **LangGraph**: Pure Python nodes. Lock-in at control flow + state persistence; business logic portable. ~1 week migration.
+- **Kimodo**: Replaces DART. GPU-exclusive kinematic motion render with joint constraints. 5-10s per sequence.
+- **VieNeu-TTS-GGUF**: Replaces Coqui/ElevenLabs. CPU-only Vietnamese TTS, frees 100% GPU for Kimodo.
+- **SSE + REST POST**: Replaces WebSocket (ADR-005 revised). CDN-friendly, auto-reconnect via EventSource.
+- **Approval Gate**: Clinical safety — user must approve before 3D motion render. Saves GPU + prevents unsafe exercise demos.
+- **PostgreSQL (pgvector)**: Replaces Firebase + ChromaDB. Single DB for structured + vector data.
+- **Redis**: STM + Celery broker + task result persistence + approval gate payloads.
+- **Celery**: Kept for async background tasks (Kimodo render, VieNeu-TTS, doc indexing).
+- **Error routing**: 3 severity levels (CRITICAL/RECOVERABLE/IGNORABLE). Graceful degradation when worker down.
+- **Deployment**: Hybrid Edge-Cloud target. **Local-first** for Phases 0-6, then split to Cloud (VPS+Supabase) + Edge (HP ProDesk 48GB RAM, RTX 3060).
 
 ### Phases
 
-0. Foundation (scaffold, PostgreSQL, stub nodes)
+0. Foundation (scaffold, PostgreSQL, stub nodes, error routing)
 1. Manager + Memory (intent classification, Redis STM, pgvector LTM)
 2. Retrieval + Reasoning (RAG pipeline, clinical analysis)
-3. Celery Tasks (motion/speech via direct REST, dispatch node)
+3. Celery Tasks + Kimodo + VieNeu-TTS (approval gate, graceful degradation)
 4. Conversation + Personas (persona MD files, styling)
-5. Streaming + Frontend (WebSocket, UI fixes)
+5. SSE Streaming + Frontend (EventSource, approval button, REST POST)
 6. Production Hardening (logging, tracing, testing, health checks)
+7. Hybrid Edge-Cloud Deployment (VPS + Supabase + local worker + CloudFront)
 
 ### Open Items
 
 - LLM provider final decision (Claude / Ollama / hybrid)
-- Deployment topology (separate discussion)
 - pgvector vs ChromaDB benchmark (Phase 2)
-- Owner confirmation of v2.1 before Phase 0 begins
+- Kimodo integration validation (Phase 3)
+
+## Skills (`.claude/skills/`)
+
+K chọn skill phù hợp theo tình huống — không cần N yêu cầu cụ thể:
+
+| Skill | Khi nào dùng |
+|-------|-------------|
+| **diagnose** | Hard bugs, performance regressions. Loop: reproduce → minimise → hypothesise → instrument → fix → regression-test |
+| **grill-with-docs** | Stress-test plan/code against domain model. Sharpen terminology, update CONTEXT.md + ADRs inline |
+| **triage** | Triage issues qua state machine of triage roles |
+| **improve-codebase-architecture** | Tìm cơ hội cải thiện architecture, informed by CONTEXT.md + ADRs |
+| **tdd** | Red-green-refactor loop. Build features/fix bugs one vertical slice at a time |
+| **to-issues** | Break plan/spec/PRD thành GitHub issues (vertical slices, independently-grabbable) |
+| **to-prd** | Synthesize conversation context thành PRD → GitHub issue |
+| **zoom-out** | Broader context / higher-level perspective cho unfamiliar code sections |
+| **prototype** | Throwaway prototype — runnable terminal app hoặc multiple UI variations |
+| **setup-matt-pocock-skills** | One-time per-repo scaffold (issue tracker, triage labels, domain doc layout) |
 
 ## Conventions
 
