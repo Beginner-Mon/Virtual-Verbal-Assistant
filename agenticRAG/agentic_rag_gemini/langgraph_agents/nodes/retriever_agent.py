@@ -1,7 +1,7 @@
 """Retriever Agent — executes planner's plan via tool calls.
 
 Pattern: ChatModel.bind_tools() → invoke → if tool_calls → ToolNode → loop
-Phase 2.5: only pgvector_search. MCP tools added in Phase 3.
+Phase 3: pgvector_search (in-process) + MCP tools (generate_motion, search_medical).
 """
 
 from datetime import datetime, timezone
@@ -13,8 +13,14 @@ from langgraph_agents.tools.pgvector_tool import pgvector_search
 
 
 RETRIEVER_TOOLS = [pgvector_search]
-# Backwards-compat alias (Phase 2.5 tests import the underscored name)
 _RETRIEVER_TOOLS = RETRIEVER_TOOLS
+
+
+async def _build_tools() -> list:
+    """In-process + MCP. Called per node invocation; tool list cached by mcp/client."""
+    from langgraph_agents.mcp.client import get_mcp_tools
+    mcp_tools = await get_mcp_tools()
+    return [pgvector_search, *mcp_tools]
 
 
 _RETRIEVER_SYSTEM_PROMPT = """You are a tool execution agent. Execute the plan from the planner.
@@ -48,7 +54,8 @@ async def retriever_agent_node(state: AgentState, config) -> dict:
         plan=plan,
     )
 
-    llm = get_chat_model("retriever").bind_tools(RETRIEVER_TOOLS)
+    tools = await _build_tools()
+    llm = get_chat_model("retriever").bind_tools(tools)
 
     try:
         ai_msg = await llm.ainvoke([

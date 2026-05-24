@@ -1,0 +1,23 @@
+# MCP server registry — consumed by langgraph_agents/mcp/client.py
+#
+# Transport options:
+#   stdio              → server runs as subprocess (default for dev)
+#   streamable_http    → server runs as long-lived HTTP service
+#
+# To switch a server to HTTP, change transport + add url, remove command/args.
+
+mcp_servers:
+  kimodo_motion:
+    transport: stdio
+    command: python
+    args: ["-m", "langgraph_agents.mcp.kimodo_server"]
+
+  web_search:
+    transport: stdio
+    command: python
+    args: ["-m", "langgraph_agents.mcp.web_search_server"]
+
+  # Production HTTP example (commented):
+  # kimodo_motion:
+  #   transport: streamable_http
+  #   url: "http://localhost:5001/mcp"

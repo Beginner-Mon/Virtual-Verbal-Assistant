@@ -3,7 +3,7 @@
 import os
 import pytest
 
-from langgraph_agents.graph import build_graph
+from langgraph_agents.graph import build_graph_async
 from langgraph_agents.state import AgentState
 
 HAS_LLM_KEY = bool(os.getenv("DEEPSEEK_API_KEY"))
@@ -36,7 +36,7 @@ def _base_invoke_args(**overrides):
 @pytest.mark.skipif(not HAS_LLM_KEY, reason="DEEPSEEK_API_KEY not set")
 @pytest.mark.asyncio
 async def test_full_graph_v24_conversation_path():
-    graph = build_graph()
+    graph = await build_graph_async()
     state, config = _base_invoke_args(query="Xin chao")
     result = await graph.ainvoke(state, config=config)
     assert result["final_answer"], "final_answer should not be empty"
@@ -47,7 +47,7 @@ async def test_full_graph_v24_conversation_path():
 @pytest.mark.skipif(not HAS_LLM_KEY, reason="DEEPSEEK_API_KEY not set")
 @pytest.mark.asyncio
 async def test_full_graph_v24_exercise_full_pipeline():
-    graph = build_graph()
+    graph = await build_graph_async()
     state, config = _base_invoke_args(query="Bai tap cho dau lung")
     result = await graph.ainvoke(state, config=config)
     assert result["final_answer"], "final_answer should not be empty"
@@ -59,7 +59,7 @@ async def test_full_graph_v24_exercise_full_pipeline():
 @pytest.mark.skipif(not HAS_LLM_KEY, reason="DEEPSEEK_API_KEY not set")
 @pytest.mark.asyncio
 async def test_full_graph_v24_grader_retry_loop():
-    graph = build_graph()
+    graph = await build_graph_async()
     # Use a query that expects exercise_recommendation — grader will check for markers
     state, config = _base_invoke_args(query="Bai tap cho co")
     result = await graph.ainvoke(state, config=config)

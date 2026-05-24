@@ -1,8 +1,8 @@
-# Plan: VVA (KineticChat) Re-Architecture — LangGraph Multi-Agent (v2.4)
+# Plan: VVA (KineticChat) Re-Architecture — LangGraph Multi-Agent (v2.4.1)
 
-> Architect: K | Reviewer: T | Developer: N | Date: 2026-05-23
-> Status: **v2.4 — Plan-Execute Pattern, Dual-mode Conversation, Conditional LTM, Rule-based Grader**
-> Base: v2.2 (K) + v2.3 debate (T) + architecture session (22-23/05/2026)
+> Architect: K | Reviewer: T | Developer: N | Last update: 2026-05-24
+> Status: **v2.4.1 — Plan-Execute Pattern, Dual-mode Conversation, Conditional LTM, Rule-based Grader, BackgroundTasks (no Celery), simplified Session, no Token Interrupt**
+> Base: v2.2 (K) + v2.3 debate (T) + architecture session (22-23/05/2026) + simplification pass (24/05/2026)
 
 ---
 
@@ -23,10 +23,11 @@
 | 11 | **LLMGateway → LangChain ChatModel** | Xoa custom LLM abstraction, dung LangChain native everywhere |
 | 12 | **Accept LangChain/LangGraph coupling** | Bo yeu cau "pure Python nodes". Framework coupling accepted |
 | 13 | **SSE via astream_events()** | LangGraph native streaming, emit stage events per node |
-| 14 | **Token budget** | User-set limit, Annotated reducer, interrupt() pause |
+| 14 | **Token tracking (no interrupt)** | `total_tokens` Annotated reducer for cost logging. **v2.4.1**: bo `interrupt()` flow — yagni |
 | 15 | **Memory architecture moi** | STM: Redis 3 Q&A FIFO. LTM: conditional keyword trigger. Session: PostgreSQL |
-| 16 | **TTS co dinh async** | Sau graph, fire tai FastAPI layer (Celery), khong trong graph |
+| 16 | **TTS via FastAPI BackgroundTasks** | **v2.4.1**: bo Celery — VieNeu < 10s, BackgroundTasks du. Celery + queue dat danh cho Phase 7 hybrid cloud |
 | 17 | **SSE stage events** | Adopt tu v2.3 — progress updates cho tung node |
+| 18 | **Session reopen = timestamp list** | **v2.4.1**: bo session summary agent — UI hien thi `created_at + first_message_preview` (giong Claude history), khong can them LLM call |
 
 ### Giu nguyen tu v2.2
 
@@ -34,8 +35,7 @@
 - Persona system (MD files) + conversation node
 - PostgreSQL (pgvector) + Redis architecture
 - SSE + REST POST protocol
-- Celery cho TTS background task
-- Hybrid Edge-Cloud deployment target
+- Hybrid Edge-Cloud deployment target (Phase 7)
 - Phase structure (co update)
 
 ---
@@ -58,10 +58,12 @@
 
 | Component | Vai tro | Nam o dau |
 |-----------|---------|-----------|
-| TTS (VieNeu) | Speech synthesis | Async function tai FastAPI layer, fire sau graph xong |
-| MCP Servers | Tool providers (Kimodo, web search) | Standalone services |
-| Celery | TTS background task + future heavy tasks | Worker on Edge machine |
-| FastAPI | REST endpoints + SSE streaming (astream_events) + fallback | Gateway layer |
+| TTS (VieNeu) | Speech synthesis | **FastAPI BackgroundTasks** (in-process async), fire sau graph xong. Persist Redis `task_result:{id}` cho polling |
+| MCP Servers | Tool providers (Kimodo, web search) | Standalone stdio subprocess (dev) / HTTP (production) |
+| Redis | STM (3 Q&A FIFO) + `task_result:{id}` persistence (TTL 1h) | DB 0 only — bo DB 1 Celery broker (v2.4.1) |
+| FastAPI | REST endpoints + SSE streaming (astream_events) + BackgroundTasks + fallback | Gateway layer |
+
+**Reserved cho Phase 7 (hybrid cloud)**: Celery + SQS queue khi scale TTS hoac add heavy async jobs (S3 upload, batch ingestion). Skeleton `celery_app.py` giu o trang thai disabled.
 
 ---
 
@@ -273,7 +275,7 @@ Memory detects recall keywords?
 
 ### 4.3 Session Persistence — PostgreSQL
 
-Sessions luu tren PostgreSQL. Support reopen session cu.
+Sessions luu tren PostgreSQL. Support reopen session cu, **giong Claude history**: list theo timestamp + preview, KHONG dung LLM tom tat.
 
 ```sql
 -- Reuse existing conversations table
@@ -282,20 +284,26 @@ CREATE TABLE conversations (
     user_id UUID REFERENCES users(id),
     session_id UUID UNIQUE,
     messages JSONB,           -- full conversation history (all messages)
-    summary TEXT,             -- auto-generated summary for session listing
+    summary TEXT,             -- reserved (v2.4.1 unused). Backfill o Phase 6+ neu UI can label
     created_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ
 );
 ```
 
-**Session reopen** (Phase 5+ API feature):
+**Session reopen** (Phase 5 API feature — simplified):
 
 ```
-GET  /sessions?user_id=...         → list sessions (id, summary, created_at)
+GET  /sessions?user_id=...         → list sessions [{id, created_at, updated_at,
+                                       first_user_message_preview (first 80 chars)}]
+                                       sorted by updated_at DESC, limit 50
 POST /sessions/{id}/resume         → load messages from PostgreSQL
-                                   → populate Redis STM with last 3 Q&A
+                                   → populate Redis STM with last 3 Q&A pairs
                                    → return session_id for SSE connection
 ```
+
+**Tai sao bo session summary agent?** Phase 5 ban dau co dinh implement Celery task tom tat session sau idle 30m → ghi cot `summary`. v2.4.1 thay doi: nhu cau thuc te chi can browse history (giong Claude UI hien chat list theo time + preview message dau). Summary agent la over-engineering: +1 LLM call/session, complexity quan ly trigger, ma user khong yeu cau. Defer cho Phase 6+ neu UX feedback can.
+
+**LTM Memory (Section 4.2) khong bi anh huong**: LTM van dung `embeddings.source_type="conversation"` semantic search trong session matched theo timestamp. Khong can summary.
 
 ### 4.4 STM Read/Write Lifecycle
 
@@ -754,13 +762,14 @@ mcp_servers:
 | Trigger | Khi nao | Cach xu ly |
 |---------|---------|-------------|
 | **External MCP voi API token** | Config co `requires_approval: true` | SSE `approval_required` → user approve → tiep tuc |
-| **Token budget > threshold** | total_tokens > token_limit * 0.8 | interrupt() → SSE event → user approve/stop |
 
 Internal tools (pgvector @tool, Kimodo, web_search) **KHONG can approval**.
 
+**v2.4.1**: Token budget approval bi xoa (xem §12) — khong co external MCP nao hien dung nen `approval_required` event chua active. Giu cho Phase 6+ khi them MCP third-party.
+
 ---
 
-## 12. Token Budget
+## 12. Token Budget — Tracking only (no interrupt)
 
 ### 12.1 Tracking via State Reducer
 
@@ -775,62 +784,121 @@ return {
 }
 ```
 
-LangChain standardized `usage_metadata` — works across Gemini, Claude, OpenAI. No provider-specific parsing needed.
+LangChain standardized `usage_metadata` — works across DeepSeek (OpenAI-compatible), Gemini, Claude, OpenAI. No provider-specific parsing needed.
 
-### 12.2 Interrupt Mechanism
+### 12.2 Use cases (Phase 6 hardening)
 
-```python
-from langgraph.types import interrupt
+`total_tokens` duoc log o `ChatResponse` + structured log voi `request_id` → answer cac cau hoi:
+- Query type nao ton nhieu token nhat? (per-intent cost analysis)
+- User nao high-volume? (per-user billing/throttle later)
+- Retry loop co lam token blow up? (regression detection)
 
-async def synthesizer_node(state, config):
-    token_limit = config["configurable"].get("token_limit")
-    if token_limit and state.get("total_tokens", 0) > token_limit * 0.8:
-        interrupt("Token budget approaching limit")
-    # ... rest of node logic
-```
+### 12.3 v2.4.1 — bo `interrupt()` flow
 
-**Khi interrupt() duoc goi:**
-1. Graph "dong bang" state → luu vao checkpointer (PostgresSaver)
-2. FastAPI gui SSE event: `approval_required` + reason
-3. User bam "Dong y" → client gui REST POST
-4. Server resume graph voi `Command(resume=True)` + same thread_id
-5. Graph "ra dong" va chay tiep
+**Removed**:
+- `interrupt()` call trong synthesizer
+- `token_limit` field trong RunnableConfig (giu skeleton, nhung khong node nao read)
+- PostgresSaver checkpointer setup
+- SSE `approval_required` event cho token budget
+- Resume flow `Command(resume=True)`
 
-**Neu user khong set token_limit** → toan bo mechanism bi skip. Khong co check, khong co interrupt.
+**Ly do**: YAGNI. Use case "user set budget cap → AI hoi xin tiep" la enterprise feature ma single-user MVP khong can. Reactivate khi:
+- Production billing track per-user → can hard cap
+- Long-running multi-step agent dot token → can checkpoint resume
+- Hien tai: chi log tokens. Du.
 
 ---
 
-## 13. TTS — Async tai FastAPI Layer
+## 13. TTS — FastAPI BackgroundTasks (v2.4.1)
 
 TTS **KHONG nam trong LangGraph graph**. Graph ket thuc sau `conversation` node.
 
+**v2.4.1 thay doi**: thay Celery `.delay()` bang FastAPI `BackgroundTasks.add_task()` — in-process async, khong can worker rieng. Reasoning:
+- VieNeu-TTS latency ~2-10s, blocking 1 request thread cua FastAPI khong dang ke
+- Bo 1 process (worker), bo 1 Redis DB (broker), bo `celery` dep
+- Test mock don gian hon (mock `add_task` vs mock `.delay`)
+- Khi nao can lai Celery: scale TTS > 100 req/min, hoac add heavy jobs (S3 batch upload, doc ingestion) → Phase 7
+
+### 13.1 Flow
+
 ```python
-# FastAPI layer (sketch)
+# FastAPI layer
+import uuid
+
+from fastapi import BackgroundTasks
+from langgraph_agents.services.vieneu_tts.tasks import synthesize_speech_async
+
 @app.post("/chat")
-async def chat(request: ChatRequest):
-    # 1. Stream graph via astream_events
-    async for event in graph.astream_events(state, config=config):
-        if event["event"] == "on_chat_model_stream":
-            await sse_send(session_id, "token", event["data"]["chunk"].content)
-        # ... other event handling
-    
-    # 2. Get final result
-    final_answer = result["final_answer"]
-    
-    # 3. Fire TTS async (if needed)
-    if request.output_mode in ("speech", "both") and final_answer:
-        task = celery_app.send_task(
-            "langgraph.synthesize_speech",
-            args=(final_answer, request.request_id, request.session_id),
+async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
+    request_id = str(uuid.uuid4())
+
+    # 1. Run graph (Phase 5 will replace with astream_events SSE)
+    result = await graph.ainvoke(state, config=config)
+    final_answer = result.get("final_answer", "")
+
+    # 2. Fire TTS (if needed)
+    speech_task_id = None
+    if req.output_mode in ("speech", "both") and final_answer:
+        speech_task_id = str(uuid.uuid4())
+        persona = get_persona(req.persona_id)
+        voice_path = persona.get("voice_identity", {}).get("voice_path")
+        background_tasks.add_task(
+            synthesize_speech_async,
+            text=final_answer,
+            task_id=speech_task_id,
+            voice_path=voice_path,
         )
-        # SSE event when done: speech_ready + audio URL
-    
-    # 4. Empty response fallback
+
+    # 3. Empty response fallback at FastAPI layer
     if not final_answer:
-        await sse_send(session_id, "token", "Xin loi, toi khong the xu ly yeu cau nay.")
-    
-    await sse_send(session_id, "done", {})
+        final_answer = "Xin loi, toi khong the xu ly yeu cau nay."
+
+    return ChatResponse(
+        request_id=request_id,
+        final_answer=final_answer,
+        speech_task_id=speech_task_id,
+        ...
+    )
 ```
+
+### 13.2 Task function
+
+```python
+# services/vieneu_tts/tasks.py
+import json
+import redis as sync_redis
+
+from langgraph_agents.services.vieneu_tts.client import get_vieneu_tts_client
+from langgraph_agents.services.exceptions import ServiceUnavailableError
+
+
+_REDIS_URL = "redis://localhost:6379/0"  # v2.4.1: DB 0 (bo DB 1 broker)
+
+
+async def synthesize_speech_async(text: str, task_id: str, voice_path: str | None = None):
+    client = get_vieneu_tts_client()
+    try:
+        result = await client.synthesize(text=text, voice_path=voice_path)
+        payload = {"event": "speech_ready", "url": result["audio_url"]}
+    except ServiceUnavailableError as exc:
+        payload = {"event": "speech_failed", "error": str(exc)}
+
+    try:
+        r = sync_redis.Redis.from_url(_REDIS_URL)
+        r.setex(f"task_result:{task_id}", 3600, json.dumps(payload))
+    except Exception:
+        pass  # graceful — polling endpoint se 404
+```
+
+Client method `synthesize()` (async) duoc dung thang. Khong can `synthesize_sync` cho Celery worker nua.
+
+### 13.3 Polling endpoint (giu nguyen)
+
+```
+GET /tts/{task_id}/result → 200 {event: "speech_ready", url: "..."} | 404
+```
+
+Phase 5 SSE se push speech_ready event truc tiep, bo polling.
 
 ---
 
@@ -842,24 +910,31 @@ SSE su dung `astream_events()` tu LangGraph. FastAPI forward events to client.
 type SSEEvent =
   // Progress tracking (moi node bat dau/ket thuc)
   | { event: "stage";             data: { node: string, status: "started" | "complete" } }
-  
+
   // Tool execution progress (tu retriever_agent)
   | { event: "tool_executing";    data: { tool: string, status: "started" | "complete" } }
   | { event: "tool_output";       data: { tool: string, summary: string } }
-  
-  // Approval (external MCP hoac token budget)
-  | { event: "approval_required"; data: { reason: "external_tool" | "token_budget", details?: string } }
-  
+
+  // Approval (external MCP only — Phase 6+, hien tai chua active)
+  | { event: "approval_required"; data: { reason: "external_tool", details?: string } }
+
   // Streaming response (tu conversation node)
   | { event: "token";             data: { content: string } }
-  
-  // Async results (tu Celery)
-  | { event: "speech_ready";      data: { url: string } }
-  
+
+  // Async results (tu BackgroundTasks → Redis pub/sub o Phase 5)
+  | { event: "speech_ready";      data: { task_id: string, url: string } }
+  | { event: "speech_failed";     data: { task_id: string, error: string } }
+
   // System
   | { event: "error";             data: { code: string, message: string } }
-  | { event: "done";              data: {} }
+  | { event: "done";              data: { request_id: string, total_tokens: number } }
 ```
+
+**v2.4.1 changes**:
+- Bo `approval_required` reason `"token_budget"` (token interrupt removed)
+- Them `speech_failed` event de UI hien thi khi VieNeu down
+- `done` event them `total_tokens` cho UI hien cost
+- Speech events giu task_id (BackgroundTasks UUID, khong phai Celery task_id)
 
 ---
 
@@ -937,9 +1012,8 @@ config/
 langgraph>=0.2.0
 langchain-core>=0.3.0
 
-# LangChain LLM providers
-langchain-google-genai>=2.0.0      # Gemini via LangChain ChatModel
-# langchain-anthropic>=0.3.0       # Claude (future option)
+# LLM provider (DeepSeek qua OpenAI-compatible API)
+langchain-openai>=1.0.0            # ChatOpenAI(base_url="https://api.deepseek.com")
 
 # MCP Integration
 langchain-mcp-adapters>=0.1.0      # MCP → LangChain tool conversion
@@ -950,20 +1024,28 @@ asyncpg>=0.29.0
 pgvector>=0.3.0
 alembic>=1.13.0
 
-# SSE
-sse-starlette>=2.0.0
+# API
+fastapi>=0.130,<0.140              # pin de tranh starlette compat break
+uvicorn[standard]>=0.30
+sse-starlette>=3.4
 
 # Existing
 redis>=5.0.0
-celery>=5.4.0
 httpx
+duckduckgo-search>=6.0.0           # web_search MCP
+
+# .env loader
+python-dotenv>=1.0.0
 ```
 
-### Removed in v2.4
+### Removed in v2.4 / v2.4.1
 
 | Package | Reason |
 |---------|--------|
-| (custom `llm_gateway.py`) | Replaced by `langchain-google-genai` ChatModel |
+| (custom `llm_gateway.py`) | Replaced by LangChain ChatModel |
+| `celery>=5.4.0` (v2.4.1) | TTS → FastAPI BackgroundTasks. Skeleton `celery_app.py` giu reserve cho Phase 7 |
+| `langchain-google-genai` (v2.4.1) | Provider doi sang DeepSeek. Reactivate khi muon multi-provider |
+| `anthropic` (v2.4.1) | Khong dung. Reactivate khi muon Claude fallback |
 
 ---
 
@@ -1005,38 +1087,74 @@ httpx
 | **UPDATE** error_handler.py | Write reasoning_output |
 | **UPDATE** tests | Adapt to new node names + grader + dual mode tests |
 
-### Phase 3: MCP Servers + Kimodo + VieNeu-TTS
-- Implement Kimodo MCP server (GPU motion generation)
-- Implement web search MCP server
-- VieNeu-TTS as Celery task (called from FastAPI layer, not graph)
-- Test: retriever_agent discovers + calls MCP tools in parallel
-- Test: grader retry → re-call tools → pass with warning if fail
+### Phase 3: MCP Servers + Kimodo + VieNeu-TTS (DONE code)
+- Implement Kimodo MCP server (mock mode; real NVIDIA inference deferred)
+- Implement web search MCP server (DuckDuckGo)
+- VieNeu-TTS as **Celery task** (sau bo o Phase 3.5)
+- FastAPI `/chat` endpoint (JSON response)
+- 48/50 tests xanh (3 API test fail — mock bug, fix o 3.1)
 
-### Phase 4: Conversation + Personas
-- Persona MD files (eca_default + 2-3 additional)
-- conversation.py — dual mode fully wired
-- Test: same reasoning_output → different styled outputs per persona
-- Test: conversation intent → generation mode → persona greeting
-- Test: clarification → generation mode → persona-styled question
+### Phase 3.5: Phase 3 Finalize + Simplification (v2.4.1) → [PHASE-3.5.md](PHASE-3.5.md)
 
-### Phase 5: SSE Streaming + Frontend + Session Management
-- SSE endpoint via astream_events() with stage events
-- REST POST /chat endpoint
-- Token streaming from conversation node
-- Async TTS via Celery → SSE speech_ready event
-- Session reopen API (GET /sessions, POST /sessions/{id}/resume)
-- Empty response fallback at FastAPI layer
-- Token budget interrupt + approval flow
-- Frontend: EventSource + REST POST
-- Test: end-to-end streaming in browser
+| Task | Detail |
+|------|--------|
+| **REFACTOR** TTS Celery → FastAPI BackgroundTasks | `services/vieneu_tts/tasks.py` → `synthesize_speech_async()` plain async. `api/main.py` dung `background_tasks.add_task()`. Giu Redis `task_result:{id}` persist |
+| **DISABLE** `celery_app.py` | Skeleton giu lai voi big comment "reserved for Phase 7 hybrid cloud". Bo import o tat ca file production |
+| **REMOVE** `celery` tu requirements-langgraph.txt | Bo dep |
+| **REMOVE** `langgraph.celery` block tu config/langgraph.yaml | Khong dung |
+| **FIX** 3 test_phase3_api.py mock bug | `mock_redis.get.return_value = None` |
+| **HARDEN** `tts_result` endpoint | `isinstance(raw, (bytes, str))` check truoc json.loads |
+| **PIN** versions trong requirements | `fastapi>=0.130,<0.140`, `starlette>=1.0`, `sse-starlette>=3.4` |
+| **CLEANUP** config/langgraph.yaml | Xoa key v2.2 chet: manager_model, reasoning_model, services.kimodo (deleted) |
+| **COMMIT** all Phase 3 work | Hien dang untracked |
 
-### Phase 6: Production Hardening
-- Structured logging, tracing, circuit breakers
-- Comprehensive test suite
-- Health check endpoints
+### Phase 4: Conversation + Personas (DONE — gop vao 2.5)
+- 3 Persona MD files (eca_default, eca_friendly, eca_clinical)
+- conversation.py — dual mode (styling + generation) wired
+- Tests passing
+
+### Phase 5: SSE Streaming + Frontend + Session reopen (simplified v2.4.1)
+
+| Task | Detail |
+|------|--------|
+| SSE endpoint qua `astream_events()` | Replace JSON response cua /chat bang stream cua events |
+| Token streaming tu conversation node | `on_chat_model_stream` → SSE `token` events |
+| Stage events | Tung node `started/complete` (planner, retriever, synthesizer, ...) |
+| BackgroundTasks → SSE bridge | Redis pub/sub channel `task_events:{session_id}` cho speech_ready |
+| Session list API | `GET /sessions?user_id=...` → list [{id, created_at, updated_at, first_user_message_preview}] |
+| Session resume API | `POST /sessions/{id}/resume` → load messages → populate Redis STM |
+| Auto-write conversations sau graph | `_write_session_async()` o FastAPI layer — insert/update conversations table + Redis STM FIFO |
+| Empty response fallback | FastAPI layer check `final_answer == ""` → fallback text |
+| Frontend rework | ECA UI: EventSource + REST POST, session history sidebar (timestamp + preview) |
+
+**v2.4.1 removed tu Phase 5**:
+- ~~Session summary agent~~ — defer Phase 6+ neu can
+- ~~Token budget interrupt flow~~ — bo han
+- ~~Celery TTS → SSE~~ — thay bang BackgroundTasks → Redis pub/sub
+
+### Phase 6: Production Hardening (expanded v2.4.1 — article-inspired)
+
+| Task | Detail |
+|------|--------|
+| **Token cost tracking per request/feature** | Log `total_tokens + intent + request_id` ra structured log + DB. Query: "exercise_recommendation tb bao tokens", "user X total this month" |
+| **Request ID tracing** | Inject `request_id` vao moi log statement xuyen graph nodes. 1 request trace = 1 log query |
+| **Eval framework + golden set** | ~30 query mau + expected behavior. Auto-eval (intent accuracy, tool call correctness, response length). Regression test khi sua prompt/model |
+| **Output validators** | Synthesizer/conversation output: regex check no PII leak (so benh an, ten thuc), no hallucinated dosage. Layer giua synthesizer ↔ grader |
+| **Failure runbook** | `docs/runbook.md`: "LLM empty", "pgvector down", "VieNeu rate-limit", "MCP subprocess crash", "Redis down" — handle co san nhung document hoa |
+| Structured logging | `loguru` hoac stdlib `logging` voi JSON formatter. Output Loki/Datadog ready |
+| Circuit breakers on MCP + VieNeu | Reuse `core/circuit_breaker.py`. Avoid cascade fail |
+| Health check endpoints | `/health/db`, `/health/redis`, `/health/mcp`, `/health/llm` |
+| Comprehensive test coverage | Target > 80% coverage cho langgraph_agents/ |
+| Persona MD prompt extraction | Optional: tach `_PLANNER_SYSTEM_PROMPT` etc ra `prompts/*.md` cho non-dev edit |
 
 ### Phase 7: Hybrid Edge-Cloud Deployment
-- VPS + Supabase + local worker
+- VPS (FastAPI + Redis) + Supabase (PostgreSQL + pgvector managed)
+- Edge worker (HP ProDesk 48GB + RTX 3060): NVIDIA Kimodo real inference + VieNeu-TTS GGUF
+- **AWS S3**: user-uploaded images, generated motion videos, audio assets (Owner roadmap)
+- **AWS CloudFront**: CDN cho static + SSE passthrough
+- **AWS SQS**: re-introduce queue cho heavy async (S3 batch upload, doc ingestion). Khoi phuc `celery_app.py` skeleton
+- Kimodo MCP: switch tu stdio subprocess → HTTP `streamable_http` qua edge worker
+- DNS + SSL + monitoring
 
 ---
 
@@ -1053,8 +1171,11 @@ httpx
 | **Planner wrong intent** | Low confidence → clarify. Grader catches downstream issues |
 | **Memory LTM keyword false positive** | Conservative patterns. False positive = unnecessary PostgreSQL query (low cost) |
 | **Memory LTM temporal ambiguity** | Calendar week + +-3 day expansion. Multiple matches → ask user |
-| **LLMGateway removal** | LangChain ChatModel is stable, actively maintained. Gemini provider well-supported |
-| **Token budget tracking accuracy** | LangChain usage_metadata standardized. Threshold at 80% gives margin |
+| **DeepSeek provider lock-in** | LangChain ChatOpenAI abstraction → swap qua base_url config. Anthropic/Gemini reactivate bang dep |
+| **DeepSeek `json_mode` constraints** | Thinking model khong support tool_choice/json_schema → fix bang prompt yeu cau "JSON" + Pydantic defaults permissive |
+| **BackgroundTasks scale limit (v2.4.1)** | OK cho <100 req/min. Khi scale: Phase 7 reactivate Celery + SQS. Skeleton `celery_app.py` da co |
+| **VieNeu-TTS down (BackgroundTasks)** | Circuit breaker o client. Task ghi `speech_failed` payload Redis. SSE notify user. Khong block /chat response |
+| **Session reopen scale (timestamp-only list)** | `LIMIT 50` + index on (user_id, updated_at DESC). Khi user co > 1000 session → Phase 6 add summary agent + search |
 
 ---
 
@@ -1091,7 +1212,9 @@ httpx
 20. **Persona variety**: same reasoning_output → different outputs per persona
 
 ### Infrastructure
-21. **Async TTS**: text streams first → TTS fires background → SSE speech_ready
+21. **Async TTS via BackgroundTasks**: text response returns immediately → TTS fires in-process background → Redis `task_result:{id}` populated → `/tts/{id}/result` 200 (Phase 5: SSE push)
 22. **SSE stage events**: each node sends stage started/complete via astream_events
 23. **Empty fallback**: graph returns empty → FastAPI sends fallback message
-24. **Token budget**: total_tokens tracked → interrupt at threshold → resume after approval
+24. **Token tracking (no interrupt)**: `total_tokens` accumulated by reducer → logged in `ChatResponse` and structured log
+25. **Session reopen**: `GET /sessions?user_id=` returns timestamp-sorted list → `POST /sessions/{id}/resume` loads messages + populates Redis STM
+26. **Celery NOT required for /chat**: production stack runs without Celery worker. `celery_app.py` exists as Phase 7 skeleton only

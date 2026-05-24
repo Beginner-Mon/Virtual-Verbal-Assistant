@@ -1,3 +1,5 @@
+import asyncio
+
 from langgraph.graph import StateGraph, END, START
 from langgraph.prebuilt import ToolNode
 
@@ -21,14 +23,24 @@ from langgraph_agents.routing import (
 _RECURSION_LIMIT = 15  # planner→retriever⇄tools→synth→grader (retry once) fits comfortably
 
 
-def build_graph():
+async def build_graph_async():
+    """Build the LangGraph state graph with MCP tools discovered at startup.
+
+    Must be called within a running event loop (FastAPI startup, test fixtures).
+    For convenience outside an event loop, use the sync build_graph() wrapper.
+    """
+    from langgraph_agents.mcp.client import get_mcp_tools
+
+    mcp_tools = await get_mcp_tools()
+    all_tools = [*RETRIEVER_TOOLS, *mcp_tools]
+
     g = StateGraph(AgentState)
 
     # Nodes
     g.add_node("memory", memory_node)
     g.add_node("planner", planner_node)
     g.add_node("retriever_agent", retriever_agent_node)
-    g.add_node("tools", ToolNode(RETRIEVER_TOOLS))
+    g.add_node("tools", ToolNode(all_tools))
     g.add_node("synthesizer", synthesizer_node)
     g.add_node("grader", grader_node)
     g.add_node("conversation", conversation_node)
@@ -69,3 +81,13 @@ def build_graph():
     g.add_edge("error_handler", "conversation")
 
     return g.compile().with_config(recursion_limit=_RECURSION_LIMIT)
+
+
+def build_graph():
+    """Sync convenience wrapper. Only call OUTSIDE a running event loop.
+
+    Inside an event loop (FastAPI startup, test fixtures, async tests),
+    call `await build_graph_async()` directly.
+    """
+    return asyncio.run(build_graph_async())
+
