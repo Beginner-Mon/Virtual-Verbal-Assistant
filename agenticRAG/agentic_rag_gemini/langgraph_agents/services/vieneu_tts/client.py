@@ -27,7 +27,7 @@ class VieNeuTTSClient:
         self,
         base_url: str = "http://localhost:5000",
         endpoint: str = "/synthesize",
-        timeout: float = 15,
+        timeout: float = 60,  # CPU TTS for ~1500 chars Vietnamese takes 10-20s
         circuit_breaker_cfg: dict = None,
     ):
         self.base_url = base_url.rstrip("/")
@@ -66,10 +66,13 @@ class VieNeuTTSClient:
                 return data
         except (httpx.TimeoutException, httpx.ConnectError, httpx.HTTPStatusError) as exc:
             self._breaker.record_failure()
-            raise ServiceUnavailableError("vieneu_tts", str(exc)) from exc
+            # Some httpx exceptions have empty str repr — include class name for diagnostics.
+            reason = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+            raise ServiceUnavailableError("vieneu_tts", reason) from exc
         except Exception as exc:
             self._breaker.record_failure()
-            raise ServiceUnavailableError("vieneu_tts", str(exc)) from exc
+            reason = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+            raise ServiceUnavailableError("vieneu_tts", reason) from exc
 
     def synthesize_sync(self, text: str, voice_path: str = None) -> dict:
         """Synchronous wrapper for Celery tasks."""

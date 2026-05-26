@@ -1003,7 +1003,20 @@
               </div>
             )}
 
-            <span style={{ fontSize: 11, color: "#AEAEB2", paddingLeft: 4, paddingRight: 4 }}>{msg.time}</span>
+            {!isUser && msg.text && !msg.isStreamingText && (
+              <div className="message-disclaimer" style={{ marginTop: 4 }}>
+                <small style={{ color: "var(--text-tertiary)", fontStyle: "italic", fontSize: 11 }}>
+                  *Câu trả lời chỉ mang tính chất tham khảo.*
+                </small>
+              </div>
+            )}
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              {!isUser && msg.usedWebSearch && (
+                <span className="web-search-badge" title="Trả lời có dùng web search"
+                  style={{ fontSize: 13, cursor: "default" }}>🔍</span>
+              )}
+              <span style={{ fontSize: 11, color: "#AEAEB2", paddingLeft: 4, paddingRight: 4 }}>{msg.time}</span>
+            </div>
           </div>
         </div>
       );
@@ -1024,9 +1037,29 @@
       const [activeTaskId, setActiveTaskId] = useState(null);
       const [motionError, setMotionError] = useState("");
       const [sessions, setSessions] = useState([]);
-      const [activeSession, setActiveSession] = useState(null);
+      const [activeSession, setActiveSession] = useState(() => {
+        try { return localStorage.getItem("eca_active_session") || null; }
+        catch { return null; }
+      });
+      React.useEffect(() => {
+        try {
+          if (activeSession) localStorage.setItem("eca_active_session", activeSession);
+          else localStorage.removeItem("eca_active_session");
+        } catch {}
+      }, [activeSession]);
       const [micActive, setMicActive] = useState(false);
       const [dark, setDark] = useState(false);
+      const [webSearchEnabled, setWebSearchEnabled] = useState(false);
+      const [ttsEnabled, setTtsEnabled] = useState(false);
+      const [selectedPersona, setSelectedPersona] = useState("eca_default");
+      const [personaMenuOpen, setPersonaMenuOpen] = useState(false);
+
+      const PERSONAS = [
+        { id: "eca_default", emoji: "👤", name: "Seele", desc: "Warm, professional PT assistant" },
+        { id: "eca_friendly", emoji: "🌸", name: "ECA Buddy", desc: "Friendly fitness companion" },
+        { id: "eca_clinical", emoji: "🩺", name: "Dr. ECA", desc: "Clinical rehab advisor" },
+      ];
+      const currentPersona = PERSONAS.find(p => p.id === selectedPersona) || PERSONAS[0];
       const bottomRef = useRef(null);
       const textRef = useRef(null);
       const audioRef = useRef(null);
@@ -1127,10 +1160,13 @@
         let cancelled = false;
         const loadInitialSessions = async () => {
           try {
-            const historySessions = await window.listSessions(USER_ID);
+            if (window.ECA_API && window.ECA_API.listSessions) {
+              const result = await window.ECA_API.listSessions(USER_ID);
+              if (!cancelled && result && Array.isArray(result.sessions)) {
+                setSessions(result.sessions);
+              }
+            }
             if (!cancelled) {
-              setSessions(historySessions);
-              // Always start a new blank session upon loading the page
               setActiveSession(null);
               setMessages(INIT);
               setMotionKey("idle");
@@ -1152,17 +1188,21 @@
 
       const loadSession = async (sessionId) => {
         try {
-          const sessionData = await window.getSession(USER_ID, sessionId);
+          let messages = [];
+          if (window.ECA_API && window.ECA_API.resumeSession) {
+            const result = await window.ECA_API.resumeSession(sessionId, USER_ID);
+            messages = result.messages || [];
+          }
           setActiveSession(sessionId);
           setMotionKey("idle");
-          if (sessionData && sessionData.messages && sessionData.messages.length > 0) {
-             const mapped = sessionData.messages.map((m, i) => ({
+          if (messages.length > 0) {
+             const mapped = messages.map((m, i) => ({
                  id: i + 1,
                  role: m.role,
                  text: m.content || "",
                  motion: m.metadata?.motion || null,
-                  audioUrl: (m.metadata?.tts && m.metadata.tts.audio_url) ? 
-                    (m.metadata.tts.audio_url.startsWith('/') ? API_BASE_URL + m.metadata.tts.audio_url : m.metadata.tts.audio_url) 
+                  audioUrl: (m.metadata?.tts && m.metadata.tts.audio_url) ?
+                    (m.metadata.tts.audio_url.startsWith('/') ? API_BASE_URL + m.metadata.tts.audio_url : m.metadata.tts.audio_url)
                     : null,
                   time: m.timestamp ? new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""
              }));
@@ -1179,8 +1219,12 @@
         e.stopPropagation();
         try {
           await window.deleteSession(USER_ID, sessionId);
-          const historySessions = await window.listSessions(USER_ID);
-          setSessions(historySessions);
+          if (window.ECA_API && window.ECA_API.listSessions) {
+            const result = await window.ECA_API.listSessions(USER_ID);
+            if (result && Array.isArray(result.sessions)) {
+              setSessions(result.sessions);
+            }
+          }
           if (activeSession === sessionId) {
             setActiveSession(null);
             setMessages(INIT);
@@ -1218,14 +1262,13 @@
         return key.replace(/_/g, " ");
       };
 
-      // Phase 5 stage labels (Vietnamese)
+      // Phase 5 stage labels (Vietnamese). Phase 6.9: conversation node deleted.
       const STAGE_LABELS_V2 = {
         memory: "Đang nhớ lại ngữ cảnh...",
         planner: "Đang phân tích yêu cầu...",
         retriever_agent: "Đang tìm tài liệu...",
-        synthesizer: "Đang suy luận...",
+        synthesizer: "Đang soạn câu trả lời...",
         grader: "Đang kiểm tra chất lượng...",
-        conversation: "Đang soạn câu trả lời...",
         error_handler: "Đã có lỗi, đang xử lý...",
       };
 
@@ -1239,6 +1282,7 @@
         } else if (node === "conversation" && status === "complete") {
           indicator.style.display = "none";
         }
+        // Other complete events: keep showing current stage, frontend already updated by prior "started"
       };
 
       const toMotionBadge = (payload) => {
@@ -1278,10 +1322,12 @@
 
         const currentAttachments = [...uploadedDocs];
 
+        const usedWebSearch = webSearchEnabled;
+
         setMessages(m => [
           ...m,
           { id: userMessageId, role: "user", text, attachments: currentAttachments, motion: null, time: now },
-          { id: assistantMessageId, role: "assistant", text: "", isStreamingText: false, motion: null, exercises: [], showExerciseButtons: false, time: now, autoPlay: true }
+          { id: assistantMessageId, role: "assistant", text: "", isStreamingText: false, motion: null, exercises: [], showExerciseButtons: false, time: now, autoPlay: true, usedWebSearch }
         ]);
         setInput("");
         setUploadedDocs([]);
@@ -1291,7 +1337,12 @@
         setGenerating(false);
         setActiveTaskStage("queued");
 
-        let currentSessionId = activeSession || crypto.randomUUID ? crypto.randomUUID() : "session-" + Date.now();
+        // Fix operator precedence: original `activeSession || crypto.randomUUID ?...`
+        // parses as `(activeSession || crypto.randomUUID) ? ...` which is always
+        // truthy (crypto.randomUUID is a function) → new UUID every turn → session
+        // never persists. Use explicit ternary.
+        let currentSessionId = activeSession
+          || (crypto.randomUUID ? crypto.randomUUID() : "session-" + Date.now());
         if (!activeSession) {
           setActiveSession(currentSessionId);
         }
@@ -1311,18 +1362,21 @@
               query: text,
               userId: USER_ID,
               sessionId: currentSessionId,
-              personaId: "eca_default",
-              outputMode: "text",
+              personaId: selectedPersona,
+              outputMode: ttsEnabled ? "speech" : "text",
+              webSearch: webSearchEnabled,
               onEvent: (type, data) => {
                 switch (type) {
                   case "stage":
                     showStageIndicatorV2(data.node, data.status);
-                    if (data.status === "started") {
-                      setActiveTaskStage(data.node);
-                    }
+                    // Backend emits "complete" for memory/planner/retriever/synthesizer/grader
+                    // and "started" only for conversation (first token). Update bubble status
+                    // on EITHER so user sees progress through all nodes, not stuck at "Queued".
+                    setActiveTaskStage(data.node);
                     break;
                   case "token":
                     streamedText += data.content;
+                    console.log("[TOKEN] streamedText now:", streamedText.length, "chars", "id=", assistantMessageId);
                     updateAssistantMessage({ text: streamedText, isStreamingText: true });
                     setClinicalAdvice(streamedText);
                     break;
@@ -1445,9 +1499,13 @@
           setMotionError("");
           setActiveTaskId(null);
           
-          // Refresh sessions list (which should now be empty)
-          const historySessions = await window.listSessions(USER_ID);
-          setSessions(historySessions);
+          // Refresh sessions list
+          if (window.ECA_API && window.ECA_API.listSessions) {
+            const result = await window.ECA_API.listSessions(USER_ID);
+            if (result && Array.isArray(result.sessions)) {
+              setSessions(result.sessions);
+            }
+          }
           
           alert("Memory cleared successfully.");
         } catch (error) {
@@ -1521,17 +1579,18 @@
                     marginBottom: 1, transition: "background 0.1s", cursor: "pointer",
                     display: "flex", justifyContent: "space-between", alignItems: "center"
                   }}>
-                  <div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{
                       fontSize: 13.5, fontWeight: 500, letterSpacing: -0.2,
-                      color: activeSession === s.session_id ? "#007AFF" : "var(--text-primary)"
-                    }}>{s.title || `Session ${s.session_id.substring(0,6)}`}</div>
+                      color: activeSession === s.session_id ? "#007AFF" : "var(--text-primary)",
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap"
+                    }}>{s.first_user_message_preview || `Session ${s.session_id.substring(0,6)}`}</div>
                     <div style={{ fontSize: 11, color: "var(--text-tertiary)", marginTop: 1 }}>
-                      {s.created_at ? new Date(s.created_at).toLocaleDateString() : ""}
+                      {s.updated_at ? new Date(s.updated_at).toLocaleDateString() : ""}{s.message_count ? ` · ${s.message_count} tin` : ""}
                     </div>
                   </div>
                   <button onClick={(e) => removeSession(s.session_id, e)} style={{
-                    color: "var(--text-tertiary)", fontSize: 18, padding: "0 4px", background: "none", border: "none", cursor: "pointer", zIndex: 10
+                    color: "var(--text-tertiary)", fontSize: 18, padding: "0 4px", background: "none", border: "none", cursor: "pointer", zIndex: 10, flexShrink: 0
                   }}>&times;</button>
                 </div>
               ))}
@@ -1618,14 +1677,57 @@
                   <span id="stage-indicator-text" style={{ fontSize: 11, fontWeight: 600, color: "#007AFF" }}></span>
                 </div>
               </div>
-              <div style={{ display: "flex", gap: 6 }}>
-                {["HumanML3D", "MDM", "Gemini"].map(tag => (
-                  <span key={tag} style={{
-                    fontSize: 11.5, color: "var(--text-secondary)", fontWeight: 500,
-                    background: "var(--tag-bg)", borderRadius: 6, padding: "3px 9px",
-                    transition: "background 0.25s"
-                  }}>{tag}</span>
-                ))}
+              {/* Persona selector dropdown */}
+              <div style={{ position: "relative" }}>
+                <button
+                  onClick={() => setPersonaMenuOpen(o => !o)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 8,
+                    background: "var(--tag-bg)", border: "1px solid var(--divider)",
+                    borderRadius: 8, padding: "6px 12px", cursor: "pointer",
+                    fontSize: 13, fontWeight: 500, color: "var(--text-primary)",
+                  }}>
+                  <span style={{ fontSize: 16 }}>{currentPersona.emoji}</span>
+                  <span>{currentPersona.name}</span>
+                  <span style={{ fontSize: 10, opacity: 0.6 }}>▼</span>
+                </button>
+                {personaMenuOpen && (
+                  <>
+                    {/* backdrop closes menu */}
+                    <div onClick={() => setPersonaMenuOpen(false)}
+                      style={{ position: "fixed", inset: 0, zIndex: 10 }} />
+                    <div style={{
+                      position: "absolute", top: "calc(100% + 4px)", right: 0,
+                      background: "var(--surface)", border: "1px solid var(--divider)",
+                      borderRadius: 10, padding: 4, minWidth: 240, zIndex: 11,
+                      boxShadow: "0 4px 20px rgba(0,0,0,0.12)",
+                    }}>
+                      {PERSONAS.map(p => (
+                        <button key={p.id}
+                          onClick={() => { setSelectedPersona(p.id); setPersonaMenuOpen(false); }}
+                          style={{
+                            display: "flex", alignItems: "center", gap: 10, width: "100%",
+                            padding: "8px 10px", border: "none", borderRadius: 6,
+                            background: p.id === selectedPersona ? "var(--session-active)" : "transparent",
+                            cursor: "pointer", textAlign: "left",
+                            transition: "background 0.15s",
+                          }}
+                          onMouseEnter={e => { if (p.id !== selectedPersona) e.currentTarget.style.background = "var(--tag-bg)"; }}
+                          onMouseLeave={e => { if (p.id !== selectedPersona) e.currentTarget.style.background = "transparent"; }}
+                        >
+                          <span style={{ fontSize: 22 }}>{p.emoji}</span>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>{p.name}</div>
+                            <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 1 }}>{p.desc}</div>
+                          </div>
+                          {p.id === selectedPersona && (
+                            <span style={{ color: "#007AFF", fontSize: 14 }}>✓</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
@@ -1723,6 +1825,33 @@
                   </div>
                 )}
                 
+                <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
+                  <label style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    fontSize: 12, fontWeight: 500, color: "var(--text-secondary)",
+                    cursor: "pointer", userSelect: "none", whiteSpace: "nowrap",
+                  }}>
+                    <input type="checkbox"
+                      checked={webSearchEnabled}
+                      onChange={e => setWebSearchEnabled(e.target.checked)}
+                      style={{ cursor: "pointer", accentColor: "#007AFF" }}
+                    />
+                    <span>🔍 Web search</span>
+                  </label>
+                  <label style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    fontSize: 12, fontWeight: 500, color: "var(--text-secondary)",
+                    cursor: "pointer", userSelect: "none", whiteSpace: "nowrap",
+                    marginLeft: 12,
+                  }}>
+                    <input type="checkbox"
+                      checked={ttsEnabled}
+                      onChange={e => setTtsEnabled(e.target.checked)}
+                      style={{ cursor: "pointer", accentColor: "#007AFF" }}
+                    />
+                    <span>🔊 Voice</span>
+                  </label>
+                </div>
                 <div style={{ display: "flex", alignItems: "flex-end", gap: 8, width: "100%" }}>
                   <textarea ref={textRef} value={input}
                     onChange={e => {

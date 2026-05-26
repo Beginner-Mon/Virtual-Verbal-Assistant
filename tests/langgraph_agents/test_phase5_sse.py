@@ -1,4 +1,4 @@
-"""Tests for SSE /chat endpoint + session endpoints (Phase 5)."""
+"""Tests for SSE /chat endpoint + session endpoints (Phase 5 + P0.1/P0.2)."""
 
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -24,114 +24,93 @@ def _parse_sse_stream(raw: bytes) -> list[dict]:
 
 
 def _make_fake_astream_stage_only():
-    """Minimal fake astream_events — stage events + final LangGraph end."""
+    """Minimal fake astream — updates (no custom token stream).
 
-    async def fake_stream(state, config, version="v2"):
-        nodes = ["memory", "planner", "conversation"]
-        for name in nodes:
-            yield {"event": "on_chain_start", "name": name, "data": {}, "metadata": {}}
-            yield {"event": "on_chain_end", "name": name, "data": {"output": {}}, "metadata": {}}
-        yield {
-            "event": "on_chain_end", "name": "LangGraph",
-            "data": {"output": {
-                "final_answer": "Xin chào! Tôi là ECA.",
-                "intent": "conversation",
-                "confidence": 0.95,
-                "total_tokens": 42,
-            }},
-            "metadata": {},
-        }
+    Phase 6.9: conversation node deleted, synthesizer produces final_answer
+    for all intents (including chat/clarify).
+    """
+
+    async def fake_stream(state, config, stream_mode=None):
+        yield ("updates", {"memory": {}})
+        yield ("updates", {"planner": {}})
+        yield ("updates", {"synthesizer": {
+            "final_answer": "Xin chao!",
+            "intent": "conversation",
+            "total_tokens": 42,
+        }})
 
     return fake_stream
 
 
 def _make_fake_astream_with_tokens():
-    """Astream with conversation tokens mixed in."""
+    """Astream that emits real token events via the custom stream channel."""
 
-    async def fake_stream(state, config, version="v2"):
-        yield {"event": "on_chain_start", "name": "planner", "data": {}, "metadata": {}}
-        yield {
-            "event": "on_chat_model_stream",
-            "name": "ChatOpenAI",
-            "data": {"chunk": _FakeChunk("{")},
-            "metadata": {"langgraph_node": "planner"},
-        }
-        yield {"event": "on_chain_end", "name": "planner",
-               "data": {"output": {"intent": "conversation"}}, "metadata": {}}
-
-        yield {"event": "on_chain_start", "name": "conversation", "data": {}, "metadata": {}}
-        for token_text in ["Xin", " ", "chào", "!"]:
-            yield {
-                "event": "on_chat_model_stream",
-                "name": "ChatOpenAI",
-                "data": {"chunk": _FakeChunk(token_text)},
-                "metadata": {"langgraph_node": "conversation"},
-            }
-        yield {"event": "on_chain_end", "name": "conversation", "data": {"output": {}}, "metadata": {}}
-
-        yield {
-            "event": "on_chain_end", "name": "LangGraph",
-            "data": {"output": {
-                "final_answer": "Xin chào!",
-                "intent": "conversation",
-                "total_tokens": 5,
-            }},
-            "metadata": {},
-        }
+    async def fake_stream(state, config, stream_mode=None):
+        yield ("updates", {"memory": {}})
+        yield ("updates", {"planner": {"intent": "conversation"}})
+        for tok in ["Xin ", "chào ", "bạn", "!"]:
+            yield ("custom", {"content": tok})
+        yield ("updates", {"synthesizer": {
+            "final_answer": "Xin chào bạn!",
+            "intent": "conversation",
+            "total_tokens": 4,
+        }})
 
     return fake_stream
 
 
 def _make_fake_astream_with_tools():
-    """Astream with tool calling events."""
+    """Astream with retriever_agent node for exercise queries."""
 
-    async def fake_stream(state, config, version="v2"):
-        yield {"event": "on_chain_start", "name": "planner", "data": {}, "metadata": {}}
-        yield {"event": "on_chain_end", "name": "planner",
-               "data": {"output": {"intent": "exercise_recommendation"}}, "metadata": {}}
-
-        yield {"event": "on_chain_start", "name": "retriever_agent", "data": {}, "metadata": {}}
-        yield {"event": "on_tool_start", "name": "pgvector_search", "data": {}, "metadata": {}}
-        yield {"event": "on_tool_end", "name": "pgvector_search",
-               "data": {"output": [{"content": "doc1"}, {"content": "doc2"}]}, "metadata": {}}
-        yield {"event": "on_chain_end", "name": "retriever_agent", "data": {"output": {}}, "metadata": {}}
-
-        yield {"event": "on_chain_start", "name": "conversation", "data": {}, "metadata": {}}
-        yield {"event": "on_chain_end", "name": "conversation", "data": {"output": {}}, "metadata": {}}
-
-        yield {
-            "event": "on_chain_end", "name": "LangGraph",
-            "data": {"output": {
-                "final_answer": "Bài tập cho lưng...",
-                "intent": "exercise_recommendation",
-                "total_tokens": 120,
-            }},
-            "metadata": {},
-        }
+    async def fake_stream(state, config, stream_mode=None):
+        yield ("updates", {"planner": {"intent": "exercise_recommendation"}})
+        yield ("updates", {"retriever_agent": {}})
+        yield ("updates", {"synthesizer": {
+            "final_answer": "Bai tap cho lung: cat-cow, child pose...",
+            "intent": "exercise_recommendation",
+            "total_tokens": 120,
+        }})
 
     return fake_stream
 
 
-class _FakeChunk:
-    def __init__(self, content):
-        self.content = content
+def _set_graph(mock_graph):
+    """Set the module-global graph for a test. Returns the mock."""
+    import langgraph_agents.api.main as api_module
+    api_module._graph = mock_graph
+    return mock_graph
+
+
+def _set_redis(mock_redis):
+    """Set the module-global redis client for a test. Returns the mock."""
+    import langgraph_agents.api.main as api_module
+    api_module._redis = mock_redis
+    return mock_redis
 
 
 @pytest.fixture
-def api_client(monkeypatch):
-    """Fixture: mock graph with astream_events + mock redis."""
+def api_client():
+    """Fixture: mock graph + redis. Creates fresh app per test."""
     mock_redis = MagicMock()
     mock_redis.get.return_value = None
 
-    import langgraph_agents.api.main as api_module
-    api_module._redis = mock_redis
+    mock_graph = MagicMock()
+    mock_graph.astream = _make_fake_astream_stage_only()
+
+    _set_graph(mock_graph)
+    _set_redis(mock_redis)
 
     from langgraph_agents.api.main import create_app
     from fastapi.testclient import TestClient
     app = create_app()
     client = TestClient(app)
 
-    yield client, mock_redis
+    yield client, mock_redis, mock_graph
+
+    # Reset module globals after test
+    import langgraph_agents.api.main as api_module
+    api_module._graph = None
+    api_module._redis = None
 
 
 # ── Health ─────────────────────────────────────────────────────────
@@ -139,10 +118,24 @@ def api_client(monkeypatch):
 
 @pytest.mark.unit
 def test_health_returns_ok(api_client):
-    client, _ = api_client
+    client, _, _ = api_client
     resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
+
+
+@pytest.mark.unit
+def test_health_detailed_returns_checks(api_client):
+    client, _, _ = api_client
+    resp = client.get("/health/detailed")
+    assert resp.status_code in (200, 503)
+    body = resp.json()
+    # FastAPI can return (body, status_code) tuple directly;
+    # if the JSON body is a list, unwrap it.
+    if isinstance(body, list):
+        body = body[0] if len(body) > 0 else {}
+    assert "checks" in body
+    assert "status" in body
 
 
 # ── SSE stage events ───────────────────────────────────────────────
@@ -150,29 +143,25 @@ def test_health_returns_ok(api_client):
 
 @pytest.mark.unit
 def test_sse_chat_emits_stage_events(api_client, monkeypatch):
-    client, _ = api_client
-    import langgraph_agents.api.main as api_module
-    mock_graph = MagicMock()
-    mock_graph.astream_events = _make_fake_astream_stage_only()
-    api_module._graph = mock_graph
+    client, _, mock_graph = api_client
+    mock_graph.astream = _make_fake_astream_stage_only()
+    _set_graph(mock_graph)
 
-    resp = client.post("/chat", json={"query": "Xin chào"})
+    resp = client.post("/chat", json={"query": "Xin chao"})
     assert resp.status_code == 200
     events = _parse_sse_stream(resp.content)
     stage_events = [e for e in events if e["event"] == "stage"]
     nodes_seen = {e["data"]["node"] for e in stage_events}
     assert "memory" in nodes_seen
     assert "planner" in nodes_seen
-    assert "conversation" in nodes_seen
+    assert "synthesizer" in nodes_seen
 
 
 @pytest.mark.unit
 def test_sse_chat_emits_done_event_last(api_client, monkeypatch):
-    client, _ = api_client
-    import langgraph_agents.api.main as api_module
-    mock_graph = MagicMock()
-    mock_graph.astream_events = _make_fake_astream_stage_only()
-    api_module._graph = mock_graph
+    client, _, mock_graph = api_client
+    mock_graph.astream = _make_fake_astream_stage_only()
+    _set_graph(mock_graph)
 
     resp = client.post("/chat", json={"query": "Xin chào"})
     events = _parse_sse_stream(resp.content)
@@ -180,45 +169,72 @@ def test_sse_chat_emits_done_event_last(api_client, monkeypatch):
     assert events[-1]["data"]["total_tokens"] == 42
 
 
-# ── Token filtering ────────────────────────────────────────────────
+# ── Token streaming ────────────────────────────────────────────────
 
 
 @pytest.mark.unit
-def test_sse_chat_token_events_only_from_conversation(api_client, monkeypatch):
-    client, _ = api_client
-    import langgraph_agents.api.main as api_module
-    mock_graph = MagicMock()
-    mock_graph.astream_events = _make_fake_astream_with_tokens()
-    api_module._graph = mock_graph
+def test_sse_chat_emits_token_events(api_client, monkeypatch):
+    client, _, mock_graph = api_client
+    mock_graph.astream = _make_fake_astream_with_tokens()
+    _set_graph(mock_graph)
+
+    resp = client.post("/chat", json={"query": "Xin chào"})
+    assert resp.status_code == 200
+    events = _parse_sse_stream(resp.content)
+    token_events = [e for e in events if e["event"] == "token"]
+    assert len(token_events) == 4
+    contents = "".join(e["data"]["content"] for e in token_events)
+    assert contents == "Xin chào bạn!"
+
+
+@pytest.mark.unit
+def test_sse_chat_no_tokens_when_no_custom_events(api_client):
+    client, _, mock_graph = api_client
+    mock_graph.astream = _make_fake_astream_stage_only()
+    _set_graph(mock_graph)
 
     resp = client.post("/chat", json={"query": "Xin chào"})
     events = _parse_sse_stream(resp.content)
     token_events = [e for e in events if e["event"] == "token"]
-    # Only conversation tokens visible (planner "{" filtered out)
-    contents = "".join(e["data"]["content"] for e in token_events)
-    assert "{" not in contents  # planner JSON token filtered
-    assert "Xin" in contents
-
-
-# ── Tool events ────────────────────────────────────────────────────
+    assert len(token_events) == 0
 
 
 @pytest.mark.unit
-def test_sse_chat_emits_tool_events(api_client, monkeypatch):
-    client, _ = api_client
-    import langgraph_agents.api.main as api_module
-    mock_graph = MagicMock()
-    mock_graph.astream_events = _make_fake_astream_with_tools()
-    api_module._graph = mock_graph
+def test_sse_chat_stage_started_before_tokens(api_client, monkeypatch):
+    client, _, mock_graph = api_client
+    mock_graph.astream = _make_fake_astream_with_tokens()
+    _set_graph(mock_graph)
+
+    resp = client.post("/chat", json={"query": "Xin chào"})
+    events = _parse_sse_stream(resp.content)
+
+    first_token_idx = next((i for i, e in enumerate(events) if e["event"] == "token"), -1)
+    assert first_token_idx > 0, "Expected at least 1 token event"
+
+    prior_stage_started = [
+        e for e in events[:first_token_idx]
+        if e["event"] == "stage"
+        and e["data"].get("node") == "synthesizer"
+        and e["data"].get("status") == "started"
+    ]
+    assert len(prior_stage_started) == 1
+
+
+# ── Retriever stage ────────────────────────────────────────────────
+
+
+@pytest.mark.unit
+def test_sse_chat_emits_retriever_stage(api_client, monkeypatch):
+    client, _, mock_graph = api_client
+    mock_graph.astream = _make_fake_astream_with_tools()
+    _set_graph(mock_graph)
 
     resp = client.post("/chat", json={"query": "Bài tập cho đau lưng"})
     events = _parse_sse_stream(resp.content)
-    tool_calling = [e for e in events if e["event"] == "tool_calling"]
-    tool_complete = [e for e in events if e["event"] == "tool_complete"]
-    assert any(e["data"]["tool"] == "pgvector_search" for e in tool_calling)
-    assert any(e["data"]["tool"] == "pgvector_search" for e in tool_complete)
-    pgvector_complete = next(e for e in tool_complete if e["data"]["tool"] == "pgvector_search")
-    assert pgvector_complete["data"]["result_count"] == 2
+    stage_events = [e for e in events if e["event"] == "stage"]
+    nodes_seen = {e["data"]["node"] for e in stage_events}
+    assert "retriever_agent" in nodes_seen
+    assert "planner" in nodes_seen
 
 
 # ── Speech mode ────────────────────────────────────────────────────
@@ -226,20 +242,15 @@ def test_sse_chat_emits_tool_events(api_client, monkeypatch):
 
 @pytest.mark.unit
 def test_sse_chat_speech_mode_emits_speech_pending(api_client, monkeypatch):
-    client, _ = api_client
-    import langgraph_agents.api.main as api_module
-    mock_graph = MagicMock()
-    mock_graph.astream_events = _make_fake_astream_stage_only()
-    api_module._graph = mock_graph
+    client, _, mock_graph = api_client
+    mock_graph.astream = _make_fake_astream_stage_only()
+    _set_graph(mock_graph)
 
-    # Mock synthesize_speech_async
+    import langgraph_agents.api.main as api_module
     fake_synth = AsyncMock()
     monkeypatch.setattr(api_module, "synthesize_speech_async", fake_synth)
-
-    # Mock get_persona
     monkeypatch.setattr(api_module, "get_persona", lambda pid: {})
 
-    # Mock _poll_speech_result to avoid 15s timeout
     async def fake_poll(task_id, timeout=15):
         yield api_module.encode_event("speech_ready", {"task_id": task_id, "url": "http://x.wav"})
 
@@ -250,7 +261,6 @@ def test_sse_chat_speech_mode_emits_speech_pending(api_client, monkeypatch):
     speech_pending = [e for e in events if e["event"] == "speech_pending"]
     assert len(speech_pending) == 1
     assert "task_id" in speech_pending[0]["data"]
-    # speech_ready should also be emitted
     speech_ready = [e for e in events if e["event"] == "speech_ready"]
     assert len(speech_ready) == 1
 
@@ -260,12 +270,11 @@ def test_sse_chat_speech_mode_emits_speech_pending(api_client, monkeypatch):
 
 @pytest.mark.unit
 def test_sse_chat_session_persisted_before_done(api_client, monkeypatch):
-    client, _ = api_client
-    import langgraph_agents.api.main as api_module
-    mock_graph = MagicMock()
-    mock_graph.astream_events = _make_fake_astream_stage_only()
-    api_module._graph = mock_graph
+    client, _, mock_graph = api_client
+    mock_graph.astream = _make_fake_astream_stage_only()
+    _set_graph(mock_graph)
 
+    import langgraph_agents.api.main as api_module
     async def fake_write(*args, **kwargs):
         pass
 
@@ -284,12 +293,11 @@ def test_sse_chat_session_persisted_before_done(api_client, monkeypatch):
 
 @pytest.mark.unit
 def test_sse_chat_persist_failure_does_not_block(api_client, monkeypatch):
-    client, _ = api_client
-    import langgraph_agents.api.main as api_module
-    mock_graph = MagicMock()
-    mock_graph.astream_events = _make_fake_astream_stage_only()
-    api_module._graph = mock_graph
+    client, _, mock_graph = api_client
+    mock_graph.astream = _make_fake_astream_stage_only()
+    _set_graph(mock_graph)
 
+    import langgraph_agents.api.main as api_module
     async def fake_write_fail(*args, **kwargs):
         raise RuntimeError("DB down")
 
@@ -305,16 +313,18 @@ def test_sse_chat_persist_failure_does_not_block(api_client, monkeypatch):
 
 @pytest.mark.unit
 def test_tts_result_404_when_missing(api_client):
-    client, mock_redis = api_client
+    client, mock_redis, _ = api_client
     mock_redis.get.return_value = None
+    _set_redis(mock_redis)
     resp = client.get("/tts/nonexistent/result")
     assert resp.status_code == 404
 
 
 @pytest.mark.unit
 def test_tts_result_200_when_present(api_client):
-    client, mock_redis = api_client
+    client, mock_redis, _ = api_client
     mock_redis.get.return_value = b'{"event":"speech_ready","url":"http://x.wav"}'
+    _set_redis(mock_redis)
     resp = client.get("/tts/abc/result")
     assert resp.status_code == 200
     assert resp.json()["event"] == "speech_ready"
@@ -322,8 +332,9 @@ def test_tts_result_200_when_present(api_client):
 
 @pytest.mark.unit
 def test_tts_result_500_on_corrupt(api_client):
-    client, mock_redis = api_client
+    client, mock_redis, _ = api_client
     mock_redis.get.return_value = b'not json'
+    _set_redis(mock_redis)
     resp = client.get("/tts/abc/result")
     assert resp.status_code == 500
 

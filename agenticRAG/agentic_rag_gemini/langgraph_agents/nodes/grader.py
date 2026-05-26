@@ -4,10 +4,14 @@ Replaces validator.py. Three outcomes: pass | retry | pass_with_warning.
 """
 
 import re
+import time
 
 from langchain_core.messages import ToolMessage
 
 from langgraph_agents.state import AgentState
+from langgraph_agents.shared.logging import get_logger
+
+logger = get_logger("langgraph.grader")
 
 
 _GENERIC_FAIL_FEEDBACK = "The response is too short or lacks content. Search for more evidence and write a more detailed answer."
@@ -68,21 +72,39 @@ def _check_rules(state: dict) -> tuple[bool, str | None]:
 
 async def grader_node(state: AgentState) -> dict:
     """Rule-based quality check. Retry max 1 time."""
+    t0 = time.perf_counter()
+    intent = state.get("intent", "")
     passed, feedback = _check_rules(state)
     retry_count = state.get("retry_count", 0)
 
+    elapsed_ms = round((time.perf_counter() - t0) * 1000)
     if passed:
+        logger.info("node_complete", extra={
+            "node": "grader", "result": "pass",
+            "elapsed_ms": elapsed_ms, "intent": intent,
+        })
         return {"grader_result": "pass"}
 
     if retry_count == 0:
+        logger.info("node_complete", extra={
+            "node": "grader", "result": "retry",
+            "elapsed_ms": elapsed_ms, "intent": intent,
+        })
         return {
             "grader_result": "retry",
             "retry_count": 1,
             "grader_feedback": feedback,
         }
 
-    # retry_count >= 1 — fail-safe pass with warning
+    # retry_count >= 1 — fail-safe pass with warning. Append warning to
+    # final_answer here so it's user-visible without an extra LLM/node call.
+    logger.warning("node_complete", extra={
+        "node": "grader", "result": "pass_with_warning",
+        "elapsed_ms": elapsed_ms, "intent": intent,
+    })
+    final = state.get("final_answer", "") or state.get("reasoning_output", "")
     return {
         "grader_result": "pass_with_warning",
         "grader_warning": _WARNING_MSG,
+        "final_answer": f"{final}\n\n_{_WARNING_MSG}_" if final else _WARNING_MSG,
     }

@@ -9,6 +9,7 @@ class ChatRequest(BaseModel):
     persona_id: str = "eca_default"
     output_mode: Literal["text", "speech", "both"] = "text"
     token_limit: Optional[int] = None
+    web_search: bool = False
 
 
 class ChatResponse(BaseModel):

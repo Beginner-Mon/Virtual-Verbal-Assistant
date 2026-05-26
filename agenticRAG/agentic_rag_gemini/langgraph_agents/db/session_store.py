@@ -20,6 +20,21 @@ _REDIS_URL = "redis://localhost:6379/0"
 _STM_MAX = 3
 
 
+def _to_uuid(value: str) -> str:
+    """Coerce arbitrary user-supplied string into a deterministic UUID string.
+
+    UI sends user_id as plain string (e.g. "anonymous", "user_123") for
+    simplicity. DB schema requires UUID. Round-trip:
+      - already valid UUID → returned unchanged
+      - any other string → uuid5(NAMESPACE_DNS, value) → deterministic UUID
+        for the same input string across runs (same user always → same UUID).
+    """
+    try:
+        return str(uuid.UUID(value))
+    except (ValueError, TypeError):
+        return str(uuid.uuid5(uuid.NAMESPACE_DNS, str(value)))
+
+
 class SessionStore:
     """Async session persistence backed by the conversations table."""
 
@@ -101,6 +116,7 @@ class SessionStore:
 
 
 async def list_user_sessions(user_id: str, limit: int = 50) -> list[dict]:
+    user_id = _to_uuid(user_id)
     pg = get_pg_client()
     await pg.connect()
     rows = await pg.fetch(
@@ -136,6 +152,7 @@ async def list_user_sessions(user_id: str, limit: int = 50) -> list[dict]:
 
 
 async def load_session_messages(user_id: str, session_id: str) -> Optional[dict]:
+    user_id = _to_uuid(user_id)
     pg = get_pg_client()
     await pg.connect()
     row = await pg.fetchrow(
@@ -144,7 +161,17 @@ async def load_session_messages(user_id: str, session_id: str) -> Optional[dict]
            WHERE user_id = $1::uuid AND session_id = $2::uuid""",
         user_id, session_id,
     )
-    return dict(row) if row else None
+    if not row:
+        return None
+    out = dict(row)
+    # asyncpg returns JSONB as a raw string by default — parse here so callers
+    # get list[dict] as the function signature implies.
+    if isinstance(out.get("messages"), str):
+        try:
+            out["messages"] = json.loads(out["messages"])
+        except (json.JSONDecodeError, TypeError):
+            out["messages"] = []
+    return out
 
 
 async def populate_stm_from_messages(session_id: str, messages: list[dict]) -> None:
@@ -185,9 +212,17 @@ async def write_session_turn(
     INSERT if session_id new, UPDATE (append to messages JSONB) if exists.
     Also update Redis STM (FIFO 3 Q&A pairs).
     """
+    user_id = _to_uuid(user_id)
     pg = get_pg_client()
     await pg.connect()
     ts = datetime.now(timezone.utc).isoformat()
+
+    # conversations.user_id has FK → users(id). Auto-create user if missing
+    # so first-time UI users (anonymous, user_123, etc.) don't trip FK.
+    await pg.execute(
+        "INSERT INTO users (id) VALUES ($1::uuid) ON CONFLICT (id) DO NOTHING",
+        user_id,
+    )
 
     new_turn = [
         {"role": "user", "content": user_query, "timestamp": ts},

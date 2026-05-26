@@ -10,6 +10,10 @@ def _reset_cache():
     import langgraph_agents.mcp.client as mod
     mod._mcp_tools = []
     mod._mcp_client = None
+    # Reset breaker state so test isolation is clean
+    mod._mcp_breaker._state.failures = 0
+    mod._mcp_breaker._state.state = "closed"
+    mod._mcp_breaker._state.opened_at = 0.0
 
 
 @pytest.mark.unit

@@ -7,11 +7,15 @@ LTM: only runs when recall keywords detected. PostgresSQL + pgvector.
 import asyncio
 import json
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from langgraph_agents.state import AgentState, ErrorSeverity
 from langgraph_agents.shared import get_embedding_service, get_pg_client
+from langgraph_agents.shared.logging import get_logger
+
+logger = get_logger("langgraph.memory")
 
 
 def _load_memory_config() -> dict:
@@ -141,15 +145,23 @@ async def _get_user_profile(user_id: str) -> dict:
 
 async def memory_node(state: AgentState, config) -> dict:
     """STM (always) + LTM (conditional on recall keywords). All three reads run in parallel."""
+    t0 = time.perf_counter()
+    request_id = config["configurable"].get("request_id", "-")
     user_id = config["configurable"]["user_id"]
     session_id = config["configurable"]["session_id"]
     query = config["configurable"]["query"]
+
+    needs_recall = _needs_recall(query)
+    logger.info("node_start", extra={
+        "node": "memory", "request_id": request_id,
+        "needs_recall": needs_recall, "session_id": session_id,
+    })
 
     # All independent — gather concurrently.
     stm_task = _read_stm(session_id)
     profile_task = _get_user_profile(user_id)
 
-    if _needs_recall(query):
+    if needs_recall:
         ltm_task = _lookup_ltm(user_id, query)
     else:
         async def _skipped() -> dict:
@@ -160,6 +172,14 @@ async def memory_node(state: AgentState, config) -> dict:
         stm_task, ltm_task, profile_task,
         return_exceptions=False,
     )
+
+    elapsed_ms = round((time.perf_counter() - t0) * 1000)
+    logger.info("node_complete", extra={
+        "node": "memory", "request_id": request_id,
+        "elapsed_ms": elapsed_ms,
+        "stm_items": len(short_term) if isinstance(short_term, list) else 0,
+        "ltm_found": bool(long_term.get("found")) if isinstance(long_term, dict) else False,
+    })
 
     return {
         "memory_context": {

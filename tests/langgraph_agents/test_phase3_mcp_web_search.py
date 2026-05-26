@@ -1,10 +1,12 @@
-"""Integration tests for DuckDuckGo web search MCP server."""
+"""Integration tests for SearXNG web search MCP server."""
 
-from unittest.mock import patch, MagicMock
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
-from langgraph_agents.mcp.web_search_server import _search, list_tools
+from langgraph_agents.mcp.web_search_server import _search_searxng, list_tools
 
 
 @pytest.mark.integration
@@ -15,30 +17,55 @@ async def test_web_search_list_tools():
     assert "search_medical" in names
 
 
-@pytest.mark.integration
-def test_web_search_returns_results():
-    try:
-        from duckduckgo_search import DDGS
-    except ImportError:
-        pytest.skip("duckduckgo-search not installed")
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_web_search_returns_results():
+    """Patch SearXNG response with 3 fake hits, verify normalized output shape."""
+    fake_response = MagicMock()
+    fake_response.raise_for_status = MagicMock()
+    fake_response.json.return_value = {
+        "results": [
+            {"title": "Back Pain Exercises", "content": "Gentle stretches for lower back.", "url": "https://pubmed.ncbi.nlm.nih.gov/1", "engine": "pubmed"},
+            {"title": "Physical Therapy Guide", "content": "Evidence-based PT for back pain.", "url": "https://example.com/pt", "engine": "google"},
+            {"title": "WebMD Back Pain", "content": "Common causes and treatments.", "url": "https://webmd.com/back", "engine": "bing"},
+        ]
+    }
 
-    results = _search("back pain exercises", max_results=2)
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = fake_response
+        results = await _search_searxng("back pain exercises", max_results=2)
+
     assert isinstance(results, list)
-    assert len(results) >= 1
-    assert "title" in results[0]
-    assert "url" in results[0]
+    assert len(results) == 2
+    assert results[0]["title"] == "Back Pain Exercises"
+    assert results[0]["snippet"] == "Gentle stretches for lower back."
+    assert results[0]["url"] == "https://pubmed.ncbi.nlm.nih.gov/1"
+    assert results[0]["source_domain"] == "pubmed"
 
 
 @pytest.mark.unit
-def test_web_search_handles_failure():
-    try:
-        from duckduckgo_search import DDGS
-    except ImportError:
-        pytest.skip("duckduckgo-search not installed")
+@pytest.mark.asyncio
+async def test_web_search_handles_searxng_down():
+    """When SearXNG is unreachable, return [] (graceful degradation)."""
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = httpx.ConnectError("connection refused")
+        results = await _search_searxng("back pain exercises")
 
-    with patch("duckduckgo_search.DDGS") as mock_ddgs:
-        mock_ddgs.return_value.__enter__.return_value.text.side_effect = RuntimeError("network down")
-        results = _search("back pain exercises")
-        assert len(results) == 1
-        assert "error" in results[0]
-        assert "network down" in results[0]["error"]
+    assert isinstance(results, list)
+    assert len(results) == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_web_search_handles_http_error():
+    """When SearXNG returns 5xx, return []."""
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = httpx.HTTPStatusError(
+            "server error",
+            request=MagicMock(),
+            response=MagicMock(status_code=502),
+        )
+        results = await _search_searxng("back pain exercises")
+
+    assert isinstance(results, list)
+    assert len(results) == 0

@@ -1,7 +1,7 @@
 """Record a voice sample for VieNeu voice cloning.
 
 Usage:  python record_voice.py
-        python record_voice.py --duration 5 --output voices/my_voice.wav
+        python record_voice.py --duration 8 --output voices/my_voice.wav
 """
 import argparse
 import sys
@@ -50,7 +50,7 @@ def record(output: str, duration: int, sample_rate: int = 24000):
 
 def main():
     parser = argparse.ArgumentParser(description="Record voice sample for VieNeu voice cloning")
-    parser.add_argument("--duration", type=int, default=5, help="Recording duration in seconds")
+    parser.add_argument("--duration", type=int, default=8, help="Recording duration in seconds")
     parser.add_argument("--output", type=str, default="voices/my_voice.wav", help="Output file path")
     parser.add_argument("--list", action="store_true", help="List available microphones")
     parser.add_argument("--device", type=int, default=None, help="Microphone device ID")

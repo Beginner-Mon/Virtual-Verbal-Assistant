@@ -19,7 +19,6 @@ Two production-critical concerns handled here:
 """
 
 import asyncio
-import logging
 import os
 import sys
 from pathlib import Path
@@ -27,23 +26,39 @@ from pathlib import Path
 import yaml
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from core.circuit_breaker import CircuitBreaker
 
-logger = logging.getLogger("langgraph.mcp.client")
+from langgraph_agents.shared.logging import get_logger
+
+logger = get_logger("langgraph.mcp.client")
 
 _mcp_client = None
 _mcp_tools: list = []
 _init_lock = asyncio.Lock()
 
+_mcp_breaker = CircuitBreaker(
+    name="mcp_discovery",
+    failure_threshold=2,
+    cool_down_seconds=60,
+)
+
 # Env vars worth inheriting into MCP subprocesses (avoid leaking everything).
 _ENV_PASSTHROUGH = (
     "PATH", "HOME", "USERPROFILE", "TEMP", "TMP", "SYSTEMROOT", "APPDATA",
-    "LOCALAPPDATA", "HF_TOKEN",
+    "LOCALAPPDATA", "HF_TOKEN", "SEARXNG_URL",
 )
 
 
 def _package_root() -> str:
-    """Return absolute path of `agenticRAG/agentic_rag_gemini/` for PYTHONPATH."""
-    return str(Path(__file__).resolve().parents[3])
+    """Return absolute path of `agenticRAG/agentic_rag_gemini/` for PYTHONPATH.
+
+    __file__ = .../agenticRAG/agentic_rag_gemini/langgraph_agents/mcp/client.py
+      parents[0] = mcp
+      parents[1] = langgraph_agents
+      parents[2] = agentic_rag_gemini  ← this is the package root needed in PYTHONPATH
+      parents[3] = agenticRAG          ← one level too high (regression fix)
+    """
+    return str(Path(__file__).resolve().parents[2])
 
 
 def _normalize_stdio_config(server_cfg: dict) -> None:
@@ -88,6 +103,10 @@ async def get_mcp_tools() -> list:
         if _mcp_tools:
             return _mcp_tools
 
+        if not _mcp_breaker.allow():
+            logger.warning("mcp_discovery_skipped_breaker_open")
+            return []
+
         cfg = _load_mcp_config()
         if not cfg:
             return []
@@ -95,14 +114,14 @@ async def get_mcp_tools() -> list:
         try:
             _mcp_client = MultiServerMCPClient(cfg)
             _mcp_tools = await _mcp_client.get_tools()
-            logger.info("MCP discovery OK: %d tool(s) loaded from %d server(s)",
-                        len(_mcp_tools), len(cfg))
+            _mcp_breaker.record_success()
+            logger.info("mcp_discovery_ok", extra={
+                "tool_count": len(_mcp_tools), "server_count": len(cfg),
+            })
             return _mcp_tools
         except Exception as exc:
-            logger.warning(
-                "MCP discovery failed (graph will run with in-process tools only): %s",
-                exc,
-            )
+            _mcp_breaker.record_failure()
+            logger.warning("mcp_discovery_failed", extra={"error": str(exc)})
             _mcp_client = None
             _mcp_tools = []
             return []

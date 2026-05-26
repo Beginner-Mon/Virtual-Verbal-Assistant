@@ -29,8 +29,7 @@ redis>=5.0.0,<6.0.0
 # .env loader
 python-dotenv>=1.0.0
 
-# Web search (MCP backend)
-duckduckgo-search>=6.0.0
+# Web search (MCP backend) — self-hosted SearXNG via httpx (no pip dep needed)
 
 # Pydantic
 pydantic>=2.0

@@ -8,35 +8,35 @@
 
 ## Changelog v2.2 → v2.4
 
-| # | Thay doi | Ly do |
+| # | Thay đổi | Lý do |
 |---|---------|-------|
-| 1 | **Bo Validator Node** | Grader check quality. Empty output fallback tai FastAPI layer |
-| 2 | **Bo Dispatch Node** | TTS = async tai FastAPI layer. Kimodo = MCP tool trong retriever |
-| 3 | **Them Grader Node** (rule-based) | Thay validator. Check theo intent + retry max 1 lan |
+| 1 | **Bỏ Validator Node** | Grader check quality. Empty output fallback tại FastAPI layer |
+| 2 | **Bỏ Dispatch Node** | TTS = async tại FastAPI layer. Kimodo = MCP tool trong retriever |
+| 3 | **Thêm Grader Node** (rule-based) | Thay validator. Check theo intent + retry max 1 lần |
 | 4 | **Manager → Planner** (renamed + upgraded) | Intent classification + query expansion + structured plan output |
-| 5 | **Memory chay TRUOC Planner** | Planner can context (STM + LTM + profile) de len plan chinh xac |
-| 6 | **Retriever Agent** (LLM + ToolNode) | Execute plan cua planner. Goi pgvector @tool + MCP tools |
-| 7 | **Reasoning → Synthesizer** (renamed) | Tong hop tool results + generate clinical response |
-| 8 | **Conversation Dual Mode** | Styling mode (co reasoning_output) + Generation mode (conversation/clarify) |
-| 9 | **pgvector KHONG phai MCP** | In-process @tool wrapper cho retriever, direct call cho memory LTM |
+| 5 | **Memory chạy TRƯỚC Planner** | Planner cần context (STM + LTM + profile) để lên plan chính xác |
+| 6 | **Retriever Agent** (LLM + ToolNode) | Execute plan của planner. Gọi pgvector @tool + MCP tools |
+| 7 | **Reasoning → Synthesizer** (renamed) | Tổng hợp tool results + generate clinical response |
+| 8 | **Conversation Dual Mode** | Styling mode (có reasoning_output) + Generation mode (conversation/clarify) |
+| 9 | **pgvector KHÔNG phải MCP** | In-process @tool wrapper cho retriever, direct call cho memory LTM |
 | 10 | **Kimodo + web_search = MCP servers** | External services, uniform MCP protocol |
-| 11 | **LLMGateway → LangChain ChatModel** | Xoa custom LLM abstraction, dung LangChain native everywhere |
-| 12 | **Accept LangChain/LangGraph coupling** | Bo yeu cau "pure Python nodes". Framework coupling accepted |
+| 11 | **LLMGateway → LangChain ChatModel** | Xóa custom LLM abstraction, dùng LangChain native everywhere |
+| 12 | **Accept LangChain/LangGraph coupling** | Bỏ yêu cầu "pure Python nodes". Framework coupling accepted |
 | 13 | **SSE via astream_events()** | LangGraph native streaming, emit stage events per node |
-| 14 | **Token tracking (no interrupt)** | `total_tokens` Annotated reducer for cost logging. **v2.4.1**: bo `interrupt()` flow — yagni |
-| 15 | **Memory architecture moi** | STM: Redis 3 Q&A FIFO. LTM: conditional keyword trigger. Session: PostgreSQL |
-| 16 | **TTS via FastAPI BackgroundTasks** | **v2.4.1**: bo Celery — VieNeu < 10s, BackgroundTasks du. Celery + queue dat danh cho Phase 7 hybrid cloud |
-| 17 | **SSE stage events** | Adopt tu v2.3 — progress updates cho tung node |
-| 18 | **Session reopen = timestamp list** | **v2.4.1**: bo session summary agent — UI hien thi `created_at + first_message_preview` (giong Claude history), khong can them LLM call |
+| 14 | **Token tracking (no interrupt)** | `total_tokens` Annotated reducer for cost logging. **v2.4.1**: bỏ `interrupt()` flow — yagni |
+| 15 | **Memory architecture mới** | STM: Redis 3 Q&A FIFO. LTM: conditional keyword trigger. Session: PostgreSQL |
+| 16 | **TTS via FastAPI BackgroundTasks** | **v2.4.1**: bỏ Celery — VieNeu < 10s, BackgroundTasks đủ. Celery + queue để dành cho Phase 7 hybrid cloud |
+| 17 | **SSE stage events** | Adopt từ v2.3 — progress updates cho từng node |
+| 18 | **Session reopen = timestamp list** | **v2.4.1**: bỏ session summary agent — UI hiển thị `created_at + first_message_preview` (giống Claude history), không cần thêm LLM call |
 
-### Giu nguyen tu v2.2
+### Giữ nguyên từ v2.2
 
 - Error routing: CRITICAL / RECOVERABLE / IGNORABLE + error_handler node
 - Persona system (MD files) + conversation node
 - PostgreSQL (pgvector) + Redis architecture
 - SSE + REST POST protocol
 - Hybrid Edge-Cloud deployment target (Phase 7)
-- Phase structure (co update)
+- Phase structure (có update)
 
 ---
 
@@ -44,26 +44,26 @@
 
 ### 1.1 Graph Nodes (7 nodes)
 
-| # | Node | Vai tro | LLM calls | Implementation |
+| # | Node | Vai trò | LLM calls | Implementation |
 |---|------|---------|-----------|----------------|
 | 1 | `memory` | Redis STM + PostgreSQL LTM (conditional) | 0 | LangChain compatible (asyncpg + redis) |
 | 2 | `planner` | Intent classification + query expansion + structured plan | 1 (fast model) | LangChain ChatModel + `with_structured_output()` |
-| 3 | `retriever_agent` | Execute plan: goi pgvector @tool + MCP tools song song | 1+ | LangGraph ToolNode + MCP adapters |
-| 4 | `synthesizer` | Tong hop tool results → generate clinical response | 1 (heavy model) | LangChain ChatModel |
+| 3 | `retriever_agent` | Execute plan: gọi pgvector @tool + MCP tools song song | 1+ | LangGraph ToolNode + MCP adapters |
+| 4 | `synthesizer` | Tổng hợp tool results → generate clinical response | 1 (heavy model) | LangChain ChatModel |
 | 5 | `grader` | Rule-based quality check, intent-based validation | 0 | Rule engine |
-| 6 | `conversation` | Dual mode: styling (co content) hoac generation (conversation/clarify) | 1 | LangChain ChatModel |
-| 7 | `error_handler` | Graceful Vietnamese error message tu errors list | 0 | Template-based |
+| 6 | `conversation` | Dual mode: styling (có content) hoặc generation (conversation/clarify) | 1 | LangChain ChatModel |
+| 7 | `error_handler` | Graceful Vietnamese error message từ errors list | 0 | Template-based |
 
-### 1.2 Infrastructure (ngoai graph)
+### 1.2 Infrastructure (ngoài graph)
 
-| Component | Vai tro | Nam o dau |
+| Component | Vai trò | Nằm ở đâu |
 |-----------|---------|-----------|
-| TTS (VieNeu) | Speech synthesis | **FastAPI BackgroundTasks** (in-process async), fire sau graph xong. Persist Redis `task_result:{id}` cho polling |
+| TTS (VieNeu) | Speech synthesis | **FastAPI BackgroundTasks** (in-process async), fire sau khi graph xong. Persist Redis `task_result:{id}` cho polling |
 | MCP Servers | Tool providers (Kimodo, web search) | Standalone stdio subprocess (dev) / HTTP (production) |
-| Redis | STM (3 Q&A FIFO) + `task_result:{id}` persistence (TTL 1h) | DB 0 only — bo DB 1 Celery broker (v2.4.1) |
+| Redis | STM (3 Q&A FIFO) + `task_result:{id}` persistence (TTL 1h) | DB 0 only — bỏ DB 1 Celery broker (v2.4.1) |
 | FastAPI | REST endpoints + SSE streaming (astream_events) + BackgroundTasks + fallback | Gateway layer |
 
-**Reserved cho Phase 7 (hybrid cloud)**: Celery + SQS queue khi scale TTS hoac add heavy async jobs (S3 upload, batch ingestion). Skeleton `celery_app.py` giu o trang thai disabled.
+**Reserved cho Phase 7 (hybrid cloud)**: Celery + SQS queue khi scale TTS hoặc add heavy async jobs (S3 upload, batch ingestion). Skeleton `celery_app.py` giữ ở trạng thái disabled.
 
 ---
 
@@ -105,7 +105,7 @@ END ──► [FastAPI layer: async TTS if output_mode = speech/both]
 
 ### 2.2 Routing Rules
 
-| Sau node | Condition | Di dau |
+| Sau node | Condition | Đi đâu |
 |----------|-----------|--------|
 | memory | CRITICAL error | error_handler |
 | memory | OK | planner |
@@ -127,20 +127,20 @@ END ──► [FastAPI layer: async TTS if output_mode = speech/both]
 
 **Conversation / Clarify → Skip retriever + synthesizer + grader**
 
-Intent `conversation` ("Xin chao") va `needs_clarification` di thang conversation node. Khong qua retriever/synthesizer/grader vi:
-- Khong co retrieval → khong co gi de synthesize → khong co gi de grade
-- Conversation node o generation mode tu generate response tu persona + query + memory_context
-- Hoac style clarification question tu planner's plan
+Intent `conversation` ("Xin chào") và `needs_clarification` đi thẳng conversation node. Không qua retriever/synthesizer/grader vì:
+- Không có retrieval → không có gì để synthesize → không có gì để grade
+- Conversation node ở generation mode tự generate response từ persona + query + memory_context
+- Hoặc style clarification question từ planner's plan
 
 **Error path → conversation styles error message**
 
-error_handler ghi error message vao `reasoning_output`. Conversation node styles error message theo persona truoc khi tra ve user.
+error_handler ghi error message vào `reasoning_output`. Conversation node styles error message theo persona trước khi trả về user.
 
 ---
 
 ## 3. State Schema
 
-### 3.1 AgentState (mutable, thay doi qua nodes)
+### 3.1 AgentState (mutable, thay đổi qua nodes)
 
 ```python
 from langchain_core.messages import add_messages
@@ -178,14 +178,14 @@ class AgentState(TypedDict):
     errors: Annotated[list[dict], operator.add]  # [{node, severity, message, timestamp}]
 ```
 
-### 3.2 RunnableConfig (immutable, set 1 lan boi FastAPI layer)
+### 3.2 RunnableConfig (immutable, set 1 lần bởi FastAPI layer)
 
 ```python
 config = {
     "configurable": {
         "user_id": "user-123",
         "session_id": "sess-456",
-        "query": "bai tap cho dau lung",
+        "query": "bài tập cho đau lưng",
         "persona_id": "eca_default",
         "output_mode": "text",           # "text" | "speech" | "both"
         "request_id": "req-789",
@@ -198,14 +198,14 @@ config = {
 
 ### 3.3 Removed from v2.2
 
-| Field | Ly do |
+| Field | Lý do |
 |-------|-------|
 | `user_id`, `session_id`, `query`, `persona_id`, `output_mode`, `request_id` | Moved to RunnableConfig (immutable) |
 | `conversation_history` | Replaced by memory_context.short_term (3 Q&A pairs from Redis) |
 | `raw_answer` | Validator removed. Conversation reads reasoning_output |
-| `voice_path` | TTS tai FastAPI layer, doc persona config truc tiep |
+| `voice_path` | TTS tại FastAPI layer, đọc persona config trực tiếp |
 | `motion_task_id`, `speech_task_id`, `motion_pending`, `motion_payload` | Dispatch removed |
-| `retrieval_results`, `retrieval_metadata` | Nam trong `messages` (ToolMessage tu retriever_agent) |
+| `retrieval_results`, `retrieval_metadata` | Nằm trong `messages` (ToolMessage từ retriever_agent) |
 
 ---
 
@@ -222,17 +222,17 @@ config = {
 
 ```json
 [
-  {"q": "bai tap cho dau lung", "a": "Co 3 bai tap tot cho lung...", "ts": "2026-05-23T10:00:00Z"},
-  {"q": "bai tap nao de nhat?", "a": "Bird-dog la bai tap nhe...", "ts": "2026-05-23T10:01:00Z"},
-  {"q": "lam bao nhieu lan?", "a": "3 hiep, moi hiep 10 lan...", "ts": "2026-05-23T10:02:00Z"}
+  {"q": "bài tập cho đau lưng", "a": "Có 3 bài tập tốt cho lưng...", "ts": "2026-05-23T10:00:00Z"},
+  {"q": "bài tập nào dễ nhất?", "a": "Bird-dog là bài tập nhẹ...", "ts": "2026-05-23T10:01:00Z"},
+  {"q": "làm bao nhiêu lần?", "a": "3 hiệp, mỗi hiệp 10 lần...", "ts": "2026-05-23T10:02:00Z"}
 ]
 ```
 
 ### 4.2 Long-Term Memory (LTM) — PostgreSQL + pgvector (conditional)
 
-LTM **KHONG chay mac dinh**. Chi trigger khi user query co recall keywords.
+LTM **KHÔNG chạy mặc định**. Chỉ trigger khi user query có recall keywords.
 
-**Keyword detection (regex, khong dung LLM):**
+**Keyword detection (regex, không dùng LLM):**
 
 ```python
 _RECALL_PATTERNS = [
@@ -244,7 +244,7 @@ _RECALL_PATTERNS = [
 ]
 ```
 
-**LTM flow — 3 nhanh:**
+**LTM flow — 3 nhánh:**
 
 ```
 Memory detects recall keywords?
@@ -265,17 +265,17 @@ Memory detects recall keywords?
         └─ 2+ sessions match
             → memory_context.long_term = {ambiguous: true, sessions: [...summaries]}
             → planner sees ambiguity → sets needs_clarification = true
-            → conversation asks: "Toi tim thay nhieu phien truoc do. Ban nho them chi tiet gi?"
+            → conversation asks: "Tôi tìm thấy nhiều phiên trước đó. Bạn nhớ thêm chi tiết gì?"
             → user provides keywords → new request → memory pgvector search
 ```
 
 **Temporal keyword handling:**
 
-"Tuan truoc" = calendar week truoc (Monday-Sunday). Neu khong match → mo rong range +-3 ngay.
+"Tuần trước" = calendar week trước (Monday-Sunday). Nếu không match → mở rộng range +-3 ngày.
 
 ### 4.3 Session Persistence — PostgreSQL
 
-Sessions luu tren PostgreSQL. Support reopen session cu, **giong Claude history**: list theo timestamp + preview, KHONG dung LLM tom tat.
+Sessions lưu trên PostgreSQL. Support reopen session cũ, **giống Claude history**: list theo timestamp + preview, KHÔNG dùng LLM tóm tắt.
 
 ```sql
 -- Reuse existing conversations table
@@ -284,7 +284,7 @@ CREATE TABLE conversations (
     user_id UUID REFERENCES users(id),
     session_id UUID UNIQUE,
     messages JSONB,           -- full conversation history (all messages)
-    summary TEXT,             -- reserved (v2.4.1 unused). Backfill o Phase 6+ neu UI can label
+    summary TEXT,             -- reserved (v2.4.1 unused). Backfill ở Phase 6+ nếu UI cần label
     created_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ
 );
@@ -301,9 +301,9 @@ POST /sessions/{id}/resume         → load messages from PostgreSQL
                                    → return session_id for SSE connection
 ```
 
-**Tai sao bo session summary agent?** Phase 5 ban dau co dinh implement Celery task tom tat session sau idle 30m → ghi cot `summary`. v2.4.1 thay doi: nhu cau thuc te chi can browse history (giong Claude UI hien chat list theo time + preview message dau). Summary agent la over-engineering: +1 LLM call/session, complexity quan ly trigger, ma user khong yeu cau. Defer cho Phase 6+ neu UX feedback can.
+**Tại sao bỏ session summary agent?** Phase 5 ban đầu có định implement Celery task tóm tắt session sau idle 30m → ghi cột `summary`. v2.4.1 thay đổi: nhu cầu thực tế chỉ cần browse history (giống Claude UI hiện chat list theo time + preview message đầu). Summary agent là over-engineering: +1 LLM call/session, complexity quản lý trigger, mà user không yêu cầu. Defer cho Phase 6+ nếu UX feedback cần.
 
-**LTM Memory (Section 4.2) khong bi anh huong**: LTM van dung `embeddings.source_type="conversation"` semantic search trong session matched theo timestamp. Khong can summary.
+**LTM Memory (Section 4.2) không bị ảnh hưởng**: LTM vẫn dùng `embeddings.source_type="conversation"` semantic search trong session matched theo timestamp. Không cần summary.
 
 ### 4.4 STM Read/Write Lifecycle
 
@@ -318,19 +318,19 @@ Request lifecycle:
 7. FastAPI writes to PostgreSQL conversations table (full history, for LTM + session reopen)
 ```
 
-Graph chi DOC memory. FastAPI layer DOC + GHI.
+Graph chỉ ĐỌC memory. FastAPI layer ĐỌC + GHI.
 
 ### 4.5 pgvector Usage Distinction
 
 | | Memory LTM (Section 4.2) | Retriever Agent (Section 6) |
 |---|---|---|
-| **Tim gi** | User's past conversations | Medical knowledge base |
+| **Tìm gì** | User's past conversations | Medical knowledge base |
 | **source_type filter** | `"conversation"` | `"document"`, `"humanml3d"` |
-| **Khi nao** | Chi khi recall keywords detected | Moi knowledge/exercise/motion query |
-| **Ai goi** | Memory node — direct call (in-process) | Retriever agent — via @tool wrapper |
-| **Can LLM quyet dinh?** | Khong (keyword detection) | Co (LLM chon tool) |
+| **Khi nào** | Chỉ khi recall keywords detected | Mọi knowledge/exercise/motion query |
+| **Ai gọi** | Memory node — direct call (in-process) | Retriever agent — via @tool wrapper |
+| **Cần LLM quyết định?** | Không (keyword detection) | Có (LLM chọn tool) |
 
-Cung bang `embeddings`, khac `source_type` filter. Khong conflict.
+Cùng bảng `embeddings`, khác `source_type` filter. Không conflict.
 
 ---
 
@@ -338,17 +338,17 @@ Cung bang `embeddings`, khac `source_type` filter. Khong conflict.
 
 ### 5.1 Responsibilities
 
-Planner la **brain** cua pipeline. Nhan query + memory_context → output:
+Planner là **brain** của pipeline. Nhận query + memory_context → output:
 1. **Intent classification**: conversation / knowledge_query / exercise_recommendation / visualize_motion / clarify
-2. **Query expansion**: them anatomical/physiotherapy synonyms
+2. **Query expansion**: thêm anatomical/physiotherapy synonyms
 3. **Structured plan**: required outputs, search strategy, detected constraints
-4. **Clarification detection**: neu thieu thong tin → set needs_clarification + cau hoi
+4. **Clarification detection**: nếu thiếu thông tin → set needs_clarification + câu hỏi
 
-Planner **chi len ke hoach**, KHONG goi tool. Retriever Agent execute plan.
+Planner **chỉ lên kế hoạch**, KHÔNG gọi tool. Retriever Agent execute plan.
 
 ### 5.2 Plan Output Schema
 
-Planner dung `with_structured_output()` tra Pydantic model:
+Planner dùng `with_structured_output()` trả Pydantic model:
 
 ```python
 class PlanOutput(BaseModel):
@@ -363,14 +363,14 @@ class PlanOutput(BaseModel):
     notes: Optional[str]                # additional context for retriever/synthesizer
 ```
 
-**Vi du per intent:**
+**Ví dụ per intent:**
 
 Exercise recommendation:
 ```json
 {
   "intent": "exercise_recommendation",
   "confidence": 0.92,
-  "expanded_query": "bai tap vat ly tri lieu cho dau cot song that lung man tinh",
+  "expanded_query": "bài tập vật lý trị liệu cho đau cột sống thắt lưng mãn tính",
   "needs_clarification": false,
   "clarification_question": null,
   "required_outputs": ["exercise_name", "description", "sets_reps", "safety_warnings"],
@@ -385,9 +385,9 @@ Clarification needed:
 {
   "intent": "exercise_recommendation",
   "confidence": 0.6,
-  "expanded_query": "bai tap cho dau lung",
+  "expanded_query": "bài tập cho đau lưng",
   "needs_clarification": true,
-  "clarification_question": "Ban co the mo ta ro hon vung dau lung khong? Phia tren hay phia duoi? Dau cap tinh hay man tinh?",
+  "clarification_question": "Bạn có thể mô tả rõ hơn vùng đau lưng không? Phía trên hay phía dưới? Đau cấp tính hay mãn tính?",
   "required_outputs": [],
   "search_strategy": [],
   "constraints_detected": [],
@@ -397,34 +397,34 @@ Clarification needed:
 
 ### 5.3 Plan Templates per Intent
 
-Planner system prompt chua huong dan cho tung intent type. Template dinh nghia `required_outputs` toi thieu:
+Planner system prompt chứa hướng dẫn cho từng intent type. Template định nghĩa `required_outputs` tối thiểu:
 
 | Intent | Required outputs | Notes |
 |--------|-----------------|-------|
-| knowledge_query | `["answer", "sources"]` | Phai co evidence-based answer |
-| exercise_recommendation | `["exercise_name", "description", "sets_reps", "safety_warnings"]` | Phai co safety |
-| visualize_motion | `["motion_description", "joint_constraints"]` | Can constraints cho Kimodo |
-| conversation | `["greeting_response"]` | Don gian |
-| clarify | `["clarification_question"]` | Hoi ro rang |
+| knowledge_query | `["answer", "sources"]` | Phải có evidence-based answer |
+| exercise_recommendation | `["exercise_name", "description", "sets_reps", "safety_warnings"]` | Phải có safety |
+| visualize_motion | `["motion_description", "joint_constraints"]` | Cần constraints cho Kimodo |
+| conversation | `["greeting_response"]` | Đơn giản |
+| clarify | `["clarification_question"]` | Hỏi rõ ràng |
 
 ### 5.4 Clarification Flow
 
 Planner set `needs_clarification = true` khi:
 - confidence < 0.5
-- Thieu thong tin critical (vd: exercise rec nhung khong biet vung dau)
+- Thiếu thông tin critical (vd: exercise rec nhưng không biết vùng đau)
 - Memory LTM ambiguous (2+ sessions match)
 
-Flow: planner → conversation (generation mode) → conversation doc `plan.clarification_question` + style theo persona → END.
+Flow: planner → conversation (generation mode) → conversation đọc `plan.clarification_question` + style theo persona → END.
 
 ---
 
 ## 6. Retriever Agent
 
-Retriever Agent **execute plan** tu planner. Nhan plan → chon tools → goi song song → tra ket qua.
+Retriever Agent **execute plan** từ planner. Nhận plan → chọn tools → gọi song song → trả kết quả.
 
 ### 6.1 pgvector @tool (in-process)
 
-pgvector search la LangChain `@tool` function, chay in-process (0ms network overhead):
+pgvector search là LangChain `@tool` function, chạy in-process (0ms network overhead):
 
 ```python
 from langchain_core.tools import tool
@@ -447,14 +447,14 @@ def pgvector_search(query: str, top_k: int = 5, source_type: str = "document") -
 
 ### 6.2 MCP Tools (Kimodo, web_search)
 
-Kimodo va web_search la MCP servers. `langchain-mcp-adapters` auto-discover tools.
+Kimodo và web_search là MCP servers. `langchain-mcp-adapters` auto-discover tools.
 
-Retriever Agent's ToolNode co ca 3 loai tool:
+Retriever Agent's ToolNode có cả 3 loại tool:
 - `pgvector_search` — @tool (in-process)
 - `generate_motion` — MCP tool (Kimodo, port 5001)
 - `search_medical` — MCP tool (web_search, port 5020)
 
-LLM quyet dinh goi tool nao dua tren planner's `search_strategy` va `required_outputs`.
+LLM quyết định gọi tool nào dựa trên planner's `search_strategy` và `required_outputs`.
 
 ### 6.3 Implementation Sketch
 
@@ -502,9 +502,9 @@ Rules:
 
 ### 7.1 Role
 
-Synthesizer la **heavy thinking LLM**. Nhan tool results + memory context + plan → **generate** clinical response.
+Synthesizer là **heavy thinking LLM**. Nhận tool results + memory context + plan → **generate** clinical response.
 
-Day KHONG chi la aggregation — synthesizer **suy nghi**, **phan tich**, va **viet** response hoan chinh (huong dan dong tac, giai thich y khoa, safety warnings).
+Đây KHÔNG chỉ là aggregation — synthesizer **suy nghĩ**, **phân tích**, và **viết** response hoàn chỉnh (hướng dẫn động tác, giải thích y khoa, safety warnings).
 
 ### 7.2 Input
 
@@ -597,7 +597,7 @@ grader receives synthesizer output
     │   → return {
     │       "grader_result": "retry",
     │       "retry_count": 1,
-    │       "grader_feedback": "Thieu buoc thuc hien bai tap. Can them sets/reps."
+    │       "grader_feedback": "Thiếu bước thực hiện bài tập. Cần thêm sets/reps."
     │   }
     │   → route to retriever_agent (retry)
     │   → retriever_agent reads grader_feedback from state
@@ -606,14 +606,14 @@ grader receives synthesizer output
     └─ ANY FAIL + retry_count >= 1
         → return {
             "grader_result": "pass_with_warning",
-            "grader_warning": "Cau tra loi co the chua day du. Vui long tham khao bac si."
+            "grader_warning": "Câu trả lời có thể chưa đầy đủ. Vui lòng tham khảo bác sĩ."
         }
         → route to conversation (warning appended to reasoning_output)
 ```
 
 **Retry path**: grader → retriever_agent → synthesizer → grader (with retry_count = 1). Worst case = 2x pipeline cost. Acceptable for quality assurance.
 
-**grader_feedback injection**: Retriever agent reads `state["grader_feedback"]` va include trong system prompt de LLM biet tai sao phai retry va can tim them gi.
+**grader_feedback injection**: Retriever agent reads `state["grader_feedback"]` và include trong system prompt để LLM biết tại sao phải retry và cần tìm thêm gì.
 
 ---
 
@@ -621,7 +621,7 @@ grader receives synthesizer output
 
 ### 9.1 Styling Mode
 
-**Trigger**: intent = knowledge/exercise/motion AND reasoning_output co noi dung.
+**Trigger**: intent = knowledge/exercise/motion AND reasoning_output có nội dung.
 
 ```
 Input: reasoning_output (clinical response from synthesizer)
@@ -630,16 +630,16 @@ Output: final_answer (styled response)
 ```
 
 - Load persona MD → build system prompt
-- LLM nhan reasoning_output → restyle tone, formatting, language
-- KHONG them medical info moi — chi restyle
+- LLM nhận reasoning_output → restyle tone, formatting, language
+- KHÔNG thêm medical info mới — chỉ restyle
 
 ### 9.2 Generation Mode
 
-**Trigger**: intent = conversation HOAC needs_clarification = true HOAC reasoning_output rong.
+**Trigger**: intent = conversation HOẶC needs_clarification = true HOẶC reasoning_output rỗng.
 
 ```
 Input: query (from RunnableConfig) + plan (from state) + memory_context (from state)
-Process: LLM generate response truc tiep tu persona + inputs
+Process: LLM generate response trực tiếp từ persona + inputs
 Output: final_answer (generated response)
 ```
 
@@ -647,7 +647,7 @@ Output: final_answer (generated response)
 
 | Case | Input | Response |
 |------|-------|----------|
-| Conversation ("Xin chao") | query + persona | Greeting in persona style |
+| Conversation ("Xin chào") | query + persona | Greeting in persona style |
 | Clarification | plan.clarification_question + persona | Styled clarification question |
 | Error (from error_handler) | reasoning_output (error msg) + persona | Styled error message |
 
@@ -677,7 +677,7 @@ async def conversation_node(state: AgentState, config: RunnableConfig) -> dict:
 
 ## 10. Error Handler
 
-error_handler ghi error message vao `reasoning_output` (KHONG phai `raw_answer`).
+error_handler ghi error message vào `reasoning_output` (KHÔNG phải `raw_answer`).
 
 ```python
 async def error_handler_node(state: AgentState) -> dict:
@@ -685,14 +685,14 @@ async def error_handler_node(state: AgentState) -> dict:
     critical = [e for e in errors if e.get("severity") == ErrorSeverity.CRITICAL]
 
     if critical:
-        msg = "Xin loi, he thong dang gap su co. Vui long thu lai sau."
+        msg = "Xin lỗi, hệ thống đang gặp sự cố. Vui lòng thử lại sau."
     else:
-        msg = "Da co loi nho, nhung toi van co gang tra loi."
+        msg = "Đã có lỗi nhỏ, nhưng tôi vẫn cố gắng trả lời."
 
     return {"reasoning_output": msg}
 ```
 
-Flow: error_handler → conversation (styling mode, vi reasoning_output co noi dung) → END.
+Flow: error_handler → conversation (styling mode, vì reasoning_output có nội dung) → END.
 
 ---
 
@@ -700,7 +700,7 @@ Flow: error_handler → conversation (styling mode, vi reasoning_output co noi d
 
 ### 11.1 MCP Servers (Kimodo + web_search ONLY)
 
-pgvector **KHONG phai MCP server**. Chi Kimodo va web_search dung MCP protocol.
+pgvector **KHÔNG phải MCP server**. Chỉ Kimodo và web_search dùng MCP protocol.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -735,7 +735,7 @@ mcp_servers:
   #   requires_approval: true
 ```
 
-**Them MCP server moi = them entry trong config. Khong sua code retriever.**
+**Thêm MCP server mới = thêm entry trong config. Không sửa code retriever.**
 
 ### 11.3 MCP Tool Specifications
 
@@ -743,8 +743,8 @@ mcp_servers:
 
 | Tool | `generate_motion` |
 |------|-------------------|
-| **Khi nao goi** | Khi user yeu cau xem/hien thi/mo phong mot chuyen dong cu the. CHI goi khi intent = `visualize_motion` hoac khi user noi ro "cho toi xem", "mo phong", "animate". KHONG goi cho exercise recommendation thong thuong. |
-| **Input** | `prompt: str` — mo ta chuyen dong bang ngon ngu tu nhien. `constraints: list[{joint: str, angle: float}]` (optional) — rang buoc goc khop. |
+| **Khi nào gọi** | Khi user yêu cầu xem/hiển thị/mô phỏng một chuyển động cụ thể. CHỈ gọi khi intent = `visualize_motion` hoặc khi user nói rõ "cho tôi xem", "mô phỏng", "animate". KHÔNG gọi cho exercise recommendation thông thường. |
+| **Input** | `prompt: str` — mô tả chuyển động bằng ngôn ngữ tự nhiên. `constraints: list[{joint: str, angle: float}]` (optional) — ràng buộc góc khớp. |
 | **Output** | `{video_url: str, duration_sec: float, format: "mp4", joints_used: list[str]}` |
 | **Latency** | 5-10s (GPU inference) |
 
@@ -752,20 +752,20 @@ mcp_servers:
 
 | Tool | `search_medical` |
 |------|-------------------|
-| **Khi nao goi** | Khi knowledge base noi bo (pgvector) khong du thong tin, hoac user hoi ve chu de moi/cap nhat ma tai lieu local chua co. Dung lam fallback khi pgvector tra ket qua similarity thap (< 0.5). |
+| **Khi nào gọi** | Khi knowledge base nội bộ (pgvector) không đủ thông tin, hoặc user hỏi về chủ đề mới/cập nhật mà tài liệu local chưa có. Dùng làm fallback khi pgvector trả kết quả similarity thấp (< 0.5). |
 | **Input** | `query: str` — search query. `max_results: int` (default 3). `domain_filter: str` (optional). |
 | **Output** | `list[{title, snippet, url, source_domain}]` |
 | **Latency** | 1-3s |
 
 ### 11.4 Approval Rules
 
-| Trigger | Khi nao | Cach xu ly |
+| Trigger | Khi nào | Cách xử lý |
 |---------|---------|-------------|
-| **External MCP voi API token** | Config co `requires_approval: true` | SSE `approval_required` → user approve → tiep tuc |
+| **External MCP với API token** | Config có `requires_approval: true` | SSE `approval_required` → user approve → tiếp tục |
 
-Internal tools (pgvector @tool, Kimodo, web_search) **KHONG can approval**.
+Internal tools (pgvector @tool, Kimodo, web_search) **KHÔNG cần approval**.
 
-**v2.4.1**: Token budget approval bi xoa (xem §12) — khong co external MCP nao hien dung nen `approval_required` event chua active. Giu cho Phase 6+ khi them MCP third-party.
+**v2.4.1**: Token budget approval bị xóa (xem §12) — không có external MCP nào hiện dùng nên `approval_required` event chưa active. Giữ cho Phase 6+ khi thêm MCP third-party.
 
 ---
 
@@ -788,36 +788,36 @@ LangChain standardized `usage_metadata` — works across DeepSeek (OpenAI-compat
 
 ### 12.2 Use cases (Phase 6 hardening)
 
-`total_tokens` duoc log o `ChatResponse` + structured log voi `request_id` → answer cac cau hoi:
-- Query type nao ton nhieu token nhat? (per-intent cost analysis)
-- User nao high-volume? (per-user billing/throttle later)
-- Retry loop co lam token blow up? (regression detection)
+`total_tokens` được log ở `ChatResponse` + structured log với `request_id` → answer các câu hỏi:
+- Query type nào tốn nhiều token nhất? (per-intent cost analysis)
+- User nào high-volume? (per-user billing/throttle later)
+- Retry loop có làm token blow up? (regression detection)
 
-### 12.3 v2.4.1 — bo `interrupt()` flow
+### 12.3 v2.4.1 — bỏ `interrupt()` flow
 
 **Removed**:
 - `interrupt()` call trong synthesizer
-- `token_limit` field trong RunnableConfig (giu skeleton, nhung khong node nao read)
+- `token_limit` field trong RunnableConfig (giữ skeleton, nhưng không node nào read)
 - PostgresSaver checkpointer setup
 - SSE `approval_required` event cho token budget
 - Resume flow `Command(resume=True)`
 
-**Ly do**: YAGNI. Use case "user set budget cap → AI hoi xin tiep" la enterprise feature ma single-user MVP khong can. Reactivate khi:
-- Production billing track per-user → can hard cap
-- Long-running multi-step agent dot token → can checkpoint resume
-- Hien tai: chi log tokens. Du.
+**Lý do**: YAGNI. Use case "user set budget cap → AI hỏi xin tiếp" là enterprise feature mà single-user MVP không cần. Reactivate khi:
+- Production billing track per-user → cần hard cap
+- Long-running multi-step agent đốt token → cần checkpoint resume
+- Hiện tại: chỉ log tokens. Đủ.
 
 ---
 
 ## 13. TTS — FastAPI BackgroundTasks (v2.4.1)
 
-TTS **KHONG nam trong LangGraph graph**. Graph ket thuc sau `conversation` node.
+TTS **KHÔNG nằm trong LangGraph graph**. Graph kết thúc sau `conversation` node.
 
-**v2.4.1 thay doi**: thay Celery `.delay()` bang FastAPI `BackgroundTasks.add_task()` — in-process async, khong can worker rieng. Reasoning:
-- VieNeu-TTS latency ~2-10s, blocking 1 request thread cua FastAPI khong dang ke
-- Bo 1 process (worker), bo 1 Redis DB (broker), bo `celery` dep
-- Test mock don gian hon (mock `add_task` vs mock `.delay`)
-- Khi nao can lai Celery: scale TTS > 100 req/min, hoac add heavy jobs (S3 batch upload, doc ingestion) → Phase 7
+**v2.4.1 thay đổi**: thay Celery `.delay()` bằng FastAPI `BackgroundTasks.add_task()` — in-process async, không cần worker riêng. Reasoning:
+- VieNeu-TTS latency ~2-10s, blocking 1 request thread của FastAPI không đáng kể
+- Bỏ 1 process (worker), bỏ 1 Redis DB (broker), bỏ `celery` dep
+- Test mock đơn giản hơn (mock `add_task` vs mock `.delay`)
+- Khi nào cần lại Celery: scale TTS > 100 req/min, hoặc add heavy jobs (S3 batch upload, doc ingestion) → Phase 7
 
 ### 13.1 Flow
 
@@ -851,7 +851,7 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
 
     # 3. Empty response fallback at FastAPI layer
     if not final_answer:
-        final_answer = "Xin loi, toi khong the xu ly yeu cau nay."
+        final_answer = "Xin lỗi, tôi không thể xử lý yêu cầu này."
 
     return ChatResponse(
         request_id=request_id,
@@ -872,7 +872,7 @@ from langgraph_agents.services.vieneu_tts.client import get_vieneu_tts_client
 from langgraph_agents.services.exceptions import ServiceUnavailableError
 
 
-_REDIS_URL = "redis://localhost:6379/0"  # v2.4.1: DB 0 (bo DB 1 broker)
+_REDIS_URL = "redis://localhost:6379/0"  # v2.4.1: DB 0 (bỏ DB 1 broker)
 
 
 async def synthesize_speech_async(text: str, task_id: str, voice_path: str | None = None):
@@ -887,41 +887,41 @@ async def synthesize_speech_async(text: str, task_id: str, voice_path: str | Non
         r = sync_redis.Redis.from_url(_REDIS_URL)
         r.setex(f"task_result:{task_id}", 3600, json.dumps(payload))
     except Exception:
-        pass  # graceful — polling endpoint se 404
+        pass  # graceful — polling endpoint sẽ 404
 ```
 
-Client method `synthesize()` (async) duoc dung thang. Khong can `synthesize_sync` cho Celery worker nua.
+Client method `synthesize()` (async) được dùng thẳng. Không cần `synthesize_sync` cho Celery worker nữa.
 
-### 13.3 Polling endpoint (giu nguyen)
+### 13.3 Polling endpoint (giữ nguyên)
 
 ```
 GET /tts/{task_id}/result → 200 {event: "speech_ready", url: "..."} | 404
 ```
 
-Phase 5 SSE se push speech_ready event truc tiep, bo polling.
+Phase 5 SSE sẽ push speech_ready event trực tiếp, bỏ polling.
 
 ---
 
 ## 14. SSE Event Schema
 
-SSE su dung `astream_events()` tu LangGraph. FastAPI forward events to client.
+SSE sử dụng `astream_events()` từ LangGraph. FastAPI forward events to client.
 
 ```typescript
 type SSEEvent =
-  // Progress tracking (moi node bat dau/ket thuc)
+  // Progress tracking (mỗi node bắt đầu/kết thúc)
   | { event: "stage";             data: { node: string, status: "started" | "complete" } }
 
-  // Tool execution progress (tu retriever_agent)
+  // Tool execution progress (từ retriever_agent)
   | { event: "tool_executing";    data: { tool: string, status: "started" | "complete" } }
   | { event: "tool_output";       data: { tool: string, summary: string } }
 
-  // Approval (external MCP only — Phase 6+, hien tai chua active)
+  // Approval (external MCP only — Phase 6+, hiện tại chưa active)
   | { event: "approval_required"; data: { reason: "external_tool", details?: string } }
 
-  // Streaming response (tu conversation node)
+  // Streaming response (từ conversation node)
   | { event: "token";             data: { content: string } }
 
-  // Async results (tu BackgroundTasks → Redis pub/sub o Phase 5)
+  // Async results (từ BackgroundTasks → Redis pub/sub ở Phase 5)
   | { event: "speech_ready";      data: { task_id: string, url: string } }
   | { event: "speech_failed";     data: { task_id: string, error: string } }
 
@@ -931,10 +931,10 @@ type SSEEvent =
 ```
 
 **v2.4.1 changes**:
-- Bo `approval_required` reason `"token_budget"` (token interrupt removed)
-- Them `speech_failed` event de UI hien thi khi VieNeu down
-- `done` event them `total_tokens` cho UI hien cost
-- Speech events giu task_id (BackgroundTasks UUID, khong phai Celery task_id)
+- Bỏ `approval_required` reason `"token_budget"` (token interrupt removed)
+- Thêm `speech_failed` event để UI hiển thị khi VieNeu down
+- `done` event thêm `total_tokens` cho UI hiện cost
+- Speech events giữ task_id (BackgroundTasks UUID, không phải Celery task_id)
 
 ---
 
@@ -1025,7 +1025,7 @@ pgvector>=0.3.0
 alembic>=1.13.0
 
 # API
-fastapi>=0.130,<0.140              # pin de tranh starlette compat break
+fastapi>=0.130,<0.140              # pin để tránh starlette compat break
 uvicorn[standard]>=0.30
 sse-starlette>=3.4
 
@@ -1043,9 +1043,9 @@ python-dotenv>=1.0.0
 | Package | Reason |
 |---------|--------|
 | (custom `llm_gateway.py`) | Replaced by LangChain ChatModel |
-| `celery>=5.4.0` (v2.4.1) | TTS → FastAPI BackgroundTasks. Skeleton `celery_app.py` giu reserve cho Phase 7 |
-| `langchain-google-genai` (v2.4.1) | Provider doi sang DeepSeek. Reactivate khi muon multi-provider |
-| `anthropic` (v2.4.1) | Khong dung. Reactivate khi muon Claude fallback |
+| `celery>=5.4.0` (v2.4.1) | TTS → FastAPI BackgroundTasks. Skeleton `celery_app.py` giữ reserve cho Phase 7 |
+| `langchain-google-genai` (v2.4.1) | Provider đổi sang DeepSeek. Reactivate khi muốn multi-provider |
+| `anthropic` (v2.4.1) | Không dùng. Reactivate khi muốn Claude fallback |
 
 ---
 
@@ -1090,25 +1090,25 @@ python-dotenv>=1.0.0
 ### Phase 3: MCP Servers + Kimodo + VieNeu-TTS (DONE code)
 - Implement Kimodo MCP server (mock mode; real NVIDIA inference deferred)
 - Implement web search MCP server (DuckDuckGo)
-- VieNeu-TTS as **Celery task** (sau bo o Phase 3.5)
+- VieNeu-TTS as **Celery task** (sau bỏ ở Phase 3.5)
 - FastAPI `/chat` endpoint (JSON response)
-- 48/50 tests xanh (3 API test fail — mock bug, fix o 3.1)
+- 48/50 tests xanh (3 API test fail — mock bug, fix ở 3.1)
 
 ### Phase 3.5: Phase 3 Finalize + Simplification (v2.4.1) → [PHASE-3.5.md](PHASE-3.5.md)
 
 | Task | Detail |
 |------|--------|
-| **REFACTOR** TTS Celery → FastAPI BackgroundTasks | `services/vieneu_tts/tasks.py` → `synthesize_speech_async()` plain async. `api/main.py` dung `background_tasks.add_task()`. Giu Redis `task_result:{id}` persist |
-| **DISABLE** `celery_app.py` | Skeleton giu lai voi big comment "reserved for Phase 7 hybrid cloud". Bo import o tat ca file production |
-| **REMOVE** `celery` tu requirements-langgraph.txt | Bo dep |
-| **REMOVE** `langgraph.celery` block tu config/langgraph.yaml | Khong dung |
+| **REFACTOR** TTS Celery → FastAPI BackgroundTasks | `services/vieneu_tts/tasks.py` → `synthesize_speech_async()` plain async. `api/main.py` dùng `background_tasks.add_task()`. Giữ Redis `task_result:{id}` persist |
+| **DISABLE** `celery_app.py` | Skeleton giữ lại với big comment "reserved for Phase 7 hybrid cloud". Bỏ import ở tất cả file production |
+| **REMOVE** `celery` từ requirements-langgraph.txt | Bỏ dep |
+| **REMOVE** `langgraph.celery` block từ config/langgraph.yaml | Không dùng |
 | **FIX** 3 test_phase3_api.py mock bug | `mock_redis.get.return_value = None` |
-| **HARDEN** `tts_result` endpoint | `isinstance(raw, (bytes, str))` check truoc json.loads |
+| **HARDEN** `tts_result` endpoint | `isinstance(raw, (bytes, str))` check trước json.loads |
 | **PIN** versions trong requirements | `fastapi>=0.130,<0.140`, `starlette>=1.0`, `sse-starlette>=3.4` |
-| **CLEANUP** config/langgraph.yaml | Xoa key v2.2 chet: manager_model, reasoning_model, services.kimodo (deleted) |
-| **COMMIT** all Phase 3 work | Hien dang untracked |
+| **CLEANUP** config/langgraph.yaml | Xóa key v2.2 chết: manager_model, reasoning_model, services.kimodo (deleted) |
+| **COMMIT** all Phase 3 work | Hiện đang untracked |
 
-### Phase 4: Conversation + Personas (DONE — gop vao 2.5)
+### Phase 4: Conversation + Personas (DONE — gộp vào 2.5)
 - 3 Persona MD files (eca_default, eca_friendly, eca_clinical)
 - conversation.py — dual mode (styling + generation) wired
 - Tests passing
@@ -1117,43 +1117,43 @@ python-dotenv>=1.0.0
 
 | Task | Detail |
 |------|--------|
-| SSE endpoint qua `astream_events()` | Replace JSON response cua /chat bang stream cua events |
-| Token streaming tu conversation node | `on_chat_model_stream` → SSE `token` events |
-| Stage events | Tung node `started/complete` (planner, retriever, synthesizer, ...) |
+| SSE endpoint qua `astream_events()` | Replace JSON response của /chat bằng stream của events |
+| Token streaming từ conversation node | `on_chat_model_stream` → SSE `token` events |
+| Stage events | Từng node `started/complete` (planner, retriever, synthesizer, ...) |
 | BackgroundTasks → SSE bridge | Redis pub/sub channel `task_events:{session_id}` cho speech_ready |
 | Session list API | `GET /sessions?user_id=...` → list [{id, created_at, updated_at, first_user_message_preview}] |
 | Session resume API | `POST /sessions/{id}/resume` → load messages → populate Redis STM |
-| Auto-write conversations sau graph | `_write_session_async()` o FastAPI layer — insert/update conversations table + Redis STM FIFO |
+| Auto-write conversations sau graph | `_write_session_async()` ở FastAPI layer — insert/update conversations table + Redis STM FIFO |
 | Empty response fallback | FastAPI layer check `final_answer == ""` → fallback text |
 | Frontend rework | ECA UI: EventSource + REST POST, session history sidebar (timestamp + preview) |
 
-**v2.4.1 removed tu Phase 5**:
-- ~~Session summary agent~~ — defer Phase 6+ neu can
-- ~~Token budget interrupt flow~~ — bo han
-- ~~Celery TTS → SSE~~ — thay bang BackgroundTasks → Redis pub/sub
+**v2.4.1 removed từ Phase 5**:
+- ~~Session summary agent~~ — defer Phase 6+ nếu cần
+- ~~Token budget interrupt flow~~ — bỏ hẳn
+- ~~Celery TTS → SSE~~ — thay bằng BackgroundTasks → Redis pub/sub
 
 ### Phase 6: Production Hardening (expanded v2.4.1 — article-inspired)
 
 | Task | Detail |
 |------|--------|
 | **Token cost tracking per request/feature** | Log `total_tokens + intent + request_id` ra structured log + DB. Query: "exercise_recommendation tb bao tokens", "user X total this month" |
-| **Request ID tracing** | Inject `request_id` vao moi log statement xuyen graph nodes. 1 request trace = 1 log query |
-| **Eval framework + golden set** | ~30 query mau + expected behavior. Auto-eval (intent accuracy, tool call correctness, response length). Regression test khi sua prompt/model |
-| **Output validators** | Synthesizer/conversation output: regex check no PII leak (so benh an, ten thuc), no hallucinated dosage. Layer giua synthesizer ↔ grader |
-| **Failure runbook** | `docs/runbook.md`: "LLM empty", "pgvector down", "VieNeu rate-limit", "MCP subprocess crash", "Redis down" — handle co san nhung document hoa |
-| Structured logging | `loguru` hoac stdlib `logging` voi JSON formatter. Output Loki/Datadog ready |
+| **Request ID tracing** | Inject `request_id` vào mọi log statement xuyên graph nodes. 1 request trace = 1 log query |
+| **Eval framework + golden set** | ~30 query mẫu + expected behavior. Auto-eval (intent accuracy, tool call correctness, response length). Regression test khi sửa prompt/model |
+| **Output validators** | Synthesizer/conversation output: regex check no PII leak (số bệnh án, tên thực), no hallucinated dosage. Layer giữa synthesizer ↔ grader |
+| **Failure runbook** | `docs/runbook.md`: "LLM empty", "pgvector down", "VieNeu rate-limit", "MCP subprocess crash", "Redis down" — handle có sẵn nhưng document hóa |
+| Structured logging | `loguru` hoặc stdlib `logging` với JSON formatter. Output Loki/Datadog ready |
 | Circuit breakers on MCP + VieNeu | Reuse `core/circuit_breaker.py`. Avoid cascade fail |
 | Health check endpoints | `/health/db`, `/health/redis`, `/health/mcp`, `/health/llm` |
 | Comprehensive test coverage | Target > 80% coverage cho langgraph_agents/ |
-| Persona MD prompt extraction | Optional: tach `_PLANNER_SYSTEM_PROMPT` etc ra `prompts/*.md` cho non-dev edit |
+| Persona MD prompt extraction | Optional: tách `_PLANNER_SYSTEM_PROMPT` etc ra `prompts/*.md` cho non-dev edit |
 
 ### Phase 7: Hybrid Edge-Cloud Deployment
 - VPS (FastAPI + Redis) + Supabase (PostgreSQL + pgvector managed)
 - Edge worker (HP ProDesk 48GB + RTX 3060): NVIDIA Kimodo real inference + VieNeu-TTS GGUF
 - **AWS S3**: user-uploaded images, generated motion videos, audio assets (Owner roadmap)
 - **AWS CloudFront**: CDN cho static + SSE passthrough
-- **AWS SQS**: re-introduce queue cho heavy async (S3 batch upload, doc ingestion). Khoi phuc `celery_app.py` skeleton
-- Kimodo MCP: switch tu stdio subprocess → HTTP `streamable_http` qua edge worker
+- **AWS SQS**: re-introduce queue cho heavy async (S3 batch upload, doc ingestion). Khôi phục `celery_app.py` skeleton
+- Kimodo MCP: switch từ stdio subprocess → HTTP `streamable_http` qua edge worker
 - DNS + SSL + monitoring
 
 ---
@@ -1171,11 +1171,11 @@ python-dotenv>=1.0.0
 | **Planner wrong intent** | Low confidence → clarify. Grader catches downstream issues |
 | **Memory LTM keyword false positive** | Conservative patterns. False positive = unnecessary PostgreSQL query (low cost) |
 | **Memory LTM temporal ambiguity** | Calendar week + +-3 day expansion. Multiple matches → ask user |
-| **DeepSeek provider lock-in** | LangChain ChatOpenAI abstraction → swap qua base_url config. Anthropic/Gemini reactivate bang dep |
-| **DeepSeek `json_mode` constraints** | Thinking model khong support tool_choice/json_schema → fix bang prompt yeu cau "JSON" + Pydantic defaults permissive |
-| **BackgroundTasks scale limit (v2.4.1)** | OK cho <100 req/min. Khi scale: Phase 7 reactivate Celery + SQS. Skeleton `celery_app.py` da co |
-| **VieNeu-TTS down (BackgroundTasks)** | Circuit breaker o client. Task ghi `speech_failed` payload Redis. SSE notify user. Khong block /chat response |
-| **Session reopen scale (timestamp-only list)** | `LIMIT 50` + index on (user_id, updated_at DESC). Khi user co > 1000 session → Phase 6 add summary agent + search |
+| **DeepSeek provider lock-in** | LangChain ChatOpenAI abstraction → swap qua base_url config. Anthropic/Gemini reactivate bằng dep |
+| **DeepSeek `json_mode` constraints** | Thinking model không support tool_choice/json_schema → fix bằng prompt yêu cầu "JSON" + Pydantic defaults permissive |
+| **BackgroundTasks scale limit (v2.4.1)** | OK cho <100 req/min. Khi scale: Phase 7 reactivate Celery + SQS. Skeleton `celery_app.py` đã có |
+| **VieNeu-TTS down (BackgroundTasks)** | Circuit breaker ở client. Task ghi `speech_failed` payload Redis. SSE notify user. Không block /chat response |
+| **Session reopen scale (timestamp-only list)** | `LIMIT 50` + index on (user_id, updated_at DESC). Khi user có > 1000 session → Phase 6 add summary agent + search |
 
 ---
 

@@ -55,8 +55,9 @@ function resolveApiBaseUrl() {
   }
 
   // Local browser can safely call local API.
+  // Backend (LangGraph FastAPI) runs on 8080. Legacy orchestrator 8000 — removed.
   if (isLocal) {
-    return "http://localhost:8000";
+    return "http://localhost:8080";
   }
 
   // For ngrok-hosted UI, prefer same-origin API so one 8000 tunnel works
@@ -500,54 +501,96 @@ async function clearMemory(userId) {
 // ── Phase 5: SSE streaming chat ──────────────────────────────────────
 
 
-async function streamChat({ query, userId, sessionId, personaId, outputMode, onEvent }) {
+// ── SSE parser ───────────────────────────────────────────────────────
+// Parse SSE blocks (separated by blank line) and emit each event via callback.
+function _parseSSEBlocks(text, emit) {
+  for (const block of text.split(/\r?\n\r?\n/)) {
+    if (!block.trim()) continue;
+    let eventType = null;
+    let dataStr = "";
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith(":")) continue;   // comment / heartbeat
+      if (line.startsWith("event:")) eventType = line.slice(6).trim();
+      else if (line.startsWith("data:")) dataStr += line.slice(5).trim();
+    }
+    if (!eventType) continue;
+    try {
+      emit(eventType, dataStr ? JSON.parse(dataStr) : {});
+    } catch (e) {
+      console.warn("Failed to parse SSE data:", dataStr, e);
+    }
+  }
+}
+
+
+async function streamChat({ query, userId, sessionId, personaId, outputMode, webSearch, onEvent }) {
   const url = joinApiBase("/chat");
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Accept": "text/event-stream",
-    },
-    body: JSON.stringify({
-      query,
-      user_id: userId,
-      session_id: sessionId,
-      persona_id: personaId || "eca_default",
-      output_mode: outputMode || "text",
-    }),
+  const body = JSON.stringify({
+    query, user_id: userId, session_id: sessionId,
+    persona_id: personaId || "eca_default",
+    output_mode: outputMode || "text",
+    web_search: webSearch || false,
   });
 
-  if (!resp.ok) {
-    throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Accept": "text/event-stream" },
+    body,
+  });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+
+  // Clone so we can fallback to text() if the reader path consumes the body
+  // without yielding events (AV/proxy buffer issue — body is in memory but
+  // ReadableStream yields done immediately).
+  const respClone = resp.clone();
+
+  // Attempt 1: stream via getReader. If it gives nothing (AV/proxy buffered the
+  // response — known issue when antivirus MITM-inspects CORS chunked traffic),
+  // fall through to text() which works because body was already buffered.
+  const reader = resp.body && resp.body.getReader ? resp.body.getReader() : null;
+  if (reader) {
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let emittedAny = false;
+    const wrappedEmit = (t, d) => { emittedAny = true; console.log("[SSE]", t, d); onEvent(t, d); };
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lastBoundary = buffer.lastIndexOf("\n\n");
+        if (lastBoundary === -1) continue;
+        const ready = buffer.slice(0, lastBoundary);
+        buffer = buffer.slice(lastBoundary + 2);
+        _parseSSEBlocks(ready, wrappedEmit);
+      }
+      if (buffer.trim()) _parseSSEBlocks(buffer, wrappedEmit);
+      if (emittedAny) return;   // streaming worked
+      console.warn("[SSE] reader returned 0 events — falling back to text() parsing");
+    } catch (e) {
+      console.warn("[SSE] reader failed, falling back to text():", e);
+    }
   }
 
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
+  // Fallback: response.body has been buffered server/proxy-side. Body is
+  // already in memory — parse all events but EMIT WITH DELAY to simulate
+  // typing (real streaming UX). Without this, all 100+ token events fire
+  // synchronously and the user sees a single chunk pop in.
+  const fullBody = await respClone.text();
+  console.log("[SSE-FALLBACK] parsing", fullBody.length, "chars at once (will replay with typing delay)");
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  // Collect events first
+  const events = [];
+  _parseSSEBlocks(fullBody, (t, d) => events.push({ type: t, data: d }));
 
-    const blocks = buffer.split("\n\n");
-    buffer = blocks.pop();
-
-    for (const block of blocks) {
-      if (!block.trim()) continue;
-      let eventType = null;
-      let dataStr = "";
-      for (const line of block.split("\n")) {
-        if (line.startsWith("event:")) eventType = line.slice(6).trim();
-        else if (line.startsWith("data:")) dataStr += line.slice(5).trim();
-      }
-      if (eventType) {
-        try {
-          onEvent(eventType, JSON.parse(dataStr));
-        } catch (e) {
-          console.warn("Failed to parse SSE data:", dataStr, e);
-        }
-      }
+  // Replay with delay only for token events (~50 tokens/sec feel)
+  const TYPING_DELAY_MS = 15;
+  for (const e of events) {
+    console.log("[SSE-FB]", e.type, e.data);
+    onEvent(e.type, e.data);
+    if (e.type === "token") {
+      await new Promise(r => setTimeout(r, TYPING_DELAY_MS));
     }
   }
 }

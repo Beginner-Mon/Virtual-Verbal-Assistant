@@ -4,12 +4,16 @@ Pattern: ChatModel.bind_tools() → invoke → if tool_calls → ToolNode → lo
 Phase 3: pgvector_search (in-process) + MCP tools (generate_motion, search_medical).
 """
 
+import time
 from datetime import datetime, timezone
 from langchain_core.messages import SystemMessage, HumanMessage
 
 from langgraph_agents.state import AgentState, ErrorSeverity
 from langgraph_agents.llm import get_chat_model
 from langgraph_agents.tools.pgvector_tool import pgvector_search
+from langgraph_agents.shared.logging import get_logger
+
+logger = get_logger("langgraph.retriever")
 
 
 RETRIEVER_TOOLS = [pgvector_search]
@@ -41,8 +45,11 @@ Plan from planner:
 
 async def retriever_agent_node(state: AgentState, config) -> dict:
     """Run one tool-calling step. ToolNode handles execution."""
+    t0 = time.perf_counter()
+    request_id = config["configurable"].get("request_id", "-")
     plan = state.get("plan", {})
     expanded = state.get("expanded_query") or config["configurable"]["query"]
+    token_limit = config["configurable"].get("token_limit", 0)
 
     retry_note = ""
     feedback = state.get("grader_feedback")
@@ -55,6 +62,21 @@ async def retriever_agent_node(state: AgentState, config) -> dict:
     )
 
     tools = await _build_tools()
+    web_search_enabled = config["configurable"].get("web_search", False)
+    if not web_search_enabled:
+        tools = [t for t in tools if t.name != "search_medical"]
+        logger.info("node_start", extra={
+            "node": "retriever_agent", "request_id": request_id,
+            "tool_count": len(tools), "is_retry": bool(feedback),
+            "web_search": False,
+        })
+    else:
+        logger.info("node_start", extra={
+            "node": "retriever_agent", "request_id": request_id,
+            "tool_count": len(tools), "is_retry": bool(feedback),
+            "web_search": True,
+        })
+
     llm = get_chat_model("retriever").bind_tools(tools)
 
     try:
@@ -63,6 +85,11 @@ async def retriever_agent_node(state: AgentState, config) -> dict:
             HumanMessage(content=f"Execute plan for query: {expanded}"),
         ])
     except Exception as exc:
+        elapsed_ms = round((time.perf_counter() - t0) * 1000)
+        logger.error("node_failed", extra={
+            "node": "retriever_agent", "request_id": request_id,
+            "elapsed_ms": elapsed_ms, "error": str(exc),
+        }, exc_info=True)
         return {
             "errors": [{
                 "node": "retriever_agent",
@@ -73,6 +100,13 @@ async def retriever_agent_node(state: AgentState, config) -> dict:
         }
 
     tokens = (ai_msg.usage_metadata or {}).get("total_tokens", 0) if hasattr(ai_msg, "usage_metadata") else 0
+    tool_calls = getattr(ai_msg, "tool_calls", []) or []
+    elapsed_ms = round((time.perf_counter() - t0) * 1000)
+    logger.info("node_complete", extra={
+        "node": "retriever_agent", "request_id": request_id,
+        "elapsed_ms": elapsed_ms, "tokens": tokens,
+        "tool_calls": len(tool_calls),
+    })
 
     return {
         "messages": [ai_msg],

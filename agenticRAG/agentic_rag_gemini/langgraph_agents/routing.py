@@ -17,18 +17,23 @@ def route_after_memory(state: AgentState) -> str:
 
 
 def route_after_planner(state: AgentState) -> str:
-    """Planner → conversation | retriever_agent | error_handler."""
+    """Planner → synthesizer (direct, for greeting/clarify) | retriever_agent | error_handler.
+
+    After Phase 6.9: conversation node deleted. Synthesizer is the universal
+    response generator and handles greeting + clarify modes directly without
+    going through retriever (no tools needed for those intents).
+    """
     if check_errors(state) == "error_handler":
         return "error_handler"
 
     if state.get("needs_clarification"):
-        return "conversation"
+        return "synthesizer"
 
     intent = state.get("intent", "conversation")
     if intent in ("knowledge_query", "exercise_recommendation", "visualize_motion"):
         return "retriever_agent"
-    # conversation, clarify, or unknown → conversation (generation mode)
-    return "conversation"
+    # conversation, clarify, or unknown → synthesizer direct (chat mode)
+    return "synthesizer"
 
 
 _MAX_TOOL_ROUNDS = 2  # hard cap on retriever⇄tools iterations within one pipeline run
@@ -60,7 +65,13 @@ def route_after_retriever(state: AgentState) -> str:
 
 
 def route_after_grader(state: AgentState) -> str:
+    """Grader → retriever_agent (retry once) | END (pass / pass_with_warning).
+
+    After Phase 6.9: synthesizer already produced final_answer with persona
+    voice. Grader appends warning to final_answer on pass_with_warning path
+    (no extra node/LLM needed).
+    """
     result = state.get("grader_result", "pass")
     if result == "retry":
         return "retriever_agent"
-    return "conversation"
+    return "end"

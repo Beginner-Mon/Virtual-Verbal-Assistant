@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>SSE Test — bypass React</title>
+  <style>
+    body { font-family: monospace; padding: 20px; max-width: 900px; }
+    button { padding: 8px 16px; font-size: 14px; }
+    #output { margin-top: 20px; padding: 12px; background: #f4f4f4; border-radius: 4px; min-height: 200px; white-space: pre-wrap; }
+    #events { margin-top: 20px; padding: 8px; background: #fffde7; border-radius: 4px; font-size: 11px; max-height: 200px; overflow: auto; }
+    .stage { color: blue; }
+    .token { color: green; }
+    .done { color: red; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h2>SSE Test — bypass React</h2>
+  <p>Mở DevTools Console (F12) trước. Click Send, xem text streaming + event log.</p>
+  <button id="send">Send "test"</button>
+  <button id="send-vn">Send "Xin chào"</button>
+
+  <h3>Streamed text:</h3>
+  <div id="output">— click Send —</div>
+
+  <h3>Event log:</h3>
+  <div id="events"></div>
+
+  <script>
+    const API = "http://localhost:8080";
+    const out = document.getElementById("output");
+    const ev = document.getElementById("events");
+
+    async function send(query) {
+      out.textContent = "";
+      ev.innerHTML = '<div style="color:orange;font-weight:bold">[SENDING — wait 5-10s for first event...]</div>';
+      let txt = "";
+
+      const sessionId = crypto.randomUUID();
+      const t0 = Date.now();
+      console.log("[TEST] starting", query, "session=", sessionId);
+
+      const resp = await fetch(API + "/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query, user_id: "sse_test",
+          session_id: sessionId, web_search: false,
+        }),
+      });
+
+      if (!resp.ok) {
+        out.textContent = "HTTP " + resp.status + ": " + await resp.text();
+        return;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+          ev.innerHTML += `<div class="done">[STREAM END after ${elapsed}s, total ${txt.length} chars]</div>`;
+          console.log("[TEST] done. Total chars:", txt.length, "elapsed:", elapsed + "s");
+          break;
+        }
+        const chunkSize = value ? value.length : 0;
+        console.log("[CHUNK]", chunkSize, "bytes at +" + ((Date.now() - t0)/1000).toFixed(1) + "s");
+        buf += decoder.decode(value, { stream: true });
+        const blocks = buf.split("\n\n");
+        buf = blocks.pop();
+
+        for (const b of blocks) {
+          if (!b.trim()) continue;
+          let etype = null, data = "";
+          for (const line of b.split("\n")) {
+            if (line.startsWith("event:")) etype = line.slice(6).trim();
+            else if (line.startsWith("data:")) data += line.slice(5).trim();
+          }
+          if (etype) {
+            const parsed = JSON.parse(data);
+            console.log("[SSE]", etype, parsed);
+            const cls = etype === "token" ? "token" : etype === "done" ? "done" : "stage";
+            ev.innerHTML += `<div class="${cls}">${etype}: ${JSON.stringify(parsed).slice(0, 100)}</div>`;
+            ev.scrollTop = ev.scrollHeight;
+            if (etype === "token") {
+              txt += parsed.content;
+              out.textContent = txt;
+            }
+          }
+        }
+      }
+    }
+
+    document.getElementById("send").onclick = () => send("test");
+    document.getElementById("send-vn").onclick = () => send("Xin chào");
+  </script>
+</body>
+</html>

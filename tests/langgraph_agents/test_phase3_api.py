@@ -6,13 +6,16 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
+def _set_redis(mock_redis):
+    import langgraph_agents.api.main as api_module
+    api_module._redis = mock_redis
+
+
 @pytest.fixture
 def api_client(monkeypatch):
     mock_redis = MagicMock()
     mock_redis.get.return_value = None
-
-    import langgraph_agents.api.main as api_module
-    api_module._redis = mock_redis
+    _set_redis(mock_redis)
 
     from langgraph_agents.api.main import create_app
     from fastapi.testclient import TestClient
@@ -20,6 +23,9 @@ def api_client(monkeypatch):
     client = TestClient(app)
 
     yield client, mock_redis
+
+    import langgraph_agents.api.main as api_module
+    api_module._redis = None
 
 
 class TestSchemas:
@@ -58,6 +64,7 @@ def test_health_returns_ok(api_client):
 def test_tts_result_404_when_missing(api_client):
     client, mock_redis = api_client
     mock_redis.get.return_value = None
+    _set_redis(mock_redis)
     resp = client.get("/tts/nonexistent/result")
     assert resp.status_code == 404
 
@@ -66,6 +73,7 @@ def test_tts_result_404_when_missing(api_client):
 def test_tts_result_200_when_present(api_client):
     client, mock_redis = api_client
     mock_redis.get.return_value = b'{"event":"speech_ready","url":"http://x.wav"}'
+    _set_redis(mock_redis)
     resp = client.get("/tts/abc/result")
     assert resp.status_code == 200
     assert resp.json()["event"] == "speech_ready"
@@ -75,5 +83,6 @@ def test_tts_result_200_when_present(api_client):
 def test_tts_result_500_on_corrupt(api_client):
     client, mock_redis = api_client
     mock_redis.get.return_value = b'not json'
+    _set_redis(mock_redis)
     resp = client.get("/tts/abc/result")
     assert resp.status_code == 500

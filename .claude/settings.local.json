@@ -3,7 +3,16 @@
     "allow": [
       "Bash(Get-ChildItem *)",
       "Bash(Test-Path *)",
-      "Bash(Select-Object FullName)"
+      "Bash(Select-Object FullName)",
+      "Bash(python -m pytest tests/langgraph_agents/test_phase4_conversation.py -v -m unit --tb=short)",
+      "Bash(python -m pytest tests/langgraph_agents/ -v -m unit --tb=short)",
+      "Bash(python -m pytest tests/langgraph_agents/test_phase4_conversation.py -m unit -v)",
+      "PowerShell(python -m pytest tests/langgraph_agents/test_phase4_conversation.py -m unit -v 2>&1)",
+      "PowerShell(C:\\\\Users\\\\Nguyen\\\\miniconda3\\\\Scripts\\\\pytest.exe tests/langgraph_agents/test_phase4_conversation.py tests/langgraph_agents/test_phase3_dispatch.py -v --tb=short -k \"not full_graph\" 2>&1)",
+      "PowerShell(conda activate *)",
+      "Bash(pip install *)",
+      "Bash(conda run *)",
+      "Bash(/c/Users/Nguyen/miniconda3/envs/firstconda/python.exe -m pytest tests/langgraph_agents/ -m unit -p no:cacheprovider --no-header -q)"
     ]
   }
 }
