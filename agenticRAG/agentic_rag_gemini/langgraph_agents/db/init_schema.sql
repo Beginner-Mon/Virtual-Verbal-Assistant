@@ -15,10 +15,12 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS conversations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES users(id),
-    session_id UUID,
+    session_id UUID NOT NULL,
     messages JSONB DEFAULT '[]',
     summary TEXT,
-    created_at TIMESTAMPTZ DEFAULT now()
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    CONSTRAINT conversations_session_id_unique UNIQUE (session_id)
 );
 
 -- Documents (uploaded files metadata)

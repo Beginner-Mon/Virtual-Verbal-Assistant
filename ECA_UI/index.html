@@ -1218,6 +1218,29 @@
         return key.replace(/_/g, " ");
       };
 
+      // Phase 5 stage labels (Vietnamese)
+      const STAGE_LABELS_V2 = {
+        memory: "Đang nhớ lại ngữ cảnh...",
+        planner: "Đang phân tích yêu cầu...",
+        retriever_agent: "Đang tìm tài liệu...",
+        synthesizer: "Đang suy luận...",
+        grader: "Đang kiểm tra chất lượng...",
+        conversation: "Đang soạn câu trả lời...",
+        error_handler: "Đã có lỗi, đang xử lý...",
+      };
+
+      const showStageIndicatorV2 = (node, status) => {
+        const indicator = document.getElementById("stage-indicator");
+        const text = document.getElementById("stage-indicator-text");
+        if (!indicator || !text) return;
+        if (status === "started") {
+          text.textContent = STAGE_LABELS_V2[node] || node;
+          indicator.style.display = "flex";
+        } else if (node === "conversation" && status === "complete") {
+          indicator.style.display = "none";
+        }
+      };
+
       const toMotionBadge = (payload) => {
         if (!payload || !payload.motion_file_url) return null;
         return {
@@ -1256,7 +1279,7 @@
         const currentAttachments = [...uploadedDocs];
 
         setMessages(m => [
-          ...m, 
+          ...m,
           { id: userMessageId, role: "user", text, attachments: currentAttachments, motion: null, time: now },
           { id: assistantMessageId, role: "assistant", text: "", isStreamingText: false, motion: null, exercises: [], showExerciseButtons: false, time: now, autoPlay: true }
         ]);
@@ -1268,18 +1291,13 @@
         setGenerating(false);
         setActiveTaskStage("queued");
 
-        let currentSessionId = activeSession;
+        let currentSessionId = activeSession || crypto.randomUUID ? crypto.randomUUID() : "session-" + Date.now();
+        if (!activeSession) {
+          setActiveSession(currentSessionId);
+        }
 
         try {
-          // Lazy session creation
-          if (!currentSessionId) {
-             const res = await window.createSession(USER_ID, text);
-             currentSessionId = res.session_id;
-             setActiveSession(currentSessionId);
-             
-             // Refresh list later in background
-             window.listSessions(USER_ID).then(setSessions).catch(console.error);
-          }
+          let streamedText = "";
 
           const updateAssistantMessage = (partial) => {
             setMessages(msgs => msgs.map((msg) => (
@@ -1287,217 +1305,86 @@
             )));
           };
 
-          const replyData = await window.askEca(text, USER_ID, currentSessionId, (progress) => {
-            const stage = String(progress?.progress_stage || "").toLowerCase();
-            const hasText = Boolean(progress?.text_answer && String(progress.text_answer).trim());
-            const isMotionStage = stage.includes("motion") || stage.includes("glb") || stage.includes("mp4") || stage.includes("dart");
-
-            setActiveTaskStage(stage);
-
-            if (progress?.status === "processing") {
-              setGenerating(isMotionStage);
-              setThinking(!hasText && !isMotionStage);
-            } else {
-              setThinking(false);
-              setGenerating(false);
-            }
-
-            if (hasText) {
-              streamAssistantText(assistantMessageId, progress.text_answer);
-              setClinicalAdvice(progress.clinical_advice || progress.text_answer || "");
-              if (progress?.task_id) {
-                setActiveTaskId(progress.task_id);
-              }
-            }
-
-            if (Array.isArray(progress?.exercises)) {
-              updateAssistantMessage({
-                exercises: progress.exercises,
-                showExerciseButtons: shouldShowExerciseButtons(progress),
-              });
-            }
-
-            if (progress?.motion && progress.motion.motion_file_url) {
-              const motionBadge = toMotionBadge(progress.motion);
-              setMotionUrl(progress.motion.motion_file_url);
-              setMotionMeta(progress.motion || null);
-              updateAssistantMessage({ motion: motionBadge });
-            }
-
-            if (progress?.motion_error) {
-              setMotionError(String(progress.motion_error));
-            }
-          });
-
-          console.log("[ECA UI] Task progress complete. Final replyData:", replyData);
-
-          setClinicalAdvice(replyData.clinical_advice || replyData.text_answer || "");
-          if (replyData.task_id) {
-            setActiveTaskId(replyData.task_id);
-          }
-          const replyShowExerciseButtons = shouldShowExerciseButtons(replyData);
-
-          setMessages(msgs => msgs.map((msg) => (
-            msg.id === assistantMessageId
-              ? {
-                  ...msg,
-                  text: msg.text || "",
-                  motion: msg.motion || null,
-                  exercises: (Array.isArray(replyData.exercises) && replyData.exercises.length > 0)
-                    ? replyData.exercises
-                    : (msg.exercises || []),
-                  showExerciseButtons: replyShowExerciseButtons,
-                  audioUrl: (replyData.tts && replyData.tts.audio_url) ?
-                    (replyData.tts.audio_url.startsWith('/') ? API_BASE_URL + replyData.tts.audio_url : replyData.tts.audio_url)
-                    : msg.audioUrl,
+          if (window.ECA_API && window.ECA_API.streamChat) {
+            // Phase 5 SSE path
+            await window.ECA_API.streamChat({
+              query: text,
+              userId: USER_ID,
+              sessionId: currentSessionId,
+              personaId: "eca_default",
+              outputMode: "text",
+              onEvent: (type, data) => {
+                switch (type) {
+                  case "stage":
+                    showStageIndicatorV2(data.node, data.status);
+                    if (data.status === "started") {
+                      setActiveTaskStage(data.node);
+                    }
+                    break;
+                  case "token":
+                    streamedText += data.content;
+                    updateAssistantMessage({ text: streamedText, isStreamingText: true });
+                    setClinicalAdvice(streamedText);
+                    break;
+                  case "speech_ready":
+                    if (data.url) {
+                      const resolvedUrl = data.url.startsWith('/') ? API_BASE_URL + data.url : data.url;
+                      updateAssistantMessage({ audioUrl: resolvedUrl, autoPlay: true });
+                    }
+                    break;
+                  case "speech_failed":
+                    console.warn("TTS failed:", data.error);
+                    break;
+                  case "session_persisted":
+                    // Refresh session list in background
+                    if (window.ECA_API.listSessions) {
+                      window.ECA_API.listSessions(USER_ID).then(res => {
+                        if (res && Array.isArray(res.sessions)) setSessions(res.sessions);
+                      }).catch(console.error);
+                    }
+                    break;
+                  case "done":
+                    updateAssistantMessage({ text: streamedText, isStreamingText: false });
+                    setThinking(false);
+                    setActiveTaskStage("");
+                    break;
                 }
-              : msg
-          )));
-
-          if (replyData.text_answer) {
-            streamAssistantText(assistantMessageId, replyData.text_answer);
-          }
-
-          if (replyData.tts && replyData.tts.audio_url) {
-            console.log("[ECA UI] Setting TTS audio URL from sync reply:", replyData.tts.audio_url);
-            playAudio(replyData.tts.audio_url);
+              },
+            });
           } else {
-            console.log("[ECA UI] No sync audio URL found in replyData.tts:", replyData.tts);
-          }
+            // Fallback to old /answer API
+            const replyData = await window.askEca(text, USER_ID, currentSessionId, (progress) => {
+              const stage = String(progress?.progress_stage || "").toLowerCase();
+              setActiveTaskStage(stage);
+              if (progress?.text_answer && String(progress.text_answer).trim()) {
+                streamAssistantText(assistantMessageId, progress.text_answer);
+                setClinicalAdvice(progress.clinical_advice || progress.text_answer || "");
+              }
+            });
 
-          if (replyData.finalPromise) {
-            setThinking(false);
-            setGenerating(true);
-            setActiveTaskStage("motion_generation");
-
-            replyData.finalPromise
-              .then((finalData) => {
-                setThinking(false);
-                setGenerating(false);
-                setActiveTaskStage("");
-                setClinicalAdvice(finalData.clinical_advice || finalData.text_answer || "");
-                setMotionMeta(finalData.motion || null);
-
-                if (finalData.motion && finalData.motion.motion_file_url) {
-                  setMotionUrl(finalData.motion.motion_file_url);
-                  let filename = finalData.motion.motion_file_url.split('/').pop().replace('.glb', '');
-                  if (filename && filename.length > 0) {
-                    setMotionKey(filename);
-                  }
-                }
-
-                const finalMotionBadge = toMotionBadge(finalData.motion);
-                const finalShowExerciseButtons = shouldShowExerciseButtons(finalData);
-                setMessages(msgs => msgs.map((msg) => (
-                  msg.id === assistantMessageId
-                    ? {
-                        ...msg,
-                        text: msg.text || "",
-                        motion: finalMotionBadge || msg.motion || null,
-                        exercises: (Array.isArray(finalData.exercises) && finalData.exercises.length > 0)
-                          ? finalData.exercises
-                          : (msg.exercises || []),
-                        showExerciseButtons: finalShowExerciseButtons,
-                        audioUrl: (finalData.tts && finalData.tts.audio_url) ?
-                          (finalData.tts.audio_url.startsWith('/') ? API_BASE_URL + finalData.tts.audio_url : finalData.tts.audio_url)
-                          : msg.audioUrl,
-                      }
-                    : msg
-                )));
-
-                if (finalData.text_answer) {
-                  streamAssistantText(assistantMessageId, finalData.text_answer);
-                }
-
-                if (finalData.tts && finalData.tts.audio_url) {
-                  const resolvedUrl = finalData.tts.audio_url.startsWith('/') ? API_BASE_URL + finalData.tts.audio_url : finalData.tts.audio_url;
-                  console.log("[ECA UI] Setting TTS audio URL from finalPromise:", resolvedUrl);
-                  playAudio(resolvedUrl);
-                }
-
-                updateAssistantMessage({
-                    text: finalData.text_answer || "",
-                    motion: finalMotionBadge || null,
-                    audioUrl: (finalData.tts && finalData.tts.audio_url) ?
-                      (finalData.tts.audio_url.startsWith('/') ? API_BASE_URL + finalData.tts.audio_url : finalData.tts.audio_url)
-                      : null
-                });
-
-
-                if (finalData.motion_error) {
-                  setMotionError(String(finalData.motion_error));
-                }
-              })
-              .catch((error) => {
-                setThinking(false);
-                setGenerating(false);
-                setActiveTaskStage("failed");
-
-                const partial = error?.partial || {};
-                const detail = partial.motion_error || error?.message || "Motion generation timed out";
-                setMotionError(String(detail));
-
-                if (partial.text_answer) {
-                  streamAssistantText(assistantMessageId, partial.text_answer);
-                  setClinicalAdvice(partial.clinical_advice || partial.text_answer || "");
-                }
-              });
-
-            return;
-          }
-
-          setThinking(false);
-          setGenerating(false);
-          setActiveTaskStage("completed");
-          setMotionMeta(replyData.motion || null);
-
-          if (replyData.motion && replyData.motion.motion_file_url) {
-            setMotionUrl(replyData.motion.motion_file_url);
-            let filename = replyData.motion.motion_file_url.split('/').pop().replace('.glb', '');
-            if (filename && filename.length > 0) {
-              setMotionKey(filename);
+            if (replyData.text_answer) {
+              streamAssistantText(assistantMessageId, replyData.text_answer);
+              setClinicalAdvice(replyData.clinical_advice || replyData.text_answer || "");
             }
+            setThinking(false);
+            setActiveTaskStage("");
           }
-          
-          if (!replyData.finalPromise) {
-             const finalMotionBadge = toMotionBadge(replyData.motion);
-             updateAssistantMessage({
-                 motion: finalMotionBadge || null,
-                 exercises: (Array.isArray(replyData.exercises) && replyData.exercises.length > 0)
-                   ? replyData.exercises
-                   : [],
-                 showExerciseButtons: replyShowExerciseButtons,
-                 audioUrl: (replyData.tts && replyData.tts.audio_url) ?
-                   (replyData.tts.audio_url.startsWith('/') ? API_BASE_URL + replyData.tts.audio_url : replyData.tts.audio_url)
-                   : null
-             });
-          }
-          setActiveTaskStage("");
         } catch (error) {
           setThinking(false);
           setGenerating(false);
           setActiveTaskStage("failed");
-          const rawMessage =
-            error?.response?.data?.detail ||
-            error?.response?.data?.error ||
-            error?.message ||
-            "Unknown error";
-          const detail = /network error|failed to fetch/i.test(String(rawMessage))
-            ? `${rawMessage}. Possible CORS/origin mismatch: use http://localhost:3000 (or allow your current origin in backend CORS).`
-            : rawMessage;
+          const detail = error?.message || "Unknown error";
           setMessages(msgs => msgs.map((msg) => (
             msg.id === assistantMessageId
               ? {
                   ...msg,
                   text: msg.text && String(msg.text).trim()
                     ? msg.text
-                    : `Error communicating with ECA backend: ${detail}`,
+                    : `Error: ${detail}`,
                   isStreamingText: false,
-                  motion: msg.motion || null,
                 }
               : msg
           )));
-          setMotionError(String(detail));
         }
       };
 
@@ -1720,15 +1607,15 @@
             }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span style={{ fontSize: 15, fontWeight: 600, letterSpacing: -0.3, color: "var(--text-primary)" }}>Shoulder rehabilitation</span>
-                <div style={{
-                  display: "flex", alignItems: "center", gap: 5,
+                <div id="stage-indicator" style={{
+                  display: "none", alignItems: "center", gap: 5,
                   background: "var(--live-bg)", borderRadius: 20, padding: "3px 9px"
                 }}>
                   <div style={{
                     width: 5, height: 5, borderRadius: "50%",
-                    background: "#34C759", animation: "pulse 2s ease infinite"
+                    background: "#007AFF", animation: "pulse 1.2s ease infinite"
                   }} />
-                  <span style={{ fontSize: 11, fontWeight: 600, color: "#34C759" }}>Live</span>
+                  <span id="stage-indicator-text" style={{ fontSize: 11, fontWeight: 600, color: "#007AFF" }}></span>
                 </div>
               </div>
               <div style={{ display: "flex", gap: 6 }}>

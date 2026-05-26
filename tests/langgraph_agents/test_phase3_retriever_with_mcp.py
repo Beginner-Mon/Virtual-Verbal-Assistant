@@ -20,20 +20,19 @@ HAS_LLM_KEY = bool(os.getenv("DEEPSEEK_API_KEY"))
 async def test_retriever_has_generate_motion_tool():
     """After MCP integration, retriever's tool list includes generate_motion."""
     import langgraph_agents.mcp.client as mcp_client_mod
-
     from langgraph_agents.mcp.kimodo_server import _generate_motion_mock
+    from langchain_core.tools import StructuredTool
 
-    class FakeMotionTool:
-        name = "generate_motion"
-        description = "Generate 3D motion mock"
+    def _fake_motion_func(prompt: str, constraints: list = None, duration_seconds: float = 3.0) -> str:
+        import json
+        result = _generate_motion_mock(prompt, constraints or [], duration_seconds)
+        return json.dumps(result)
 
-        def invoke(self, input):
-            result = _generate_motion_mock(input.get("prompt", ""), input.get("constraints", []), input.get("duration_seconds", 3.0))
-            from langchain_core.messages import ToolMessage
-            import json
-            return ToolMessage(content=json.dumps(result), name="generate_motion", tool_call_id="mock_call_1")
-
-    fake_motion = FakeMotionTool()
+    fake_motion = StructuredTool.from_function(
+        func=_fake_motion_func,
+        name="generate_motion",
+        description="Generate 3D motion mock",
+    )
 
     with patch.object(mcp_client_mod, "get_mcp_tools", new=AsyncMock(return_value=[fake_motion])):
         graph = await build_graph_async()

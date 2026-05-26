@@ -497,6 +497,83 @@ async function clearMemory(userId) {
   return response.data;
 }
 
+// ── Phase 5: SSE streaming chat ──────────────────────────────────────
+
+
+async function streamChat({ query, userId, sessionId, personaId, outputMode, onEvent }) {
+  const url = joinApiBase("/chat");
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Accept": "text/event-stream",
+    },
+    body: JSON.stringify({
+      query,
+      user_id: userId,
+      session_id: sessionId,
+      persona_id: personaId || "eca_default",
+      output_mode: outputMode || "text",
+    }),
+  });
+
+  if (!resp.ok) {
+    throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const blocks = buffer.split("\n\n");
+    buffer = blocks.pop();
+
+    for (const block of blocks) {
+      if (!block.trim()) continue;
+      let eventType = null;
+      let dataStr = "";
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) eventType = line.slice(6).trim();
+        else if (line.startsWith("data:")) dataStr += line.slice(5).trim();
+      }
+      if (eventType) {
+        try {
+          onEvent(eventType, JSON.parse(dataStr));
+        } catch (e) {
+          console.warn("Failed to parse SSE data:", dataStr, e);
+        }
+      }
+    }
+  }
+}
+
+
+async function listSessionsV2(userId) {
+  const resp = await fetch(joinApiBase(`/sessions?user_id=${encodeURIComponent(userId)}`));
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return await resp.json();
+}
+
+
+async function resumeSession(sessionId, userId) {
+  const resp = await fetch(joinApiBase(`/sessions/${sessionId}/resume?user_id=${encodeURIComponent(userId)}`), {
+    method: "POST",
+  });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return await resp.json();
+}
+
+
+// Expose to UI
+window.ECA_API = { streamChat, listSessions: listSessionsV2, resumeSession };
+
+// ── Legacy exports (keep existing React working) ─────────────────────
+
 // Make it globally available for Babel/React script
 window.askEca = askEca;
 window.pollTaskStatus = pollTaskStatus;

@@ -22,3 +22,23 @@ class ChatResponse(BaseModel):
     grader_result: Optional[str] = None
     grader_warning: Optional[str] = None
     errors: list[dict] = Field(default_factory=list)
+
+
+class SessionListItem(BaseModel):
+    session_id: str
+    created_at: str
+    updated_at: str
+    first_user_message_preview: str
+    message_count: int
+
+
+class SessionListResponse(BaseModel):
+    sessions: list[SessionListItem]
+    total: int
+
+
+class SessionResumeResponse(BaseModel):
+    session_id: str
+    messages: list[dict]
+    stm_populated: bool
+    last_updated: str
