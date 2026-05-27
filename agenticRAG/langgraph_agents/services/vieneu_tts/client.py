@@ -7,7 +7,7 @@ from typing import Optional
 
 import httpx
 
-from core.circuit_breaker import CircuitBreaker
+from langgraph_agents.core.circuit_breaker import CircuitBreaker
 from langgraph_agents.services.exceptions import ServiceUnavailableError
 
 

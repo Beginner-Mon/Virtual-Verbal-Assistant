@@ -5,13 +5,13 @@ import pytest
 
 # Make langgraph_agents importable from tests
 _project_root = Path(__file__).resolve().parents[2]
-_agentic_root = _project_root / "agenticRAG" / "agentic_rag_gemini"
+_agentic_root = _project_root / "agenticRAG"
 sys.path.insert(0, str(_agentic_root))
 
 # Auto-load .env so HAS_*_KEY checks (and live LLM calls) see the keys.
 try:
     from dotenv import load_dotenv
-    load_dotenv(_agentic_root / ".env", override=False)
+    load_dotenv(_agentic_root / "agentic_rag_gemini" / ".env", override=False)
 except ImportError:
     pass
 

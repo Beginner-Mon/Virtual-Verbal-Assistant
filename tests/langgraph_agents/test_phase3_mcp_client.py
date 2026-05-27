@@ -77,7 +77,7 @@ def test_normalize_stdio_substitutes_python3():
 
 @pytest.mark.unit
 def test_normalize_stdio_injects_pythonpath():
-    """Subprocess needs PYTHONPATH=agenticRAG/agentic_rag_gemini so `python -m
+    """Subprocess needs PYTHONPATH=agenticRAG so `python -m
     langgraph_agents.mcp.X` resolves."""
     from langgraph_agents.mcp.client import _normalize_stdio_config, _package_root
     cfg = {"transport": "stdio", "command": "python", "args": []}

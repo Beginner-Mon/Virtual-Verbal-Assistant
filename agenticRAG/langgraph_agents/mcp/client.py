@@ -26,7 +26,7 @@ from pathlib import Path
 import yaml
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
-from core.circuit_breaker import CircuitBreaker
+from langgraph_agents.core.circuit_breaker import CircuitBreaker
 
 from langgraph_agents.shared.logging import get_logger
 
@@ -50,13 +50,9 @@ _ENV_PASSTHROUGH = (
 
 
 def _package_root() -> str:
-    """Return absolute path of `agenticRAG/agentic_rag_gemini/` for PYTHONPATH.
-
-    __file__ = .../agenticRAG/agentic_rag_gemini/langgraph_agents/mcp/client.py
-      parents[0] = mcp
-      parents[1] = langgraph_agents
-      parents[2] = agentic_rag_gemini  ← this is the package root needed in PYTHONPATH
-      parents[3] = agenticRAG          ← one level too high (regression fix)
+    """Return absolute path of agenticRAG for PYTHONPATH.
+    
+    Since langgraph_agents is now fully independent, we only need agenticRAG.
     """
     return str(Path(__file__).resolve().parents[2])
 

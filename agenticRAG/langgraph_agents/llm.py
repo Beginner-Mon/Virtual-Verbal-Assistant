@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from langchain_openai import ChatOpenAI
-from core.circuit_breaker import CircuitBreaker
+from langgraph_agents.core.circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger("langgraph.llm")
 
