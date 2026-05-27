@@ -16,7 +16,7 @@ _persona_cache: dict[str, dict] = {}
 
 
 def _load_config() -> dict:
-    config_path = Path(__file__).resolve().parents[4] / "config" / "langgraph.yaml"
+    config_path = Path(__file__).resolve().parents[3] / "config" / "langgraph.yaml"
     if config_path.exists():
         with open(config_path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f).get("langgraph", {})

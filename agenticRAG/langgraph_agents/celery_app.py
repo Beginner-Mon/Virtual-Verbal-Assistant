@@ -34,7 +34,7 @@ celery_app = None   # disabled
 #     from pathlib import Path
 #
 #     def _load_cfg() -> dict:
-#         path = Path(__file__).resolve().parents[3] / "config" / "langgraph.yaml"
+#         path = Path(__file__).resolve().parents[2] / "config" / "langgraph.yaml"
 #         if not path.exists():
 #             return {}
 #         with open(path, "r", encoding="utf-8") as f:

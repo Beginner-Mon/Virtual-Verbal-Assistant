@@ -40,14 +40,28 @@ logger = logging.getLogger("langgraph.llm")
 
 
 def _load_dotenv_once() -> None:
-    """Best-effort load of agenticRAG/agentic_rag_gemini/.env. No-op if dotenv missing."""
+    """Best-effort load of .env in new parent, legacy nested, or repo-root paths."""
     try:
         from dotenv import load_dotenv
     except ImportError:
         return
+    
+    # Try current parent directory (agenticRAG/.env)
     env_path = Path(__file__).resolve().parents[1] / ".env"
     if env_path.exists():
         load_dotenv(env_path, override=False)
+        return
+        
+    # Try legacy nested directory (agenticRAG/agentic_rag_gemini/.env)
+    legacy_path = Path(__file__).resolve().parents[1] / "agentic_rag_gemini" / ".env"
+    if legacy_path.exists():
+        load_dotenv(legacy_path, override=False)
+        return
+
+    # Try repository root directory (Virtual-Verbal-Assistant/.env)
+    root_path = Path(__file__).resolve().parents[2] / ".env"
+    if root_path.exists():
+        load_dotenv(root_path, override=False)
 
 
 _load_dotenv_once()

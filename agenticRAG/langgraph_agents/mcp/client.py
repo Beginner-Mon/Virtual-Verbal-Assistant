@@ -79,7 +79,7 @@ def _normalize_stdio_config(server_cfg: dict) -> None:
 
 
 def _load_mcp_config() -> dict:
-    config_path = Path(__file__).resolve().parents[4] / "config" / "mcp_servers.yaml"
+    config_path = Path(__file__).resolve().parents[3] / "config" / "mcp_servers.yaml"
     if not config_path.exists():
         return {}
     with open(config_path, "r", encoding="utf-8") as f:
