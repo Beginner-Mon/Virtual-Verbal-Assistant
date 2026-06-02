@@ -1,0 +1,20 @@
+{
+  "version": "1.1",
+  "auth": {
+    "user_pool_id": "dummy_pool_id",
+    "aws_region": "us-east-1",
+    "user_pool_client_id": "dummy_client_id",
+    "identity_pool_id": "dummy_identity_pool_id",
+    "mfa_methods": [],
+    "standard_required_attributes": ["email"],
+    "username_attributes": ["email"],
+    "user_verification_types": ["email"],
+    "password_policy": {
+      "min_length": 8,
+      "require_lowercase": true,
+      "require_numbers": true,
+      "require_symbols": true,
+      "require_uppercase": true
+    }
+  }
+}

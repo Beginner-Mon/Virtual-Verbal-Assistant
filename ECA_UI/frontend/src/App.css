@@ -1,0 +1,61 @@
+/* ─── Custom scrollbar ─── */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* ─── Message entry animation ─── */
+@keyframes message-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.animate-message-in {
+  animation: message-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ─── Glow pulse for status indicators ─── */
+@keyframes glow-pulse {
+  0%, 100% {
+    box-shadow: 0 0 4px 1px rgba(52, 211, 153, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 8px 3px rgba(52, 211, 153, 0.6);
+  }
+}
+.animate-glow-pulse {
+  animation: glow-pulse 2s ease-in-out infinite;
+}
+
+/* ─── Amplify UI style overrides (dark theme) ─── */
+[data-amplify-authenticator] {
+  --amplify-colors-background-primary: var(--background);
+  --amplify-colors-background-secondary: var(--card);
+  --amplify-colors-font-primary: var(--foreground);
+  --amplify-colors-brand-primary-10: oklch(0.55 0.24 290);
+  --amplify-colors-brand-primary-80: oklch(0.55 0.24 290);
+  --amplify-colors-brand-primary-90: oklch(0.50 0.22 290);
+  --amplify-colors-brand-primary-100: oklch(0.45 0.20 290);
+  --amplify-components-authenticator-router-background-color: var(--card);
+  --amplify-components-authenticator-router-border-color: var(--border);
+}
+
+[data-amplify-authenticator] [data-amplify-router] {
+  border-radius: 1rem;
+  border: 1px solid var(--border);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+}
