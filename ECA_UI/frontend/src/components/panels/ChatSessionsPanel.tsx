@@ -1,0 +1,27 @@
+import { MessageSquare, Clock } from 'lucide-react'
+
+export default function ChatSessionsPanel() {
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="px-4 py-3 border-b border-border/40 shrink-0">
+        <h2 className="text-sm font-semibold text-foreground tracking-tight flex items-center gap-2">
+          <MessageSquare className="w-4 h-4 text-primary" />
+          Chat Sessions
+        </h2>
+        <p className="text-[11px] text-muted-foreground mt-0.5">Your conversation history</p>
+      </div>
+
+      {/* Empty state */}
+      <div className="flex-1 flex flex-col items-center justify-center px-6 py-8 text-center">
+        <div className="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
+          <Clock className="w-7 h-7 text-primary/60" />
+        </div>
+        <p className="text-sm font-medium text-foreground/80 mb-1">No sessions yet</p>
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          Chat history will appear here once the API is connected.
+        </p>
+      </div>
+    </div>
+  )
+}

@@ -1,16 +1,16 @@
 import { Outlet } from 'react-router-dom'
-import Sidebar from '../components/Sidebar'
+import FloatingNavBar from '../components/FloatingNavBar'
 
 export default function MainLayout() {
   return (
-    <main className="flex h-screen w-screen overflow-hidden bg-background">
-      {/* Far Left — Sidebar */}
-      <Sidebar />
-
-      {/* Main Content Area */}
-      <div className="flex-1 flex min-w-0 overflow-hidden">
+    <main className="relative h-screen w-screen overflow-hidden bg-background">
+      {/* Full-screen content */}
+      <div className="w-full h-full">
         <Outlet />
       </div>
+
+      {/* Floating navigation overlay */}
+      <FloatingNavBar />
     </main>
   )
 }
