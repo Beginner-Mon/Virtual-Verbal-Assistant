@@ -28,6 +28,9 @@
     "three": "^0.184.0"
   },
   "devDependencies": {
+    "@aws-amplify/backend": "^1.2.1",
+    "@aws-amplify/backend-auth": "^1.9.4",
+    "@aws-amplify/backend-cli": "^1.8.3",
     "@eslint/js": "^10.0.1",
     "@tailwindcss/vite": "^4.3.0",
     "@types/node": "^24.12.4",

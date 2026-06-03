@@ -1,6 +1,6 @@
 import ChatPanel from '../components/ChatPanel'
 import CharacterViewer from '../components/CharacterViewer'
-import { useAuth } from '../components/AuthGuard'
+import { useAuth } from '../contexts/AuthContext'
 
 export default function ChatPage() {
   const { signOut } = useAuth()

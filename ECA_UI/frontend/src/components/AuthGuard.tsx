@@ -1,17 +1,7 @@
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react'
+import { useState, useEffect } from 'react'
 import { isAmplifyConfigured } from '../config/amplify'
 import { Outlet } from 'react-router-dom'
-
-export interface UserContextType {
-  signOut?: () => void
-  user?: { signInDetails?: { loginId?: string } }
-}
-
-const AuthContext = createContext<UserContextType>({})
-
-export function useAuth() {
-  return useContext(AuthContext)
-}
+import { AuthContext } from '../contexts/AuthContext'
 
 const formFields = {
   signUp: {
