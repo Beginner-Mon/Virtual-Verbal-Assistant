@@ -4,6 +4,9 @@ export async function initializeAmplify(): Promise<void> {
   try {
     const { Amplify } = await import('aws-amplify')
     const outputs = await import(/* @vite-ignore */ '../../amplify_outputs.json')
+    if (!outputs.default || Object.keys(outputs.default).length === 0) {
+      throw new Error('Amplify outputs are empty')
+    }
     Amplify.configure(outputs.default)
     isAmplifyConfigured = true
     console.log('[Auth] Amplify configured successfully')
