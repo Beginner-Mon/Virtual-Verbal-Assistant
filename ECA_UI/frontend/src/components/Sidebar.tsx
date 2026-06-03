@@ -1,5 +1,4 @@
 import { MessageSquare, Settings, User, SquarePen } from 'lucide-react'
-import { cn } from '@/lib/utils'
 
 export default function Sidebar() {
   return (

@@ -1,5 +1,3 @@
-import { cn } from '@/lib/utils'
-
 export interface Message {
   id: string
   role: 'user' | 'assistant'

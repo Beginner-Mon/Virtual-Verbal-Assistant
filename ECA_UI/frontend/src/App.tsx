@@ -10,7 +10,7 @@ interface AuthGateProps {
   children: (ctx: { signOut?: () => void; user?: { signInDetails?: { loginId?: string } } }) => ReactNode
 }
 
-function AuthGate({ children }: AuthGateProps) {
+export function AuthGate({ children }: AuthGateProps) {
   const [Authenticator, setAuthenticator] = useState<React.ComponentType<any> | null>(null)
   const [ready, setReady] = useState(!isAmplifyConfigured)
 
@@ -61,6 +61,7 @@ import Sidebar from './components/Sidebar'
 
 function AppContent({ signOut, user }: AppContentProps) {
   // We can pass the user prop down to the Sidebar later.
+  void user;
   return (
     <main className="flex h-screen w-screen overflow-hidden bg-background">
       {/* Far Left — Sidebar */}
