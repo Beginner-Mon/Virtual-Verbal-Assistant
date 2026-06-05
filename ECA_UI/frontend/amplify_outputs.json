@@ -1,9 +1,9 @@
 {
   "auth": {
-    "user_pool_id": "us-east-1_jTOjfD93a",
+    "user_pool_id": "us-east-1_kEZVSMpKU",
     "aws_region": "us-east-1",
-    "user_pool_client_id": "36eeg0kk6ijq7aavok4n4hdcbt",
-    "identity_pool_id": "us-east-1:00e660a8-7a03-434d-bda3-46986e0ceab2",
+    "user_pool_client_id": "2tdvv5l3obfjf3isbgc7848mbp",
+    "identity_pool_id": "us-east-1:8e5989d5-9fd4-43db-a091-6463ad390cb8",
     "mfa_methods": [],
     "standard_required_attributes": [
       "email",

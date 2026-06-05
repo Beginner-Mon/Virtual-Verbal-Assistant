@@ -23,6 +23,7 @@ import {
   MoreHorizontal,
   Settings,
   GripVertical,
+  type LucideIcon,
 } from 'lucide-react'
 
 import ChatPanel from './ChatPanel'
@@ -37,7 +38,7 @@ type PanelId = 'chat' | 'sessions' | 'avatars' | 'more' | 'settings' | null
 
 interface NavItem {
   id: PanelId
-  icon: React.ElementType
+  icon: LucideIcon
   label: string
 }
 
@@ -234,7 +235,6 @@ export default function FloatingNavBar() {
   }, [dockedEdge])
 
   // Floating UI for the panel
-  const referenceRef = useRef<HTMLDivElement>(null)
   const { refs, floatingStyles } = useFloating({
     placement: getPlacementFromEdge(dockedEdge),
     middleware: [
