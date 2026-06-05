@@ -385,3 +385,7 @@
 .floating-panel .scrollbar-thin::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.15);
 }
+/* Fix Radix ScrollArea horizontal blowout */
+[data-radix-scroll-area-viewport] > div {
+  display: block !important;
+}

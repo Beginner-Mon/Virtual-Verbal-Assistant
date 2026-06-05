@@ -149,8 +149,8 @@ export default function ChatPanel() {
       </header>
 
       {/* ── Messages ── */}
-      <ScrollArea className="flex-1 px-2">
-        <div className="py-4 space-y-2">
+      <ScrollArea className="flex-1 min-h-0 px-2">
+        <div className="py-4 space-y-2 max-w-full overflow-x-hidden">
           {messages.map((msg) => (
             <ChatMessage key={msg.id} message={msg} />
           ))}
@@ -171,7 +171,7 @@ export default function ChatPanel() {
 
       {/* ── Input ── */}
       <div className="p-4 bg-card/80 backdrop-blur-sm shrink-0">
-        <div className="flex flex-wrap items-end gap-2 bg-secondary/40 border border-border/40 rounded-2xl p-2 focus-within:ring-1 focus-within:ring-primary/50 focus-within:border-primary/50 transition-all">
+        <div className="flex flex-col bg-secondary/40 border border-border/40 rounded-2xl p-2 focus-within:ring-1 focus-within:ring-primary/50 focus-within:border-primary/50 transition-all">
           <TextareaAutosize
             minRows={1}
             maxRows={6}
@@ -180,10 +180,10 @@ export default function ChatPanel() {
             onKeyDown={onKeyDown}
             placeholder="Type your message…"
             disabled={isGenerating}
-            className="flex-1 bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/70 resize-none focus:outline-none disabled:opacity-50 min-w-[200px]"
+            className="w-full bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/70 resize-none focus:outline-none disabled:opacity-50"
           />
           
-          <div className="flex items-center gap-1 shrink-0 pb-1">
+          <div className="flex items-center justify-end gap-1 shrink-0 pt-2 px-1 pb-1">
             <button
               title="Record audio"
               className="p-2 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"

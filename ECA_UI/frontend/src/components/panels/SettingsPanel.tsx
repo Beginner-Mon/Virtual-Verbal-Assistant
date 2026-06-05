@@ -20,7 +20,7 @@ export default function SettingsPanel() {
       </div>
 
       {/* Content */}
-      <ScrollArea className="flex-1 p-4">
+      <ScrollArea className="flex-1 min-h-0 p-4">
         <div className="space-y-4">
           {/* User info */}
           <div className="flex items-center gap-3 p-3 rounded-xl bg-secondary/40 border border-border/30">
