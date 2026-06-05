@@ -37,7 +37,7 @@ type PanelId = 'chat' | 'sessions' | 'avatars' | 'more' | 'settings' | null
 
 interface NavItem {
   id: PanelId
-  icon: React.ElementType
+  icon: React.ComponentType<{ className?: string }>
   label: string
 }
 
@@ -81,17 +81,20 @@ function getPlacementFromEdge(edge: DockedEdge): Placement {
   }
 }
 
-function getSnapPosition(edge: DockedEdge, barWidth: number, barHeight: number) {
+function getSnapPosition(edge: DockedEdge, x: number, y: number, barWidth: number, barHeight: number) {
   const padding = 16
+  const clampedX = Math.max(padding, Math.min(x, window.innerWidth - barWidth - padding))
+  const clampedY = Math.max(padding, Math.min(y, window.innerHeight - barHeight - padding))
+
   switch (edge) {
     case 'left':
-      return { x: padding, y: Math.round((window.innerHeight - barHeight) / 2) }
+      return { x: padding, y: clampedY }
     case 'right':
-      return { x: window.innerWidth - barWidth - padding, y: Math.round((window.innerHeight - barHeight) / 2) }
+      return { x: window.innerWidth - barWidth - padding, y: clampedY }
     case 'top':
-      return { x: Math.round((window.innerWidth - barWidth) / 2), y: padding }
+      return { x: clampedX, y: padding }
     case 'bottom':
-      return { x: Math.round((window.innerWidth - barWidth) / 2), y: window.innerHeight - barHeight - padding }
+      return { x: clampedX, y: window.innerHeight - barHeight - padding }
   }
 }
 
@@ -133,12 +136,15 @@ function DraggableBar({
 
   const isHorizontal = dockedEdge === 'top' || dockedEdge === 'bottom'
 
+  const currentX = position.x + (transform?.x ?? 0)
+  const currentY = position.y + (transform?.y ?? 0)
+
   const style: React.CSSProperties = {
     position: 'fixed',
-    left: position.x,
-    top: position.y,
-    transform: transform ? CSS.Translate.toString(transform) : undefined,
-    transition: isDragging ? 'none' : 'left 0.35s cubic-bezier(0.16, 1, 0.3, 1), top 0.35s cubic-bezier(0.16, 1, 0.3, 1)',
+    left: 0,
+    top: 0,
+    transform: `translate3d(${currentX}px, ${currentY}px, 0)`,
+    transition: isDragging ? 'none' : 'transform 0.35s cubic-bezier(0.16, 1, 0.3, 1)',
     zIndex: 9999,
     touchAction: 'none',
   }
@@ -234,8 +240,8 @@ export default function FloatingNavBar() {
   }, [dockedEdge])
 
   // Floating UI for the panel
-  const referenceRef = useRef<HTMLDivElement>(null)
-  const { refs, floatingStyles } = useFloating({
+
+  const { refs, floatingStyles, isPositioned } = useFloating({
     placement: getPlacementFromEdge(dockedEdge),
     middleware: [
       offset(12),
@@ -263,6 +269,7 @@ export default function FloatingNavBar() {
 
   const handleDragStart = useCallback((_event: DragStartEvent) => {
     setIsDragging(true)
+    setActivePanel(null)
   }, [])
 
   const handleDragEnd = useCallback((event: DragEndEvent) => {
@@ -276,11 +283,21 @@ export default function FloatingNavBar() {
     const nearestEdge = findNearestEdge(newX, newY, barSize.width, barSize.height)
     setDockedEdge(nearestEdge)
 
-    // We need to recalc bar size for the new orientation before snapping
-    // For now, use current barSize; the useEffect above will re-measure
-    const snapPos = getSnapPosition(nearestEdge, barSize.width, barSize.height)
+    // Calculate expected size if orientation flips
+    const isNowHorizontal = nearestEdge === 'top' || nearestEdge === 'bottom'
+    const wasHorizontal = dockedEdge === 'top' || dockedEdge === 'bottom'
+    
+    let expectedWidth = barSize.width
+    let expectedHeight = barSize.height
+    
+    if (isNowHorizontal !== wasHorizontal) {
+      expectedWidth = barSize.height
+      expectedHeight = barSize.width
+    }
+
+    const snapPos = getSnapPosition(nearestEdge, newX, newY, expectedWidth, expectedHeight)
     setPosition(snapPos)
-  }, [position, barSize])
+  }, [position, barSize, dockedEdge])
 
   const handleIconClick = useCallback((id: PanelId) => {
     setActivePanel((prev) => (prev === id ? null : id))
@@ -331,6 +348,7 @@ export default function FloatingNavBar() {
           style={{
             ...floatingStyles,
             zIndex: 9998,
+            visibility: isPositioned ? 'visible' : 'hidden',
           }}
           className={`
             floating-panel
@@ -339,7 +357,7 @@ export default function FloatingNavBar() {
             bg-card/80 backdrop-blur-2xl
             border border-border/50
             shadow-[0_16px_64px_rgba(0,0,0,0.4),0_0_0_1px_rgba(255,255,255,0.05)_inset]
-            animate-panel-in
+            ${isPositioned ? 'animate-panel-in' : ''}
           `}
         >
           <PanelContent panelId={activePanel} />

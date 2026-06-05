@@ -45,10 +45,18 @@ chroma_data/
 *.key
 !*.pub.key
 
+# Amplify sandbox outputs (per-developer)
+ECA_UI/frontend/amplify_outputs.json
+opencode.json
+
 # Local tooling state (per-machine, not project state)
+.opencode/
 .agents/
 .claude/worktrees/
 .claude/settings.local.json
 .claude/skills/
 .claude/karpathy-guidelines.md
 skills-lock.json
+.opencode/*
+
+

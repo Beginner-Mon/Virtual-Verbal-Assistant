@@ -4,9 +4,6 @@ import { VRMLoaderPlugin } from '@pixiv/three-vrm'
 import seeleUrl from '../asset/seele.vrm'
 import { useTheme } from '../contexts/ThemeContext'
 import {
-  Float,
-  MeshDistortMaterial,
-  Sphere,
   Environment,
   ContactShadows,
   Stars,
@@ -47,8 +44,8 @@ function FloatingParticles() {
     return arr
   }, [])
 
-  useFrame((state) => {
-    const t = state.clock.getElapsedTime()
+  useFrame(({ clock }) => {
+    const t = clock.getElapsedTime()
     pointsRef.current.rotation.y = t * 0.02
     pointsRef.current.rotation.x = t * 0.01
   })
