@@ -1,4 +1,5 @@
 import { MessageSquare, Clock } from 'lucide-react'
+import { ScrollArea } from '../ui/scroll-area'
 
 export default function ChatSessionsPanel() {
   return (
@@ -13,15 +14,17 @@ export default function ChatSessionsPanel() {
       </div>
 
       {/* Empty state */}
-      <div className="flex-1 flex flex-col items-center justify-center px-6 py-8 text-center">
-        <div className="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
-          <Clock className="w-7 h-7 text-primary/60" />
+      <ScrollArea className="flex-1">
+        <div className="flex flex-col items-center justify-center px-6 py-8 text-center h-full min-h-[300px]">
+          <div className="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
+            <Clock className="w-7 h-7 text-primary/60" />
+          </div>
+          <p className="text-sm font-medium text-foreground/80 mb-1">No sessions yet</p>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Chat history will appear here once the API is connected.
+          </p>
         </div>
-        <p className="text-sm font-medium text-foreground/80 mb-1">No sessions yet</p>
-        <p className="text-xs text-muted-foreground leading-relaxed">
-          Chat history will appear here once the API is connected.
-        </p>
-      </div>
+      </ScrollArea>
     </div>
   )
 }

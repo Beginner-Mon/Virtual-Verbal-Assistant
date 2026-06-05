@@ -1,6 +1,7 @@
 import { Settings, LogOut, Sun, Moon, User } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 import { useTheme } from '../../contexts/ThemeContext'
+import { ScrollArea } from '../ui/scroll-area'
 
 export default function SettingsPanel() {
   const { signOut, user } = useAuth()
@@ -19,47 +20,49 @@ export default function SettingsPanel() {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto scrollbar-thin p-4 space-y-4">
-        {/* User info */}
-        <div className="flex items-center gap-3 p-3 rounded-xl bg-secondary/40 border border-border/30">
-          <div className="w-10 h-10 rounded-full bg-primary/15 flex items-center justify-center shrink-0">
-            <User className="w-5 h-5 text-primary" />
+      <ScrollArea className="flex-1 p-4">
+        <div className="space-y-4">
+          {/* User info */}
+          <div className="flex items-center gap-3 p-3 rounded-xl bg-secondary/40 border border-border/30">
+            <div className="w-10 h-10 rounded-full bg-primary/15 flex items-center justify-center shrink-0">
+              <User className="w-5 h-5 text-primary" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs text-muted-foreground">Signed in as</p>
+              <p className="text-sm font-medium text-foreground truncate">{email}</p>
+            </div>
           </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-xs text-muted-foreground">Signed in as</p>
-            <p className="text-sm font-medium text-foreground truncate">{email}</p>
-          </div>
-        </div>
 
-        {/* Theme toggle */}
-        <div className="flex items-center justify-between p-3 rounded-xl bg-secondary/40 border border-border/30">
-          <div className="flex items-center gap-3">
-            {theme === 'dark' ? (
-              <Moon className="w-4 h-4 text-muted-foreground" />
-            ) : (
-              <Sun className="w-4 h-4 text-muted-foreground" />
-            )}
-            <span className="text-sm text-foreground">
-              {theme === 'dark' ? 'Dark' : 'Light'} mode
-            </span>
-          </div>
-          <button
-            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-            className={`
-              relative w-11 h-6 rounded-full transition-colors duration-200
-              ${theme === 'dark' ? 'bg-primary' : 'bg-border'}
-            `}
-          >
-            <span
+          {/* Theme toggle */}
+          <div className="flex items-center justify-between p-3 rounded-xl bg-secondary/40 border border-border/30">
+            <div className="flex items-center gap-3">
+              {theme === 'dark' ? (
+                <Moon className="w-4 h-4 text-muted-foreground" />
+              ) : (
+                <Sun className="w-4 h-4 text-muted-foreground" />
+              )}
+              <span className="text-sm text-foreground">
+                {theme === 'dark' ? 'Dark' : 'Light'} mode
+              </span>
+            </div>
+            <button
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
               className={`
-                absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow-sm
-                transition-transform duration-200
-                ${theme === 'dark' ? 'translate-x-5' : 'translate-x-0'}
+                relative w-11 h-6 rounded-full transition-colors duration-200
+                ${theme === 'dark' ? 'bg-primary' : 'bg-border'}
               `}
-            />
-          </button>
+            >
+              <span
+                className={`
+                  absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow-sm
+                  transition-transform duration-200
+                  ${theme === 'dark' ? 'translate-x-5' : 'translate-x-0'}
+                `}
+              />
+            </button>
+          </div>
         </div>
-      </div>
+      </ScrollArea>
 
       {/* Logout at bottom */}
       <div className="p-3 border-t border-border/40 shrink-0">
