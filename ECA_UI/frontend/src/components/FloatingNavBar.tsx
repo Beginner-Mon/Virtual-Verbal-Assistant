@@ -7,6 +7,7 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
+  type Modifier,
 } from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
 import {
@@ -334,12 +335,28 @@ export default function FloatingNavBar() {
     panelDimensionsClass = isMiddleThird ? 'w-[600px] h-[400px]' : 'w-[360px] h-[600px]'
   }
 
+  // Custom drag constraint
+  const restrictToScreen: Modifier = ({ transform }) => {
+    const padding = 16
+    const minX = padding - position.x
+    const maxX = window.innerWidth - barSize.width - padding - position.x
+    const minY = padding - position.y
+    const maxY = window.innerHeight - barSize.height - padding - position.y
+
+    return {
+      ...transform,
+      x: Math.max(minX, Math.min(maxX, transform.x)),
+      y: Math.max(minY, Math.min(maxY, transform.y)),
+    }
+  }
+
   return (
     <div ref={barRef}>
       <DndContext
         sensors={sensors}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
+        modifiers={[restrictToScreen]}
       >
         <DraggableBar
           dockedEdge={dockedEdge}
@@ -359,17 +376,20 @@ export default function FloatingNavBar() {
             zIndex: 9998,
             visibility: isPositioned ? 'visible' : 'hidden',
           }}
-          className={`
-            floating-panel
-            ${panelDimensionsClass}
-            rounded-2xl overflow-hidden
-            bg-card/80 backdrop-blur-2xl
-            border border-border/50
-            shadow-[0_16px_64px_rgba(0,0,0,0.4),0_0_0_1px_rgba(255,255,255,0.05)_inset]
-            ${isPositioned ? 'animate-panel-in' : ''}
-          `}
         >
-          <PanelContent panelId={activePanel} />
+          <div
+            className={`
+              floating-panel
+              ${panelDimensionsClass}
+              rounded-2xl overflow-hidden
+              bg-card/80 backdrop-blur-2xl
+              border border-border/50
+              shadow-[0_16px_64px_rgba(0,0,0,0.4),0_0_0_1px_rgba(255,255,255,0.05)_inset]
+              ${isPositioned ? 'animate-panel-in' : ''}
+            `}
+          >
+            <PanelContent panelId={activePanel} />
+          </div>
         </div>
       )}
     </div>
