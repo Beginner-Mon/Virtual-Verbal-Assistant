@@ -24,6 +24,7 @@ import {
   MoreHorizontal,
   Settings,
   GripVertical,
+  type LucideIcon,
 } from 'lucide-react'
 
 import ChatPanel from './ChatPanel'
