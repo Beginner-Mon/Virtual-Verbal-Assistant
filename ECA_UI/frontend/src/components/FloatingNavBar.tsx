@@ -323,7 +323,16 @@ export default function FloatingNavBar() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [activePanel])
 
+  // Calculate dynamic dimensions
   const isHorizontal = dockedEdge === 'top' || dockedEdge === 'bottom'
+  
+  const navBarCenterX = position.x + (barSize.width / 2)
+  const isMiddleThird = navBarCenterX >= window.innerWidth / 3 && navBarCenterX <= (window.innerWidth * 2) / 3
+  
+  let panelDimensionsClass = isHorizontal ? 'w-[360px] h-[480px]' : 'w-[360px] h-[520px]'
+  if (activePanel === 'chat') {
+    panelDimensionsClass = isMiddleThird ? 'w-[600px] h-[400px]' : 'w-[360px] h-[600px]'
+  }
 
   return (
     <div ref={barRef}>
@@ -352,7 +361,7 @@ export default function FloatingNavBar() {
           }}
           className={`
             floating-panel
-            ${isHorizontal ? 'w-[360px] h-[480px]' : 'w-[360px] h-[520px]'}
+            ${panelDimensionsClass}
             rounded-2xl overflow-hidden
             bg-card/80 backdrop-blur-2xl
             border border-border/50

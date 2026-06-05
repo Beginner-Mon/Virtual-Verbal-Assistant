@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type KeyboardEvent } from 'react'
-import { ArrowUp, Mic, Sparkles } from 'lucide-react'
+import { ArrowUp, Mic, Sparkles, Square } from 'lucide-react'
 import TextareaAutosize from 'react-textarea-autosize'
 import { ScrollArea } from './ui/scroll-area'
 import ChatMessage from './ChatMessage'
@@ -28,7 +28,11 @@ export default function ChatPanel() {
   const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES)
   const [input, setInput] = useState('')
   const [isTyping, setIsTyping] = useState(false)
+  const [isGenerating, setIsGenerating] = useState(false)
+  
   const bottomRef = useRef<HTMLDivElement>(null)
+  const networkTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const streamIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
   /* auto-scroll on new messages */
   useEffect(() => {
@@ -50,19 +54,76 @@ export default function ChatPanel() {
     setMessages((prev) => [...prev, userMsg])
     setInput('')
     setIsTyping(true)
+    setIsGenerating(true)
 
-    // Simulated response
-    const delay = 1200 + Math.random() * 800
-    setTimeout(() => {
-      const reply: Message = {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: DEMO_RESPONSES[Math.floor(Math.random() * DEMO_RESPONSES.length)],
-        timestamp: new Date(),
-      }
-      setMessages((prev) => [...prev, reply])
+    // Simulate initial network delay
+    networkTimeoutRef.current = setTimeout(() => {
       setIsTyping(false)
-    }, delay)
+
+      // Prepare an empty assistant message to stream into
+      const assistantMsgId = crypto.randomUUID()
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: assistantMsgId,
+          role: 'assistant',
+          content: '',
+          timestamp: new Date(),
+        },
+      ])
+
+      // Select a random response to simulate
+      const targetResponse = DEMO_RESPONSES[Math.floor(Math.random() * DEMO_RESPONSES.length)]
+
+      // TODO: Replace with actual SSE / Fetch Stream logic when backend is ready
+      /* Example implementation:
+      abortControllerRef.current = new AbortController()
+      const res = await fetch('/api/chat', { 
+        method: 'POST', 
+        body: JSON.stringify({ message: text }),
+        signal: abortControllerRef.current.signal
+      })
+      const reader = res.body?.getReader()
+      const decoder = new TextDecoder()
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        const chunk = decoder.decode(value)
+        // parse chunk and update state
+      }
+      setIsGenerating(false)
+      */
+      
+      let currentContent = ''
+      const words = targetResponse.split(' ')
+      let i = 0
+
+      // Mock streaming effect
+      streamIntervalRef.current = setInterval(() => {
+        if (i < words.length) {
+          currentContent += words[i] + (i < words.length - 1 ? ' ' : '')
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantMsgId ? { ...msg, content: currentContent } : msg
+            )
+          )
+          i++
+        } else {
+          if (streamIntervalRef.current) clearInterval(streamIntervalRef.current)
+          setIsGenerating(false)
+        }
+      }, 70) // ~70ms delay per word
+
+    }, 800)
+  }
+
+  const handleStop = () => {
+    if (networkTimeoutRef.current) clearTimeout(networkTimeoutRef.current)
+    if (streamIntervalRef.current) clearInterval(streamIntervalRef.current)
+    // if (abortControllerRef.current) abortControllerRef.current.abort()
+    
+    setIsTyping(false)
+    setIsGenerating(false)
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -118,7 +179,7 @@ export default function ChatPanel() {
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onKeyDown}
             placeholder="Type your message…"
-            disabled={isTyping}
+            disabled={isGenerating}
             className="flex-1 bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground/70 resize-none focus:outline-none disabled:opacity-50 min-w-[200px]"
           />
           
@@ -126,17 +187,26 @@ export default function ChatPanel() {
             <button
               title="Record audio"
               className="p-2 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
-              disabled={isTyping}
+              disabled={isGenerating}
             >
               <Mic className="w-5 h-5" />
             </button>
-            <button
-              onClick={handleSend}
-              disabled={!input.trim() || isTyping}
-              className="w-8 h-8 rounded-full bg-primary hover:bg-primary/90 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-all text-primary-foreground"
-            >
-              <ArrowUp className="w-4 h-4" />
-            </button>
+            {isGenerating ? (
+              <button
+                onClick={handleStop}
+                className="w-8 h-8 rounded-full bg-primary hover:bg-primary/90 flex items-center justify-center transition-all text-primary-foreground"
+              >
+                <Square className="w-4 h-4 fill-current" />
+              </button>
+            ) : (
+              <button
+                onClick={handleSend}
+                disabled={!input.trim()}
+                className="w-8 h-8 rounded-full bg-primary hover:bg-primary/90 disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-all text-primary-foreground"
+              >
+                <ArrowUp className="w-4 h-4" />
+              </button>
+            )}
           </div>
         </div>
         <p className="text-[10px] text-muted-foreground/50 mt-2 text-center select-none">
