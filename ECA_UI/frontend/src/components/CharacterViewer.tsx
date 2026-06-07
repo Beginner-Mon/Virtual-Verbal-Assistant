@@ -1,6 +1,6 @@
-import { Canvas, useFrame, useLoader } from '@react-three/fiber'
+import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
-import { VRMLoaderPlugin } from '@pixiv/three-vrm'
+import { VRMLoaderPlugin, VRMHumanBoneName } from '@pixiv/three-vrm'
 import type { VRM } from '@pixiv/three-vrm'
 import seeleUrl from '../asset/seele.vrm'
 import { useTheme } from '../contexts/ThemeContext'
@@ -24,6 +24,7 @@ interface VRMCharacterProps {
   speed: number
   onResetRef: React.MutableRefObject<(() => void) | null>
   onLoaded: (info: { tracks: number; duration: number }) => void
+  vrmRef: React.MutableRefObject<VRM | null>
 }
 
 function VRMCharacter({
@@ -33,12 +34,22 @@ function VRMCharacter({
   speed,
   onResetRef,
   onLoaded,
+  vrmRef,
 }: VRMCharacterProps) {
   const gltf = useLoader(GLTFLoader, vrmUrl, (loader) => {
     loader.register((parser) => new VRMLoaderPlugin(parser))
   })
 
   const vrm: VRM = gltf.userData.vrm
+
+  // Expose the VRM instance so the parent can read bone positions
+  useEffect(() => {
+    vrmRef.current = vrm
+    return () => {
+      vrmRef.current = null
+    }
+  }, [vrm, vrmRef])
+
   const mixerRef = useRef<THREE.AnimationMixer | null>(null)
   const [animLoaded, setAnimLoaded] = useState(false)
 
@@ -179,14 +190,47 @@ function Scene({
   onResetRef,
   onLoaded,
 }: SceneProps) {
-  return (
+  const controlsRef = useRef<any>(null)
+  const vrmRef = useRef<VRM | null>(null)
+  const { camera } = useThree()
+
+  // Reusable vectors to avoid GC pressure
+  const hipsPos = useMemo(() => new THREE.Vector3(), [])
+  const deltaVec = useMemo(() => new THREE.Vector3(), [])
+
+  // Every frame: make the camera orbit target follow the VRM hips.
+  // We also shift the camera position by the same delta so the orbital
+  // offset (angle + distance) is preserved while the rig moves.
+  useFrame(() => {
+    if (!vrmRef.current || !controlsRef.current) return
+
+    const hips = vrmRef.current.humanoid.getNormalizedBoneNode(
+      VRMHumanBoneName.Hips,
+    )
+    if (!hips) return
+
+    hips.getWorldPosition(hipsPos)
+
+    // How far did the hips move since the last frame?
+    deltaVec.subVectors(hipsPos, controlsRef.current.target)
+
+    // Shift the camera by the exact same amount so the orbit "diameter"
+    // around the skeleton stays constant.
+    camera.position.add(deltaVec)
+
+    // Update the controls target to the new hips position
+    controlsRef.current.target.copy(hipsPos)
+  })
+
+return (
     <>
       <ambientLight intensity={theme === 'dark' ? 0.15 : 0.6} />
-      <directionalLight position={[5, 5, 5]} intensity={0.5} color={theme === 'dark' ? "#e9d5ff" : "#ffffff"} />
+      <directionalLight position={[5, 5, 5]} intensity={0.5} castShadow color={theme === 'dark' ? "#e9d5ff" : "#ffffff"} />
       <directionalLight position={[-5, 3, -5]} intensity={0.3} color="#7c3aed" />
       <spotLight position={[0, 5, 0]} angle={0.4} penumbra={1} intensity={0.5} color="#a78bfa" />
 
       <VRMCharacter
+        vrmRef={vrmRef}
         vrmUrl={vrmUrl}
         animationUrl={animationUrl}
         isPlaying={isPlaying}
@@ -196,8 +240,26 @@ function Scene({
       />
       <FloatingParticles />
 
+      {/* Ground disc */}
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.5, 0]} receiveShadow>
+        <circleGeometry args={[4, 64]} />
+        <meshStandardMaterial
+          color={theme === 'dark' ? '#2d1b4e' : '#e9d5ff'}
+          roughness={0.8}
+          metalness={0.1}
+          transparent
+          opacity={0.85}
+        />
+      </mesh>
+
+      {/* Grid overlay */}
+      <gridHelper
+        args={[8, 16, theme === 'dark' ? '#6d28d9' : '#c084fc', theme === 'dark' ? '#3b1265' : '#ddd6fe']}
+        position={[0, -1.5, 0]}
+      />
+
       <ContactShadows
-        position={[0, -2, 0]}
+        position={[0, -1.5, 0]}
         opacity={theme === 'dark' ? 0.4 : 0.15}
         scale={8}
         blur={2.5}
@@ -208,8 +270,9 @@ function Scene({
       {theme === 'dark' && <Stars radius={50} depth={50} count={1000} factor={2} saturation={0.5} fade speed={0.5} />}
       <Environment preset={theme === 'dark' ? 'night' : 'city'} />
 
-      {/* Allow user to orbit/inspect the 3D model */}
+      {/* Orbital camera: follows hips, enforces minimum distance (radius) */}
       <OrbitControls
+        ref={controlsRef}
         enablePan={false}
         enableZoom={true}
         minDistance={2}
