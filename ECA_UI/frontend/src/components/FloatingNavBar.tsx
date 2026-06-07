@@ -248,6 +248,7 @@ export default function FloatingNavBar() {
   const [isDragging, setIsDragging] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [modalType, setModalType] = useState<'profile' | 'settings' | null>(null)
+  const prevPanelRef = useRef<PanelId>(null)
   const barRef = useRef<HTMLDivElement>(null)
   const mobileMenuRef = useRef<HTMLDivElement>(null)
 
@@ -554,11 +555,15 @@ export default function FloatingNavBar() {
           </div>
         </div>
 
-        {/* Mobile full-screen panel overlay */}
+        {/* Mobile bottom sheet panel overlay — 50% height */}
         {activePanel && activePanel !== 'chat' && (
-          <div className="fixed inset-0 z-[9999] bg-background animate-panel-in">
-            <div className="flex flex-col h-full">
-              <div className="flex items-center px-4 h-14 border-b border-border/40 shrink-0 bg-card">
+          <div className="fixed inset-0 z-[9999] flex items-end">
+            <div
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+              onClick={() => setActivePanel(null)}
+            />
+            <div className="relative w-full h-[50vh] bg-card rounded-t-2xl animate-slide-up flex flex-col overflow-hidden shadow-[0_-8px_40px_rgba(0,0,0,0.4)]">
+              <div className="flex items-center px-4 h-14 border-b border-border/40 shrink-0">
                 <button
                   onClick={() => setActivePanel(null)}
                   className="p-2 -ml-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors"
@@ -570,6 +575,7 @@ export default function FloatingNavBar() {
                 <PanelContent
                   panelId={activePanel}
                   onOpenModal={(type) => {
+                    prevPanelRef.current = activePanel
                     setModalType(type)
                     setActivePanel(null)
                   }}
@@ -584,6 +590,10 @@ export default function FloatingNavBar() {
           <ProfileSettingsModal
             type={modalType}
             onClose={() => setModalType(null)}
+            onBack={() => {
+              setModalType(null)
+              setActivePanel(prevPanelRef.current)
+            }}
           />
         )}
       </>
@@ -682,6 +692,7 @@ export default function FloatingNavBar() {
             <PanelContent
               panelId="settings"
               onOpenModal={(type) => {
+                prevPanelRef.current = activePanel
                 setModalType(type)
                 setActivePanel(null)
               }}
@@ -695,6 +706,10 @@ export default function FloatingNavBar() {
         <ProfileSettingsModal
           type={modalType}
           onClose={() => setModalType(null)}
+          onBack={() => {
+            setModalType(null)
+            setActivePanel(prevPanelRef.current)
+          }}
         />
       )}
     </div>
