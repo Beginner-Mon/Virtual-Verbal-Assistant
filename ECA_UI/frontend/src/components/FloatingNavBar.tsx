@@ -273,16 +273,10 @@ export default function FloatingNavBar() {
 
   // Floating UI for the panel
 
-  const settingsPlacement: Placement =
-    dockedEdge === 'left' ? 'right-end'
-    : dockedEdge === 'right' ? 'left-end'
-    : dockedEdge === 'top' ? 'bottom-end'
-    : 'top-end'
-
   const { refs, floatingStyles, isPositioned } = useFloating({
-    placement: activePanel === 'settings' ? settingsPlacement : getPlacementFromEdge(dockedEdge),
+    placement: getPlacementFromEdge(dockedEdge),
     middleware: [
-      offset(activePanel === 'settings' ? 8 : 12),
+      offset(12),
       shift({ padding: 16 }),
     ],
     whileElementsMounted: autoUpdate,
@@ -614,8 +608,8 @@ export default function FloatingNavBar() {
         />
       </DndContext>
 
-      {/* Floating panel */}
-      {activePanel && (
+      {/* Non-settings floating panels (use floating UI) */}
+      {activePanel && activePanel !== 'settings' && (
         <div
           ref={refs.setFloating}
           style={{
@@ -627,8 +621,7 @@ export default function FloatingNavBar() {
           <div
             className={`
               floating-panel
-              ${activePanel === 'settings' ? '' : panelDimensionsClass}
-              ${activePanel === 'settings' ? 'min-w-[200px]' : ''}
+              ${panelDimensionsClass}
               rounded-2xl overflow-hidden
               bg-card/80 backdrop-blur-2xl
               border border-border/50
@@ -638,6 +631,56 @@ export default function FloatingNavBar() {
           >
             <PanelContent
               panelId={activePanel}
+              onOpenModal={(type) => {
+                setModalType(type)
+                setActivePanel(null)
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Settings dropdown — manually positioned at bottom of sidebar */}
+      {activePanel === 'settings' && (
+        <div
+          style={{
+            position: 'fixed',
+            zIndex: 9998,
+            ...(dockedEdge === 'left' && {
+              left: position.x + barSize.width + 10,
+              top: position.y + barSize.height,
+              transform: 'translateY(-100%)',
+            }),
+            ...(dockedEdge === 'right' && {
+              right: window.innerWidth - position.x + 10,
+              top: position.y + barSize.height,
+              transform: 'translateY(-100%)',
+            }),
+            ...(dockedEdge === 'top' && {
+              left: position.x + barSize.width,
+              top: position.y + barSize.height + 10,
+              transform: 'translateX(-100%)',
+            }),
+            ...(dockedEdge === 'bottom' && {
+              left: position.x + barSize.width,
+              bottom: window.innerHeight - position.y + 10,
+              transform: 'translateX(-100%)',
+            }),
+          }}
+        >
+          <div
+            className="
+              floating-panel
+              min-w-[200px]
+              rounded-2xl overflow-hidden
+              bg-card/80 backdrop-blur-2xl
+              border border-border/50
+              shadow-[0_16px_64px_rgba(0,0,0,0.4),0_0_0_1px_rgba(255,255,255,0.05)_inset]
+              animate-panel-in
+            "
+          >
+            <PanelContent
+              panelId="settings"
               onOpenModal={(type) => {
                 setModalType(type)
                 setActivePanel(null)
