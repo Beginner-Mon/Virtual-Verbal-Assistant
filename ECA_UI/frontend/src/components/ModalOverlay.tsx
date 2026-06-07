@@ -26,14 +26,14 @@ export default function ModalOverlay({ title, onClose, children }: ModalOverlayP
 
   return (
     <div
-      className="fixed inset-0 z-[10000] flex items-end justify-center"
+      className="fixed inset-0 z-[10000] flex items-end md:items-center justify-center"
       onPointerDown={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}
     >
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
 
-      <div className="relative w-full max-w-lg max-h-[85vh] bg-card rounded-t-2xl border border-border/50 border-b-0 shadow-[0_-8px_40px_rgba(0,0,0,0.4)] animate-slide-up flex flex-col overflow-hidden">
+      <div className="relative w-full max-w-lg max-h-[85vh] md:w-[600px] md:h-[500px] bg-card rounded-t-2xl md:rounded-2xl border border-border/50 border-b-0 md:border-b shadow-[0_-8px_40px_rgba(0,0,0,0.4)] md:shadow-[0_32px_80px_rgba(0,0,0,0.5)] animate-slide-up md:animate-panel-in flex flex-col overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-border/40 shrink-0">
           <h2 className="text-base font-semibold text-foreground">{title}</h2>
           <button

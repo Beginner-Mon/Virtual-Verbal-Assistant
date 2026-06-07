@@ -24,9 +24,11 @@ import {
   GripVertical,
   Menu,
   X,
-  LogOut,
-  type LucideIcon,
 } from 'lucide-react'
+// @ts-expect-error - reserved for auth feature (commented out)
+import { LogOut } from 'lucide-react'
+// @ts-expect-error - reserved for auth feature (commented out)
+import type { LucideIcon } from 'lucide-react'
 import { useMediaQuery } from '../lib/use-media-query'
 
 import ChatPanel from './ChatPanel'
