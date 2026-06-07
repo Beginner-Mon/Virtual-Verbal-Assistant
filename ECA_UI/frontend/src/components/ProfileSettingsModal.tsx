@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
 import { X, ChevronLeft } from 'lucide-react'
-import ProfileContent from './ProfileContent'
-import SettingsContent from './SettingsContent'
+
+const ProfileContent = lazy(() => import('./ProfileContent'))
+const SettingsContent = lazy(() => import('./SettingsContent'))
 
 interface ProfileSettingsModalProps {
   type: 'profile' | 'settings'
@@ -83,21 +84,23 @@ export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileS
           </button>
         </div>
 
-        {type === 'profile' ? (
-          <ProfileContent />
-        ) : settingsView === 'providers' ? (
-          <SettingsContent
-            view="providers"
-            onSelectProvider={handleSelectProvider}
-          />
-        ) : settingsView === 'provider-detail' ? (
-          <SettingsContent
-            view="provider-detail"
-            selectedProvider={selectedProvider}
-          />
-        ) : (
-          <SettingsContent onNavigateToProviders={() => setSettingsView('providers')} />
-        )}
+        <Suspense fallback={<div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">Loading...</div>}>
+          {type === 'profile' ? (
+            <ProfileContent />
+          ) : settingsView === 'providers' ? (
+            <SettingsContent
+              view="providers"
+              onSelectProvider={handleSelectProvider}
+            />
+          ) : settingsView === 'provider-detail' ? (
+            <SettingsContent
+              view="provider-detail"
+              selectedProvider={selectedProvider}
+            />
+          ) : (
+            <SettingsContent onNavigateToProviders={() => setSettingsView('providers')} />
+          )}
+        </Suspense>
       </div>
     </div>
   )

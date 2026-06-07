@@ -398,9 +398,6 @@ export default function FloatingNavBar() {
 
   /* ─── Mobile drag state ─── */
   const btnSize = 36
-  const [menuX, setMenuX] = useState(0)
-  const [menuY, setMenuY] = useState(80)
-  const [isMenuDragging, setIsMenuDragging] = useState(false)
   const menuXRef = useRef(0)
   const menuYRef = useRef(80)
   const menuIsDraggingRef = useRef(false)
@@ -411,8 +408,12 @@ export default function FloatingNavBar() {
     if (!isMobile || menuInitRef.current) return
     menuInitRef.current = true
     const x = window.innerWidth - btnSize - 8
+    const y = 80
     menuXRef.current = x
-    setMenuX(x)
+    menuYRef.current = y
+    if (mobileMenuRef.current) {
+      mobileMenuRef.current.style.transform = `translate(${x}px, ${y}px)`
+    }
   }, [isMobile])
 
   const getMenuYBounds = useCallback(() => {
@@ -423,9 +424,9 @@ export default function FloatingNavBar() {
   const handleMenuPointerDown = useCallback((e: React.PointerEvent) => {
     const el = e.currentTarget as HTMLElement
     el.setPointerCapture(e.pointerId)
+    el.style.transition = 'none'
     menuDragStart.current = { x: e.clientX, y: e.clientY, startMenuX: menuXRef.current, startMenuY: menuYRef.current }
     menuIsDraggingRef.current = false
-    setIsMenuDragging(false)
   }, [])
 
   const handleMenuPointerMove = useCallback((e: React.PointerEvent) => {
@@ -436,7 +437,6 @@ export default function FloatingNavBar() {
     if (!menuIsDraggingRef.current && Math.abs(dx) < 5 && Math.abs(dy) < 5) return
 
     menuIsDraggingRef.current = true
-    setIsMenuDragging(true)
 
     const newX = Math.max(8, Math.min(window.innerWidth - btnSize - 8, menuDragStart.current.startMenuX + dx))
     const { minY, maxY } = getMenuYBounds()
@@ -444,28 +444,33 @@ export default function FloatingNavBar() {
 
     menuXRef.current = newX
     menuYRef.current = newY
-    setMenuX(newX)
-    setMenuY(newY)
+
+    const el = e.currentTarget as HTMLElement
+    el.style.transform = `translate(${newX}px, ${newY}px)`
   }, [getMenuYBounds])
 
-  const handleMenuPointerUp = useCallback(() => {
+  const handleMenuPointerUp = useCallback((e: React.PointerEvent) => {
     const wasDragging = menuIsDraggingRef.current
+    const el = e.currentTarget as HTMLElement
     menuDragStart.current = null
     menuIsDraggingRef.current = false
-    setIsMenuDragging(false)
+
+    el.style.transition = ''
 
     if (wasDragging) {
       const center = menuXRef.current + btnSize / 2
       const snapX = center < window.innerWidth / 2 ? 8 : window.innerWidth - btnSize - 8
       menuXRef.current = snapX
-      setMenuX(snapX)
+      el.style.transform = `translate(${snapX}px, ${menuYRef.current}px)`
     }
   }, [])
 
   const handleMenuPointerCancel = useCallback(() => {
     menuDragStart.current = null
     menuIsDraggingRef.current = false
-    setIsMenuDragging(false)
+    if (mobileMenuRef.current) {
+      mobileMenuRef.current.style.transition = ''
+    }
   }, [])
 
   /* ─── Split nav items for mobile (no Chat) ─── */
@@ -481,10 +486,10 @@ export default function FloatingNavBar() {
             position: 'fixed',
             top: 0,
             left: 0,
-            transform: `translate(${menuX}px, ${menuY}px)`,
-            transition: isMenuDragging ? 'none' : 'transform 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
             zIndex: 10000,
             touchAction: 'none',
+            willChange: 'transform',
+            transition: 'transform 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
           }}
           onPointerDown={handleMenuPointerDown}
           onPointerMove={handleMenuPointerMove}
