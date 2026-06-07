@@ -9,7 +9,6 @@ import {
   useSensors,
   type Modifier,
 } from '@dnd-kit/core'
-import { CSS } from '@dnd-kit/utilities'
 import {
   useFloating,
   offset,
@@ -21,17 +20,21 @@ import {
   SquarePen,
   MessageSquare,
   UserRound,
-  MoreHorizontal,
-  Settings,
+  Settings2,
   GripVertical,
+  Menu,
+  X,
+  LogOut,
   type LucideIcon,
 } from 'lucide-react'
+import { useMediaQuery } from '../lib/use-media-query'
 
 import ChatPanel from './ChatPanel'
 import ChatSessionsPanel from './panels/ChatSessionsPanel'
 import AvatarsPanel from './panels/AvatarsPanel'
 import SettingsPanel from './panels/SettingsPanel'
 import MorePanel from './panels/MorePanel'
+import ProfileSettingsModal from './ProfileSettingsModal'
 
 /* ─── Types ─── */
 type DockedEdge = 'left' | 'right' | 'top' | 'bottom'
@@ -47,12 +50,17 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'chat', icon: SquarePen, label: 'Chat' },
   { id: 'sessions', icon: MessageSquare, label: 'Sessions' },
   { id: 'avatars', icon: UserRound, label: 'Avatars' },
-  { id: 'more', icon: MoreHorizontal, label: 'More' },
-  { id: 'settings', icon: Settings, label: 'Settings' },
+  { id: 'more', icon: Settings2, label: 'More' },
 ]
 
 /* ─── Panel content map ─── */
-function PanelContent({ panelId }: { panelId: PanelId }) {
+function PanelContent({
+  panelId,
+  onOpenModal,
+}: {
+  panelId: PanelId
+  onOpenModal?: (type: 'profile' | 'settings') => void
+}) {
   switch (panelId) {
     case 'chat':
       return <ChatPanel />
@@ -61,7 +69,7 @@ function PanelContent({ panelId }: { panelId: PanelId }) {
     case 'avatars':
       return <AvatarsPanel />
     case 'settings':
-      return <SettingsPanel />
+      return <SettingsPanel onOpenModal={onOpenModal} />
     case 'more':
       return <MorePanel />
     default:
@@ -207,6 +215,23 @@ function DraggableBar({
           </button>
         )
       })}
+
+      {/* Separator before avatar */}
+      <div className={`${isHorizontal ? 'w-px h-6' : 'h-px w-6'} bg-border/40`} />
+
+      {/* Avatar circle (replaces settings icon) */}
+      <button
+        onClick={() => onIconClick('settings')}
+        title="Profile & Settings"
+        className={`
+          w-8 h-8 rounded-full
+          transition-all duration-200 shrink-0 ${isHorizontal ? 'ml-2' : 'mt-2'}
+          ${activePanel === 'settings'
+            ? 'bg-primary/20 ring-2 ring-primary'
+            : 'bg-muted-foreground/20 hover:bg-muted-foreground/30'
+          }
+        `}
+      />
     </div>
   )
 }
@@ -216,10 +241,15 @@ function DraggableBar({
    ═══════════════════════════════════════════════ */
 
 export default function FloatingNavBar() {
+  const isMobile = useMediaQuery('(max-width: 767px)')
+
   const [dockedEdge, setDockedEdge] = useState<DockedEdge>('left')
   const [activePanel, setActivePanel] = useState<PanelId>(null)
   const [isDragging, setIsDragging] = useState(false)
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [modalType, setModalType] = useState<'profile' | 'settings' | null>(null)
   const barRef = useRef<HTMLDivElement>(null)
+  const mobileMenuRef = useRef<HTMLDivElement>(null)
 
   // We need to measure the bar to calculate snap positions
   const [barSize, setBarSize] = useState({ width: 56, height: 320 })
@@ -243,10 +273,16 @@ export default function FloatingNavBar() {
 
   // Floating UI for the panel
 
+  const settingsPlacement: Placement =
+    dockedEdge === 'left' ? 'right-end'
+    : dockedEdge === 'right' ? 'left-end'
+    : dockedEdge === 'top' ? 'bottom-end'
+    : 'top-end'
+
   const { refs, floatingStyles, isPositioned } = useFloating({
-    placement: getPlacementFromEdge(dockedEdge),
+    placement: activePanel === 'settings' ? settingsPlacement : getPlacementFromEdge(dockedEdge),
     middleware: [
-      offset(12),
+      offset(activePanel === 'settings' ? 8 : 12),
       shift({ padding: 16 }),
     ],
     whileElementsMounted: autoUpdate,
@@ -303,15 +339,27 @@ export default function FloatingNavBar() {
 
   const handleIconClick = useCallback((id: PanelId) => {
     setActivePanel((prev) => (prev === id ? null : id))
+    setMobileMenuOpen(false)
   }, [])
+
+  // Close mobile menu on outside pointer
+  useEffect(() => {
+    if (!mobileMenuOpen) return
+    const handler = (e: PointerEvent) => {
+      if (mobileMenuRef.current && !mobileMenuRef.current.contains(e.target as Node)) {
+        setMobileMenuOpen(false)
+      }
+    }
+    document.addEventListener('pointerdown', handler)
+    return () => document.removeEventListener('pointerdown', handler)
+  }, [mobileMenuOpen])
 
   // Close panel when clicking outside
   useEffect(() => {
-    if (!activePanel) return
+    if (!activePanel || isMobile) return
 
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as HTMLElement
-      // Don't close if clicking inside the nav bar or the panel
       if (
         target.closest('.floating-nav-bar') ||
         target.closest('.floating-panel')
@@ -323,7 +371,7 @@ export default function FloatingNavBar() {
 
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [activePanel])
+  }, [activePanel, isMobile])
 
   // Calculate dynamic dimensions
   const isHorizontal = dockedEdge === 'top' || dockedEdge === 'bottom'
@@ -351,6 +399,204 @@ export default function FloatingNavBar() {
     }
   }
 
+  /* ─── Mobile drag state ─── */
+  const btnSize = 36
+  const [menuX, setMenuX] = useState(0)
+  const [menuY, setMenuY] = useState(80)
+  const [isMenuDragging, setIsMenuDragging] = useState(false)
+  const menuXRef = useRef(0)
+  const menuYRef = useRef(80)
+  const menuIsDraggingRef = useRef(false)
+  const menuDragStart = useRef<{ x: number; y: number; startMenuX: number; startMenuY: number } | null>(null)
+  const menuInitRef = useRef(false)
+
+  useEffect(() => {
+    if (!isMobile || menuInitRef.current) return
+    menuInitRef.current = true
+    const x = window.innerWidth - btnSize - 8
+    menuXRef.current = x
+    setMenuX(x)
+  }, [isMobile])
+
+  const getMenuYBounds = useCallback(() => {
+    const chatTop = window.innerHeight * 0.6
+    return { minY: 80, maxY: chatTop - btnSize - 8 }
+  }, [])
+
+  const handleMenuPointerDown = useCallback((e: React.PointerEvent) => {
+    const el = e.currentTarget as HTMLElement
+    el.setPointerCapture(e.pointerId)
+    menuDragStart.current = { x: e.clientX, y: e.clientY, startMenuX: menuXRef.current, startMenuY: menuYRef.current }
+    menuIsDraggingRef.current = false
+    setIsMenuDragging(false)
+  }, [])
+
+  const handleMenuPointerMove = useCallback((e: React.PointerEvent) => {
+    if (!menuDragStart.current) return
+    const dx = e.clientX - menuDragStart.current.x
+    const dy = e.clientY - menuDragStart.current.y
+
+    if (!menuIsDraggingRef.current && Math.abs(dx) < 5 && Math.abs(dy) < 5) return
+
+    menuIsDraggingRef.current = true
+    setIsMenuDragging(true)
+
+    const newX = Math.max(8, Math.min(window.innerWidth - btnSize - 8, menuDragStart.current.startMenuX + dx))
+    const { minY, maxY } = getMenuYBounds()
+    const newY = Math.max(minY, Math.min(maxY, menuDragStart.current.startMenuY + dy))
+
+    menuXRef.current = newX
+    menuYRef.current = newY
+    setMenuX(newX)
+    setMenuY(newY)
+  }, [getMenuYBounds])
+
+  const handleMenuPointerUp = useCallback(() => {
+    const wasDragging = menuIsDraggingRef.current
+    menuDragStart.current = null
+    menuIsDraggingRef.current = false
+    setIsMenuDragging(false)
+
+    if (wasDragging) {
+      const center = menuXRef.current + btnSize / 2
+      const snapX = center < window.innerWidth / 2 ? 8 : window.innerWidth - btnSize - 8
+      menuXRef.current = snapX
+      setMenuX(snapX)
+    }
+  }, [])
+
+  const handleMenuPointerCancel = useCallback(() => {
+    menuDragStart.current = null
+    menuIsDraggingRef.current = false
+    setIsMenuDragging(false)
+  }, [])
+
+  /* ─── Split nav items for mobile (no Chat) ─── */
+  const mobileNavItems = NAV_ITEMS.filter((item) => item.id !== 'chat')
+
+  /* ─── Mobile: draggable hamburger + icon-only dropdown ─── */
+  if (isMobile) {
+    return (
+      <>
+        <div
+          ref={mobileMenuRef}
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            transform: `translate(${menuX}px, ${menuY}px)`,
+            transition: isMenuDragging ? 'none' : 'transform 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
+            zIndex: 10000,
+            touchAction: 'none',
+          }}
+          onPointerDown={handleMenuPointerDown}
+          onPointerMove={handleMenuPointerMove}
+          onPointerUp={handleMenuPointerUp}
+          onPointerCancel={handleMenuPointerCancel}
+        >
+          <div
+            className="flex flex-col items-center backdrop-blur-md border border-border/30 shadow-lg rounded-xl overflow-hidden transition-all duration-200"
+            style={{ background: 'rgba(0,0,0,0.15)' }}
+          >
+            {/* Menu button */}
+            <button
+              onClick={() => setMobileMenuOpen((prev) => !prev)}
+              className="flex items-center justify-center"
+              style={{ width: btnSize, height: btnSize, touchAction: 'none' }}
+            >
+              <div className="relative w-4 h-4">
+                <Menu
+                  className="absolute inset-0 w-4 h-4 transition-all duration-200 text-muted-foreground"
+                  style={{
+                    opacity: mobileMenuOpen ? 0 : 1,
+                    transform: `rotate(${mobileMenuOpen ? 45 : 0}deg)`,
+                  }}
+                />
+                <X
+                  className="absolute inset-0 w-4 h-4 transition-all duration-200 text-muted-foreground"
+                  style={{
+                    opacity: mobileMenuOpen ? 1 : 0,
+                    transform: `rotate(${mobileMenuOpen ? 0 : -45}deg)`,
+                  }}
+                />
+              </div>
+            </button>
+
+            {/* Icon-only dropdown — slides down/up with transition */}
+            <div
+              className="flex flex-col items-center gap-1 transition-all duration-200"
+              style={{
+                maxHeight: mobileMenuOpen ? '200px' : '0px',
+                opacity: mobileMenuOpen ? 1 : 0,
+                paddingTop: mobileMenuOpen ? '6px' : '0',
+                paddingBottom: mobileMenuOpen ? '6px' : '0',
+                pointerEvents: mobileMenuOpen ? 'auto' : 'none',
+              }}
+            >
+              {mobileNavItems.map((item) => {
+                const Icon = item.icon
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => handleIconClick(item.id)}
+                    className={`flex items-center justify-center rounded-lg transition-colors ${activePanel === item.id ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:text-foreground hover:bg-white/10'}`}
+                    style={{ width: btnSize - 4, height: btnSize - 4 }}
+                    title={item.label}
+                  >
+                    <Icon className="w-4 h-4" />
+                  </button>
+                )
+              })}
+
+              {/* Mobile avatar */}
+              <div className="h-px w-6 bg-border/40" />
+              <button
+                onClick={() => handleIconClick('settings')}
+                className={`rounded-full transition-colors ${activePanel === 'settings' ? 'bg-primary/20 ring-2 ring-primary' : 'bg-muted-foreground/20 hover:bg-muted-foreground/30'}`}
+                style={{ width: 20, height: 20 }}
+                title="Profile & Settings"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Mobile full-screen panel overlay */}
+        {activePanel && activePanel !== 'chat' && (
+          <div className="fixed inset-0 z-[9999] bg-background animate-panel-in">
+            <div className="flex flex-col h-full">
+              <div className="flex items-center px-4 h-14 border-b border-border/40 shrink-0 bg-card">
+                <button
+                  onClick={() => setActivePanel(null)}
+                  className="p-2 -ml-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="flex-1 min-h-0 overflow-hidden">
+                <PanelContent
+                  panelId={activePanel}
+                  onOpenModal={(type) => {
+                    setModalType(type)
+                    setActivePanel(null)
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Centered modal for Profile / Settings on mobile */}
+        {modalType && (
+          <ProfileSettingsModal
+            type={modalType}
+            onClose={() => setModalType(null)}
+          />
+        )}
+      </>
+    )
+  }
+
+  /* ─── Desktop: full draggable nav bar + floating panels ─── */
   return (
     <div ref={barRef}>
       <DndContext
@@ -381,7 +627,8 @@ export default function FloatingNavBar() {
           <div
             className={`
               floating-panel
-              ${panelDimensionsClass}
+              ${activePanel === 'settings' ? '' : panelDimensionsClass}
+              ${activePanel === 'settings' ? 'min-w-[200px]' : ''}
               rounded-2xl overflow-hidden
               bg-card/80 backdrop-blur-2xl
               border border-border/50
@@ -389,9 +636,23 @@ export default function FloatingNavBar() {
               ${isPositioned ? 'animate-panel-in' : ''}
             `}
           >
-            <PanelContent panelId={activePanel} />
+            <PanelContent
+              panelId={activePanel}
+              onOpenModal={(type) => {
+                setModalType(type)
+                setActivePanel(null)
+              }}
+            />
           </div>
         </div>
+      )}
+
+      {/* Centered modal for Profile / Settings */}
+      {modalType && (
+        <ProfileSettingsModal
+          type={modalType}
+          onClose={() => setModalType(null)}
+        />
       )}
     </div>
   )
