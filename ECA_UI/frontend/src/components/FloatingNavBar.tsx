@@ -22,8 +22,6 @@ import {
   UserRound,
   Settings2,
   GripVertical,
-  Menu,
-  X,
 } from 'lucide-react'
 // @ts-expect-error - reserved for auth feature (commented out)
 import { LogOut } from 'lucide-react'
@@ -37,12 +35,13 @@ import AvatarsPanel from './panels/AvatarsPanel'
 import SettingsPanel from './panels/SettingsPanel'
 import MorePanel from './panels/MorePanel'
 import ProfileSettingsModal from './ProfileSettingsModal'
+import MobileNavBar from './MobileNavBar'
 
 /* ─── Types ─── */
 type DockedEdge = 'left' | 'right' | 'top' | 'bottom'
-type PanelId = 'chat' | 'sessions' | 'avatars' | 'more' | 'settings' | null
+export type PanelId = 'chat' | 'sessions' | 'avatars' | 'more' | 'settings' | null
 
-interface NavItem {
+export interface NavItem {
   id: PanelId
   icon: React.ComponentType<{ className?: string }>
   label: string
@@ -248,11 +247,9 @@ export default function FloatingNavBar() {
   const [dockedEdge, setDockedEdge] = useState<DockedEdge>('left')
   const [activePanel, setActivePanel] = useState<PanelId>(null)
   const [isDragging, setIsDragging] = useState(false)
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [modalType, setModalType] = useState<'profile' | 'settings' | null>(null)
   const prevPanelRef = useRef<PanelId>(null)
   const barRef = useRef<HTMLDivElement>(null)
-  const mobileMenuRef = useRef<HTMLDivElement>(null)
 
   // We need to measure the bar to calculate snap positions
   const [barSize, setBarSize] = useState({ width: 56, height: 320 })
@@ -285,13 +282,13 @@ export default function FloatingNavBar() {
     whileElementsMounted: autoUpdate,
   })
 
-  // Sync reference to the bar element
+  // Sync reference to the bar element (stable ref, run once)
   useEffect(() => {
     const el = barRef.current?.querySelector('.floating-nav-bar')
     if (el) {
       refs.setReference(el as HTMLElement)
     }
-  }, [refs, position, dockedEdge])
+  }, [])
 
   // DnD sensors — increase activation distance so clicks don't trigger drag
   const sensors = useSensors(
@@ -336,20 +333,7 @@ export default function FloatingNavBar() {
 
   const handleIconClick = useCallback((id: PanelId) => {
     setActivePanel((prev) => (prev === id ? null : id))
-    setMobileMenuOpen(false)
   }, [])
-
-  // Close mobile menu on outside pointer
-  useEffect(() => {
-    if (!mobileMenuOpen) return
-    const handler = (e: PointerEvent) => {
-      if (mobileMenuRef.current && !mobileMenuRef.current.contains(e.target as Node)) {
-        setMobileMenuOpen(false)
-      }
-    }
-    document.addEventListener('pointerdown', handler)
-    return () => document.removeEventListener('pointerdown', handler)
-  }, [mobileMenuOpen])
 
   // Close panel when clicking outside
   useEffect(() => {
@@ -396,203 +380,32 @@ export default function FloatingNavBar() {
     }
   }
 
-  /* ─── Mobile drag state ─── */
-  const btnSize = 36
-  const menuXRef = useRef(0)
-  const menuYRef = useRef(80)
-  const menuIsDraggingRef = useRef(false)
-  const menuDragStart = useRef<{ x: number; y: number; startMenuX: number; startMenuY: number } | null>(null)
-  const menuInitRef = useRef(false)
-
-  useEffect(() => {
-    if (!isMobile || menuInitRef.current) return
-    menuInitRef.current = true
-    const x = window.innerWidth - btnSize - 8
-    const y = 80
-    menuXRef.current = x
-    menuYRef.current = y
-    if (mobileMenuRef.current) {
-      mobileMenuRef.current.style.transform = `translate(${x}px, ${y}px)`
-    }
-  }, [isMobile])
-
-  const getMenuYBounds = useCallback(() => {
-    const chatTop = window.innerHeight * 0.6
-    return { minY: 80, maxY: chatTop - btnSize - 8 }
-  }, [])
-
-  const handleMenuPointerDown = useCallback((e: React.PointerEvent) => {
-    const el = e.currentTarget as HTMLElement
-    el.setPointerCapture(e.pointerId)
-    el.style.transition = 'none'
-    menuDragStart.current = { x: e.clientX, y: e.clientY, startMenuX: menuXRef.current, startMenuY: menuYRef.current }
-    menuIsDraggingRef.current = false
-  }, [])
-
-  const handleMenuPointerMove = useCallback((e: React.PointerEvent) => {
-    if (!menuDragStart.current) return
-    const dx = e.clientX - menuDragStart.current.x
-    const dy = e.clientY - menuDragStart.current.y
-
-    if (!menuIsDraggingRef.current && Math.abs(dx) < 5 && Math.abs(dy) < 5) return
-
-    menuIsDraggingRef.current = true
-
-    const newX = Math.max(8, Math.min(window.innerWidth - btnSize - 8, menuDragStart.current.startMenuX + dx))
-    const { minY, maxY } = getMenuYBounds()
-    const newY = Math.max(minY, Math.min(maxY, menuDragStart.current.startMenuY + dy))
-
-    menuXRef.current = newX
-    menuYRef.current = newY
-
-    const el = e.currentTarget as HTMLElement
-    el.style.transform = `translate(${newX}px, ${newY}px)`
-  }, [getMenuYBounds])
-
-  const handleMenuPointerUp = useCallback((e: React.PointerEvent) => {
-    const wasDragging = menuIsDraggingRef.current
-    const el = e.currentTarget as HTMLElement
-    menuDragStart.current = null
-    menuIsDraggingRef.current = false
-
-    el.style.transition = ''
-
-    if (wasDragging) {
-      const center = menuXRef.current + btnSize / 2
-      const snapX = center < window.innerWidth / 2 ? 8 : window.innerWidth - btnSize - 8
-      menuXRef.current = snapX
-      el.style.transform = `translate(${snapX}px, ${menuYRef.current}px)`
-    }
-  }, [])
-
-  const handleMenuPointerCancel = useCallback(() => {
-    menuDragStart.current = null
-    menuIsDraggingRef.current = false
-    if (mobileMenuRef.current) {
-      mobileMenuRef.current.style.transition = ''
-    }
-  }, [])
-
-  /* ─── Split nav items for mobile (no Chat) ─── */
-  const mobileNavItems = NAV_ITEMS.filter((item) => item.id !== 'chat')
-
   /* ─── Mobile: draggable hamburger + icon-only dropdown ─── */
   if (isMobile) {
     return (
       <>
-        <div
-          ref={mobileMenuRef}
-          style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            zIndex: 10000,
-            touchAction: 'none',
-            willChange: 'transform',
-            transition: 'transform 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
+        <MobileNavBar
+          activePanel={activePanel}
+          onIconClick={handleIconClick}
+          onOpenModal={(type) => {
+            prevPanelRef.current = activePanel
+            setModalType(type)
+            setActivePanel(null)
           }}
-          onPointerDown={handleMenuPointerDown}
-          onPointerMove={handleMenuPointerMove}
-          onPointerUp={handleMenuPointerUp}
-          onPointerCancel={handleMenuPointerCancel}
-        >
-          <div
-            className="flex flex-col items-center backdrop-blur-md border border-border/30 shadow-lg rounded-xl overflow-hidden transition-all duration-200"
-            style={{ background: 'rgba(0,0,0,0.15)' }}
-          >
-            {/* Menu button */}
-            <button
-              onClick={() => setMobileMenuOpen((prev) => !prev)}
-              className="flex items-center justify-center"
-              style={{ width: btnSize, height: btnSize, touchAction: 'none' }}
-            >
-              <div className="relative w-4 h-4">
-                <Menu
-                  className="absolute inset-0 w-4 h-4 transition-all duration-200 text-muted-foreground"
-                  style={{
-                    opacity: mobileMenuOpen ? 0 : 1,
-                    transform: `rotate(${mobileMenuOpen ? 45 : 0}deg)`,
-                  }}
-                />
-                <X
-                  className="absolute inset-0 w-4 h-4 transition-all duration-200 text-muted-foreground"
-                  style={{
-                    opacity: mobileMenuOpen ? 1 : 0,
-                    transform: `rotate(${mobileMenuOpen ? 0 : -45}deg)`,
-                  }}
-                />
-              </div>
-            </button>
-
-            {/* Icon-only dropdown — slides down/up with transition */}
-            <div
-              className="flex flex-col items-center gap-1 transition-all duration-200"
-              style={{
-                maxHeight: mobileMenuOpen ? '200px' : '0px',
-                opacity: mobileMenuOpen ? 1 : 0,
-                paddingTop: mobileMenuOpen ? '6px' : '0',
-                paddingBottom: mobileMenuOpen ? '6px' : '0',
-                pointerEvents: mobileMenuOpen ? 'auto' : 'none',
-              }}
-            >
-              {mobileNavItems.map((item) => {
-                const Icon = item.icon
-                return (
-                  <button
-                    key={item.id}
-                    onClick={() => handleIconClick(item.id)}
-                    className={`flex items-center justify-center rounded-lg transition-colors ${activePanel === item.id ? 'bg-primary/20 text-primary' : 'text-muted-foreground hover:text-foreground hover:bg-white/10'}`}
-                    style={{ width: btnSize - 4, height: btnSize - 4 }}
-                    title={item.label}
-                  >
-                    <Icon className="w-4 h-4" />
-                  </button>
-                )
-              })}
-
-              {/* Mobile avatar */}
-              <div className="h-px w-6 bg-border/40" />
-              <button
-                onClick={() => handleIconClick('settings')}
-                className={`rounded-full transition-colors ${activePanel === 'settings' ? 'bg-primary/20 ring-2 ring-primary' : 'bg-muted-foreground/20 hover:bg-muted-foreground/30'}`}
-                style={{ width: 20, height: 20 }}
-                title="Profile & Settings"
+          navItems={NAV_ITEMS}
+          panelContent={
+            activePanel && activePanel !== 'chat' ? (
+              <PanelContent
+                panelId={activePanel}
+                onOpenModal={(type) => {
+                  prevPanelRef.current = activePanel
+                  setModalType(type)
+                  setActivePanel(null)
+                }}
               />
-            </div>
-          </div>
-        </div>
-
-        {/* Mobile bottom sheet panel overlay — 50% height */}
-        {activePanel && activePanel !== 'chat' && (
-          <div className="fixed inset-0 z-[9999] flex items-end">
-            <div
-              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
-              onClick={() => setActivePanel(null)}
-            />
-            <div className="relative w-full h-[50vh] bg-card rounded-t-2xl animate-slide-up flex flex-col overflow-hidden shadow-[0_-8px_40px_rgba(0,0,0,0.4)]">
-              <div className="flex items-center px-4 h-14 border-b border-border/40 shrink-0">
-                <button
-                  onClick={() => setActivePanel(null)}
-                  className="p-2 -ml-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-              <div className="flex-1 min-h-0 overflow-hidden">
-                <PanelContent
-                  panelId={activePanel}
-                  onOpenModal={(type) => {
-                    prevPanelRef.current = activePanel
-                    setModalType(type)
-                    setActivePanel(null)
-                  }}
-                />
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Centered modal for Profile / Settings on mobile */}
+            ) : undefined
+          }
+        />
         {modalType && (
           <ProfileSettingsModal
             type={modalType}

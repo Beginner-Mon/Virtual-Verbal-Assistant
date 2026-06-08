@@ -1,4 +1,4 @@
-import { Settings, IdCard, LogOut } from 'lucide-react'
+import { Settings, IdCard, Ellipsis, CreditCard, LogOut } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 
 interface SettingsPanelProps {
@@ -14,7 +14,7 @@ export default function SettingsPanel({ onOpenModal }: SettingsPanelProps) {
   ]
 
   return (
-    <div className="p-2 w-56">
+    <div className="p-2">
       {items.map((item) => {
         const Icon = item.icon
         return (
@@ -28,6 +28,21 @@ export default function SettingsPanel({ onOpenModal }: SettingsPanelProps) {
           </button>
         )
       })}
+
+      <div className="h-px bg-border/40 my-1" />
+
+      <button
+        className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm text-foreground hover:bg-secondary/60 transition-colors"
+      >
+        <Ellipsis className="w-4 h-4 shrink-0" />
+        <span>Learn More</span>
+      </button>
+      <button
+        className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm text-foreground hover:bg-secondary/60 transition-colors"
+      >
+        <CreditCard className="w-4 h-4 shrink-0" />
+        <span>Billing</span>
+      </button>
 
       <div className="h-px bg-border/40 my-1" />
 

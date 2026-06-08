@@ -3,9 +3,11 @@ import { IdCard, User, Link2, LogOut } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 
 export default function ProfileContent() {
-  const { signOut, user } = useAuth()
-  const email = user?.signInDetails?.loginId ?? 'Unknown user'
-  const displayName = email?.split('@')[0] ?? 'User'
+  const { signOut, user, userAttributes } = useAuth()
+  const email = user?.signInDetails?.loginId ?? userAttributes?.email ?? 'Unknown user'
+  const displayName = userAttributes?.given_name
+    ? `${userAttributes.given_name} ${userAttributes.family_name ?? ''}`.trim()
+    : email?.split('@')[0] ?? 'User'
 
   const [activeSection, setActiveSection] = useState<string>('profile')
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({})

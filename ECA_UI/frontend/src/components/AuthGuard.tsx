@@ -1,7 +1,87 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { isAmplifyConfigured } from '../config/amplify'
 import { Outlet } from 'react-router-dom'
-import { AuthContext } from '../contexts/AuthContext'
+import { fetchUserAttributes } from 'aws-amplify/auth'
+import { AuthContext, type FetchUserAttributesOutput } from '../contexts/AuthContext'
+
+function AuthInner({ signOut: _signOut, user }: any) {
+  const [attrs, setAttrs] = useState<FetchUserAttributesOutput | undefined>(undefined)
+
+  useEffect(() => {
+    fetchUserAttributes()
+      .then((data) => {
+        console.log('[Auth] User attributes:', data)
+        setAttrs(data as FetchUserAttributesOutput)
+      })
+      .catch((err) => {
+        console.warn('[Auth] Failed to fetch attributes:', err)
+        setAttrs(undefined)
+      })
+  }, [user])
+
+  /**
+   * Full sign-out that clears the Cognito Hosted UI session cookie.
+   *
+   * If we don't redirect to `/logout`, the Google session remains active
+   * in the browser cookies, causing auto-signin on the next attempt.
+   */
+  const handleSignOut = useCallback(async () => {
+    // ── Step 1: Wipe local tokens ──────────────────────────────
+    const purge = (storage: Storage) => {
+      const doomed: string[] = []
+      for (let i = 0; i < storage.length; i++) {
+        const key = storage.key(i)
+        if (
+          key &&
+          (key.startsWith('CognitoIdentityServiceProvider') ||
+            key.startsWith('amplify-'))
+        ) {
+          doomed.push(key)
+        }
+      }
+      doomed.forEach((k) => storage.removeItem(k))
+    }
+    purge(localStorage)
+    purge(sessionStorage)
+
+    // ── Step 2: Redirect to Cognito /logout ────────────────────
+    try {
+      const { Amplify } = await import('aws-amplify')
+      /* eslint-disable @typescript-eslint/no-explicit-any */
+      const cfg = Amplify.getConfig() as any
+      const oauth = cfg?.Auth?.Cognito?.loginWith?.oauth
+      const clientId = cfg?.Auth?.Cognito?.userPoolClientId
+      /* eslint-enable @typescript-eslint/no-explicit-any */
+
+      if (oauth?.domain && clientId) {
+        // HARDCODE chính xác 100% đường link để loại bỏ mọi rủi ro từ biến môi trường
+        const exactLogoutUri = 'http://localhost:5173/'
+
+        const url =
+          `https://${oauth.domain}/logout` +
+          `?client_id=${clientId}` +
+          `&logout_uri=${encodeURIComponent(exactLogoutUri)}`
+        
+        console.log('[Auth] Redirecting to clear Hosted UI session:', url)
+        window.location.href = url
+        return
+      }
+    } catch (err) {
+      console.warn('[Auth] Could not build Cognito logout URL:', err)
+    }
+
+    // Fallback if no OAuth configured
+    window.location.href = '/'
+  }, [])
+
+  return (
+    <AuthContext.Provider value={{ signOut: handleSignOut, user, userAttributes: attrs }}>
+      <div className="flex h-screen w-screen bg-background">
+        <Outlet />
+      </div>
+    </AuthContext.Provider>
+  )
+}
 
 const formFields = {
   signUp: {
@@ -62,7 +142,7 @@ export default function AuthGuard() {
     Authenticator: any
     useAuthenticator: () => any
   } | null>(null)
-  const [ready, setReady] = useState(!isAmplifyConfigured)
+  const [ready, setReady] = useState(false)
 
   useEffect(() => {
     if (!isAmplifyConfigured) return
@@ -103,6 +183,7 @@ export default function AuthGuard() {
     return (
       <div className="auth-center-container">
         <Authenticator
+          socialProviders={['google']}
           signUpAttributes={['given_name', 'family_name']}
           formFields={formFields}
           components={{
@@ -112,11 +193,7 @@ export default function AuthGuard() {
           }}
         >
           {({ signOut, user }: any) => (
-            <AuthContext.Provider value={{ signOut, user }}>
-              <div className="flex h-screen w-screen bg-background">
-                <Outlet />
-              </div>
-            </AuthContext.Provider>
+            <AuthInner signOut={signOut} user={user} />
           )}
         </Authenticator>
       </div>
