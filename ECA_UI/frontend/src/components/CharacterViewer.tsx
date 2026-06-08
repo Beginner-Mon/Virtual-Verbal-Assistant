@@ -343,7 +343,7 @@ export default function CharacterViewer() {
           : 'radial-gradient(ellipse at center, #f3e8ff 0%, #ffffff 70%)',
       }}
     >
-      <Canvas camera={{ position: [0, -4, -2], fov: 45 }} gl={{ antialias: true, alpha: true }}>
+      <Canvas camera={{ position: [0, 4, 0], fov: 45 }} gl={{ antialias: true, alpha: true }}>
         <Suspense fallback={null}>
           <Scene
             theme={theme}
