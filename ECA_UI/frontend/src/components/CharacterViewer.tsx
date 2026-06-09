@@ -126,7 +126,11 @@ function VRMCharacter({
     }
   })
 
-  return <primitive object={vrm.scene} position={[0, -1.5, 0]} />
+  return (
+    <group position={[0, -1.5, 0]} rotation={[0, Math.PI, 0]}>
+      <primitive object={vrm.scene} />
+    </group>
+  )
 }
 
 /* ───────────────────────── Floating Particles ────────────────────── */
@@ -195,6 +199,11 @@ function Scene({
   const vrmRef = useRef<VRM | null>(null)
   const { camera } = useThree()
 
+  useEffect(() => {
+    camera.up.set(0, 0, 1)
+    camera.lookAt(0, 0, 0)
+  }, [camera])
+
   // Reusable vectors to avoid GC pressure
   const hipsPos = useMemo(() => new THREE.Vector3(), [])
   const deltaVec = useMemo(() => new THREE.Vector3(), [])
@@ -215,9 +224,10 @@ function Scene({
     // How far did the hips move since the last frame?
     deltaVec.subVectors(hipsPos, controlsRef.current.target)
 
-    // Shift the camera by the exact same amount so the orbit "diameter"
-    // around the skeleton stays constant.
-    camera.position.add(deltaVec)
+    // Keep the camera on a horizontal orbit plane so the view stays
+    // front-facing instead of drifting into a top-down angle.
+    camera.position.x += deltaVec.x
+    camera.position.z += deltaVec.z
 
     // Update the controls target to the new hips position
     controlsRef.current.target.copy(hipsPos)
@@ -241,8 +251,8 @@ return (
       />
       <FloatingParticles />
 
-     {/* Ground disc — XY plane, facing camera (no rotation) */}
-      <mesh position={[0, 0, 0.5]} receiveShadow>
+     {/* Ground disc — XZ plane in a Y-up world */}
+      <mesh position={[0, -1.5, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
         <circleGeometry args={[4, 64]} />
         <meshStandardMaterial
           color={theme === 'dark' ? '#7c3aed' : '#7c3aed'}
@@ -253,8 +263,8 @@ return (
         />
       </mesh>
 
-      {/* Grid on XY plane */}
-      <mesh position={[0, 0, 0.5]}>
+      {/* Grid on XZ plane */}
+      <mesh position={[0, -1.5, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <planeGeometry args={[8, 8, 16, 16]} />
         <meshStandardMaterial
           color={theme === 'dark' ? '#7c3aed' : '#7c3aed'}
