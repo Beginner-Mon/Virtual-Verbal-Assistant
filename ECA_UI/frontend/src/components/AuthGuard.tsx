@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, type MouseEvent } from 'react'
 import { isAmplifyConfigured } from '../config/amplify'
 import { Outlet } from 'react-router-dom'
 import { Amplify } from 'aws-amplify'
-import { fetchAuthSession, fetchUserAttributes } from 'aws-amplify/auth'
+import { fetchAuthSession, fetchUserAttributes, signInWithRedirect } from 'aws-amplify/auth'
 import { AuthContext, type FetchUserAttributesOutput } from '../contexts/AuthContext'
 
 function getCognitoConfig() {
@@ -134,6 +134,15 @@ const formFields = {
   },
 }
 
+function signInWithGoogleAccountPicker() {
+  void signInWithRedirect({
+    provider: 'Google',
+    options: {
+      prompt: 'SELECT_ACCOUNT',
+    },
+  })
+}
+
 export default function AuthGuard() {
   /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
   const [AuthModule, setAuthModule] = useState<{
@@ -180,8 +189,17 @@ export default function AuthGuard() {
       </>
     )
 
+    const handleAuthenticatorClickCapture = (event: MouseEvent<HTMLDivElement>) => {
+      const button = (event.target as HTMLElement).closest('button')
+      if (!button?.textContent?.toLowerCase().includes('google')) return
+
+      event.preventDefault()
+      event.stopPropagation()
+      signInWithGoogleAccountPicker()
+    }
+
     return (
-      <div className="auth-center-container">
+      <div className="auth-center-container" onClickCapture={handleAuthenticatorClickCapture}>
         <Authenticator
           socialProviders={['google']}
           signUpAttributes={['given_name', 'family_name']}
