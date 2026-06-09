@@ -134,27 +134,6 @@ const formFields = {
   },
 }
 
-function ConfirmHumanCheckbox() {
-  const [checked, setChecked] = useState(false)
-
-  return (
-    <div className="confirm-human-wrapper">
-      <label className="confirm-human-label">
-        <input
-          type="checkbox"
-          checked={checked}
-          onChange={(e) => setChecked(e.target.checked)}
-          className="confirm-human-checkbox"
-          id="confirm-human-input"
-          name="confirmHuman"
-        />
-        <span className="confirm-human-checkmark" />
-        <span className="confirm-human-text">I'm not a robot</span>
-      </label>
-    </div>
-  )
-}
-
 export default function AuthGuard() {
   /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
   const [AuthModule, setAuthModule] = useState<{
@@ -198,7 +177,6 @@ export default function AuthGuard() {
     const CustomSignUpFormFields = () => (
       <>
         <Authenticator.SignUp.FormFields />
-        <ConfirmHumanCheckbox />
       </>
     )
 
