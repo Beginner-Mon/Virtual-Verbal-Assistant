@@ -1,6 +1,7 @@
 import { useState, useRef } from 'react'
 import { IdCard, User, Link2, LogOut } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
+import { Avatar, AvatarImage, AvatarFallback } from './ui/avatar'
 
 export default function ProfileContent() {
   const { signOut, user, userAttributes } = useAuth()
@@ -8,6 +9,8 @@ export default function ProfileContent() {
   const displayName = userAttributes?.given_name
     ? `${userAttributes.given_name} ${userAttributes.family_name ?? ''}`.trim()
     : email?.split('@')[0] ?? 'User'
+  const profilePicture = userAttributes?.picture
+  const isGoogleLinked = !!profilePicture
 
   const [activeSection, setActiveSection] = useState<string>('profile')
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({})
@@ -33,8 +36,6 @@ export default function ProfileContent() {
     { id: 'display-name', icon: User, label: 'Display Name' },
     { id: 'account-linked', icon: Link2, label: 'Account Linked' },
   ]
-
-  const initials = displayName.slice(0, 2).toUpperCase()
 
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -71,9 +72,10 @@ export default function ProfileContent() {
         <div ref={setRef('profile')} className="scroll-mt-6 pb-5">
           <h3 className="text-base font-semibold text-foreground mb-5">Profile</h3>
           <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-              <span className="text-sm font-semibold text-primary">{initials}</span>
-            </div>
+            <Avatar className="w-14 h-14">
+              <AvatarImage src={profilePicture} alt={displayName} referrerPolicy="no-referrer" />
+              <AvatarFallback className="bg-primary/10" />
+            </Avatar>
             <div>
               <p className="text-xs text-muted-foreground">Signed in as</p>
               <p className="text-sm font-medium text-foreground">{displayName}</p>
@@ -122,12 +124,18 @@ export default function ProfileContent() {
                 </div>
                 <div>
                   <p className="text-sm font-medium text-foreground">Google</p>
-                  <p className="text-xs text-muted-foreground">Not connected</p>
+                  <p className="text-xs text-muted-foreground">{isGoogleLinked ? 'Connected' : 'Not connected'}</p>
                 </div>
               </div>
-              <button className="px-3 py-1.5 rounded-lg text-xs font-medium border border-border/40 text-foreground hover:bg-secondary/60 transition-colors">
-                Link
-              </button>
+              {isGoogleLinked ? (
+                <span className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary">
+                  Linked
+                </span>
+              ) : (
+                <button className="px-3 py-1.5 rounded-lg text-xs font-medium border border-border/40 text-foreground hover:bg-secondary/60 transition-colors">
+                  Link
+                </button>
+              )}
             </div>
 
             {/* GitHub */}

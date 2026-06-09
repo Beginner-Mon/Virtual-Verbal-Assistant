@@ -1,11 +1,68 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { isAmplifyConfigured } from '../config/amplify'
 import { Outlet } from 'react-router-dom'
-import { fetchUserAttributes } from 'aws-amplify/auth'
+import { Amplify } from 'aws-amplify'
+import { fetchAuthSession, fetchUserAttributes } from 'aws-amplify/auth'
 import { AuthContext, type FetchUserAttributesOutput } from '../contexts/AuthContext'
 
-function AuthInner({ signOut: _signOut, user }: any) {
+function getCognitoConfig() {
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const cfg = Amplify.getConfig() as any
+  const cognito = cfg?.Auth?.Cognito
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+
+  return cognito as
+    | {
+        userPoolId?: string
+        userPoolClientId?: string
+        userPoolEndpoint?: string
+      }
+    | undefined
+}
+
+function clearLocalAuthStorage() {
+  const purge = (storage: Storage) => {
+    const doomed: string[] = []
+    for (let i = 0; i < storage.length; i++) {
+      const key = storage.key(i)
+      if (
+        key &&
+        (key.startsWith('CognitoIdentityServiceProvider') ||
+          key.startsWith('amplify-'))
+      ) {
+        doomed.push(key)
+      }
+    }
+    doomed.forEach((key) => storage.removeItem(key))
+  }
+
+  purge(localStorage)
+  purge(sessionStorage)
+}
+
+async function globalSignOutFromCognito() {
+  const session = await fetchAuthSession()
+  const accessToken = session.tokens?.accessToken?.toString()
+  const cognito = getCognitoConfig()
+
+  if (!accessToken || !cognito?.userPoolId) return
+
+  const region = cognito.userPoolId.split('_')[0]
+  const endpoint = cognito.userPoolEndpoint ?? `https://cognito-idp.${region}.amazonaws.com/`
+
+  await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-amz-json-1.1',
+      'X-Amz-Target': 'AWSCognitoIdentityProviderService.GlobalSignOut',
+    },
+    body: JSON.stringify({ AccessToken: accessToken }),
+  })
+}
+
+function AuthInner({ user }: any) {
   const [attrs, setAttrs] = useState<FetchUserAttributesOutput | undefined>(undefined)
+  const signingOutRef = useRef(false)
 
   useEffect(() => {
     fetchUserAttributes()
@@ -19,59 +76,21 @@ function AuthInner({ signOut: _signOut, user }: any) {
       })
   }, [user])
 
-  /**
-   * Full sign-out that clears the Cognito Hosted UI session cookie.
-   *
-   * If we don't redirect to `/logout`, the Google session remains active
-   * in the browser cookies, causing auto-signin on the next attempt.
-   */
   const handleSignOut = useCallback(async () => {
-    // ── Step 1: Wipe local tokens ──────────────────────────────
-    const purge = (storage: Storage) => {
-      const doomed: string[] = []
-      for (let i = 0; i < storage.length; i++) {
-        const key = storage.key(i)
-        if (
-          key &&
-          (key.startsWith('CognitoIdentityServiceProvider') ||
-            key.startsWith('amplify-'))
-        ) {
-          doomed.push(key)
-        }
-      }
-      doomed.forEach((k) => storage.removeItem(k))
-    }
-    purge(localStorage)
-    purge(sessionStorage)
+    if (signingOutRef.current) return
+    signingOutRef.current = true
 
-    // ── Step 2: Redirect to Cognito /logout ────────────────────
     try {
-      const { Amplify } = await import('aws-amplify')
-      /* eslint-disable @typescript-eslint/no-explicit-any */
-      const cfg = Amplify.getConfig() as any
-      const oauth = cfg?.Auth?.Cognito?.loginWith?.oauth
-      const clientId = cfg?.Auth?.Cognito?.userPoolClientId
-      /* eslint-enable @typescript-eslint/no-explicit-any */
-
-      if (oauth?.domain && clientId) {
-        // HARDCODE chính xác 100% đường link để loại bỏ mọi rủi ro từ biến môi trường
-        const exactLogoutUri = 'http://localhost:5173/'
-
-        const url =
-          `https://${oauth.domain}/logout` +
-          `?client_id=${clientId}` +
-          `&logout_uri=${encodeURIComponent(exactLogoutUri)}`
-        
-        console.log('[Auth] Redirecting to clear Hosted UI session:', url)
-        window.location.href = url
-        return
-      }
+      await globalSignOutFromCognito().catch((err) => {
+        console.warn('[Auth] Cognito global sign-out failed:', err)
+      })
+      clearLocalAuthStorage()
+      window.location.replace('/')
     } catch (err) {
-      console.warn('[Auth] Could not build Cognito logout URL:', err)
+      console.warn('[Auth] Sign-out failed, clearing local auth state:', err)
+      clearLocalAuthStorage()
+      window.location.replace('/')
     }
-
-    // Fallback if no OAuth configured
-    window.location.href = '/'
   }, [])
 
   return (
@@ -145,7 +164,10 @@ export default function AuthGuard() {
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
-    if (!isAmplifyConfigured) return
+    if (!isAmplifyConfigured) {
+      setReady(true)
+      return
+    }
 
     Promise.all([
       import('@aws-amplify/ui-react'),
@@ -164,7 +186,7 @@ export default function AuthGuard() {
       <div className="auth-loading-screen">
         <div className="auth-loading-inner">
           <div className="auth-spinner" />
-          <span className="auth-loading-text">Loading…</span>
+          <span className="auth-loading-text">Loading...</span>
         </div>
       </div>
     )
@@ -192,15 +214,14 @@ export default function AuthGuard() {
             },
           }}
         >
-          {({ signOut, user }: any) => (
-            <AuthInner signOut={signOut} user={user} />
+          {({ user }: any) => (
+            <AuthInner user={user} />
           )}
         </Authenticator>
       </div>
     )
   }
 
-  // Bypass if not configured
   return (
     <AuthContext.Provider value={{}}>
       <Outlet />

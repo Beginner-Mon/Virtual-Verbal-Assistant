@@ -28,6 +28,8 @@ import { LogOut } from 'lucide-react'
 // @ts-expect-error - reserved for auth feature (commented out)
 import type { LucideIcon } from 'lucide-react'
 import { useMediaQuery } from '../lib/use-media-query'
+import { useAuth } from '../contexts/AuthContext'
+import { Avatar, AvatarImage, AvatarFallback } from './ui/avatar'
 
 import ChatPanel from './ChatPanel'
 import ChatSessionsPanel from './panels/ChatSessionsPanel'
@@ -141,6 +143,9 @@ function DraggableBar({
   onIconClick: (id: PanelId) => void
   isDragging: boolean
 }) {
+  const { userAttributes } = useAuth()
+  const profilePicture = userAttributes?.picture
+
   const { attributes, listeners, setNodeRef, transform } = useDraggable({
     id: 'floating-nav-bar',
   })
@@ -225,14 +230,15 @@ function DraggableBar({
         onClick={() => onIconClick('settings')}
         title="Profile & Settings"
         className={`
-          w-8 h-8 rounded-full
-          transition-all duration-200 shrink-0 ${isHorizontal ? 'ml-2' : 'mt-2'}
-          ${activePanel === 'settings'
-            ? 'bg-primary/20 ring-2 ring-primary'
-            : 'bg-muted-foreground/20 hover:bg-muted-foreground/30'
-          }
+          shrink-0 ${isHorizontal ? 'ml-2' : 'mt-2'}
+          rounded-full
         `}
-      />
+      >
+        <Avatar className="w-9 h-9">
+          <AvatarImage src={profilePicture} alt="Avatar" referrerPolicy="no-referrer" />
+          <AvatarFallback className="bg-muted-foreground/20" />
+        </Avatar>
+      </button>
     </div>
   )
 }

@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Menu, X } from 'lucide-react'
 import type { PanelId, NavItem } from './FloatingNavBar'
+import { useAuth } from '../contexts/AuthContext'
+import { Avatar, AvatarImage, AvatarFallback } from './ui/avatar'
 
 interface MobileNavBarProps {
   activePanel: PanelId
@@ -17,6 +19,9 @@ export default function MobileNavBar({
   navItems,
   panelContent,
 }: MobileNavBarProps) {
+  const { userAttributes } = useAuth()
+  const profilePicture = userAttributes?.picture
+
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const mobileMenuRef = useRef<HTMLDivElement>(null)
   const btnSize = 36
@@ -188,10 +193,14 @@ export default function MobileNavBar({
                 onIconClick('settings')
                 setMobileMenuOpen(false)
               }}
-              className={`rounded-full transition-colors ${activePanel === 'settings' ? 'bg-primary/20 ring-2 ring-primary' : 'bg-muted-foreground/20 hover:bg-muted-foreground/30'}`}
-              style={{ width: 20, height: 20 }}
+              className={`rounded-full transition-colors`}
               title="Profile & Settings"
-            />
+            >
+              <Avatar style={{ width: 24, height: 24 }}>
+                <AvatarImage src={profilePicture} alt="Avatar" referrerPolicy="no-referrer" />
+                <AvatarFallback className="bg-muted-foreground/20" />
+              </Avatar>
+            </button>
           </div>
         </div>
       </div>

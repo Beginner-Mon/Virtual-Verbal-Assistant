@@ -11,11 +11,12 @@ export interface FetchUserAttributesOutput {
   given_name?: string
   family_name?: string
   phone_number?: string
+  picture?: string
   [key: string]: string | undefined
 }
 
 export interface UserContextType {
-  signOut?: () => void
+  signOut?: () => Promise<void>
   user?: AuthUser
   userAttributes?: FetchUserAttributesOutput
 }
