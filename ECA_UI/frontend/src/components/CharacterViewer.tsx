@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMHumanBoneName } from '@pixiv/three-vrm'
 import type { VRM } from '@pixiv/three-vrm'
 import seeleUrl from '../asset/seele.vrm'
+import { Html } from '@react-three/drei'
 import { useTheme } from '../contexts/ThemeContext'
 import {
   ContactShadows,
@@ -240,15 +241,28 @@ return (
       />
       <FloatingParticles />
 
-      {/* Ground disc */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -1.5, 0]} receiveShadow>
+     {/* Ground disc — XY plane, facing camera (no rotation) */}
+      <mesh position={[0, 0, 0.5]} receiveShadow>
         <circleGeometry args={[4, 64]} />
         <meshStandardMaterial
-          color={theme === 'dark' ? '#2d1b4e' : '#e9d5ff'}
+          color={theme === 'dark' ? '#7c3aed' : '#7c3aed'}
           roughness={0.8}
           metalness={0.1}
           transparent
-          opacity={0.85}
+          opacity={0.65}
+        />
+      </mesh>
+
+      {/* Grid on XY plane */}
+      <mesh position={[0, 0, 0.5]}>
+        <planeGeometry args={[8, 8, 16, 16]} />
+        <meshStandardMaterial
+          color={theme === 'dark' ? '#7c3aed' : '#7c3aed'}
+          roughness={1}
+          metalness={0}
+          transparent
+          opacity={0.4}
+          wireframe
         />
       </mesh>
 
@@ -257,6 +271,18 @@ return (
         args={[8, 16, theme === 'dark' ? '#6d28d9' : '#c084fc', theme === 'dark' ? '#3b1265' : '#ddd6fe']}
         position={[0, -1.5, 0]}
       />
+      <primitive object={new THREE.AxesHelper(3)} />
+
+      {/* Axis labels */}
+      <Html position={[3.2, 0, 0]}>
+        <span style={{ color: 'red', fontWeight: 'bold', fontSize: 14 }}>X</span>
+      </Html>
+      <Html position={[0, 3.2, 0]}>
+        <span style={{ color: 'green', fontWeight: 'bold', fontSize: 14 }}>Y</span>
+      </Html>
+      <Html position={[0, 0, 3.2]}>
+        <span style={{ color: 'blue', fontWeight: 'bold', fontSize: 14 }}>Z</span>
+      </Html>
 
       <ContactShadows
         position={[0, -1.5, 0]}
@@ -275,7 +301,7 @@ return (
         ref={controlsRef}
         enablePan={false}
         enableZoom={true}
-        minDistance={2}
+        minDistance={1}
         maxDistance={8}
         target={[0, 0, 0]}
       />
@@ -317,7 +343,7 @@ export default function CharacterViewer() {
           : 'radial-gradient(ellipse at center, #f3e8ff 0%, #ffffff 70%)',
       }}
     >
-      <Canvas camera={{ position: [0, 0, 4], fov: 45 }} gl={{ antialias: true, alpha: true }}>
+      <Canvas camera={{ position: [0, 4, 0], fov: 45 }} gl={{ antialias: true, alpha: true }}>
         <Suspense fallback={null}>
           <Scene
             theme={theme}
