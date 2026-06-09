@@ -201,7 +201,13 @@ function Scene({
 
   useEffect(() => {
     camera.up.set(0, 0, 1)
-    camera.lookAt(0, 0, 0)
+    camera.position.set(0, 2.05, 0)
+    camera.lookAt(0, 1.7, 0)
+
+    if (controlsRef.current) {
+      controlsRef.current.target.set(0, 1.7, 0)
+      controlsRef.current.update()
+    }
   }, [camera])
 
   // Reusable vectors to avoid GC pressure
@@ -224,13 +230,13 @@ function Scene({
     // How far did the head move since the last frame?
     deltaVec.subVectors(headPos, controlsRef.current.target)
 
-    // Keep the camera on a horizontal orbit plane so the view stays
-    // front-facing instead of drifting into a top-down angle.
-    camera.position.x += deltaVec.x
-    camera.position.z += deltaVec.z
+    // Move the camera by the same 3D delta so the distance to the model
+    // stays identical even if the model shifts on any axis.
+    camera.position.add(deltaVec)
 
     // Update the controls target to the new head position
     controlsRef.current.target.copy(headPos)
+    controlsRef.current.update()
   })
 
 return (
@@ -312,8 +318,9 @@ return (
         enablePan={false}
         enableZoom={true}
         minDistance={1}
-        maxDistance={8}
-        target={[0, 1.5, 0]}
+        maxDistance={20}
+        //DISTANCE BETWEEN CAMERA AND TARGET (HEAD) IS PRESERVED EVEN IF THE MODEL MOVES AROUND
+        target={[0, 5.5, 0]}
       />
     </>
   )
@@ -353,7 +360,7 @@ export default function CharacterViewer() {
           : 'radial-gradient(ellipse at center, #f3e8ff 0%, #ffffff 70%)',
       }}
     >
-      <Canvas camera={{ position: [0, 4, 0], fov: 45 }} gl={{ antialias: true, alpha: true }}>
+      <Canvas camera={{ position: [0, 2.05, 0], fov: 45 }} gl={{ antialias: true, alpha: true }}>
         <Suspense fallback={null}>
           <Scene
             theme={theme}
