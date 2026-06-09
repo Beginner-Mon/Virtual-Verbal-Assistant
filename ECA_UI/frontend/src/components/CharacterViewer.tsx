@@ -205,32 +205,32 @@ function Scene({
   }, [camera])
 
   // Reusable vectors to avoid GC pressure
-  const hipsPos = useMemo(() => new THREE.Vector3(), [])
+  const headPos = useMemo(() => new THREE.Vector3(), [])
   const deltaVec = useMemo(() => new THREE.Vector3(), [])
 
-  // Every frame: make the camera orbit target follow the VRM hips.
+  // Every frame: make the camera orbit target follow the VRM head.
   // We also shift the camera position by the same delta so the orbital
   // offset (angle + distance) is preserved while the rig moves.
   useFrame(() => {
     if (!vrmRef.current || !controlsRef.current) return
 
-    const hips = vrmRef.current.humanoid.getNormalizedBoneNode(
-      VRMHumanBoneName.Hips,
+    const head = vrmRef.current.humanoid.getNormalizedBoneNode(
+      VRMHumanBoneName.Head,
     )
-    if (!hips) return
+    if (!head) return
 
-    hips.getWorldPosition(hipsPos)
+    head.getWorldPosition(headPos)
 
-    // How far did the hips move since the last frame?
-    deltaVec.subVectors(hipsPos, controlsRef.current.target)
+    // How far did the head move since the last frame?
+    deltaVec.subVectors(headPos, controlsRef.current.target)
 
     // Keep the camera on a horizontal orbit plane so the view stays
     // front-facing instead of drifting into a top-down angle.
     camera.position.x += deltaVec.x
     camera.position.z += deltaVec.z
 
-    // Update the controls target to the new hips position
-    controlsRef.current.target.copy(hipsPos)
+    // Update the controls target to the new head position
+    controlsRef.current.target.copy(headPos)
   })
 
 return (
@@ -313,7 +313,7 @@ return (
         enableZoom={true}
         minDistance={1}
         maxDistance={8}
-        target={[0, 0, 0]}
+        target={[0, 1.5, 0]}
       />
     </>
   )
