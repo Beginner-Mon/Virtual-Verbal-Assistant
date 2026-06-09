@@ -4,6 +4,8 @@ import { useMotion } from '../../contexts/MotionContext'
 
 export default function MorePanel() {
   const {
+    cameraMode,
+    setCameraMode,
     selectedMotionId,
     setSelectedMotionId,
     isPlaying,
@@ -27,6 +29,21 @@ export default function MorePanel() {
 
       <ScrollArea className="flex-1 min-h-0 p-4">
         <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-secondary/20 border border-border/10">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+              <MoreHorizontal className="w-3 h-3" />
+              Camera mode
+            </span>
+            <select
+              value={cameraMode}
+              onChange={(e) => setCameraMode(e.target.value as 'head' | 'hips')}
+              className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-0.5"
+            >
+              <option value="head" className="bg-card text-foreground">Head - close face view</option>
+              <option value="hips" className="bg-card text-foreground">Hips - wider body view</option>
+            </select>
+          </div>
+
           <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-secondary/20 border border-border/10">
             <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
               <Activity className="w-3 h-3" />

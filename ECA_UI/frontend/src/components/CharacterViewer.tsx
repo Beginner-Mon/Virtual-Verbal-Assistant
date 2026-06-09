@@ -14,7 +14,18 @@ import {
 import { useRef, useEffect, useState, Suspense, useMemo } from 'react'
 import * as THREE from 'three'
 import { loadAndRetargetBVH } from '../lib/bvhToVrm'
-import { useMotion } from '../contexts/MotionContext'
+import { type CameraMode, useMotion } from '../contexts/MotionContext'
+
+const CAMERA_MODES: Record<CameraMode, { boneName: VRMHumanBoneName; cameraOffset: THREE.Vector3 }> = {
+  head: {
+    boneName: VRMHumanBoneName.Head,
+    cameraOffset: new THREE.Vector3(0, 0.5, 0),
+  },
+  hips: {
+    boneName: VRMHumanBoneName.Hips,
+    cameraOffset: new THREE.Vector3(0, 2.1, 0),
+  },
+}
 
 /* ───────────────────── VRM Character with BVH Animation ──────────── */
 
@@ -198,44 +209,53 @@ function Scene({
   const controlsRef = useRef<any>(null)
   const vrmRef = useRef<VRM | null>(null)
   const { camera } = useThree()
+  const cameraInitializedRef = useRef(false)
+  const { cameraMode } = useMotion()
 
   useEffect(() => {
     camera.up.set(0, 0, 1)
-    camera.position.set(0, 2.05, 0)
-    camera.lookAt(0, 1.7, 0)
-
-    if (controlsRef.current) {
-      controlsRef.current.target.set(0, 1.7, 0)
-      controlsRef.current.update()
-    }
   }, [camera])
 
+  useEffect(() => {
+    cameraInitializedRef.current = false
+  }, [cameraMode, vrmUrl])
+
   // Reusable vectors to avoid GC pressure
-  const headPos = useMemo(() => new THREE.Vector3(), [])
+  const followPos = useMemo(() => new THREE.Vector3(), [])
   const deltaVec = useMemo(() => new THREE.Vector3(), [])
 
-  // Every frame: make the camera orbit target follow the VRM head.
+  // Every frame: make the camera orbit target follow the selected bone.
   // We also shift the camera position by the same delta so the orbital
   // offset (angle + distance) is preserved while the rig moves.
   useFrame(() => {
     if (!vrmRef.current || !controlsRef.current) return
 
-    const head = vrmRef.current.humanoid.getNormalizedBoneNode(
-      VRMHumanBoneName.Head,
-    )
-    if (!head) return
+    const mode = CAMERA_MODES[cameraMode]
+    const bone =
+      vrmRef.current.humanoid.getNormalizedBoneNode(mode.boneName) ??
+      vrmRef.current.humanoid.getNormalizedBoneNode(VRMHumanBoneName.Hips)
+    if (!bone) return
 
-    head.getWorldPosition(headPos)
+    bone.getWorldPosition(followPos)
 
-    // How far did the head move since the last frame?
-    deltaVec.subVectors(headPos, controlsRef.current.target)
+    if (!cameraInitializedRef.current) {
+      controlsRef.current.target.copy(followPos)
+      camera.position.copy(followPos).add(mode.cameraOffset)
+      camera.lookAt(followPos)
+      controlsRef.current.update()
+      cameraInitializedRef.current = true
+      return
+    }
+
+    // How far did the follow point move since the last frame?
+    deltaVec.subVectors(followPos, controlsRef.current.target)
 
     // Move the camera by the same 3D delta so the distance to the model
     // stays identical even if the model shifts on any axis.
     camera.position.add(deltaVec)
 
-    // Update the controls target to the new head position
-    controlsRef.current.target.copy(headPos)
+    // Update the controls target to the new follow point
+    controlsRef.current.target.copy(followPos)
     controlsRef.current.update()
   })
 
@@ -319,8 +339,7 @@ return (
         enableZoom={true}
         minDistance={1}
         maxDistance={20}
-        //DISTANCE BETWEEN CAMERA AND TARGET (HEAD) IS PRESERVED EVEN IF THE MODEL MOVES AROUND
-        target={[0, 5.5, 0]}
+        target={[0, 0, 0]}
       />
     </>
   )

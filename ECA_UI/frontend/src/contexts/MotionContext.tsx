@@ -6,6 +6,8 @@ type AssetOption = {
   url: string
 }
 
+export type CameraMode = 'head' | 'hips'
+
 const VRM_ASSET_MODULES = import.meta.glob('../asset/**/*.vrm', {
   eager: true,
   import: 'default',
@@ -38,6 +40,8 @@ interface MotionContextType {
   setSelectedVrmId: (id: string) => void
   selectedMotionId: string
   setSelectedMotionId: (id: string) => void
+  cameraMode: CameraMode
+  setCameraMode: (mode: CameraMode) => void
   isPlaying: boolean
   setIsPlaying: (playing: boolean) => void
   speed: number
@@ -58,6 +62,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
   const [clipInfo, setClipInfo] = useState<{ tracks: number; duration: number } | null>(null)
   const [selectedVrmId, setSelectedVrmId] = useState(BUILTIN_VRM_OPTIONS[0]?.id ?? '')
   const [selectedMotionId, setSelectedMotionId] = useState(BUILTIN_MOTION_OPTIONS[0]?.id ?? '')
+  const [cameraMode, setCameraMode] = useState<CameraMode>('head')
 
   const onResetRef = useRef<(() => void) | null>(null)
 
@@ -74,6 +79,8 @@ export function MotionProvider({ children }: { children: ReactNode }) {
         setSelectedVrmId,
         selectedMotionId,
         setSelectedMotionId,
+        cameraMode,
+        setCameraMode,
         isPlaying,
         setIsPlaying,
         speed,
