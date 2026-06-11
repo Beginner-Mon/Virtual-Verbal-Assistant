@@ -1,4 +1,5 @@
 export let isAmplifyConfigured = false
+export let customOutputs: Record<string, unknown> = {}
 
 export async function initializeAmplify(): Promise<void> {
   try {
@@ -8,6 +9,7 @@ export async function initializeAmplify(): Promise<void> {
       throw new Error('Amplify outputs are empty')
     }
     Amplify.configure(outputs.default)
+    customOutputs = (outputs.default as any).custom || {}
     isAmplifyConfigured = true
     console.log('[Auth] Amplify configured successfully')
   } catch {
