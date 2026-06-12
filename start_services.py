@@ -37,7 +37,7 @@ SERVICES: dict[str, dict] = {
         "note": "PostgreSQL :5432 + Redis :6379 + SearXNG :6666 (needs Docker Desktop)",
     },
     "backend": {
-        "cwd": "agenticRAG/agentic_rag_gemini",
+        "cwd": "agenticRAG",
         "conda_env": "firstconda",
         "command": "python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8080",
         "note": "LangGraph FastAPI :8080 (spawns Kimodo + web_search MCP itself)",

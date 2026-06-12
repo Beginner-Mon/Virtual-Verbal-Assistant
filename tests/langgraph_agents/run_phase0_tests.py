@@ -4,7 +4,7 @@ from pathlib import Path
 
 _here = Path(__file__).resolve().parent
 _project_root = _here.parents[1]
-_agentic_root = _project_root / "agenticRAG" / "agentic_rag_gemini"
+_agentic_root = _project_root / "agenticRAG"
 sys.path.insert(0, str(_agentic_root))
 
 # Import and run tests programmatically
