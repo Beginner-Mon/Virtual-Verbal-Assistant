@@ -71,18 +71,18 @@ Verify `.env` is in `.gitignore`. Then `docker compose -f docker-compose.langgra
 will auto-read `.env` and pass `SEARXNG_SECRET_KEY` to the container. If not set,
 compose fails immediately with a clear error (intended — better than silent SearXNG crash).
 
-Run schema migration:
+Run schema migration (Alembic, M.4 schema):
 
 ```bash
-cd agenticRAG/agentic_rag_gemini
-python -m langgraph_agents.db.init_schema
+cd agenticRAG/langgraph_agents
+alembic upgrade head
 ```
 
 Verify tables exist:
 
 ```bash
 docker exec -it vva-postgres psql -U vva -d vva -c "\dt"
-# Expected: users, conversations, documents, embeddings
+# Expected: users, conversations, messages, summaries, user_memory, documents, kb_embeddings
 ```
 
 ## 4. Start services
@@ -91,10 +91,10 @@ Terminal 1 — Backend (port 8080, logs to file):
 
 ```powershell
 conda activate vva
-cd agenticRAG/agentic_rag_gemini
+cd agenticRAG
 # Redirect stdout to vva.log so log-analysis commands in §8 work.
-# Drop the `*> ..\..\vva.log` part if you prefer console output.
-python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8080 --host 0.0.0.0 *> ..\..\vva.log
+# Drop the `*> ..\vva.log` part if you prefer console output.
+python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8080 --host 0.0.0.0 *> ..\vva.log
 ```
 
 Terminal 2 — Frontend (port 3000):

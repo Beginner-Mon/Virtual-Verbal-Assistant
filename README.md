@@ -105,7 +105,7 @@ conda activate firstconda
 pip install -r requirements-langgraph.txt
 
 # 3. Start backend (Terminal 1)
-cd agenticRAG/agentic_rag_gemini
+cd agenticRAG
 python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8080
 
 # 4. Start frontend (Terminal 2)

@@ -109,7 +109,7 @@ user query → memory (STM+facts) → planner (3-axis intent) → retriever (too
 docker compose -f docker-compose.langgraph.yml up -d postgres redis
 
 # Migration (port 5433 — host may conflict with local PostgreSQL)
-cd agenticRAG/agentic_rag_gemini/langgraph_agents
+cd agenticRAG/langgraph_agents
 alembic upgrade head
 
 # Tests
