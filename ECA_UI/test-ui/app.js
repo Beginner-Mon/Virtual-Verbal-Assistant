@@ -1,917 +1,433 @@
-// API base resolution priority:
-// 1) Query param: ?api_base=https://your-api-host
-// 2) Global override: window.TEST_UI_API_BASE_URL
-// 3) If page itself is served from :8000, use current origin
-// 4) Local default: http://localhost:8000
-function resolveApiBase() {
-    const params = new URLSearchParams(window.location.search);
-    const fromQuery = params.get('api_base');
-    const fromGlobal = window.TEST_UI_API_BASE_URL;
-    const isApiPort = window.location.port === '8000';
-
-    const base = fromQuery || fromGlobal || (isApiPort ? window.location.origin : 'http://localhost:8000');
-    return String(base).replace(/\/$/, '');
+// ── Base URL resolution ────────────────────────────────────────────
+// Priority: ?api_base= query param → window.TEST_UI_API_BASE_URL → default :8080
+function resolveBase(paramName, globalName, fallback) {
+    const p = new URLSearchParams(window.location.search).get(paramName);
+    return String(p || window[globalName] || fallback).replace(/\/$/, '');
 }
 
-const API_BASE = resolveApiBase();
-console.log('[test-ui] API_BASE =', API_BASE);
+const API_BASE    = resolveBase('api_base',    'TEST_UI_API_BASE_URL',    'http://localhost:8080');
+const SPEECH_BASE = resolveBase('speech_base', 'TEST_UI_SPEECH_BASE_URL', 'http://localhost:5000');
+const SEARXNG_BASE= resolveBase('searxng_base','TEST_UI_SEARXNG_BASE_URL','http://localhost:6666');
+const KIMODO_BASE = resolveBase('kimodo_base', 'TEST_UI_KIMODO_BASE_URL', 'http://localhost:5001');
 
-function siblingBaseFromApi(defaultPort, fallbackUrl) {
-    try {
-        const u = new URL(API_BASE);
-        u.port = String(defaultPort);
-        return u.origin;
-    } catch {
-        return fallbackUrl;
-    }
-}
+console.log('[test-ui] endpoints', { API_BASE, SPEECH_BASE, SEARXNG_BASE, KIMODO_BASE });
 
-function resolveServiceBase(paramName, globalName, fallbackUrl) {
-    const params = new URLSearchParams(window.location.search);
-    const fromQuery = params.get(paramName);
-    const fromGlobal = window[globalName];
-    return String(fromQuery || fromGlobal || fallbackUrl).replace(/\/$/, '');
-}
-
-const ORCHESTRATOR_BASE = resolveServiceBase(
-    'orchestrator_base',
-    'TEST_UI_ORCHESTRATOR_BASE_URL',
-    siblingBaseFromApi(8080, 'http://localhost:8080')
-);
-const DART_BASE = resolveServiceBase(
-    'dart_base',
-    'TEST_UI_DART_BASE_URL',
-    'http://localhost:5001'
-);
-const SPEECH_BASE = resolveServiceBase(
-    'speech_base',
-    'TEST_UI_SPEECH_BASE_URL',
-    siblingBaseFromApi(5000, 'http://localhost:5000')
-);
-
+// ── Service registry ───────────────────────────────────────────────
 const SERVICES = {
-    rag: {
-        name: 'AgenticRAG',
-        baseUrl: API_BASE,
-        healthUrl: `${API_BASE}/health`,
-    },
-    dart: {
-        name: 'DART Motion',
-        baseUrl: DART_BASE,
-        healthUrl: `${DART_BASE}/health`,
-    },
-    orchestrator: {
-        name: 'Orchestrator',
-        baseUrl: ORCHESTRATOR_BASE,
-        healthUrl: `${ORCHESTRATOR_BASE}/health`,
-    },
-    speechllm: {
-        name: 'SpeechLLm',
-        baseUrl: SPEECH_BASE,
-        healthUrl: `${SPEECH_BASE}/health`,
-    },
+    langgraph: { name: 'LangGraph Agent', baseUrl: API_BASE,     healthUrl: `${API_BASE}/health` },
+    speechllm: { name: 'VieNeu TTS',      baseUrl: SPEECH_BASE,  healthUrl: `${SPEECH_BASE}/health` },
+    searxng:   { name: 'SearXNG',         baseUrl: SEARXNG_BASE, healthUrl: `${SEARXNG_BASE}/healthz` },
+    kimodo:    { name: 'Kimodo MCP',      baseUrl: KIMODO_BASE,  healthUrl: `${KIMODO_BASE}/health` },
 };
 
-function joinUrl(baseUrl, pathOrUrl) {
-    if (!pathOrUrl) return null;
-    if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
-    const normalizedBase = String(baseUrl || '').replace(/\/$/, '');
-    const normalizedPath = String(pathOrUrl).startsWith('/') ? pathOrUrl : `/${pathOrUrl}`;
-    return `${normalizedBase}${normalizedPath}`;
+// ── Helpers ────────────────────────────────────────────────────────
+function escapeHtml(str) {
+    const d = document.createElement('div');
+    d.textContent = String(str ?? '');
+    return d.innerHTML;
 }
 
-function setServiceBaseUrl(serviceKey, baseUrl) {
-    const normalizedBase = String(baseUrl || '').replace(/\/$/, '');
-    SERVICES[serviceKey].baseUrl = normalizedBase;
-    SERVICES[serviceKey].healthUrl = `${normalizedBase}/health`;
-}
-
-async function initializeServiceEndpoints() {
-    try {
-        const orchestratorInfoUrl = `${SERVICES.orchestrator.baseUrl}/info`;
-        const response = await fetch(orchestratorInfoUrl, { cache: 'no-store' });
-        if (!response.ok) return;
-
-        const info = await response.json();
-        const upstream = info?.upstream_services || {};
-
-        if (upstream.dart) {
-            const dartBase = String(upstream.dart).replace(/\/generate\/?$/, '');
-            setServiceBaseUrl('dart', dartBase);
+function syntaxHighlight(json) {
+    return escapeHtml(json).replace(
+        /("(\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+        m => {
+            let c = 'json-number';
+            if (/^"/.test(m)) c = /:$/.test(m) ? 'json-key' : 'json-string';
+            else if (/true|false/.test(m)) c = 'json-bool';
+            else if (/null/.test(m)) c = 'json-null';
+            return `<span class="${c}">${m}</span>`;
         }
-        if (upstream.tts) {
-            const ttsBase = String(upstream.tts).replace(/\/synthesize\/?$/, '');
-            setServiceBaseUrl('speechllm', ttsBase);
-        }
-        console.log('[test-ui] Resolved service endpoints from orchestrator /info', {
-            dart: SERVICES.dart.baseUrl,
-            speechllm: SERVICES.speechllm.baseUrl,
-        });
-    } catch (err) {
-        console.warn('[test-ui] Could not resolve dynamic service endpoints, using defaults.', err);
-    }
+    );
 }
-
-async function checkDartHealthViaOrchestrator() {
-    // Orchestrator health is same-origin-ish for local dev and can reach DART
-    // even when direct browser -> WSL DART fetch is blocked.
-    const response = await fetch(SERVICES.orchestrator.healthUrl, { cache: 'no-store' });
-    if (!response.ok) {
-        throw new Error(`Orchestrator health HTTP ${response.status}`);
-    }
-
-    const data = await response.json();
-    const dartStatus = String(data?.services?.dart || '').toLowerCase();
-    const isOk = dartStatus === 'ok';
-    return { isOk, dartStatus, raw: data };
-}
-
-// ==============================
-// Health Checks
-// ==============================
-
-async function checkHealth(serviceKey) {
-    const service = SERVICES[serviceKey];
-    const dot = document.getElementById(`dot-${serviceKey}`);
-    const label = document.getElementById(`label-${serviceKey}`);
-
-    dot.className = 'status-dot checking';
-    label.textContent = 'Checking...';
-
-    try {
-        const start = performance.now();
-        const response = await fetch(service.healthUrl);
-        const elapsed = Math.round(performance.now() - start);
-        const data = await response.json();
-
-        const isOk = data.status === 'healthy' || data.status === 'ok';
-        if (isOk) {
-            dot.className = 'status-dot online';
-            label.textContent = `✅ Healthy (${elapsed}ms)`;
-            addLog('success', service.name, `Health check passed in ${elapsed}ms`);
-        } else {
-            dot.className = 'status-dot offline';
-            label.textContent = `⚠️ Unexpected: ${JSON.stringify(data)}`;
-            addLog('error', service.name, `Unexpected response: ${JSON.stringify(data)}`);
-        }
-    } catch (err) {
-        // Special fallback for DART in Windows+WSL setups:
-        // browser direct fetch can fail while orchestrator can still reach DART.
-        if (serviceKey === 'dart') {
-            try {
-                const start = performance.now();
-                const viaOrchestrator = await checkDartHealthViaOrchestrator();
-                const elapsed = Math.round(performance.now() - start);
-                if (viaOrchestrator.isOk) {
-                    dot.className = 'status-dot online';
-                    label.textContent = `✅ Healthy via Orchestrator (${elapsed}ms)`;
-                    addLog(
-                        'success',
-                        service.name,
-                        `Health check passed via orchestrator proxy in ${elapsed}ms (direct browser fetch failed: ${err.message})`
-                    );
-                    return;
-                }
-
-                dot.className = 'status-dot offline';
-                label.textContent = `⚠️ DART status via orchestrator: ${viaOrchestrator.dartStatus || 'unknown'}`;
-                addLog(
-                    'error',
-                    service.name,
-                    `Direct health failed (${err.message}); orchestrator reports DART=${viaOrchestrator.dartStatus || 'unknown'}`
-                );
-                return;
-            } catch (fallbackErr) {
-                // Continue to existing file:// fallback path below.
-                addLog('error', service.name, `DART fallback via orchestrator failed: ${fallbackErr.message}`);
-            }
-        }
-
-        // When opened via file://, browsers often block cross-origin JSON reads.
-        // Fallback to no-cors to detect basic reachability.
-        const isFileProtocol = window.location.protocol === 'file:';
-        if (isFileProtocol) {
-            try {
-                await fetch(service.healthUrl, { mode: 'no-cors' });
-                dot.className = 'status-dot checking';
-                label.textContent = '⚠️ Reachable — CORS blocked in file:// mode';
-                addLog('error', service.name, 'Endpoint reachable, but browser blocked response in file:// mode (CORS). Serve test-ui over http:// for full health details.');
-                return;
-            } catch {
-                // Fall through to offline if even no-cors cannot reach endpoint.
-            }
-        }
-
-        dot.className = 'status-dot offline';
-        label.textContent = `❌ Offline — ${err.message}`;
-        addLog('error', service.name, `Health check failed: ${err.message}`);
-    }
-}
-
-async function checkAllHealth() {
-    await Promise.all([
-        checkHealth('rag'),
-        checkHealth('dart'),
-        checkHealth('orchestrator'),
-        checkHealth('speechllm'),
-    ]);
-}
-
-// Auto-check on load
-window.addEventListener('DOMContentLoaded', async () => {
-    await initializeServiceEndpoints();
-    checkAllHealth();
-});
-
-// ==============================
-// Tab Switching
-// ==============================
-
-function switchTab(tabId) {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.test-panel').forEach(p => p.classList.remove('active'));
-    document.getElementById(`tab-${tabId}`).classList.add('active');
-    document.getElementById(`panel-${tabId}`).classList.add('active');
-}
-
-// ==============================
-// API Tests
-// ==============================
-
-async function testAgenticRAG() {
-    const query = document.getElementById('rag-query').value;
-    const userId = document.getElementById('rag-user-id').value;
-    const btn = document.getElementById('btn-rag');
-    const container = document.getElementById('result-rag');
-    const timer = document.getElementById('timer-rag');
-
-    if (!query) return;
-
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Sending...';
-    container.innerHTML = '<div class="result-placeholder">Processing query...</div>';
-
-    const start = performance.now();
-    updateTimer(timer, start);
-
-    try {
-        const response = await fetch(`${API_BASE}/query`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query, user_id: userId, conversation_history: [] }),
-        });
-
-        const elapsed = Math.round(performance.now() - start);
-        clearTimerInterval();
-
-        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-
-        const data = await response.json();
-        showRagResult(container, data, elapsed, response.status);
-        addLog('success', 'AgenticRAG', `Query processed in ${elapsed}ms`);
-
-    } catch (err) {
-        clearTimerInterval();
-        showError(container, err.message, Math.round(performance.now() - start));
-        addLog('error', 'AgenticRAG', err.message);
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<span class="btn-icon">▶</span> Send Query';
-    }
-}
-
-async function testDART() {
-    const prompt = document.getElementById('dart-prompt').value.trim();
-    const primitives = Math.max(1, parseInt(document.getElementById('dart-primitives').value, 10) || 1);
-    const guidance = parseFloat(document.getElementById('dart-guidance').value) || 5.0;
-    const seedStr = document.getElementById('dart-seed').value.trim();
-    const respacing = document.getElementById('dart-respacing').value.trim();
-    const gender = document.getElementById('dart-gender').value;
-
-    const btn = document.getElementById('btn-dart');
-    const container = document.getElementById('result-dart');
-    const timer = document.getElementById('timer-dart');
-
-    if (!prompt) return;
-
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Generating...';
-    container.innerHTML = '<div class="result-placeholder">Generating motion (this can take 30–120s on GPU)...</div>';
-
-    const start = performance.now();
-    updateTimer(timer, start);
-
-    try {
-        // Keep advanced prompt syntax untouched, e.g. "walk*5,jump*3".
-        // If user typed a plain action, use the Primitives field as fallback.
-        const textPrompt = (prompt.includes('*') || prompt.includes(','))
-            ? prompt
-            : `${prompt}*${primitives}`;
-
-        const body = { text_prompt: textPrompt, guidance_scale: guidance, num_steps: 50, gender };
-        if (respacing !== '') body.respacing = respacing;
-        if (seedStr !== '' && !isNaN(Number(seedStr))) body.seed = Number(seedStr);
-
-        const response = await fetch(`${SERVICES.dart.baseUrl}/generate`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        });
-
-        const elapsed = Math.round(performance.now() - start);
-        clearTimerInterval();
-
-        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-
-        const data = await response.json();
-        showDartResult(container, data, elapsed, response.status);
-        addLog('success', 'DART Motion', `Generated ${data.num_frames} frames in ${elapsed}ms`);
-
-    } catch (err) {
-        clearTimerInterval();
-        showError(container, err.message, Math.round(performance.now() - start));
-        addLog('error', 'DART Motion', err.message);
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<span class="btn-icon">▶</span> Generate Motion';
-    }
-}
-
-async function testPipeline() {
-    const query = document.getElementById('pipeline-query').value;
-    const userId = document.getElementById('pipeline-user-id').value;
-    const btn = document.getElementById('btn-pipeline');
-    const container = document.getElementById('result-pipeline');
-    const timer = document.getElementById('timer-pipeline');
-
-    if (!query) return;
-
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Running Pipeline...';
-    container.innerHTML = '<div class="result-placeholder">Calling AgenticRAG (:8000) + DART (:5001) in parallel…</div>';
-
-    const start = performance.now();
-    updateTimer(timer, start);
-
-    try {
-        // main_api.py fans out to AgenticRAG + DART simultaneously
-        const response = await fetch(`${API_BASE}/answer`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query, user_id: userId, conversation_history: [] }),
-        });
-
-        if (!response.ok) {
-            clearTimerInterval();
-            throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-        }
-
-        let data = await response.json();
-        
-        // Poll if async enrichment is enabled
-        while (data.status === 'processing') {
-            await new Promise(r => setTimeout(r, 2000));
-            const statusResp = await fetch(`${API_BASE}/answer/status/${data.request_id}`);
-            if (statusResp.ok) {
-                data = await statusResp.json();
-                container.innerHTML = `<div class="result-placeholder">Waiting for background services... (Pending: ${data.pending_services.join(', ')})</div>`;
-            } else {
-                break; // stop polling on error
-            }
-        }
-
-        const elapsed = Math.round(performance.now() - start);
-        clearTimerInterval();
-
-        showPipelineResult(container, data, elapsed, response.status);
-
-        const motionFramesRaw = Number(data.motion?.num_frames || data.motion?.frames || 0) || 0;
-        const motionFps = Math.max(1, Number(data.motion?.fps || 30) || 30);
-        const motionDuration = Number(data.motion?.duration_seconds || 0) || 0;
-        const motionFrames = motionFramesRaw > 0
-            ? motionFramesRaw
-            : (motionDuration > 0 ? Math.max(1, Math.round(motionDuration * motionFps)) : 0);
-        const motionInfo = data.motion
-            ? ` | 🏃 Motion: ${motionFrames} frames (${motionDuration || '—'}s)`
-            : ' | No motion';
-        const errorsInfo = data.errors ? ` | ⚠️ Errors: ${Object.keys(data.errors).join(', ')}` : '';
-        addLog('success', 'Pipeline', `Completed in ${elapsed}ms${motionInfo}${errorsInfo}`);
-
-    } catch (err) {
-        clearTimerInterval();
-        showError(container, err.message, Math.round(performance.now() - start));
-        addLog('error', 'Pipeline', err.message);
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<span class="btn-icon">🚀</span> Run Full Pipeline';
-    }
-}
-
-async function testSpeechLLm() {
-    const text = document.getElementById('speechllm-text').value.trim();
-    const userId = document.getElementById('speechllm-user-id').value.trim();
-    const emotion = document.getElementById('speechllm-emotion').value;
-    const btn = document.getElementById('btn-speechllm');
-    const container = document.getElementById('result-speechllm');
-    const timer = document.getElementById('timer-speechllm');
-
-    if (!text) {
-        alert('Please enter some text to synthesize.');
-        return;
-    }
-
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Generating Speech...';
-    container.innerHTML = '<div class="result-placeholder">Processing text and generating audio...</div>';
-
-    const start = performance.now();
-    updateTimer(timer, start);
-
-    try {
-        const payload = {
-            text: text,
-            user_id: userId || 'test-user',
-        };
-
-        if (emotion) {
-            payload.emotion = emotion;
-        }
-
-        const response = await fetch(`${SERVICES.speechllm.baseUrl}/synthesize`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(payload),
-        });
-
-        const elapsed = Math.round(performance.now() - start);
-        clearTimerInterval();
-
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.detail || `HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-
-        showSpeechLLmResult(container, data, elapsed, response.status);
-
-        addLog('success', 'SpeechLLm', `Generated speech for "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"`);
-
-    } catch (err) {
-        clearTimerInterval();
-        showError(container, err.message, Math.round(performance.now() - start));
-        addLog('error', 'SpeechLLm', err.message);
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<span class="btn-icon">🎤</span> Generate Speech';
-    }
-}
-
-// ==============================
-// Specialised Result Renderers
-// ==============================
-
-/** Render AgenticRAG /query response with text_answer highlight. */
-function showRagResult(container, data, elapsed, status) {
-    const textAnswer = data.text_answer || '';
-    const decision = data.orchestrator_decision || {};
-    const motion = data.motion_prompt;
-
-    container.className = 'result-container result-success';
-    container.innerHTML = `
-        <div class="result-card">
-            <div class="result-card-section">
-                <div class="result-card-label">💬 Text Answer</div>
-                <div class="result-card-value result-text">${escapeHtml(textAnswer)}</div>
-            </div>
-            <div class="result-card-section">
-                <div class="result-card-label">🧠 Orchestrator Decision</div>
-                <div class="result-card-value">
-                    <span class="chip">${escapeHtml(decision.action || 'unknown')}</span>
-                    <span class="chip">Confidence: ${decision.confidence}</span>
-                    <br><span style="color:var(--text-muted); font-size:0.9em;">Reasoning: ${escapeHtml(decision.reasoning || '')}</span>
-                </div>
-            </div>
-            ${motion ? `<div class="result-card-section"><div class="result-card-label">🏃 Motion Prompt</div><div class="result-card-value"><code>${escapeHtml(motion)}</code></div></div>` : ''}
-            <details>
-                <summary style="cursor:pointer;color:var(--text-muted);font-size:0.8rem;margin-top:8px">Full JSON</summary>
-                <pre class="result-json">${syntaxHighlight(JSON.stringify(data, null, 2))}</pre>
-            </details>
-        </div>
-        <div class="result-meta">
-            <span>✅ Status: ${status}</span>
-            <span>⏱️ ${elapsed}ms</span>
-            <span>📦 ${JSON.stringify(data).length} bytes</span>
-        </div>
-    `;
-}
-
-/** Render DART /generate response with download link. */
-function showDartResult(container, data, elapsed, status) {
-    const fileUrl = joinUrl(SERVICES.dart.baseUrl, data.motion_file_url);
-
-    container.className = 'result-container result-success';
-    container.innerHTML = `
-        <div class="result-card">
-            <div class="result-card-row">
-                <div class="result-card-section">
-                    <div class="result-card-label">🎬 Frames</div>
-                    <div class="result-card-value">${data.num_frames || '—'} @ ${data.fps || 30} fps</div>
-                </div>
-                <div class="result-card-section">
-                    <div class="result-card-label">⏱ Duration</div>
-                    <div class="result-card-value">${data.duration_seconds || '—'}s</div>
-                </div>
-                <div class="result-card-section">
-                    <div class="result-card-label">🆔 Request ID</div>
-                    <div class="result-card-value"><code>${data.request_id || '—'}</code></div>
-                </div>
-            </div>
-            <div class="result-card-section">
-                <div class="result-card-label">📝 Prompt</div>
-                <div class="result-card-value"><code>${escapeHtml(data.text_prompt || '—')}</code></div>
-            </div>
-            ${fileUrl ? `<div class="result-card-section">
-                <div class="result-card-label">📥 Download NPZ</div>
-                <div class="result-card-value">
-                    <a href="${fileUrl}" target="_blank" style="color:var(--accent)">${fileUrl}</a>
-                </div>
-            </div>` : ''}
-            <details>
-                <summary style="cursor:pointer;color:var(--text-muted);font-size:0.8rem;margin-top:8px">Full JSON</summary>
-                <pre class="result-json">${syntaxHighlight(JSON.stringify(data, null, 2))}</pre>
-            </details>
-        </div>
-        <div class="result-meta">
-            <span>✅ Status: ${status}</span>
-            <span>⏱️ ${elapsed}ms</span>
-        </div>
-    `;
-}
-
-/** Render main_api /answer response — combined AgenticRAG + DART. */
-function showPipelineResult(container, data, elapsed, status) {
-    const motion = data.motion;
-    const errors = data.errors;
-    const fileUrl = joinUrl(SERVICES.dart.baseUrl, motion?.motion_file_url);
-    const motionFps = Math.max(1, Number(motion?.fps || 30) || 30);
-    const motionDuration = Number(motion?.duration_seconds || 0) || 0;
-    const motionFramesRaw = Number(motion?.num_frames || motion?.frames || 0) || 0;
-    const motionFrames = motionFramesRaw > 0
-        ? motionFramesRaw
-        : (motionDuration > 0 ? Math.max(1, Math.round(motionDuration * motionFps)) : 0);
-
-    const errBanner = errors
-        ? `<div class="result-card-section result-error-banner">
-               <div class="result-card-label">⚠️ Service Errors</div>
-               <pre class="result-json" style="color:var(--error)">${syntaxHighlight(JSON.stringify(errors, null, 2))}</pre>
-           </div>`
-        : '';
-
-    const motionBlock = motion ? `
-        <div class="result-card-section">
-            <div class="result-card-label">🏃 DART Motion (<code>${escapeHtml(motion.text_prompt || '')}</code>)</div>
-            <div class="result-card-row" style="gap:12px;margin-top:4px">
-                <span class="chip">🎬 ${motionFrames || '—'} frames</span>
-                <span class="chip">⏱ ${motionDuration || '—'}s @ ${motionFps}fps</span>
-                ${fileUrl ? `<a class="chip chip-link" href="${fileUrl}" target="_blank">📥 Download NPZ</a>` : ''}
-            </div>
-        </div>` : `
-        <div class="result-card-section">
-            <div class="result-card-label">🏃 DART Motion</div>
-            <div class="result-card-value" style="color:var(--text-muted)">Not generated or unavailable</div>
-        </div>`;
-
-    const exercisesBlock = (data.exercises && data.exercises.length > 0) ? `
-        <div class="result-card-section">
-            <div class="result-card-label">🏋️ Exercises</div>
-            <div class="result-card-row" style="gap:8px; margin-top:4px;">
-                ${data.exercises.map(ex => `
-                    <button class="chip chip-link" onclick="visualizeExercise('${escapeHtml(ex.name)}')" 
-                            style="border:1px solid var(--accent); background:transparent; cursor:pointer;"
-                            title="Generate motion for this exercise">
-                        ▶ Visualize: ${escapeHtml(ex.name)}
-                    </button>
-                `).join('')}
-            </div>
-        </div>` : '';
-
-    container.className = 'result-container result-success';
-    container.innerHTML = `
-        <div class="result-card">
-            ${errBanner}
-            <div class="result-card-section">
-                <div class="result-card-label">💬 AgenticRAG Answer</div>
-                <div class="result-card-value result-text">${escapeHtml(data.text_answer || '')}</div>
-            </div>
-            ${exercisesBlock}
-            ${motionBlock}
-            <details>
-                <summary style="cursor:pointer;color:var(--text-muted);font-size:0.8rem;margin-top:8px">Full JSON</summary>
-                <pre class="result-json">${syntaxHighlight(JSON.stringify(data, null, 2))}</pre>
-            </details>
-        </div>
-        <div class="result-meta">
-            <span>✅ Status: ${status}</span>
-            <span>⏱️ ${elapsed}ms wall-clock</span>
-            <span>🔧 Pipeline: ${Math.round(data.generation_time_ms || elapsed)}ms</span>
-            ${errors ? `<span style="color:var(--error)">⚠️ ${Object.keys(errors).length} error(s)</span>` : ''}
-        </div>
-    `;
-}
-
-/** Render SpeechLLm /synthesize response with audio player and download link. */
-function showSpeechLLmResult(container, data, elapsed, status) {
-    const audioFilename = data.audio_file ? data.audio_file.split('\\').pop().split('/').pop() : null;
-    const audioUrl = audioFilename ? `${SERVICES.speechllm.baseUrl}/audio/${encodeURIComponent(audioFilename)}` : null;
-
-    container.className = 'result-container result-success';
-    container.innerHTML = `
-        <div class="result-card">
-            <div class="result-card-section">
-                <div class="result-card-label">🎵 Generated Audio</div>
-                <div class="result-card-value">
-                    ${audioUrl ? `
-                        <audio controls style="width:100%;margin-bottom:8px;">
-                            <source src="${audioUrl}" type="audio/wav">
-                            Your browser does not support the audio element.
-                        </audio>
-                        <a href="${audioUrl}" target="_blank" style="color:var(--accent);text-decoration:none;">
-                            📥 Download Audio File
-                        </a>
-                    ` : 'Audio file not available'}
-                </div>
-            </div>
-            <div class="result-card-section">
-                <div class="result-card-label">💬 Synthesized Text</div>
-                <div class="result-card-value result-text">${escapeHtml(data.text || '')}</div>
-            </div>
-            <div class="result-card-row">
-                <div class="result-card-section">
-                    <div class="result-card-label">🎭 Emotion</div>
-                    <div class="result-card-value">${data.emotion || 'N/A'}</div>
-                </div>
-                <div class="result-card-section">
-                    <div class="result-card-label">⏱ Duration</div>
-                    <div class="result-card-value">${data.duration_seconds ? `${data.duration_seconds.toFixed(2)}s` : 'N/A'}</div>
-                </div>
-                <div class="result-card-section">
-                    <div class="result-card-label">🆔 Request ID</div>
-                    <div class="result-card-value"><code>${data.request_id || 'N/A'}</code></div>
-                </div>
-            </div>
-            <details>
-                <summary style="cursor:pointer;color:var(--text-muted);font-size:0.8rem;margin-top:8px">Full JSON</summary>
-                <pre class="result-json">${syntaxHighlight(JSON.stringify(data, null, 2))}</pre>
-            </details>
-        </div>
-        <div class="result-meta">
-            <span>✅ Status: ${status}</span>
-            <span>⏱️ ${elapsed}ms</span>
-        </div>
-    `;
-}
-
-// ==============================
-// NPZ Runner
-// ==============================
-
-let npzPlaybackTimer = null;
-let npzSummary = null;
-
-function getNpzBaseUrl() {
-    return document.getElementById('npz-base-url')?.value?.trim() || 'http://127.0.0.1:8090';
-}
-
-async function loadNpzSummary() {
-    const btn = document.getElementById('btn-npz-load');
-    const container = document.getElementById('result-npz');
-    const timer = document.getElementById('timer-npz');
-    const slider = document.getElementById('npz-frame-slider');
-    const frameInput = document.getElementById('npz-frame-input');
-    const baseUrl = getNpzBaseUrl();
-
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Loading...';
-    container.innerHTML = '<div class="result-placeholder">Loading NPZ summary...</div>';
-    const start = performance.now();
-    updateTimer(timer, start);
-
-    try {
-        const response = await fetch(`${baseUrl}/api/npz/summary`);
-        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-
-        npzSummary = await response.json();
-        const maxFrame = Math.max(0, (npzSummary.num_frames || 1) - 1);
-        slider.max = String(maxFrame);
-        frameInput.max = String(maxFrame);
-
-        const elapsed = Math.round(performance.now() - start);
-        clearTimerInterval();
-        showResult(container, npzSummary, elapsed, response.status);
-        addLog('success', 'NPZ Runner', `Loaded ${npzSummary.num_frames} frames from ${npzSummary.file}`);
-        await loadNpzFrame(0);
-
-    } catch (err) {
-        clearTimerInterval();
-        showError(container, err.message, Math.round(performance.now() - start));
-        addLog('error', 'NPZ Runner', err.message);
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<span class="btn-icon">▶</span> Load NPZ';
-    }
-}
-
-async function loadNpzFrame(frame) {
-    const container = document.getElementById('result-npz');
-    const slider = document.getElementById('npz-frame-slider');
-    const frameInput = document.getElementById('npz-frame-input');
-    const baseUrl = getNpzBaseUrl();
-    const safeFrame = Math.max(0, parseInt(frame, 10) || 0);
-
-    slider.value = String(safeFrame);
-    frameInput.value = String(safeFrame);
-
-    try {
-        const response = await fetch(`${baseUrl}/api/npz/frame?i=${safeFrame}`);
-        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-
-        const data = await response.json();
-        const payload = { summary: npzSummary || null, frame: data };
-        const json = syntaxHighlight(JSON.stringify(payload, null, 2));
-
-        container.className = 'result-container result-success';
-        container.innerHTML = `
-            <div class="result-content">
-                <pre class="result-json">${json}</pre>
-            </div>
-            <div class="result-meta">
-                <span>Frame ${data.frame}</span>
-                <span>t=${data.time_seconds}s</span>
-                <span>transl=(${data.transl.map(v => Number(v).toFixed(3)).join(', ')})</span>
-            </div>
-        `;
-    } catch (err) {
-        showError(container, err.message, 0);
-        addLog('error', 'NPZ Runner', err.message);
-    }
-}
-
-function stopNpzPlayback() {
-    if (npzPlaybackTimer) { clearInterval(npzPlaybackTimer); npzPlaybackTimer = null; }
-    const playBtn = document.getElementById('btn-npz-play');
-    if (playBtn) playBtn.innerHTML = '<span class="btn-icon">▶</span> Play';
-}
-
-function toggleNpzPlayback() {
-    const slider = document.getElementById('npz-frame-slider');
-    const timer = document.getElementById('timer-npz');
-    const playBtn = document.getElementById('btn-npz-play');
-
-    if (!npzSummary) { loadNpzSummary(); return; }
-    if (npzPlaybackTimer) { stopNpzPlayback(); return; }
-
-    const fps = npzSummary.fps || 30;
-    const intervalMs = Math.max(1, Math.floor(1000 / fps));
-    const maxFrame = parseInt(slider.max, 10) || 0;
-    let frame = parseInt(slider.value, 10) || 0;
-
-    playBtn.innerHTML = '<span class="btn-icon">⏸</span> Pause';
-    updateTimer(timer, performance.now() - frame * intervalMs);
-
-    npzPlaybackTimer = setInterval(async () => {
-        if (frame > maxFrame) { stopNpzPlayback(); clearTimerInterval(); return; }
-        await loadNpzFrame(frame++);
-    }, intervalMs);
-}
-
-function setupNpzControls() {
-    const slider = document.getElementById('npz-frame-slider');
-    const frameInput = document.getElementById('npz-frame-input');
-    if (!slider || !frameInput) return;
-
-    slider.addEventListener('input', () => { stopNpzPlayback(); loadNpzFrame(slider.value); });
-    frameInput.addEventListener('change', () => {
-        stopNpzPlayback();
-        loadNpzFrame(parseInt(frameInput.value, 10) || 0);
-    });
-}
-
-// ==============================
-// Generic Result Rendering
-// ==============================
 
 function showResult(container, data, elapsed, status) {
-    const json = syntaxHighlight(JSON.stringify(data, null, 2));
     container.className = 'result-container result-success';
     container.innerHTML = `
-        <div class="result-content"><pre class="result-json">${json}</pre></div>
+        <div class="result-content"><pre class="result-json">${syntaxHighlight(JSON.stringify(data, null, 2))}</pre></div>
         <div class="result-meta">
-            <span>✅ Status: ${status}</span>
-            <span>⏱️ ${elapsed}ms</span>
+            <span>✅ ${status}</span><span>⏱️ ${elapsed}ms</span>
             <span>📦 ${JSON.stringify(data).length} bytes</span>
-        </div>
-    `;
+        </div>`;
 }
 
 function showError(container, message, elapsed) {
     container.className = 'result-container result-error';
     container.innerHTML = `
         <div class="result-content">
-            <pre class="result-json" style="color: var(--error);">❌ Error: ${escapeHtml(message)}</pre>
+            <pre class="result-json" style="color:var(--error)">❌ ${escapeHtml(message)}</pre>
         </div>
-        <div class="result-meta">
-            <span>❌ Failed</span>
-            <span>⏱️ ${elapsed}ms</span>
-        </div>
-    `;
+        <div class="result-meta"><span>❌ Failed</span><span>⏱️ ${elapsed}ms</span></div>`;
 }
 
-// ==============================
-// JSON Syntax Highlighting
-// ==============================
-
-function syntaxHighlight(json) {
-    json = escapeHtml(json);
-    return json.replace(
-        /("(\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
-        (match) => {
-            let cls = 'json-number';
-            if (/^"/.test(match)) cls = /:$/.test(match) ? 'json-key' : 'json-string';
-            else if (/true|false/.test(match)) cls = 'json-bool';
-            else if (/null/.test(match)) cls = 'json-null';
-            return `<span class="${cls}">${match}</span>`;
-        }
-    );
+let _timerInterval = null;
+function startTimer(el, t0) {
+    clearInterval(_timerInterval);
+    _timerInterval = setInterval(() => { el.textContent = `${Math.round(performance.now() - t0)}ms`; }, 50);
 }
-
-function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-}
-
-
-
-// ==============================
-// Timer
-// ==============================
-
-let timerInterval = null;
-
-function updateTimer(timerEl, startTime) {
-    clearTimerInterval();
-    timerInterval = setInterval(() => {
-        timerEl.textContent = `${Math.round(performance.now() - startTime)}ms`;
-    }, 50);
-}
-
-function clearTimerInterval() {
-    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
-}
-
-// ==============================
-// Response Log
-// ==============================
+function stopTimer() { clearInterval(_timerInterval); _timerInterval = null; }
 
 function addLog(type, service, message) {
-    const container = document.getElementById('log-container');
-    const emptyMsg = container.querySelector('.log-empty');
-    if (emptyMsg) emptyMsg.remove();
-
+    const c = document.getElementById('log-container');
+    c.querySelector('.log-empty')?.remove();
     const now = new Date().toLocaleTimeString('en-US', { hour12: false });
-    const entry = document.createElement('div');
-    entry.className = 'log-entry';
-    entry.innerHTML = `
-        <span class="log-time">${now}</span>
+    const el = document.createElement('div');
+    el.className = 'log-entry';
+    el.innerHTML = `<span class="log-time">${now}</span>
         <span class="log-badge ${type}">${type}</span>
-        <span class="log-message"><strong>${service}</strong> — ${escapeHtml(message)}</span>
-    `;
-    container.insertBefore(entry, container.firstChild);
-    while (container.children.length > 50) container.removeChild(container.lastChild);
+        <span class="log-message"><strong>${escapeHtml(service)}</strong> — ${escapeHtml(message)}</span>`;
+    c.insertBefore(el, c.firstChild);
+    while (c.children.length > 80) c.removeChild(c.lastChild);
 }
 
 function clearLog() {
     document.getElementById('log-container').innerHTML =
-        '<div class="log-empty">No requests yet. Test an endpoint above.</div>';
+        '<div class="log-empty">No requests yet.</div>';
 }
 
-// ==============================
-// Keyboard shortcuts
-// ==============================
+// ── Tab switching ──────────────────────────────────────────────────
+function switchTab(id) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.test-panel').forEach(p => p.classList.remove('active'));
+    document.getElementById(`tab-${id}`).classList.add('active');
+    document.getElementById(`panel-${id}`).classList.add('active');
+}
 
-document.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-        const activePanel = document.querySelector('.test-panel.active');
-        if (!activePanel) return;
-        const id = activePanel.id;
-        if (id === 'panel-rag-test') testAgenticRAG();
-        else if (id === 'panel-dart-test') testDART();
-        else if (id === 'panel-pipeline-test') testPipeline();
-        else if (id === 'panel-npz-test') loadNpzSummary();
+// ── Health checks ──────────────────────────────────────────────────
+async function checkHealth(key) {
+    const svc   = SERVICES[key];
+    const dot   = document.getElementById(`dot-${key}`);
+    const label = document.getElementById(`label-${key}`);
+    dot.className = 'status-dot checking';
+    label.textContent = 'Checking…';
+
+    try {
+        const t0 = performance.now();
+        const res = await fetch(svc.healthUrl, { signal: AbortSignal.timeout(3000) });
+        const ms  = Math.round(performance.now() - t0);
+
+        // SearXNG returns HTML on /healthz — just check HTTP 200
+        let data = {};
+        const ct = res.headers.get('content-type') || '';
+        if (ct.includes('json')) data = await res.json();
+
+        const ok = res.ok;
+        dot.className  = ok ? 'status-dot online' : 'status-dot offline';
+        label.textContent = ok ? `✅ OK (${ms}ms)` : `⚠️ HTTP ${res.status}`;
+        addLog(ok ? 'success' : 'error', svc.name, ok ? `Healthy in ${ms}ms` : `HTTP ${res.status}`);
+    } catch (err) {
+        dot.className = 'status-dot offline';
+        label.textContent = `❌ ${err.message}`;
+        addLog('error', svc.name, err.message);
     }
+}
+
+async function checkHealthDetailed() {
+    const container = document.getElementById('result-health');
+    container.innerHTML = '<div class="result-placeholder">Fetching /health/detailed…</div>';
+    const t0 = performance.now();
+    try {
+        const res = await fetch(`${API_BASE}/health/detailed`, { signal: AbortSignal.timeout(8000) });
+        const ms  = Math.round(performance.now() - t0);
+        const data = await res.json();
+        showResult(container, data, ms, res.status);
+        addLog(data.all_ok ? 'success' : 'error', 'LangGraph', `Detailed health in ${ms}ms — ${data.status}`);
+    } catch (err) {
+        showError(container, err.message, Math.round(performance.now() - t0));
+        addLog('error', 'LangGraph', err.message);
+    }
+}
+
+async function checkAllHealth() {
+    await Promise.all(Object.keys(SERVICES).map(k => checkHealth(k)));
+}
+
+// ── SSE Chat test ──────────────────────────────────────────────────
+let _chatAbort = null;
+
+async function testChat() {
+    const query     = document.getElementById('chat-query').value.trim();
+    const userId    = document.getElementById('chat-user-id').value.trim() || 'test-user';
+    const sessionId = document.getElementById('chat-session-id').value.trim() || crypto.randomUUID();
+    const personaId = document.getElementById('chat-persona').value;
+    const webSearch = document.getElementById('chat-web-search').checked;
+    const tts       = document.getElementById('chat-tts').checked;
+    const btn       = document.getElementById('btn-chat');
+    const stopBtn   = document.getElementById('btn-chat-stop');
+    const output    = document.getElementById('chat-output');
+    const events    = document.getElementById('chat-events');
+    const timer     = document.getElementById('timer-chat');
+
+    if (!query) return;
+
+    // Abort previous if running
+    if (_chatAbort) { _chatAbort.abort(); }
+    _chatAbort = new AbortController();
+
+    btn.disabled = true;
+    stopBtn.style.display = 'inline-flex';
+    output.textContent = '';
+    events.innerHTML = '';
+    const t0 = performance.now();
+    startTimer(timer, t0);
+
+    try {
+        const res = await fetch(`${API_BASE}/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                query, user_id: userId, session_id: sessionId,
+                persona_id: personaId,
+                output_mode: tts ? 'speech' : 'text',
+                web_search: webSearch,
+            }),
+            signal: _chatAbort.signal,
+        });
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+
+            const parts = buf.split('\n\n');
+            buf = parts.pop();
+
+            for (const chunk of parts) {
+                const lines = chunk.split('\n');
+                let eventType = 'message', dataLine = '';
+                for (const l of lines) {
+                    if (l.startsWith('event:')) eventType = l.slice(6).trim();
+                    if (l.startsWith('data:'))  dataLine  = l.slice(5).trim();
+                }
+                if (!dataLine) continue;
+
+                let payload = {};
+                try { payload = JSON.parse(dataLine); } catch { continue; }
+
+                if (eventType === 'token') {
+                    output.textContent += payload.content || '';
+                    output.scrollTop = output.scrollHeight;
+                } else {
+                    addEventBadge(events, eventType, payload);
+                }
+            }
+        }
+
+        stopTimer();
+        const ms = Math.round(performance.now() - t0);
+        addLog('success', 'LangGraph Chat', `Done in ${ms}ms`);
+
+    } catch (err) {
+        stopTimer();
+        if (err.name !== 'AbortError') {
+            output.textContent += `\n\n[ERROR: ${err.message}]`;
+            addLog('error', 'LangGraph Chat', err.message);
+        } else {
+            addLog('info', 'LangGraph Chat', 'Stopped by user');
+        }
+    } finally {
+        btn.disabled = false;
+        stopBtn.style.display = 'none';
+        _chatAbort = null;
+    }
+}
+
+function stopChat() {
+    if (_chatAbort) { _chatAbort.abort(); _chatAbort = null; }
+}
+
+function addEventBadge(container, eventType, payload) {
+    const colors = {
+        stage: '#7c80ff', tool_executing: '#f59e0b', tool_output: '#10b981',
+        speech_pending: '#a78bfa', speech_ready: '#34d399', speech_failed: '#ef4444',
+        session_persisted: '#6b7280', done: '#22c55e', error: '#ef4444',
+    };
+    const color = colors[eventType] || '#888';
+    const span = document.createElement('span');
+    span.style.cssText = `display:inline-block;margin:2px;padding:2px 8px;border-radius:12px;
+        font-size:0.72rem;font-weight:600;background:${color}22;color:${color};border:1px solid ${color}44;`;
+
+    let label = eventType;
+    if (eventType === 'stage')    label = `${payload.node} ${payload.status}`;
+    if (eventType === 'done')     label = `done · ${payload.total_tokens ?? 0} tok · ${payload.intent ?? ''}`;
+    if (eventType === 'error')    label = `error: ${payload.message ?? ''}`;
+    if (eventType === 'speech_ready') label = `🔊 speech_ready`;
+
+    span.textContent = label;
+    container.appendChild(span);
+}
+
+// ── Session management ─────────────────────────────────────────────
+async function listSessions() {
+    const userId    = document.getElementById('sess-user-id').value.trim() || 'test-user';
+    const container = document.getElementById('result-sessions');
+    const t0 = performance.now();
+    container.innerHTML = '<div class="result-placeholder">Loading…</div>';
+    try {
+        const res = await fetch(`${API_BASE}/sessions?user_id=${encodeURIComponent(userId)}`);
+        const ms  = Math.round(performance.now() - t0);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        renderSessions(container, data, ms);
+        addLog('success', 'Sessions', `${data.total} session(s) for ${userId} in ${ms}ms`);
+    } catch (err) {
+        showError(container, err.message, Math.round(performance.now() - t0));
+        addLog('error', 'Sessions', err.message);
+    }
+}
+
+function renderSessions(container, data, ms) {
+    if (!data.sessions?.length) {
+        container.className = 'result-container result-success';
+        container.innerHTML = `<div class="result-placeholder">No sessions found.</div>
+            <div class="result-meta"><span>✅ 200</span><span>⏱️ ${ms}ms</span></div>`;
+        return;
+    }
+    const rows = data.sessions.map(s => `
+        <tr>
+            <td><code style="font-size:0.78rem">${escapeHtml(s.session_id.slice(0,8))}…</code></td>
+            <td>${escapeHtml(s.first_user_message_preview ?? '')}</td>
+            <td style="white-space:nowrap">${new Date(s.updated_at).toLocaleString()}</td>
+            <td>${s.message_count ?? '—'}</td>
+            <td>
+                <button class="btn btn-sm btn-outline" onclick="resumeSession('${escapeHtml(s.session_id)}')">Resume</button>
+                <button class="btn btn-sm btn-outline" style="color:var(--error)" onclick="deleteSession('${escapeHtml(s.session_id)}')">Delete</button>
+            </td>
+        </tr>`).join('');
+
+    container.className = 'result-container result-success';
+    container.innerHTML = `
+        <div style="overflow-x:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
+                <thead><tr style="color:var(--text-muted);font-size:0.75rem">
+                    <th style="text-align:left;padding:6px 8px">Session</th>
+                    <th style="text-align:left;padding:6px 8px">First message</th>
+                    <th style="text-align:left;padding:6px 8px">Last updated</th>
+                    <th style="text-align:left;padding:6px 8px">Msgs</th>
+                    <th style="padding:6px 8px">Actions</th>
+                </tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+        <div class="result-meta"><span>✅ ${data.total} sessions</span><span>⏱️ ${ms}ms</span></div>`;
+}
+
+async function resumeSession(sessionId) {
+    const userId    = document.getElementById('sess-user-id').value.trim() || 'test-user';
+    const container = document.getElementById('result-sessions');
+    const t0 = performance.now();
+    try {
+        const res = await fetch(
+            `${API_BASE}/sessions/${encodeURIComponent(sessionId)}?user_id=${encodeURIComponent(userId)}`
+        );
+        const ms   = Math.round(performance.now() - t0);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? `HTTP ${res.status}`);
+        showResult(container, data, ms, res.status);
+        // Pre-fill chat session id so user can continue the conversation
+        document.getElementById('chat-session-id').value = sessionId;
+        document.getElementById('chat-user-id').value   = userId;
+        addLog('success', 'Sessions', `Resumed ${sessionId.slice(0,8)}… in ${ms}ms`);
+    } catch (err) {
+        showError(container, err.message, Math.round(performance.now() - t0));
+        addLog('error', 'Sessions', err.message);
+    }
+}
+
+async function deleteSession(sessionId) {
+    if (!confirm(`Delete session ${sessionId.slice(0,8)}…?`)) return;
+    const userId    = document.getElementById('sess-user-id').value.trim() || 'test-user';
+    const container = document.getElementById('result-sessions');
+    const t0 = performance.now();
+    try {
+        const res = await fetch(
+            `${API_BASE}/sessions/${encodeURIComponent(userId)}/${encodeURIComponent(sessionId)}`,
+            { method: 'DELETE' }
+        );
+        const ms   = Math.round(performance.now() - t0);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail ?? `HTTP ${res.status}`);
+        addLog('success', 'Sessions', `Deleted ${sessionId.slice(0,8)}… in ${ms}ms`);
+        await listSessions();
+    } catch (err) {
+        showError(container, err.message, Math.round(performance.now() - t0));
+        addLog('error', 'Sessions', err.message);
+    }
+}
+
+// ── VieNeu TTS test ────────────────────────────────────────────────
+async function testTTS() {
+    const text  = document.getElementById('tts-text').value.trim();
+    const voice = document.getElementById('tts-voice').value.trim();
+    const btn   = document.getElementById('btn-tts');
+    const container = document.getElementById('result-tts');
+    const timer = document.getElementById('timer-tts');
+
+    if (!text) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Generating…';
+    container.innerHTML = '<div class="result-placeholder">Calling VieNeu TTS…</div>';
+    const t0 = performance.now();
+    startTimer(timer, t0);
+
+    try {
+        const body = { text };
+        if (voice) body.voice_path = voice;
+
+        const res = await fetch(`${SPEECH_BASE}/synthesize`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        stopTimer();
+        const ms   = Math.round(performance.now() - t0);
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+        const data = await res.json();
+
+        const audioFile = data.audio_file ?? '';
+        const audioUrl  = audioFile ? `${SPEECH_BASE}/audio/${encodeURIComponent(audioFile.split(/[\\/]/).pop())}` : null;
+
+        container.className = 'result-container result-success';
+        container.innerHTML = `
+            <div class="result-card">
+                ${audioUrl ? `<div class="result-card-section">
+                    <div class="result-card-label">🔊 Audio</div>
+                    <audio controls style="width:100%"><source src="${audioUrl}" type="audio/wav"></audio>
+                    <a href="${audioUrl}" target="_blank" style="color:var(--accent);font-size:0.85rem">📥 Download</a>
+                </div>` : ''}
+                <details><summary style="cursor:pointer;color:var(--text-muted);font-size:0.8rem">Full JSON</summary>
+                    <pre class="result-json">${syntaxHighlight(JSON.stringify(data, null, 2))}</pre>
+                </details>
+            </div>
+            <div class="result-meta"><span>✅ 200</span><span>⏱️ ${ms}ms</span></div>`;
+        addLog('success', 'VieNeu TTS', `Generated in ${ms}ms`);
+    } catch (err) {
+        stopTimer();
+        showError(container, err.message, Math.round(performance.now() - t0));
+        addLog('error', 'VieNeu TTS', err.message);
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span class="btn-icon">🔊</span> Synthesize';
+    }
+}
+
+// ── Init ───────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+    // Pre-fill a random session id for chat
+    document.getElementById('chat-session-id').value = crypto.randomUUID();
+    checkAllHealth();
 });
 
-window.addEventListener('DOMContentLoaded', () => { setupNpzControls(); });
+document.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' || e.shiftKey) return;
+    const panel = document.querySelector('.test-panel.active');
+    if (!panel) return;
+    if (panel.id === 'panel-chat')     testChat();
+    if (panel.id === 'panel-sessions') listSessions();
+    if (panel.id === 'panel-tts')      testTTS();
+});

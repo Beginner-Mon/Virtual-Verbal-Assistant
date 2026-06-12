@@ -83,7 +83,11 @@ def test_health_detailed_all_ok(api_client):
          patch("langgraph_agents.api.health.check_mcp",
                new_callable=AsyncMock) as mock_mcp, \
          patch("langgraph_agents.api.health.check_graph",
-               new_callable=AsyncMock) as mock_graph:
+               new_callable=AsyncMock) as mock_graph, \
+         patch("langgraph_agents.api.health.check_speechllm",
+               new_callable=AsyncMock) as mock_speech, \
+         patch("langgraph_agents.api.health.check_searxng",
+               new_callable=AsyncMock) as mock_searxng:
 
         from langgraph_agents.api.health import CheckResult
         ok_pg = CheckResult(name="postgres", ok=True, latency_ms=1.0)
@@ -91,12 +95,16 @@ def test_health_detailed_all_ok(api_client):
         ok_llm = CheckResult(name="llm", ok=True, latency_ms=0.0, detail="skipped")
         ok_mcp = CheckResult(name="mcp", ok=True, latency_ms=2.0, detail="2 tool(s)")
         ok_graph = CheckResult(name="graph", ok=True, latency_ms=0.0)
+        ok_speech = CheckResult(name="speechllm", ok=True, latency_ms=0.0, detail="skipped")
+        ok_searxng = CheckResult(name="searxng", ok=True, latency_ms=0.0, detail="skipped")
 
         mock_pg.return_value = ok_pg
         mock_redis.return_value = ok_redis
         mock_llm.return_value = ok_llm
         mock_mcp.return_value = ok_mcp
         mock_graph.return_value = ok_graph
+        mock_speech.return_value = ok_speech
+        mock_searxng.return_value = ok_searxng
 
         resp = client.get("/health/detailed")
         assert resp.status_code == 200
@@ -129,11 +137,17 @@ def test_health_detailed_degraded_when_redis_down(api_client):
              patch("langgraph_agents.api.health.check_llm",
                    new_callable=AsyncMock) as mock_llm, \
              patch("langgraph_agents.api.health.check_mcp",
-                   new_callable=AsyncMock) as mock_mcp:
+                   new_callable=AsyncMock) as mock_mcp, \
+             patch("langgraph_agents.api.health.check_speechllm",
+                   new_callable=AsyncMock) as mock_speech, \
+             patch("langgraph_agents.api.health.check_searxng",
+                   new_callable=AsyncMock) as mock_searxng:
             ok_result = CheckResult(name="x", ok=True, latency_ms=0.0, detail="skipped")
             mock_pg.return_value = CheckResult(name="postgres", ok=True, latency_ms=1.0)
             mock_llm.return_value = ok_result
             mock_mcp.return_value = ok_result
+            mock_speech.return_value = ok_result
+            mock_searxng.return_value = ok_result
 
             resp = client.get("/health/detailed")
             assert resp.status_code == 503
@@ -201,19 +215,25 @@ async def test_run_all_checks_runs_in_parallel():
          patch("langgraph_agents.api.health.check_mcp",
                new_callable=AsyncMock) as mock_mcp, \
          patch("langgraph_agents.api.health.check_graph",
-               new_callable=AsyncMock) as mock_graph_chk:
+               new_callable=AsyncMock) as mock_graph_chk, \
+         patch("langgraph_agents.api.health.check_speechllm",
+               new_callable=AsyncMock) as mock_speech, \
+         patch("langgraph_agents.api.health.check_searxng",
+               new_callable=AsyncMock) as mock_searxng:
 
         mock_redis_chk.return_value = slow_ok("redis", 0.05)
         mock_pg.return_value = slow_ok("postgres", 0.05)
         mock_llm.return_value = slow_ok("llm", 0.05)
         mock_mcp.return_value = slow_ok("mcp", 0.05)
         mock_graph_chk.return_value = slow_ok("graph", 0.05)
+        mock_speech.return_value = slow_ok("speechllm", 0.05)
+        mock_searxng.return_value = slow_ok("searxng", 0.05)
 
         from langgraph_agents.api.health import run_all_checks
         t0 = time.perf_counter()
         result = await run_all_checks(mock_graph, mock_redis)
         elapsed_s = time.perf_counter() - t0
 
-        # 5 checks each sleep 50ms → sequential = 250ms, parallel < 120ms
-        assert elapsed_s < 0.15, f"Took {elapsed_s:.2f}s, expected <0.15s (parallel)"
+        # 7 checks each sleep 50ms → sequential = 350ms, parallel < 150ms
+        assert elapsed_s < 0.20, f"Took {elapsed_s:.2f}s, expected <0.20s (parallel)"
         assert result["all_ok"] is True

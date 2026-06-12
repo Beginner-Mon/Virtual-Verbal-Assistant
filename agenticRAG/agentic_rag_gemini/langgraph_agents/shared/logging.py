@@ -15,6 +15,8 @@ Usage in nodes:
 import contextvars
 import json
 import logging
+import logging.handlers
+import os
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
@@ -74,12 +76,27 @@ def get_logger(name: str) -> logging.Logger:
 def configure_root_logger(level: str = "INFO") -> None:
     """Call once at FastAPI startup (lifespan).
 
-    Replaces all root handlers with a single StreamHandler using JsonFormatter.
+    Replaces all root handlers. Always adds a StreamHandler (stderr).
+    If LOG_FILE is set, also adds a RotatingFileHandler (10 MB × 5 backups).
     """
     root = logging.getLogger()
     root.setLevel(level)
     for h in root.handlers[:]:
         root.removeHandler(h)
-    handler = logging.StreamHandler()
-    handler.setFormatter(JsonFormatter())
-    root.addHandler(handler)
+
+    formatter = JsonFormatter()
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(formatter)
+    root.addHandler(stream_handler)
+
+    log_file = os.getenv("LOG_FILE")
+    if log_file:
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_file,
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)

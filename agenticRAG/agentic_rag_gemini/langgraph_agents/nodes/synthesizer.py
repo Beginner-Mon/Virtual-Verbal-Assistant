@@ -1,17 +1,29 @@
-"""Synthesizer node — universal response generator with persona voice.
+"""Synthesizer node — M.3b universal responder, persona-styled.
 
-Replaces both reasoning.py and conversation.py (after Phase 6.9 refactor).
-Handles 3 modes in a single LLM call:
-  - CLINICAL: tool results present → generate evidence-based response
-  - CLARIFY:  needs_clarification → ask styled clarification question
-  - CHAT:     intent=conversation (greeting/casual) → respond naturally
+Decisions encoded:
+  D29:  Mode EMERGES from signals, NOT enum response_mode
+  D30:  Persona applies to ALL modes (including refuse/clarify)
+  D32:  Safety warning = FIRST in output (synthesizer writes);
+        unverified disclaimer = LAST (grader appends)
+  D33:  Danger detection = PLANNER only (1 place);
+        synthesizer executes tags, does NOT re-evaluate danger
+  D26:  Motion coherence via tag motion_descriptor;
+        synthesizer does NOT receive motion flag
 
-All 3 modes carry the persona voice (loaded from persona MD file).
+Mode derivation (D29 — derive, don't store):
+  needs_clarification OR tool ambiguous → CLARIFY
+  clinical tag + all tools empty (no-source)  → REFUSE
+  Has ToolMessage non-empty                   → SYNTHESIZE
+  No tools + no tags                          → CHAT
 """
+
+from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
+
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 
 from langgraph.config import get_stream_writer
 from langgraph_agents.state import AgentState, ErrorSeverity
@@ -22,75 +34,91 @@ from langgraph_agents.shared.logging import get_logger
 logger = get_logger("langgraph.synthesizer")
 
 
-def _extract_tool_results(messages: list) -> str:
-    """Format ToolMessage content from retriever_agent's tool calls."""
-    parts = []
-    for i, m in enumerate(messages, 1):
-        if isinstance(m, ToolMessage):
-            parts.append(f"[Tool {i}: {m.name}]\n{m.content}")
-    return "\n\n".join(parts) if parts else ""
+# ── Language rule (shared across all modes) ──────────────────────────────
 
-
-def _format_memory(memory: dict) -> str:
-    parts = []
-    stm = memory.get("short_term") or []
-    if stm:
-        parts.append("Recent Q&A:\n" + "\n".join(f"- Q: {p['q']}\n  A: {p['a']}" for p in stm))
-    profile = memory.get("user_profile") or {}
-    if profile:
-        parts.append(f"User profile: {profile}")
-    return "\n\n".join(parts) if parts else ""
-
-
-# ── Mode-specific task prompts ──────────────────────────────────────
-
-# Language rule shared across all modes — placed first to make it priority.
-_LANGUAGE_RULE = """CRITICAL LANGUAGE RULE (overrides any persona default):
-- Supported languages: ENGLISH and VIETNAMESE only.
+_LANGUAGE_RULE = """## LANGUAGE RULE (overrides persona defaults)
+- Supported: ENGLISH and VIETNAMESE only.
 - Detect the user's query language:
-    * If query is mostly Vietnamese → respond entirely in Vietnamese
-    * If query is mostly English (or any other language) → respond entirely in English
-- Do NOT mix languages within the response.
-- Do NOT write any preamble like "I'll answer in English" or "Tôi sẽ trả lời...".
+    * Mostly Vietnamese → respond entirely in Vietnamese
+    * Mostly English → respond entirely in English
+- Do NOT mix languages. Do NOT write preambles like "I'll answer in...".
 - Start your response DIRECTLY with the answer content.
 """
 
-_CLINICAL_TASK = """You are an expert physical therapist AI assistant.
+
+# ── Safety warning prefix (D32: safety = ĐẦU output, mọi persona) ─────
+
+_SAFETY_PREFIX_RULES = """
+## SAFETY RULES (applied BEFORE everything else — D32, D33)
+
+IF the required_outputs contain `red_flag_screen`:
+  Your FIRST sentence MUST be a clear warning that the user's symptom
+  (chest pain, numbness, dizziness, loss of control) could be serious.
+  Example: "⚠️ Đau ngực khi tập thể dục có thể là dấu hiệu nghiêm trọng.
+  Bạn nên NGỪNG tập ngay và đi khám bác sĩ."
+
+IF the required_outputs contain `referral_advice`:
+  Your response MUST include a statement that the user should consult
+  a medical professional. Use your persona voice but keep the message clear.
+  Example: "Tôi khuyên bạn nên gặp bác sĩ chuyên khoa để được chẩn đoán chính xác."
+
+IF the required_outputs contain `scope_disclaimer`:
+  Include a brief note that this is wellness advice, not a substitute for
+  clinical examination. Place it near the end (grader appends boilerplate too).
+"""
+
+
+# ── Mode-specific prompts ────────────────────────────────────────────────
+
+_SYNTHESIZE_TASK = """You are a physical therapy & wellness AI assistant.
 Stay in the persona voice defined above.
 
 {language_rule}
+{safety_rules}
 
-## Plan requirements
+## Required deliverables (tags)
 {required_outputs}
-{constraints}
-{notes}
 
 ## Retrieved evidence
 {tool_results}
 
-## Patient memory
-{memory}
+## User's question (cleaned, coreferences resolved)
+{resolved_query}
 
 Instructions:
-- Cover ALL required_outputs from the plan
-- Respond in the persona voice (tone, formatting from persona block above)
-- Include safety warnings for exercise recommendations
-- Cite sources when available
-- Keep under 500 words unless topic requires detail
+- Cover ALL required_outputs tags in your response
+- Use the persona voice (tone, formatting from persona block)
+- Base your answer on the retrieved evidence — cite sources when available
+- For exercise_protocol: include sets, reps, frequency (e.g. "3 hiệp × 10 lần, 2-3 lần/tuần")
+- For exercise_steps: provide ≥2 ordered steps
+- For contraindication: list conditions where the exercise should NOT be done
+- For motion_descriptor: describe the movement + joints involved clearly
+- For evidence_citation: mention sources (document title, web source)
+- Keep under 500 words unless the topic requires detail
 """
 
-_CHAT_TASK = """You are responding to a casual conversational message from the user.
+_REFUSE_TASK = """You are a physical therapy & wellness AI assistant.
 Stay in the persona voice defined above.
 
 {language_rule}
+{safety_rules}
 
-## Patient memory
-{memory}
+## Situation
+The user asked a question that is OUTSIDE your wellness advisory scope
+and/or no reliable sources were found. You MUST NOT fabricate an answer.
+
+## Required deliverables (tags)
+{required_outputs}
+
+## User's question
+{resolved_query}
 
 Instructions:
-- Respond naturally in your persona voice (warm, brief, friendly)
-- Keep under 50 words for greetings, under 100 for follow-up chat
-- Do NOT add clinical advice unless the user explicitly asks
+- Be honest: explain WHY you cannot answer (out of scope / no sources)
+- If referral_advice tag is present: strongly recommend seeing a medical professional
+- If no sources were found: state this clearly, suggest the user rephrase or ask a professional
+- Keep it brief but compassionate (persona voice)
+- Do NOT invent exercises, diagnoses, or medical advice
 """
 
 _CLARIFY_TASK = """The user's query needs clarification before you can give a useful answer.
@@ -98,76 +126,167 @@ Stay in the persona voice defined above.
 
 {language_rule}
 
-## Required clarification question
-{clarification_question}
-
-## Patient memory
-{memory}
+## User's question
+{resolved_query}
 
 Instructions:
-- Rephrase the clarification question in your persona voice (warm, professional)
+- Ask the user for the specific missing information in your persona voice
+- Be warm and professional — explain WHY you need this info
 - Keep concise (1-3 sentences)
-- Briefly explain WHY you need this info (so user understands)
+- If there are multiple possible interpretations, list them briefly (2-3 options)
+"""
+
+_CHAT_TASK = """You are responding to a casual conversational message.
+Stay in the persona voice defined above.
+
+{language_rule}
+
+## User's question
+{resolved_query}
+
+Instructions:
+- Respond naturally in your persona voice (warm, brief, friendly)
+- Keep under 50 words for greetings, under 100 for follow-up chat
+- Do NOT add clinical advice unless the user explicitly asks
+- You may offer PT/wellness help in 1 short line if natural
 """
 
 
-# ── Mode detection + prompt build ──────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────
 
-def _select_mode_and_prompt(state, query, memory_str) -> tuple[str, str]:
-    """Returns (mode_label, task_system_prompt) based on state.
+def _extract_tool_results(messages: list) -> str:
+    """Format ToolMessage content from retriever tool calls."""
+    parts = []
+    for i, m in enumerate(messages, 1):
+        if isinstance(m, ToolMessage):
+            content = str(m.content)[:1500]  # Truncate per-message for context window
+            parts.append(f"[Tool {i}: {m.name}]\n{content}")
+    return "\n\n".join(parts) if parts else ""
 
-    Mode priority:
-      1. needs_clarification → CLARIFY
-      2. Has ToolMessages in state.messages → CLINICAL
-      3. Otherwise (intent=conversation or empty) → CHAT
+
+def _has_tool_results(messages: list) -> bool:
+    """Check if any ToolMessage has non-empty, non-error results."""
+    for m in messages:
+        if isinstance(m, ToolMessage):
+            content = str(m.content)
+            # Empty result (D23: {found: false} or [])
+            if content in ("", "[]", "{}", '{"found": false}'):
+                continue
+            # Error result
+            if '"error"' in content or '"error":' in content:
+                continue
+            return True
+    return False
+
+
+def _check_tool_ambiguous(messages: list) -> bool:
+    """Check if any tool returned ambiguity metadata (D22: dynamic clarify)."""
+    import json
+    for m in messages:
+        if isinstance(m, ToolMessage):
+            try:
+                data = json.loads(str(m.content))
+                if isinstance(data, dict) and data.get("ambiguous"):
+                    return True
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return False
+
+
+# ── Mode derivation (D29: emerge from signals, no enum) ─────────────────
+
+def _derive_mode(state: AgentState) -> str:
+    """Derive synthesizer mode from state signals.
+
+    Returns one of: 'clarify', 'refuse', 'synthesize', 'chat'
     """
-    plan = state.get("plan", {})
     needs_clarification = state.get("needs_clarification", False)
-    has_tools = any(isinstance(m, ToolMessage) for m in state.get("messages", []))
+    required_outputs = state.get("required_outputs", [])
+    messages = state.get("messages", [])
 
-    if needs_clarification and plan.get("clarification_question"):
-        return "clarify", _CLARIFY_TASK.format(
-            language_rule=_LANGUAGE_RULE,
-            clarification_question=plan["clarification_question"],
-            memory=memory_str or "(none)",
-        )
+    # 1. CLARIFY: static (planner-detected) or dynamic (tool ambiguous)
+    if needs_clarification or _check_tool_ambiguous(messages):
+        return "clarify"
 
-    if has_tools:
-        tool_results = _extract_tool_results(state.get("messages", []))
-        required = ", ".join(plan.get("required_outputs", []))
-        constraints = ", ".join(plan.get("constraints_detected", []))
-        notes = plan.get("notes", "")
-        return "clinical", _CLINICAL_TASK.format(
-            language_rule=_LANGUAGE_RULE,
-            required_outputs=("Required: " + required) if required else "",
-            constraints=("Constraints: " + constraints) if constraints else "",
-            notes=("Notes: " + notes) if notes else "",
-            tool_results=tool_results or "(no results)",
-            memory=memory_str or "(none)",
-        )
+    has_results = _has_tool_results(messages)
 
-    # Default: chat/greeting
-    return "chat", _CHAT_TASK.format(language_rule=_LANGUAGE_RULE, memory=memory_str or "(none)")
+    # 2. REFUSE: clinical/safety tags + no sources (D25 — clinical-no-source)
+    safety_tags = {"red_flag_screen", "referral_advice"}
+    clinical_tags = {"exercise_protocol", "exercise_steps", "contraindication",
+                     "evidence_citation", "scope_disclaimer"}
+    has_clinical = bool(set(required_outputs) & (safety_tags | clinical_tags))
+
+    if has_clinical and not has_results:
+        return "refuse"
+
+    # 3. SYNTHESIZE: has tool results (regardless of tags)
+    if has_results:
+        return "synthesize"
+
+    # 4. CHAT: no tools, no tags (greeting/general/empty)
+    return "chat"
 
 
-async def synthesizer_node(state: AgentState, config) -> dict:
+# ── Node ─────────────────────────────────────────────────────────────────
+
+async def synthesizer_node(state: AgentState, config: RunnableConfig) -> dict:
+    """Synthesizer node — universal responder (M.3b).
+
+    Derives mode from state signals (D29), applies persona voice (D30),
+    writes safety warning FIRST (D32).
+    """
     t0 = time.perf_counter()
     request_id = config["configurable"].get("request_id", "-")
     persona_id = config["configurable"].get("persona_id", "eca_default")
-    intent = state.get("intent", "")
-    memory = state.get("memory_context", {})
-    query = config["configurable"]["query"]
+    resolved_query = state.get("resolved_query") or config["configurable"]["query"]
+    required_outputs = state.get("required_outputs", [])
 
-    memory_str = _format_memory(memory)
-    mode, task_system = _select_mode_and_prompt(state, query, memory_str)
+    mode = _derive_mode(state)
 
     logger.info("node_start", extra={
         "node": "synthesizer", "request_id": request_id,
-        "intent": intent, "mode": mode, "persona_id": persona_id,
+        "mode": mode, "persona_id": persona_id,
+        "tags": required_outputs,
+        "query_preview": resolved_query[:80],
     })
 
+    # ── Build prompts ─────────────────────────────────────────────────
+    tool_results = _extract_tool_results(state.get("messages", []))
+    tags_str = ", ".join(required_outputs) if required_outputs else "(none — free response)"
+
+    # Safety rules: only inject when safety tags present (D32, D33)
+    has_safety = bool({"red_flag_screen", "referral_advice", "scope_disclaimer"} & set(required_outputs))
+    safety_rules = _SAFETY_PREFIX_RULES if has_safety else ""
+
+    if mode == "clarify":
+        task_system = _CLARIFY_TASK.format(
+            language_rule=_LANGUAGE_RULE,
+            resolved_query=resolved_query,
+        )
+    elif mode == "refuse":
+        task_system = _REFUSE_TASK.format(
+            language_rule=_LANGUAGE_RULE,
+            safety_rules=safety_rules,
+            required_outputs=tags_str,
+            resolved_query=resolved_query,
+        )
+    elif mode == "synthesize":
+        task_system = _SYNTHESIZE_TASK.format(
+            language_rule=_LANGUAGE_RULE,
+            safety_rules=safety_rules,
+            required_outputs=tags_str,
+            tool_results=tool_results or "(no evidence)",
+            resolved_query=resolved_query,
+        )
+    else:  # chat
+        task_system = _CHAT_TASK.format(
+            language_rule=_LANGUAGE_RULE,
+            resolved_query=resolved_query,
+        )
+
+    # Persona prompt (D30: applies to ALL modes)
     persona = get_persona(persona_id)
-    persona_system = build_persona_prompt(persona, intent)
+    persona_system = build_persona_prompt(persona, mode)
     system = f"{persona_system}\n\n---\n\n{task_system}"
 
     llm = get_chat_model("synthesizer")
@@ -178,7 +297,7 @@ async def synthesizer_node(state: AgentState, config) -> dict:
         writer = None
 
     try:
-        msgs = [SystemMessage(content=system), HumanMessage(content=query)]
+        msgs = [SystemMessage(content=system), HumanMessage(content=resolved_query)]
         if writer is not None:
             final = ""
             tokens = 0
@@ -192,7 +311,9 @@ async def synthesizer_node(state: AgentState, config) -> dict:
         else:
             ai_msg = await llm.ainvoke(msgs)
             final = ai_msg.content
-            tokens = (ai_msg.usage_metadata or {}).get("total_tokens", 0) if hasattr(ai_msg, "usage_metadata") else 0
+            tokens = 0
+            if hasattr(ai_msg, "usage_metadata") and ai_msg.usage_metadata:
+                tokens = ai_msg.usage_metadata.get("total_tokens", 0)
     except Exception as exc:
         elapsed_ms = round((time.perf_counter() - t0) * 1000)
         logger.error("node_failed", extra={
@@ -201,7 +322,6 @@ async def synthesizer_node(state: AgentState, config) -> dict:
         }, exc_info=True)
         fallback = "Xin lỗi, tôi không thể trả lời ngay lúc này. Vui lòng thử lại."
         return {
-            "reasoning_output": fallback,
             "final_answer": fallback,
             "errors": [{
                 "node": "synthesizer",
@@ -219,9 +339,7 @@ async def synthesizer_node(state: AgentState, config) -> dict:
         "streamed": writer is not None,
     })
 
-    # Set both reasoning_output (legacy/grader compat) and final_answer
     return {
-        "reasoning_output": final,
-        "final_answer": final,
+        "final_answer": final or "",
         "total_tokens": tokens,
     }

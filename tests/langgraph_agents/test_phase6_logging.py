@@ -121,7 +121,8 @@ def test_exc_info_included(log_stream):
 
 
 @pytest.mark.unit
-def test_configure_root_logger_sets_json_handler():
+def test_configure_root_logger_sets_json_handler(monkeypatch):
+    monkeypatch.delenv("LOG_FILE", raising=False)
     root = logging.getLogger()
     original_handlers = root.handlers[:]
     try:

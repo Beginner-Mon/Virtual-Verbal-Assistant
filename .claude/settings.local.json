@@ -12,7 +12,26 @@
       "PowerShell(conda activate *)",
       "Bash(pip install *)",
       "Bash(conda run *)",
-      "Bash(/c/Users/Nguyen/miniconda3/envs/firstconda/python.exe -m pytest tests/langgraph_agents/ -m unit -p no:cacheprovider --no-header -q)"
+      "Bash(/c/Users/Nguyen/miniconda3/envs/firstconda/python.exe -m pytest tests/langgraph_agents/ -m unit -p no:cacheprovider --no-header -q)",
+      "Bash(python -m pytest tests/langgraph_agents/ -x -q --tb=short)",
+      "Bash(conda activate *)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('D:/Project_A/Virtual-Verbal-Assistant/agenticRAG/agentic_rag_gemini/langgraph_agents/api/main.py', doraise=True\\); print\\('main.py OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('D:/Project_A/Virtual-Verbal-Assistant/agenticRAG/agentic_rag_gemini/langgraph_agents/shared/logging.py', doraise=True\\); print\\('logging.py OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('D:/Project_A/Virtual-Verbal-Assistant/agenticRAG/agentic_rag_gemini/langgraph_agents/api/health.py', doraise=True\\); print\\('health.py OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('D:/Project_A/Virtual-Verbal-Assistant/agenticRAG/agentic_rag_gemini/langgraph_agents/db/session_store.py', doraise=True\\); print\\('session_store.py OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('D:/Project_A/Virtual-Verbal-Assistant/agenticRAG/agentic_rag_gemini/langgraph_agents/nodes/memory.py', doraise=True\\); print\\('memory.py OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('D:/Project_A/Virtual-Verbal-Assistant/agenticRAG/agentic_rag_gemini/langgraph_agents/tools/youtube_ingest.py', doraise=True\\); print\\('youtube_ingest.py OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('D:/Project_A/Virtual-Verbal-Assistant/scripts/cleanup_tts_audio.py', doraise=True\\); print\\('cleanup_tts_audio.py OK'\\)\")",
+      "Bash(conda info *)",
+      "PowerShell(& \"C:\\\\Users\\\\Nguyen\\\\miniconda3\\\\envs\\\\firstconda\\\\python.exe\" -m pytest tests/langgraph_agents/ -x -q --tb=short 2>&1)",
+      "PowerShell(& \"C:\\\\Users\\\\Nguyen\\\\miniconda3\\\\envs\\\\firstconda\\\\python.exe\" -m pytest tests/langgraph_agents/ -x -q --tb=short -m \"not integration\" 2>&1)",
+      "PowerShell(& \"C:\\\\Users\\\\Nguyen\\\\miniconda3\\\\envs\\\\firstconda\\\\python.exe\" -m pytest tests/langgraph_agents/ -q --tb=short -m \"not integration\" -k \"not test_tts_result_404_when_missing\" 2>&1)",
+      "PowerShell(& \"C:\\\\Users\\\\Nguyen\\\\miniconda3\\\\envs\\\\firstconda\\\\python.exe\" -m pytest tests/langgraph_agents/ -q --tb=short -m \"not integration\" -k \"not test_tts_result\" 2>&1)",
+      "Bash(\"C:\\\\Users\\\\Nguyen\\\\miniconda3\\\\envs\\\\firstconda\\\\Scripts\\\\pytest.exe\" tests/langgraph_agents/ -m \"not integration\" -q)",
+      "Bash(python -m pytest tests/langgraph_agents/test_phase2_5_integration.py -v -x -k \"not integration\")",
+      "Bash(python -m pytest tests/langgraph_agents/test_phase2_5_integration.py -v -x -k \"TestPlan or TestGrader or TestMode or TestTag\")",
+      "Bash(python -m pytest tests/langgraph_agents/test_phase2_5_integration.py -v -k \"TestPlan or TestGrader or TestMode or TestTag\")",
+      "PowerShell(python -m pytest tests/langgraph_agents/test_pr1_memory_fix.py tests/langgraph_agents/test_pr2_summarizer.py -v --no-header -x 2>$null)"
     ]
   }
 }

@@ -5,7 +5,6 @@ run_all_checks() runs them in parallel and aggregates.
 """
 
 import asyncio
-import logging
 import os
 import time
 from dataclasses import dataclass
@@ -24,20 +23,9 @@ class CheckResult:
 
 
 async def check_redis(redis_client, timeout: float = 2.0) -> CheckResult:
-    # asyncio.wait_for cancels the awaiting coroutine but NOT the underlying
-    # thread spawned by asyncio.to_thread — that thread stays blocked in
-    # socket.recv until the redis client's own socket_timeout fires (set at
-    # client construction time in api/main.py:_get_redis). Together they
-    # bound:
-    #   • health response: 2s (wait_for) → returns 503 quickly
-    #   • thread occupancy: 5s (socket_timeout) → thread releases shortly after
-    # Phase 7 migration to redis.asyncio for true cancellation.
     t0 = time.perf_counter()
     try:
-        await asyncio.wait_for(
-            asyncio.to_thread(redis_client.ping),
-            timeout=timeout,
-        )
+        await asyncio.wait_for(redis_client.ping(), timeout=timeout)
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
         return CheckResult(name="redis", ok=True, latency_ms=elapsed_ms)
     except asyncio.TimeoutError:
@@ -99,6 +87,46 @@ async def check_mcp(timeout: float = 3.0) -> CheckResult:
         return CheckResult(name="mcp", ok=False, latency_ms=elapsed_ms, detail=str(exc))
 
 
+async def check_speechllm(timeout: float = 2.0) -> CheckResult:
+    """Check VieNeu TTS service at VIENEU_URL/health."""
+    base = os.getenv("VIENEU_URL", "http://localhost:5000").rstrip("/")
+    t0 = time.perf_counter()
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            res = await asyncio.wait_for(
+                client.get(f"{base}/health"),
+                timeout=timeout,
+            )
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+        ok = res.status_code == 200
+        return CheckResult(name="speechllm", ok=ok, latency_ms=elapsed_ms,
+                           detail=None if ok else f"HTTP {res.status_code}")
+    except Exception as exc:
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+        return CheckResult(name="speechllm", ok=False, latency_ms=elapsed_ms, detail=str(exc))
+
+
+async def check_searxng(timeout: float = 2.0) -> CheckResult:
+    """Check SearXNG at SEARXNG_URL/healthz."""
+    base = os.getenv("SEARXNG_URL", "http://localhost:6666").rstrip("/")
+    t0 = time.perf_counter()
+    try:
+        import httpx
+        async with httpx.AsyncClient() as client:
+            res = await asyncio.wait_for(
+                client.get(f"{base}/healthz"),
+                timeout=timeout,
+            )
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+        ok = res.status_code == 200
+        return CheckResult(name="searxng", ok=ok, latency_ms=elapsed_ms,
+                           detail=None if ok else f"HTTP {res.status_code}")
+    except Exception as exc:
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+        return CheckResult(name="searxng", ok=False, latency_ms=elapsed_ms, detail=str(exc))
+
+
 async def run_all_checks(graph, redis_client) -> dict:
     """Run all dep checks in parallel. Returns {status, checks} dict for JSON response."""
     results: list[CheckResult] = await asyncio.gather(
@@ -107,6 +135,8 @@ async def run_all_checks(graph, redis_client) -> dict:
         check_graph(graph),
         check_llm(),
         check_mcp(),
+        check_speechllm(),
+        check_searxng(),
         return_exceptions=True,
     )
 
@@ -120,22 +150,35 @@ async def run_all_checks(graph, redis_client) -> dict:
             if r.detail:
                 checks[r.name]["detail"] = r.detail
 
-    # Circuit breaker status for each role
+    # Circuit breaker status for each role (informational — see all_ok below).
+    # "conversation" role removed in Phase 6.9; snapshot returns None → skipped.
     try:
         from langgraph_agents.llm import get_breaker_snapshot
-        for role in ["planner", "synthesizer", "conversation", "retriever"]:
+        for role in ["planner", "synthesizer", "retriever"]:
             snap = get_breaker_snapshot(role)
             if snap:
                 checks[f"breaker:{role}"] = snap["state"]
     except Exception:
         pass
 
+    # Health (ok → HTTP 200, fail → 503) is computed ONLY over dependency checks
+    # (dict entries with an "ok" field). Circuit-breaker states are reported for
+    # visibility but do NOT flip the probe to 503: a single role's breaker
+    # opening (e.g. a transient LLM-provider error) must not pull every instance
+    # out of the load balancer — that would cascade across the fleet. An open
+    # breaker surfaces as status "degraded" while the instance stays live (200).
     all_ok = all(
-        v.get("ok", False) if isinstance(v, dict) else v in ("ok", "closed")
+        v.get("ok", False)
+        for v in checks.values()
+        if isinstance(v, dict)
+    )
+    breaker_open = any(
+        isinstance(v, str) and v in ("open", "half-open")
         for v in checks.values()
     )
+    status = "ready" if (all_ok and not breaker_open) else "degraded"
     return {
-        "status": "ready" if all_ok else "degraded",
+        "status": status,
         "checks": checks,
         "all_ok": all_ok,
     }

@@ -92,7 +92,7 @@ def _set_redis(mock_redis):
 def api_client():
     """Fixture: mock graph + redis. Creates fresh app per test."""
     mock_redis = MagicMock()
-    mock_redis.get.return_value = None
+    mock_redis.get = AsyncMock(return_value=None)
 
     mock_graph = MagicMock()
     mock_graph.astream = _make_fake_astream_stage_only()

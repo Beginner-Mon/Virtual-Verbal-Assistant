@@ -7,7 +7,7 @@ from langgraph_agents.state import ErrorSeverity, AgentState
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_error_handler_writes_reasoning_output():
+async def test_error_handler_writes_final_answer():
     from langgraph_agents.nodes.error_handler import error_handler_node
 
     state: AgentState = {
@@ -16,8 +16,8 @@ async def test_error_handler_writes_reasoning_output():
         "final_answer": "",
     }
     result = await error_handler_node(state)
-    assert "reasoning_output" in result
-    assert result["reasoning_output"]  # non-empty
+    assert "final_answer" in result
+    assert result["final_answer"]  # non-empty
 
 
 @pytest.mark.unit
@@ -31,7 +31,7 @@ async def test_error_handler_no_error():
         "final_answer": "",
     }
     result = await error_handler_node(state)
-    assert "reasoning_output" in result
+    assert "final_answer" in result
 
 
 @pytest.mark.unit
@@ -46,5 +46,5 @@ async def test_error_handler_recoverable_only():
     }
     result = await error_handler_node(state)
     # Recoverable-only should produce the soft message, not the critical apology.
-    assert "sự cố" not in result["reasoning_output"]
-    assert "lỗi nhỏ" in result["reasoning_output"]
+    assert "sự cố" not in result["final_answer"]
+    assert "lỗi nhỏ" in result["final_answer"]

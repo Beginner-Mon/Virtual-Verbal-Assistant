@@ -1,4 +1,4 @@
-"""PostgreSQL session store — replaces Firebase Firestore for LangGraph agents.
+"""PostgreSQL session store — M.4 schema (REUPDATE_PLAN.md §M.4).
 
 Coexists with memory/session_store.py (Firebase) for the old code path.
 """
@@ -36,7 +36,7 @@ def _to_uuid(value: str) -> str:
 
 
 class SessionStore:
-    """Async session persistence backed by the conversations table."""
+    """Async session persistence backed by M.4 conversations + messages tables."""
 
     def __init__(self, pg: PostgresClient = None):
         self.pg = pg or PostgresClient()
@@ -48,64 +48,67 @@ class SessionStore:
         messages: list[dict],
         summary: str = None,
     ):
-        """Insert or update a conversation row."""
+        """Insert or update a conversation + messages in M.4 schema."""
         await self.pg.connect()
 
-        existing = await self.pg.fetchrow(
-            "SELECT id FROM conversations WHERE user_id = $1 AND session_id = $2",
+        await self.pg.execute(
+            "INSERT INTO users (id) VALUES ($1::uuid) ON CONFLICT (id) DO NOTHING",
             user_id,
-            session_id,
+        )
+        await self.pg.execute(
+            """INSERT INTO conversations (session_id, user_id, created_at, updated_at)
+               VALUES ($1::uuid, $2::uuid, now(), now())
+               ON CONFLICT (session_id) DO UPDATE SET updated_at = now()""",
+            session_id, user_id,
         )
 
-        if existing:
-            await self.pg.execute(
-                "UPDATE conversations SET messages = $1, summary = COALESCE($2, summary), updated_at = now() WHERE id = $3",
-                json.dumps(messages, ensure_ascii=False),
-                summary,
-                str(existing["id"]),
-            )
-        else:
-            await self.pg.execute(
-                """INSERT INTO conversations (id, user_id, session_id, messages, summary)
-                   VALUES ($1, $2, $3, $4, $5)""",
-                str(uuid.uuid4()),
-                user_id,
-                session_id,
-                json.dumps(messages, ensure_ascii=False),
-                summary,
-            )
+        if messages:
+            for m in messages:
+                role = m.get("role", "user")
+                content = m.get("content", "")
+                if role in ("user", "assistant") and content:
+                    await self.pg.execute(
+                        """INSERT INTO messages (session_id, role, content, created_at)
+                           VALUES ($1::uuid, $2, $3, now())""",
+                        session_id, role, content,
+                    )
 
     async def load_session(self, user_id: str, session_id: str) -> dict | None:
-        """Load a single session by user and session ID."""
+        """Load a single session by user and session ID from M.4 schema."""
         row = await self.pg.fetchrow(
-            "SELECT * FROM conversations WHERE user_id = $1 AND session_id = $2",
-            user_id,
-            session_id,
+            "SELECT session_id, user_id, created_at, updated_at FROM conversations "
+            "WHERE user_id = $1 AND session_id = $2",
+            user_id, session_id,
         )
         if not row:
             return None
+        msgs = await self.pg.fetch(
+            "SELECT role, content, created_at FROM messages "
+            "WHERE session_id = $1 ORDER BY created_at",
+            session_id,
+        )
         return {
-            "id": str(row["id"]),
+            "session_id": str(row["session_id"]),
             "user_id": row["user_id"],
-            "session_id": row["session_id"],
-            "messages": row["messages"] or [],
-            "summary": row["summary"],
+            "messages": [
+                {"role": m["role"], "content": m["content"],
+                 "timestamp": m["created_at"].isoformat()}
+                for m in msgs
+            ],
             "created_at": row["created_at"].isoformat(),
         }
 
     async def list_sessions(self, user_id: str, limit: int = 10) -> list[dict]:
-        """List recent sessions for a user."""
+        """List recent sessions for a user from M.4 schema."""
         rows = await self.pg.fetch(
-            "SELECT id, session_id, summary, created_at FROM conversations "
+            "SELECT session_id, title, created_at FROM conversations "
             "WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2",
-            user_id,
-            limit,
+            user_id, limit,
         )
         return [
             {
-                "id": str(row["id"]),
-                "session_id": row["session_id"],
-                "summary": row["summary"],
+                "session_id": str(row["session_id"]),
+                "title": row["title"],
                 "created_at": row["created_at"].isoformat(),
             }
             for row in rows
@@ -121,57 +124,91 @@ async def list_user_sessions(user_id: str, limit: int = 50) -> list[dict]:
     await pg.connect()
     rows = await pg.fetch(
         """
-        SELECT session_id::text AS session_id,
-               created_at, updated_at,
-               jsonb_array_length(COALESCE(messages, '[]'::jsonb)) AS message_count,
-               COALESCE(
-                 SUBSTRING(
-                   (SELECT m->>'content' FROM jsonb_array_elements(messages) AS m
-                    WHERE m->>'role' = 'user' LIMIT 1),
-                   1, 80
-                 ),
-                 '(empty)'
-               ) AS first_user_message_preview
-        FROM conversations
-        WHERE user_id = $1::uuid
-        ORDER BY updated_at DESC
+        SELECT c.session_id::text,
+               c.created_at,
+               c.updated_at,
+               COALESCE(first_msg.content, '(empty)')  AS first_user_message_preview,
+               COALESCE(msg_count.cnt, 0)::int          AS message_count
+        FROM conversations c
+        LEFT JOIN LATERAL (
+            SELECT content FROM messages
+            WHERE session_id = c.session_id AND role = 'user'
+            ORDER BY created_at LIMIT 1
+        ) first_msg ON true
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*)::int AS cnt FROM messages
+            WHERE session_id = c.session_id
+        ) msg_count ON true
+        WHERE c.user_id = $1::uuid
+        ORDER BY c.updated_at DESC
         LIMIT $2
         """,
         user_id, limit,
     )
     return [
         {
-            "session_id": r["session_id"],
-            "created_at": r["created_at"].isoformat(),
-            "updated_at": r["updated_at"].isoformat(),
+            "session_id":                 r["session_id"],
+            "created_at":                 r["created_at"].isoformat(),
+            "updated_at":                 r["updated_at"].isoformat(),
             "first_user_message_preview": r["first_user_message_preview"],
-            "message_count": r["message_count"],
+            "message_count":              r["message_count"],
         }
         for r in rows
     ]
 
 
-async def load_session_messages(user_id: str, session_id: str) -> Optional[dict]:
+async def load_session_messages(
+    user_id: str,
+    session_id: str,
+    limit: int = 50,
+    before: str | None = None,
+) -> dict | None:
     user_id = _to_uuid(user_id)
     pg = get_pg_client()
     await pg.connect()
-    row = await pg.fetchrow(
-        """SELECT session_id::text, messages, updated_at
-           FROM conversations
-           WHERE user_id = $1::uuid AND session_id = $2::uuid""",
+
+    header = await pg.fetchrow(
+        "SELECT updated_at FROM conversations WHERE user_id=$1::uuid AND session_id=$2::uuid",
         user_id, session_id,
     )
-    if not row:
+    if not header:
         return None
-    out = dict(row)
-    # asyncpg returns JSONB as a raw string by default — parse here so callers
-    # get list[dict] as the function signature implies.
-    if isinstance(out.get("messages"), str):
-        try:
-            out["messages"] = json.loads(out["messages"])
-        except (json.JSONDecodeError, TypeError):
-            out["messages"] = []
-    return out
+
+    if before:
+        rows = await pg.fetch(
+            """SELECT role, content, token_count, created_at
+               FROM messages
+               WHERE session_id = $1::uuid AND created_at < $2::timestamptz
+               ORDER BY created_at DESC LIMIT $3""",
+            session_id, before, limit,
+        )
+        rows = list(reversed(rows))
+    else:
+        rows = await pg.fetch(
+            """SELECT role, content, token_count, created_at
+               FROM messages
+               WHERE session_id = $1::uuid
+               ORDER BY created_at DESC LIMIT $2""",
+            session_id, limit,
+        )
+        rows = list(reversed(rows))
+
+    messages = [
+        {
+            "role":       r["role"],
+            "content":    r["content"],
+            "tokens":     r["token_count"],
+            "timestamp":  r["created_at"].isoformat(),
+        }
+        for r in rows
+    ]
+    return {
+        "session_id": session_id,
+        "messages":   messages,
+        "updated_at": header["updated_at"],
+        "has_more":   len(rows) == limit,
+        "next_cursor": rows[0]["created_at"].isoformat() if rows else None,
+    }
 
 
 async def populate_stm_from_messages(session_id: str, messages: list[dict]) -> None:
@@ -204,43 +241,32 @@ async def write_session_turn(
     session_id: str,
     user_query: str,
     assistant_answer: str,
-    intent: str,
-    tokens: int,
+    total_tokens: int = 0,
+    grader_result: str = "pass",
 ) -> None:
-    """Append 1 user message + 1 assistant message to conversations.
-
-    INSERT if session_id new, UPDATE (append to messages JSONB) if exists.
-    Also update Redis STM (FIFO 3 Q&A pairs).
-    """
     user_id = _to_uuid(user_id)
     pg = get_pg_client()
     await pg.connect()
     ts = datetime.now(timezone.utc).isoformat()
 
-    # conversations.user_id has FK → users(id). Auto-create user if missing
-    # so first-time UI users (anonymous, user_123, etc.) don't trip FK.
     await pg.execute(
         "INSERT INTO users (id) VALUES ($1::uuid) ON CONFLICT (id) DO NOTHING",
         user_id,
     )
-
-    new_turn = [
-        {"role": "user", "content": user_query, "timestamp": ts},
-        {"role": "assistant", "content": assistant_answer, "timestamp": ts,
-         "metadata": {"intent": intent, "tokens": tokens}},
-    ]
-
     await pg.execute(
-        """
-        INSERT INTO conversations (id, user_id, session_id, messages, created_at, updated_at)
-        VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3::jsonb, now(), now())
-        ON CONFLICT (session_id) DO UPDATE
-        SET messages = conversations.messages || $3::jsonb,
-            updated_at = now()
-        """,
-        user_id, session_id, json.dumps(new_turn),
+        """INSERT INTO conversations (session_id, user_id, created_at, updated_at)
+           VALUES ($1::uuid, $2::uuid, now(), now())
+           ON CONFLICT (session_id) DO UPDATE SET updated_at = now()""",
+        session_id, user_id,
     )
-
+    await pg.executemany(
+        """INSERT INTO messages (session_id, role, content, token_count, created_at)
+           VALUES ($1::uuid, $2, $3, $4, $5::timestamptz)""",
+        [
+            (session_id, "user",      user_query,       None,         ts),
+            (session_id, "assistant", assistant_answer, total_tokens, ts),
+        ],
+    )
     await _append_stm(session_id, user_query, assistant_answer, ts)
 
 

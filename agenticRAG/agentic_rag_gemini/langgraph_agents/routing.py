@@ -1,3 +1,13 @@
+"""Routing — M.2 HAI CỔNG ĐỘC LẬP (D2, D15).
+
+Decisions encoded:
+  D2:   Routing ⟸ needs_retrieval; grader ⟸ required_outputs (2 independent gates)
+  D2b:  Manager says WHAT, dev chooses HOW — no tool flags in planner
+  D15:  NEVER merge gates → safety bug (no-retrieval + safety tag → skip grader)
+  D22:  Clarify = multi-turn, no loop in graph
+  D24:  Retry ONLY for grader quality fail, NOT for empty results
+"""
+
 from langgraph_agents.state import AgentState, ErrorSeverity
 
 
@@ -9,19 +19,33 @@ def check_errors(state: AgentState) -> str:
     return "continue"
 
 
+# ── After memory ──────────────────────────────────────────────────────────
+
 def route_after_memory(state: AgentState) -> str:
-    """Memory always goes to planner unless CRITICAL error."""
+    """Memory → planner (always, unless CRITICAL error)."""
     if check_errors(state) == "error_handler":
         return "error_handler"
     return "planner"
 
 
-def route_after_planner(state: AgentState) -> str:
-    """Planner → synthesizer (direct, for greeting/clarify) | retriever_agent | error_handler.
+# ── After planner — TWO INDEPENDENT PATHS ─────────────────────────────────
+# Path A: retriever gate (⟸ needs_retrieval)
+# Path B: Kimodo gate (⟸ needs_motion, hard edge)
+# Both can run in parallel (LangGraph fan-out)
 
-    After Phase 6.9: conversation node deleted. Synthesizer is the universal
-    response generator and handles greeting + clarify modes directly without
-    going through retriever (no tools needed for those intents).
+def route_after_planner(state: AgentState) -> str:
+    """Planner → retriever_agent | kimodo | synthesizer | error_handler.
+
+    Cổng RETRIEVER ⟸ needs_retrieval (D2).
+    Kimodo hard edge ⟸ needs_motion (D3, D26).
+    Does NOT read required_outputs — those are for the grader gate (D15).
+
+    Priority (single path — one conditional edge per node):
+      1. CRITICAL error → error_handler
+      2. needs_clarification → synthesizer (skip all)
+      3. needs_retrieval → retriever_agent (may chain to kimodo after)
+      4. needs_motion (only) → kimodo
+      5. neither → synthesizer (chat/greeting/safety-only)
     """
     if check_errors(state) == "error_handler":
         return "error_handler"
@@ -29,47 +53,81 @@ def route_after_planner(state: AgentState) -> str:
     if state.get("needs_clarification"):
         return "synthesizer"
 
-    intent = state.get("intent", "conversation")
-    if intent in ("knowledge_query", "exercise_recommendation", "visualize_motion"):
+    if state.get("needs_retrieval"):
         return "retriever_agent"
-    # conversation, clarify, or unknown → synthesizer direct (chat mode)
+
+    if state.get("needs_motion"):
+        return "kimodo"
+
     return "synthesizer"
 
 
-_MAX_TOOL_ROUNDS = 2  # hard cap on retriever⇄tools iterations within one pipeline run
+# ── After retriever ───────────────────────────────────────────────────────
+
+_MAX_TOOL_ROUNDS = 2  # Hard cap on retriever⇄tools iterations
 
 
 def route_after_retriever(state: AgentState) -> str:
-    """Retriever → tools (more calls) | synthesizer (done) | error_handler.
+    """Retriever → tools (more calls) | kimodo (if needs_motion) | synthesizer | error_handler.
 
-    Replaces langgraph.prebuilt.tools_condition so we can:
-      1. Check CRITICAL errors first
-      2. Hard-cap the retriever⇄tools loop (prevents infinite tool-call loops
-         when the LLM keeps requesting more searches with empty results)
+    Hard-caps tool call rounds to prevent infinite loops (D24: retry only
+    for service errors, not empty results).
+    After retrieval done: chain to kimodo if needs_motion (D26: motion after retrieval).
     """
     if check_errors(state) == "error_handler":
         return "error_handler"
 
     from langchain_core.messages import AIMessage
     messages = state.get("messages", [])
+
+    # Count tool-call rounds
     tool_rounds = sum(
         1 for m in messages
         if isinstance(m, AIMessage) and getattr(m, "tool_calls", None)
     )
 
-    last_has_tool_calls = bool(messages and getattr(messages[-1], "tool_calls", None))
+    last_msg = messages[-1] if messages else None
+    last_has_tool_calls = bool(
+        last_msg and getattr(last_msg, "tool_calls", None)
+    )
 
     if last_has_tool_calls and tool_rounds <= _MAX_TOOL_ROUNDS:
         return "tools"
+
+    # Retrieval done — chain to kimodo if motion needed (D26)
+    if state.get("needs_motion"):
+        return "kimodo"
     return "synthesizer"
 
 
-def route_after_grader(state: AgentState) -> str:
-    """Grader → retriever_agent (retry once) | END (pass / pass_with_warning).
+# ── After synthesizer — GRADER GATE ───────────────────────────────────────
+# Cổng GRADER ⟸ required_outputs != [] (D2, D15)
+# Independent from retriever gate — MUST run even when retriever was skipped.
+# This closes the safety bug: "đau ngực" (no retrieval, safety tag) still gets
+# grader enforcement.
 
-    After Phase 6.9: synthesizer already produced final_answer with persona
-    voice. Grader appends warning to final_answer on pass_with_warning path
-    (no extra node/LLM needed).
+def route_after_synthesizer(state: AgentState) -> str:
+    """Synthesizer → grader | END.
+
+    Cổng GRADER ⟸ required_outputs != [] (D2, D15).
+    Empty tags → fast-path END (D8: chat/general/clarify no contract).
+    """
+    if check_errors(state) == "error_handler":
+        return "error_handler"
+
+    required_outputs = state.get("required_outputs", [])
+    if required_outputs:
+        return "grader"
+    return "end"
+
+
+# ── After grader ──────────────────────────────────────────────────────────
+
+def route_after_grader(state: AgentState) -> str:
+    """Grader → retriever_agent (retry once) | END.
+
+    Retry only for quality fails (D6: safety fails get template cứng, no retry).
+    Retry count max 1 (D24).
     """
     result = state.get("grader_result", "pass")
     if result == "retry":

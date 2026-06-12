@@ -9,14 +9,16 @@ from core.circuit_breaker import CircuitBreaker
 
 
 def _reset_llm_breaker(role: str = "test"):
-    """Create a fresh breaker and inject it into llm.py's _cb_map."""
-    from langgraph_agents.llm import _cb_map
+    """Create a fresh breaker and inject it into llm.py's _cb_map.
+    Also clears lru_cache on get_chat_model so new breaker takes effect."""
+    from langgraph_agents.llm import _cb_map, get_chat_model
     breaker = CircuitBreaker(
         name=f"llm:{role}",
         failure_threshold=3,
         cool_down_seconds=30.0,
     )
     _cb_map[role] = breaker
+    get_chat_model.cache_clear()
     return breaker
 
 
@@ -153,17 +155,18 @@ async def test_planner_handles_breaker_open_as_recoverable():
 
     from langgraph_agents.nodes.planner import planner_node
 
-    state = {"memory_context": {}}
-    config = {"configurable": {
+    state: AgentState = {"messages": [], "errors": [], "retry_count": 0,
+                          "total_tokens": 0}
+    config: RunnableConfig = {"configurable": {
         "query": "Bài tập cho đau lưng",
         "user_id": "u1",
         "session_id": "s1",
         "request_id": "r-test",
+        "persona_id": "eca_default",
     }}
 
     result = await planner_node(state, config)
 
-    assert result["intent"] == "clarify"
     assert result["needs_clarification"] is True
     errors = result.get("errors", [])
     assert len(errors) == 1

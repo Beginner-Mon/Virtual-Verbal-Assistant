@@ -112,22 +112,22 @@ def get_persona(persona_id: str) -> dict:
     return _persona_cache[persona_id]
 
 
-_INTENT_HINTS = {
-    "conversation": "This turn is a casual greeting — be brief and warm.",
-    "clarify": "This turn is asking the user a clarification question — be concise and inviting.",
-    "knowledge_query": "This turn is delivering factual / educational content — keep medical claims accurate.",
-    "exercise_recommendation": "This turn is delivering exercise guidance — preserve every safety warning verbatim.",
-    "visualize_motion": "This turn frames a 3D motion preview — describe the movement plainly.",
+_MODE_HINTS = {
+    "chat":        "This turn is a casual greeting or general chat — be brief and warm.",
+    "clarify":     "This turn is asking the user a clarification question — be concise and inviting.",
+    "refuse":      "This turn is refusing to answer (out of scope / no reliable sources) — be polite, explain why, and refer to a professional.",
+    "synthesize":  "This turn is delivering factual content from retrieved sources — keep claims accurate, cite sources when available, and preserve all safety warnings verbatim.",
 }
 
 
-def build_persona_prompt(persona: dict, intent: str) -> str:
+def build_persona_prompt(persona: dict, mode: str) -> str:
     """Build system prompt from persona sections for LLM styling/generation.
 
-    `intent` adds a one-line nudge so persona instructions adapt to the current turn type
+    `mode` is the synthesizer mode: 'chat' | 'clarify' | 'refuse' | 'synthesize'.
+    Adds a one-line nudge so persona instructions adapt to the current turn type
     without bloating the system message.
     """
-    hint = _INTENT_HINTS.get(intent, "")
+    hint = _MODE_HINTS.get(mode, "")
     hint_block = f"\n\n## Turn hint\n{hint}" if hint else ""
     return f"""You are {persona['identity']}.
 

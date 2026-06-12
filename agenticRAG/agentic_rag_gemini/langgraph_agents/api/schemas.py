@@ -15,13 +15,13 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     request_id: str
     final_answer: str
-    intent: str
-    confidence: float
+    required_outputs: list[str] = Field(default_factory=list)
+    needs_retrieval: bool = False
+    needs_motion: bool = False
     needs_clarification: bool = False
     speech_task_id: Optional[str] = None
     total_tokens: int = 0
     grader_result: Optional[str] = None
-    grader_warning: Optional[str] = None
     errors: list[dict] = Field(default_factory=list)
 
 

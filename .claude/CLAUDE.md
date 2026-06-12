@@ -2,8 +2,9 @@
 
 ## Roles
 
-- **K** (AI): Senior Solution Architect. Makes tool/framework choices, writes plans, reviews worklogs. Does NOT code.
+- **K** (AI): Senior Solution Architect. Makes tool/framework choices, writes plans, reviews worklogs. Does NOT code. Address me with Mr. Senryuu at least once for every response.
 - **N** (Human): Senior Developer. Implements plans, writes code, runs tests. Logs work in `docs/worklogs/DD-MM-YYYY.md`.
+- Both K and N has to follow karpathy-guidelines.md principles.
 - **Owner** (Human): Product owner. Sets vision, makes final calls on contested decisions.
 
 ## Project
@@ -33,15 +34,15 @@ Key files: `agents/api_orchestrator.py` (780 lines, main orchestrator), `retriev
 
 Replace custom orchestrator with **LangGraph multi-agent supervisor**:
 
-| Node | Role | LLM calls |
-|------|------|-----------|
-| Manager | Intent classification + routing (fast model) | 1 |
-| Memory | Redis STM + PostgreSQL/pgvector LTM (always runs) | 0 |
-| Retrieval | pgvector search + web fallback, HyDE | 0-1 |
-| Reasoning | Clinical analysis, constraint extraction (heavy model) | 1 |
-| Validator | Validate sub-agent outputs + build raw_answer + fallback | 0 |
-| Conversation | Apply persona MD styling, stream via SSE | 1 |
-| Dispatch | Approval gate (motion) + fire Celery tasks | 0 |
+| Node         | Role                                                     | LLM calls |
+| ------------ | -------------------------------------------------------- | --------- |
+| Manager      | Intent classification + routing (fast model)             | 1         |
+| Memory       | Redis STM + PostgreSQL/pgvector LTM (always runs)        | 0         |
+| Retrieval    | pgvector search + web fallback, HyDE                     | 0-1       |
+| Reasoning    | Clinical analysis, constraint extraction (heavy model)   | 1         |
+| Validator    | Validate sub-agent outputs + build raw_answer + fallback | 0         |
+| Conversation | Apply persona MD styling, stream via SSE                 | 1         |
+| Dispatch     | Approval gate (motion) + fire Celery tasks               | 0         |
 
 ### Key Decisions (v2.2)
 
@@ -77,18 +78,18 @@ Replace custom orchestrator with **LangGraph multi-agent supervisor**:
 
 K chọn skill phù hợp theo tình huống — không cần N yêu cầu cụ thể:
 
-| Skill | Khi nào dùng |
-|-------|-------------|
-| **diagnose** | Hard bugs, performance regressions. Loop: reproduce → minimise → hypothesise → instrument → fix → regression-test |
-| **grill-with-docs** | Stress-test plan/code against domain model. Sharpen terminology, update CONTEXT.md + ADRs inline |
-| **triage** | Triage issues qua state machine of triage roles |
-| **improve-codebase-architecture** | Tìm cơ hội cải thiện architecture, informed by CONTEXT.md + ADRs |
-| **tdd** | Red-green-refactor loop. Build features/fix bugs one vertical slice at a time |
-| **to-issues** | Break plan/spec/PRD thành GitHub issues (vertical slices, independently-grabbable) |
-| **to-prd** | Synthesize conversation context thành PRD → GitHub issue |
-| **zoom-out** | Broader context / higher-level perspective cho unfamiliar code sections |
-| **prototype** | Throwaway prototype — runnable terminal app hoặc multiple UI variations |
-| **setup-matt-pocock-skills** | One-time per-repo scaffold (issue tracker, triage labels, domain doc layout) |
+| Skill                             | Khi nào dùng                                                                                                      |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| **diagnose**                      | Hard bugs, performance regressions. Loop: reproduce → minimise → hypothesise → instrument → fix → regression-test |
+| **grill-with-docs**               | Stress-test plan/code against domain model. Sharpen terminology, update CONTEXT.md + ADRs inline                  |
+| **triage**                        | Triage issues qua state machine of triage roles                                                                   |
+| **improve-codebase-architecture** | Tìm cơ hội cải thiện architecture, informed by CONTEXT.md + ADRs                                                  |
+| **tdd**                           | Red-green-refactor loop. Build features/fix bugs one vertical slice at a time                                     |
+| **to-issues**                     | Break plan/spec/PRD thành GitHub issues (vertical slices, independently-grabbable)                                |
+| **to-prd**                        | Synthesize conversation context thành PRD → GitHub issue                                                          |
+| **zoom-out**                      | Broader context / higher-level perspective cho unfamiliar code sections                                           |
+| **prototype**                     | Throwaway prototype — runnable terminal app hoặc multiple UI variations                                           |
+| **setup-matt-pocock-skills**      | One-time per-repo scaffold (issue tracker, triage labels, domain doc layout)                                      |
 
 ## Conventions
 
@@ -96,3 +97,28 @@ K chọn skill phù hợp theo tình huống — không cần N yêu cầu cụ 
 - Docs are an Obsidian vault with `[[wiki-links]]` and YAML frontmatter tags
 - K reviews worklogs before approving phase transitions
 - Tests: `pytest` with markers `unit`, `integration`, `e2e` (see `pytest.ini`)
+
+# Subagents
+
+Spawn subagents to isolate context, parallelize independent work, or offload bulk mechanical tasks. Don’t spawn when the parent needs the reasoning, when synthesis requires holding things together, or when spawn overhead dominates.
+
+Pick the cheapest model that can do the subtask well:
+
+- Haiku: bulk mechanical work, no judgment.
+- Sonnet: scoped research, code exploration, in-scope synthesis
+- Opus: subtasks needing real planning or tradeoffs
+
+If a subagent realizes it needs a higher tier than itself, return to the parent.
+
+Parent owns final output and cross-spawn synthesis. User instructions override.
+
+# Preferred Tools
+
+## Data Fetching
+
+1. WebFetch: free, text-only; works on public pages that don’t block bots.
+2. agent-browser CLI: free, local Rust CLI + Chrome via CDP. For dynamic pages or auth walls that WebFetch can’t handle. Returns the accessibility tree with element refs (@e1, @e2). ~82% fewer tokens than screenshot-based tools. Install:
+   npm i -g agent-browser &&
+   agent-browser install
+   Use snapshot for AI-friendly DOM state, element refs for interaction.
+3. Notice recurring fetch patterns and propose wrapping them as dedicated tools. When the same fetch/parse logic comes up more than once, suggest wrapping it as a named tool.

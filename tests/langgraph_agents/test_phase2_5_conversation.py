@@ -16,7 +16,7 @@ def test_persona_loader_get_default():
 @pytest.mark.unit
 def test_persona_build_prompt():
     persona = get_persona("eca_default")
-    prompt = build_persona_prompt(persona, "knowledge_query")
+    prompt = build_persona_prompt(persona, "synthesize")
     assert persona["identity"] in prompt
     assert "Personality" in prompt
     assert "Rules" in prompt

@@ -5,7 +5,7 @@ GET  /health      → liveness (no dependency checks)
 GET  /health/detailed → readiness (parallel DB/Redis/LLM checks, 3s timeout each)
 GET  /tts/{task_id}/result   → poll Redis for TTS result (fallback)
 GET  /sessions    → list user sessions
-POST /sessions/{session_id}/resume → load session + populate STM
+GET  /sessions/{session_id} → load session messages
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
-import redis as sync_redis
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
+import redis.asyncio as aioredis
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -29,9 +29,10 @@ from langgraph_agents.api.sse import encode_event, stream_response
 from langgraph_agents.graph import build_graph_async
 from langgraph_agents.nodes._persona_loader import get_persona
 from langgraph_agents.services.vieneu_tts.tasks import synthesize_speech_async
+from langgraph_agents.nodes.summarizer import maybe_summarize
 from langgraph_agents.db.session_store import (
     list_user_sessions, load_session_messages,
-    populate_stm_from_messages, write_session_turn,
+    populate_stm_from_messages, write_session_turn, _to_uuid,
 )
 from langgraph_agents.shared.logging import (
     configure_root_logger, get_logger, with_request_id,
@@ -47,13 +48,16 @@ logger = get_logger("langgraph.api")
 # spawned later get the default None).
 
 _graph = None
-_redis: sync_redis.Redis | None = None
+_redis: aioredis.Redis | None = None
 
 # Keep strong references to fire-and-forget TTS tasks. asyncio.create_task
 # returns a Task that the event loop only holds via a WEAK reference — if
 # garbage collected mid-execution the task silently vanishes. Storing the
 # Task in this set + removing it via done_callback prevents GC.
 _pending_tts_tasks: set = set()
+
+# Strong references for summarizer tasks (M.5 background summarize)
+_pending_summarizer_tasks: set = set()
 
 # Node names that emit stage events (Phase 6.9: conversation node removed)
 _STAGE_NODES = {
@@ -62,14 +66,10 @@ _STAGE_NODES = {
 }
 
 
-def _get_redis() -> sync_redis.Redis:
+def _get_redis() -> aioredis.Redis:
     global _redis
     if _redis is None:
-        # socket_timeout bounds thread occupancy when health check or any other
-        # caller hangs on Redis. 5s is generous for normal ops (set/get/ping)
-        # but ensures asyncio.to_thread workers don't pile up if Redis goes
-        # unresponsive. socket_connect_timeout covers initial TCP handshake.
-        _redis = sync_redis.Redis.from_url(
+        _redis = aioredis.from_url(
             "redis://localhost:6379/0",
             socket_timeout=5,
             socket_connect_timeout=5,
@@ -93,6 +93,8 @@ async def lifespan(application: FastAPI):
         "graph_loaded": _graph is not None,
     })
     yield
+    if _redis is not None:
+        await _redis.aclose()
     logger.info("shutdown", extra={"event": "lifespan_end"})
 
 
@@ -102,9 +104,14 @@ def create_app() -> FastAPI:
     # CORS — frontend at port 3000 (or wherever) calls backend cross-origin.
     # Browser sends OPTIONS preflight before POST /chat; without this middleware
     # FastAPI returns 405 Method Not Allowed and the browser blocks the request.
+    _ALLOWED_ORIGINS = [
+        o.strip()
+        for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080").split(",")
+        if o.strip()
+    ]
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],          # dev: allow all. Phase 7: lock down to known origins
+        allow_origins=_ALLOWED_ORIGINS,
         allow_credentials=False,      # "*" + credentials disallowed by spec
         allow_methods=["*"],
         allow_headers=["*"],
@@ -128,11 +135,26 @@ def create_app() -> FastAPI:
         )
 
     @application.post("/chat")
-    async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
+    async def chat(req: ChatRequest, request: Request, background_tasks: BackgroundTasks):
         graph = _get_graph()
         if graph is None:
             raise HTTPException(503, "Graph not loaded yet")
         request_id = str(uuid.uuid4())
+
+        # Lazy STM warm-up: if Redis STM is empty (new session or resumed from
+        # history), backfill it from PostgreSQL before the graph runs. This is a
+        # prerequisite of /chat — not a side effect of session resume — so it
+        # lives here rather than in GET /sessions/{id}.
+        try:
+            if not await _get_redis().get(f"stm:{req.session_id}"):
+                recent = await load_session_messages(
+                    user_id=req.user_id, session_id=req.session_id, limit=6,
+                )
+                if recent and recent["messages"]:
+                    await populate_stm_from_messages(req.session_id, recent["messages"])
+        except Exception as exc:
+            logger.warning("stm_warmup_failed", extra={"error": str(exc)})
+
         state = {"messages": [], "errors": [], "retry_count": 0, "total_tokens": 0}
         config = {"configurable": {
             "user_id": req.user_id,
@@ -147,14 +169,14 @@ def create_app() -> FastAPI:
 
         async def event_generator():
             with with_request_id(request_id):
-                async for sse_event in _stream_chat(req, request_id, config, state, background_tasks):
+                async for sse_event in _stream_chat(req, request_id, config, state, background_tasks, request):
                     yield sse_event
 
         return stream_response(event_generator())
 
     @application.get("/tts/{task_id}/result")
     async def tts_result(task_id: str):
-        raw = _get_redis().get(f"task_result:{task_id}")
+        raw = await _get_redis().get(f"task_result:{task_id}")
         if raw is None or not isinstance(raw, (bytes, str)):
             raise HTTPException(404, "Task not ready or expired")
         try:
@@ -170,26 +192,21 @@ def create_app() -> FastAPI:
             total=len(rows),
         )
 
-    @application.post("/sessions/{session_id}/resume", response_model=SessionResumeResponse)
-    async def resume_session(session_id: str, user_id: str = Query(...)):
-        row = await load_session_messages(user_id=user_id, session_id=session_id)
+    @application.get("/sessions/{session_id}", response_model=SessionResumeResponse)
+    async def get_session(session_id: str, user_id: str = Query(...), limit: int = 50):
+        row = await load_session_messages(user_id=user_id, session_id=session_id, limit=limit)
         if not row:
             raise HTTPException(404, "Session not found")
-
-        messages = row["messages"] or []
-        await populate_stm_from_messages(session_id, messages)
-
         return SessionResumeResponse(
             session_id=session_id,
-            messages=messages,
-            stm_populated=True,
+            messages=row["messages"] or [],
+            stm_populated=False,
             last_updated=row["updated_at"].isoformat(),
         )
 
     @application.delete("/sessions/{user_id}/{session_id}")
     async def delete_session(user_id: str, session_id: str):
         """Delete a session row + clear its Redis STM."""
-        from langgraph_agents.db.session_store import _to_uuid
         from langgraph_agents.shared import get_pg_client
         pg = get_pg_client()
         await pg.connect()
@@ -199,11 +216,7 @@ def create_app() -> FastAPI:
         )
         # Clear Redis STM (best-effort)
         try:
-            import redis.asyncio as aioredis
-            r = aioredis.from_url("redis://localhost:6379/0")
-            await r.delete(f"stm:{session_id}")
-            close_fn = getattr(r, "aclose", None) or r.close
-            await close_fn()
+            await _get_redis().delete(f"stm:{session_id}")
         except Exception:
             pass
         return {"deleted": session_id, "result": result}
@@ -214,7 +227,7 @@ def create_app() -> FastAPI:
 # ── Chat stream helper ─────────────────────────────────────────────
 
 
-async def _stream_chat(req, request_id, config, state, background_tasks):
+async def _stream_chat(req, request_id, config, state, background_tasks, request=None):
     """Core SSE stream: graph execution + post-processing.
 
     Wrapped in with_request_id by the caller so every log line from this
@@ -231,6 +244,10 @@ async def _stream_chat(req, request_id, config, state, background_tasks):
     async for mode, payload in graph.astream(
         state, config, stream_mode=["updates", "custom"]
     ):
+        if request is not None and await request.is_disconnected():
+            logger.info("client_disconnected", extra={"request_id": request_id})
+            return
+
         if mode == "updates":
             if not isinstance(payload, dict):
                 continue
@@ -240,7 +257,7 @@ async def _stream_chat(req, request_id, config, state, background_tasks):
 
                 extra: dict = {}
                 if node_name == "planner" and isinstance(node_output, dict):
-                    extra["intent"] = node_output.get("intent")
+                    extra["required_outputs"] = node_output.get("required_outputs")
                     extra["needs_clarification"] = node_output.get("needs_clarification", False)
                 if node_name == "grader" and isinstance(node_output, dict):
                     extra["result"] = node_output.get("grader_result")
@@ -250,9 +267,15 @@ async def _stream_chat(req, request_id, config, state, background_tasks):
                     {"node": node_name, "status": "complete", **extra},
                 )
 
-                # synthesizer / error_handler / grader can set final_answer
-                if isinstance(node_output, dict) and node_output.get("final_answer"):
-                    final_state.update(node_output)
+                if isinstance(node_output, dict):
+                    # Capture tracking fields from any node as they arrive
+                    if "required_outputs" in node_output:
+                        final_state["required_outputs"] = node_output["required_outputs"]
+                    if "grader_result" in node_output:
+                        final_state["grader_result"] = node_output["grader_result"]
+                    # synthesizer / error_handler / grader can set final_answer
+                    if node_output.get("final_answer"):
+                        final_state.update(node_output)
 
         elif mode == "custom":
             if isinstance(payload, dict) and "content" in payload:
@@ -274,12 +297,19 @@ async def _stream_chat(req, request_id, config, state, background_tasks):
                 session_id=req.session_id,
                 user_query=req.query,
                 assistant_answer=final_answer,
-                intent=final_state.get("intent", ""),
-                tokens=final_state.get("total_tokens", 0),
+                total_tokens=final_state.get("total_tokens", 0),
+                grader_result=final_state.get("grader_result", "pass"),
             )
             yield encode_event("session_persisted", {"session_id": req.session_id})
         except Exception as exc:
             logger.warning("session_persist_failed", extra={"error": str(exc)})
+
+    # Background summarizer M.5 — fire-and-forget after session write
+    if final_state.get("final_answer"):
+        try:
+            await maybe_summarize(req.session_id)
+        except Exception as exc:
+            logger.warning("summarizer_check_failed", extra={"error": str(exc)})
 
     # Fire TTS if needed
     if req.output_mode in ("speech", "both") and final_state.get("final_answer"):
@@ -307,14 +337,14 @@ async def _stream_chat(req, request_id, config, state, background_tasks):
     logger.info("chat_complete", extra={
         "elapsed_ms": elapsed_ms,
         "total_tokens": final_state.get("total_tokens", 0),
-        "intent": final_state.get("intent", ""),
+        "required_outputs": final_state.get("required_outputs", []),
         "speech_task_id": speech_task_id,
     })
 
     yield encode_event("done", {
         "request_id": request_id,
         "total_tokens": final_state.get("total_tokens", 0),
-        "intent": final_state.get("intent", ""),
+        "required_outputs": final_state.get("required_outputs", []),
         "speech_task_id": speech_task_id,
     })
 
@@ -334,7 +364,7 @@ async def _poll_speech_result(task_id: str, timeout: float = 15.0):
     key = f"task_result:{task_id}"
 
     while asyncio.get_event_loop().time() < deadline:
-        raw = _get_redis().get(key)
+        raw = await _get_redis().get(key)
         if raw is not None and isinstance(raw, (bytes, str)):
             try:
                 payload = json.loads(raw)

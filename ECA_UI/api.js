@@ -604,9 +604,8 @@ async function listSessionsV2(userId) {
 
 
 async function resumeSession(sessionId, userId) {
-  const resp = await fetch(joinApiBase(`/sessions/${sessionId}/resume?user_id=${encodeURIComponent(userId)}`), {
-    method: "POST",
-  });
+  // GET — pure read. STM is warmed lazily on the first /chat of the session.
+  const resp = await fetch(joinApiBase(`/sessions/${sessionId}?user_id=${encodeURIComponent(userId)}`));
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   return await resp.json();
 }

@@ -1,14 +1,26 @@
-"""Planner node — intent classification + query expansion + structured plan output.
+"""Planner node — M.1 3-axis intent model.
 
-Replaces manager.py. Uses LangChain ChatModel with with_structured_output()
-for typed PlanOutput via Pydantic.
+Replaces old 6-enum intent system. Decisions encoded:
+  D1:  3-axis (required_outputs / resolved_query / routing bits) replaces 6-enum
+  D2b: Manager says WHAT (tags + query), NOT HOW (which tools)
+  D9:  resolved_query with coreference resolution (memory ran first)
+  D18: required_outputs = list[str] tag thuần — NOT list[{tag, scope}]
+  D21: resolved_query keeps tool-selection cues (temporal/source/topic)
+  D33: Danger detection = PLANNER (1 place), not synthesizer
+
+Metaphor: Planner = manager — assigns deliverables (WHAT).
+         Retriever = dev — chooses tools (HOW).
 """
+
+from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
 from typing import Optional
 
 from pydantic import BaseModel, Field
+
+from langchain_core.runnables import RunnableConfig
 
 from langgraph_agents.state import AgentState, ErrorSeverity
 from langgraph_agents.llm import get_chat_model
@@ -17,93 +29,165 @@ from langgraph_agents.shared.logging import get_logger
 logger = get_logger("langgraph.planner")
 
 
+# ── TAG_RULES vocabulary (M.3) — single source of truth (D7) ──────────────
+
+# Tags planner can emit. Must match TAG_RULES in grader.py exactly.
+# startup assertion in grader.py ensures planner_tags ⊆ TAG_RULES keys (D7).
+PLANNER_TAGS = frozenset({
+    # Safety tags (thiếu → template cứng, no retry — D6)
+    "red_flag_screen",    # cảnh báo dấu hiệu nguy hiểm (đau ngực, tê, mất kiểm soát)
+    "referral_advice",    # khuyên đi gặp bác sĩ/chuyên gia khi vượt scope wellness
+    "scope_disclaimer",   # "đây là tư vấn wellness, không thay khám lâm sàng"
+
+    # Quality tags (thiếu → retry max 1 — D6)
+    "exercise_protocol",  # bài tập phải có sets + reps + tần suất
+    "exercise_steps",     # hướng dẫn thực hiện ≥2 bước
+    "contraindication",   # nêu trường hợp KHÔNG nên tập
+    "evidence_citation",  # knowledge query phải có nguồn/citation
+    "motion_descriptor",  # mô tả động tác + khớp (đi kèm Kimodo)
+})
+
+
+# ── PlanOutput (3-axis — M.1) ─────────────────────────────────────────────
+
 class PlanOutput(BaseModel):
-    """Defaults are intentionally permissive — DeepSeek (thinking model in
-    json_mode) frequently omits fields. Planner_node post-processes for the
-    rest. Only `intent` is mandatory in spirit; we tolerate omission and
-    fall back at the node level."""
-    intent: str = Field(
-        default="clarify",
-        description="conversation | knowledge_query | exercise_recommendation | visualize_motion | clarify",
+    """Planner output — 3 independent axes. No intent enum, no scope dicts.
+
+    required_outputs  = deliverables (WHAT) — grader reads this
+    resolved_query    = cleaned question — synthesizer reads this
+    needs_retrieval   = gate for retriever node
+    needs_motion      = hard gate for Kimodo node (D3, D26)
+    """
+
+    # TRỤC 1 — required_outputs: DELIVERABLE checklist
+    #   Tags ∈ PLANNER_TAGS. Empty = no contract → grader skip (D8).
+    required_outputs: list[str] = Field(
+        default_factory=list,
+        description="Delivery checklist tags. Must be from: "
+                    + ", ".join(sorted(PLANNER_TAGS)),
     )
-    confidence: float = Field(default=0.8, ge=0.0, le=1.0)
-    expanded_query: str = ""
-    needs_clarification: bool = False
-    clarification_question: Optional[str] = None
-    required_outputs: list[str] = Field(default_factory=list)
-    search_strategy: list[str] = Field(default_factory=list)
-    constraints_detected: list[str] = Field(default_factory=list)
-    notes: Optional[str] = None
+
+    # TRỤC 2 — resolved_query: coreference resolved, tool-selection cues kept (D21)
+    #   "đào sâu về nó" → "chi tiết bài bird-dog". GIỮ SẠCH (chỉ là câu hỏi).
+    resolved_query: str = Field(
+        default="",
+        description="User's question with coreferences resolved. Keep tool-selection "
+                    "cues (temporal/source/topic), only replace pronouns.",
+    )
+
+    # TRỤC 3 — routing bits
+    needs_retrieval: bool = Field(
+        default=False,
+        description="Does answering need external knowledge lookup? "
+                    "Retriever decides which tools (kb/web/memory).",
+    )
+    needs_motion: bool = Field(
+        default=False,
+        description="Does the user want to SEE/visualize a movement? "
+                    "Hard gate for Kimodo GPU node (D3).",
+    )
+
+    # ── Clarify (static — planner knows before retrieval) ─────────────
+    needs_clarification: bool = Field(
+        default=False,
+        description="True if query is missing critical info the planner can detect. "
+                    "Dynamic clarify (tool ambiguous) is handled by synthesizer (D22).",
+    )
 
 
-_PLANNER_SYSTEM_PROMPT = """You are the planning brain for a physical therapy AI assistant.
+# ── System prompt ─────────────────────────────────────────────────────────
 
-Analyze the user query + memory context and produce a structured plan.
+_PLANNER_SYSTEM_PROMPT = """You are the PLANNER for a physical therapy & wellness AI assistant.
+Your job: analyze the user query + conversation context and produce a structured plan.
 
-Intents:
-- conversation            : greetings, thanks, follow-ups, casual chat, no clinical content
-- knowledge_query         : explanation, facts, non-motion advice
-- exercise_recommendation : exercises, stretches, workouts
-- visualize_motion        : asks to SEE / animate a specific movement
-- clarify                 : query mentions an action/topic but is missing critical specifics
+## YOUR ROLE (Manager metaphor)
+You are a MANAGER — you assign DELIVERABLES (WHAT), not methods (HOW).
+The RETRIEVER (dev) decides which tools to use (kb/web/memory).
+You do NOT specify tools. You only say WHAT needs to be delivered and WHETHER lookup is needed.
 
-Required outputs per intent:
-- knowledge_query         : ["answer", "sources"]
-- exercise_recommendation : ["exercise_name", "description", "sets_reps", "safety_warnings"]
-- visualize_motion        : ["motion_description", "joint_constraints"]
-- conversation            : ["greeting_response"]
-- clarify                 : ["clarification_question"]
+## THE 3 AXES
 
-Search strategy (suggest tools for retriever):
-- "pgvector_search"           : internal knowledge base
-- "web_search_if_low_quality" : fallback to web
-- "generate_motion"           : Kimodo motion synthesis (visualize_motion only)
-
-Vietnamese input note:
-Users frequently type Vietnamese WITHOUT diacritics (mobile typing, no IME).
-Treat "xin chao" === "xin chào", "cam on" === "cảm ơn", "bai tap" === "bài tập",
-"dau lung" === "đau lưng", etc. Do NOT downgrade confidence just because diacritics
-are missing — recognize the intent from the unaccented form.
+### 1. required_outputs — deliverable checklist (tags)
+Tags you can assign (ONLY these, no inventing):
+  SAFETY (critical, hard enforcement):
+    red_flag_screen   — user mentions dangerous symptoms (chest pain, numbness, dizziness, loss of control)
+    referral_advice   — question is out of wellness scope, needs medical professional
+    scope_disclaimer  — any clinical/exercise answer needs wellness disclaimer
+  QUALITY (checked, retry if missing):
+    exercise_protocol — specific exercise recommendation needs sets+reps+frequency
+    exercise_steps    — movement instructions need ordered steps (≥2)
+    contraindication  — exercise has risks for certain conditions, must list warnings
+    evidence_citation — knowledge/explanation needs sources
+    motion_descriptor — motion visualization needs movement+joint description
 
 Rules:
-- Clear greetings / thanks / casual replies → intent=conversation, confidence ≥ 0.8,
-  needs_clarification=false. NEVER route greetings to clarify.
-- clarify ONLY when the query points at an action or topic but omits a critical
-  specific (e.g. "bài tập" without body region, "đau" without location).
-  Confidence-alone is not sufficient grounds for clarify.
-- expanded_query: add anatomical / physiotherapy synonyms (for non-conversation intents).
-- For greetings: required_outputs=["greeting_response"], search_strategy=[].
+- Empty list [] = casual chat/greeting/general (no contract, grader skipped — D8)
+- Clinical answer ALWAYS needs at least [scope_disclaimer] (safety)
+- "đau ngực", "tê", "chóng mặt", "mất kiểm soát" → MUST include [red_flag_screen, referral_advice]
+- Exercise recommendation → [scope_disclaimer, exercise_protocol, exercise_steps, contraindication]
+- "Cho xem động tác..." → [motion_descriptor] + needs_motion=true
+- Out of wellness scope (diagnosis, medication, test interpretation) → [referral_advice]
 
-Examples:
+### 2. resolved_query — cleaned question (1 sentence)
+- Resolve pronouns using conversation context ("nó", "cái đó", "bài đó" → specific subject)
+- KEEP tool-selection cues: temporal ("tuần trước", "hôm qua"), source ("mới nhất"), topic keywords
+- DO NOT add search instructions or scope notes — keep it clean
+- If no coreference to resolve, use the original query as-is
 
-Query: "Xin chào"
-→ {"intent":"conversation","confidence":0.95,"expanded_query":"Xin chào","needs_clarification":false,"required_outputs":["greeting_response"],"search_strategy":[]}
+### 3. routing bits
+- needs_retrieval=true: question needs external knowledge (KB, web, or memory search)
+  Examples: PT exercises, health facts, news, real-time info, recalling past sessions
+- needs_retrieval=false: greeting, casual chat, or static safety response (red_flag needs no lookup)
+- needs_motion=true: user explicitly asks to SEE/VISUALIZE a movement
+  "Cho tôi xem", "mô phỏng", "hiển thị động tác", "3D", "animate"
 
-Query: "Xin chao" (no diacritics)
-→ {"intent":"conversation","confidence":0.9,"expanded_query":"Xin chào","needs_clarification":false,"required_outputs":["greeting_response"],"search_strategy":[]}
+### Clarify (static)
+- needs_clarification=true ONLY when planner can detect missing critical info WITHOUT querying:
+  "bài tập" (no body region), "đau" (no location), "thuốc" (no specific question)
+- Do NOT clarify for: greetings, red-flag symptoms (answer with safety warning instead)
 
-Query: "Hi" / "Hello" / "Cảm ơn nhé"
-→ {"intent":"conversation","confidence":0.95,"needs_clarification":false,"required_outputs":["greeting_response"],"search_strategy":[]}
+## EXAMPLES
 
-Query: "Bài tập cho đau lưng"
-→ {"intent":"exercise_recommendation","confidence":0.9,"expanded_query":"bài tập vật lý trị liệu cho đau thắt lưng (lower back pain)","needs_clarification":false,"required_outputs":["exercise_name","description","sets_reps","safety_warnings"],"search_strategy":["pgvector_search","web_search_if_low_quality"]}
+Query: "xin chào"
+→ {"required_outputs":[],"resolved_query":"xin chào","needs_retrieval":false,"needs_motion":false,"needs_clarification":false}
 
-Query: "Bài tập" (missing body region)
-→ {"intent":"clarify","confidence":0.4,"needs_clarification":true,"clarification_question":"Bạn muốn bài tập cho vùng nào (lưng, cổ, vai, đầu gối...)?","required_outputs":["clarification_question"]}
+Query: "xin chao" (no diacritics — recognize as "xin chào")
+→ {"required_outputs":[],"resolved_query":"xin chào","needs_retrieval":false,"needs_motion":false,"needs_clarification":false}
 
-Query: "Cho tôi xem động tác giơ tay phải lên 90 độ"
-→ {"intent":"visualize_motion","confidence":0.95,"needs_clarification":false,"required_outputs":["motion_description","joint_constraints"],"search_strategy":["generate_motion"]}
+Query: "tôi bị đau ngực khi tập thể dục"
+→ {"required_outputs":["red_flag_screen","referral_advice"],"resolved_query":"đau ngực khi tập thể dục","needs_retrieval":false,"needs_motion":false,"needs_clarification":false}
 
-Query: "Đau lưng là gì?"
-→ {"intent":"knowledge_query","confidence":0.9,"expanded_query":"định nghĩa đau lưng (lower back pain) nguyên nhân triệu chứng","needs_clarification":false,"required_outputs":["answer","sources"],"search_strategy":["pgvector_search","web_search_if_low_quality"]}
+Query: "bài tập cho thoát vị đĩa đệm L4-L5"
+→ {"required_outputs":["scope_disclaimer","exercise_protocol","exercise_steps","contraindication"],"resolved_query":"bài tập vật lý trị liệu cho thoát vị đĩa đệm L4-L5","needs_retrieval":true,"needs_motion":false,"needs_clarification":false}
 
-Respond strictly as a single valid JSON object matching the required schema."""
+Query: "bài tập" (missing body region — critical)
+→ {"required_outputs":[],"resolved_query":"bài tập","needs_retrieval":false,"needs_motion":false,"needs_clarification":true}
 
-_VALID_INTENTS = {"conversation", "knowledge_query", "exercise_recommendation", "visualize_motion", "clarify"}
+Query: "giá vàng hôm nay"
+→ {"required_outputs":["evidence_citation"],"resolved_query":"giá vàng Việt Nam hôm nay","needs_retrieval":true,"needs_motion":false,"needs_clarification":false}
+
+Query: "cho tôi xem động tác squat"
+→ {"required_outputs":["scope_disclaimer","motion_descriptor","exercise_steps"],"resolved_query":"động tác squat","needs_retrieval":true,"needs_motion":true,"needs_clarification":false}
+
+Query: "tôi đã hỏi về bài tập cổ tuần trước, nhắc lại đi" (recall past session)
+→ {"required_outputs":["scope_disclaimer","exercise_protocol","exercise_steps"],"resolved_query":"bài tập cổ đã hỏi tuần trước","needs_retrieval":true,"needs_motion":false,"needs_clarification":false}
+
+## VIETNAMESE NOTE
+Users often type Vietnamese WITHOUT diacritics. "xin chao" = "xin chào", "dau lung" = "đau lưng".
+Recognize intent from unaccented form. Do NOT downgrade confidence because diacritics are missing.
+
+Respond as a single JSON object matching the schema."""
 
 
-async def planner_node(state: AgentState, config) -> dict:
-    """Intent classification + query expansion + structured plan output."""
+# ── Node ──────────────────────────────────────────────────────────────────
+
+async def planner_node(state: AgentState, config: RunnableConfig) -> dict:
+    """Planner node — classify intent into 3-axis PlanOutput (M.1).
+
+    Reads: messages (context assembled by memory node) + config.query
+    Outputs: required_outputs, resolved_query, needs_retrieval, needs_motion,
+             needs_clarification
+    """
     t0 = time.perf_counter()
     request_id = config["configurable"].get("request_id", "-")
     query = config["configurable"]["query"]
@@ -114,52 +198,39 @@ async def planner_node(state: AgentState, config) -> dict:
     })
 
     llm = get_chat_model("planner")
-    # DeepSeek (v4-pro thinking model) constraints:
-    #   - json_schema  → "response_format type unavailable"
-    #   - function_calling → "thinking mode does not support tool_choice"
-    # → use json_mode: schema is injected into the prompt and `response_format=
-    #   {"type": "json_object"}` is set; Pydantic validates the returned JSON.
     structured_llm = llm.with_structured_output(PlanOutput, method="json_mode")
 
-    memory = state.get("memory_context", {})
+    # Build user message: query + context hint from recent messages
+    messages = state.get("messages", [])
+    context_hint = ""
+    if len(messages) > 1:
+        # Last few messages for context (exclude system messages)
+        recent = [m for m in messages[-6:] if hasattr(m, "content") and m.content]
+        if recent:
+            context_hint = "\n\nRecent context:\n" + "\n".join(
+                f"[{getattr(m, 'type', 'unknown')}]: {str(m.content)[:200]}"
+                for m in recent[-4:]
+            )
 
-    # Build context snippet from memory
-    stm = memory.get("short_term") or []
-    history_snippet = ""
-    if stm:
-        history_snippet = "\n\nRecent Q&A:\n" + "\n".join(
-            f"Q: {p['q']}\nA: {p['a']}" for p in stm[-3:]
-        )
-
-    profile = memory.get("user_profile") or {}
-    profile_snippet = f"\n\nUser profile: {profile}" if profile else ""
-
-    ltm = memory.get("long_term") or {}
-    ltm_snippet = ""
-    if ltm.get("ambiguous"):
-        ltm_snippet = "\n\nNote: Multiple past sessions matched recall — ask user for clarification."
-    elif ltm.get("results"):
-        ltm_snippet = "\n\nRelevant past context found in memory."
-
-    user_msg = query + history_snippet + profile_snippet + ltm_snippet
+    user_msg = query + context_hint
 
     try:
         plan: PlanOutput = await structured_llm.ainvoke([
             ("system", _PLANNER_SYSTEM_PROMPT),
             ("user", user_msg),
         ])
-        llm_elapsed_ms = round((time.perf_counter() - t0) * 1000)
     except Exception as exc:
         elapsed_ms = round((time.perf_counter() - t0) * 1000)
         logger.warning("node_failed", extra={
             "node": "planner", "request_id": request_id,
             "elapsed_ms": elapsed_ms, "error": str(exc),
         })
+        # Safe fallback: assume chat, no tags, no retrieval
         return {
-            "intent": "clarify",
-            "confidence": 0.3,
-            "expanded_query": query,
-            "plan": {},
+            "required_outputs": [],
+            "resolved_query": query,
+            "needs_retrieval": False,
+            "needs_motion": False,
             "needs_clarification": True,
             "errors": [{
                 "node": "planner",
@@ -169,32 +240,62 @@ async def planner_node(state: AgentState, config) -> dict:
             }],
         }
 
-    # Validate intent
-    intent = plan.intent if plan.intent in _VALID_INTENTS else "clarify"
+    # ── Handle None plan (circuit breaker open / chain returns None) ───
+    if plan is None:
+        elapsed_ms = round((time.perf_counter() - t0) * 1000)
+        logger.warning("node_failed", extra={
+            "node": "planner", "request_id": request_id,
+            "elapsed_ms": elapsed_ms, "error": "LLM chain returned None (breaker open?)",
+        })
+        return {
+            "required_outputs": [],
+            "resolved_query": query,
+            "needs_retrieval": False,
+            "needs_motion": False,
+            "needs_clarification": True,
+            "errors": [{
+                "node": "planner",
+                "severity": ErrorSeverity.RECOVERABLE,
+                "message": f"LLM chain returned None ({elapsed_ms:.0f}ms)",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }],
+        }
 
-    # Hard rule (Plan v2.4 §5.4): ambiguous LTM → force clarification
-    # LLM may ignore the prompt hint, so enforce here.
+    # ── Post-validate ─────────────────────────────────────────────────
+    # Filter tags to known vocabulary (D7: no invented tags)
+    valid_tags = [t for t in plan.required_outputs if t in PLANNER_TAGS]
+    if len(valid_tags) != len(plan.required_outputs):
+        unknown = set(plan.required_outputs) - PLANNER_TAGS
+        logger.warning("unknown_tags_filtered", extra={
+            "request_id": request_id, "unknown": list(unknown),
+        })
+
+    # Safety override: red_flag_screen always gets referral_advice too (D33)
+    if "red_flag_screen" in valid_tags and "referral_advice" not in valid_tags:
+        valid_tags.append("referral_advice")
+
+    # If needs_clarification, don't set tags — clarify is its own path
     needs_clarification = plan.needs_clarification
-    plan_dict = plan.model_dump()
-    if ltm.get("ambiguous"):
-        needs_clarification = True
-        if not plan_dict.get("clarification_question"):
-            plan_dict["clarification_question"] = (
-                "Tôi thấy nhiều phiên trò chuyện trước đó. Bạn có thể nhớ thêm chi tiết "
-                "(chủ đề, thời gian gần đúng, hoặc bài tập cụ thể) để tôi tìm chính xác hơn không?"
-            )
+    if needs_clarification:
+        valid_tags = []
+
+    # Resolved query fallback
+    resolved_query = plan.resolved_query.strip() or query
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000)
     logger.info("node_complete", extra={
         "node": "planner", "request_id": request_id,
-        "elapsed_ms": elapsed_ms, "intent": intent,
-        "confidence": plan.confidence, "needs_clarification": needs_clarification,
+        "elapsed_ms": elapsed_ms,
+        "tags": valid_tags,
+        "needs_retrieval": plan.needs_retrieval,
+        "needs_motion": plan.needs_motion,
+        "needs_clarification": needs_clarification,
     })
 
     return {
-        "intent": intent,
-        "confidence": plan.confidence,
-        "expanded_query": plan.expanded_query or query,
-        "plan": plan_dict,
+        "required_outputs": valid_tags,
+        "resolved_query": resolved_query,
+        "needs_retrieval": plan.needs_retrieval and not needs_clarification,
+        "needs_motion": plan.needs_motion and not needs_clarification,
         "needs_clarification": needs_clarification,
     }

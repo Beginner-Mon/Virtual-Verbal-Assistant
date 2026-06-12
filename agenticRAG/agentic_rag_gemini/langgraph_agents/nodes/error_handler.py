@@ -27,4 +27,4 @@ async def error_handler_node(state: AgentState) -> dict:
             "node": "error_handler", "total_errors": total_count,
         })
 
-    return {"reasoning_output": msg, "final_answer": msg}
+    return {"final_answer": msg}
