@@ -42,5 +42,9 @@ class TestPersonaPathTraversal:
         # Load invalid — should get fallback
         invalid = get_persona("../../etc/passwd")
         assert invalid["title"] == "ECA Default"
-        # But the cache entry for the invalid key should still be the fallback
-        # (it's cached so repeated calls return same fallback without re-checking)
+
+        # The valid entry must NOT be corrupted by the invalid lookup
+        assert _persona_cache["eca_default"] is cached_default
+
+        # Repeated invalid lookup stays a fallback (never reads an external file)
+        assert get_persona("../../etc/passwd")["title"] == "ECA Default"

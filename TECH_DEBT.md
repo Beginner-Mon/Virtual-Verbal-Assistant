@@ -33,8 +33,6 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
 - [ ] **HNSW iterative_scan** — khi memory_search có filter `session_id = ANY(...)`, HNSW
       over-fetch cần `iterative_scan` (pgvector 0.8) để recall đúng. Verify sau khi fix
       tenant-scope. (REUPDATE §M.4 note)
-- [ ] **`test-ui/app.js` resume** — đã đổi sang GET; verify lại sau rebuild (response shape đổi:
-      `required_outputs/needs_retrieval/needs_motion` thay `intent/confidence`).
 - [ ] **User paste YouTube link — Q&A feature (MỚI)** — ĐÃ QUYẾT (29/05). User dán link YouTube
       vào ô chat, AI lấy transcript của video đó → đưa vào context → trả lời ngay lượt đó.
       **3 đường YouTube tách bạch, đừng lẫn:**
@@ -68,6 +66,9 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
 
 ## Đã xong (tham chiếu — không phải pending)
 
+- ✅ **`test-ui/app.js` done-label stale field** — `payload.intent` → `required_outputs` (SSE
+  done event không còn `intent`). Phần resume rendering đã đúng shape M.4 (không tham chiếu
+  `metadata/intent`). + assert thật cho test cache persona (R3 nit #1). K 13/06.
 - ✅ **GDPR re-summarize bug (R1) + acceptance tests (R2)** — `rebuild_dirty_chunk` mới ở
   `nodes/summarizer.py` (tái dùng `_summarize_messages` tách từ `_run_summarize`); api/main.py
   fire đúng signature. +17 test (dirty-window, re-summarize round-trip, R1 regression, A1/A3).

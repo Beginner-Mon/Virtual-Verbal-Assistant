@@ -254,7 +254,7 @@ function addEventBadge(container, eventType, payload) {
 
     let label = eventType;
     if (eventType === 'stage')    label = `${payload.node} ${payload.status}`;
-    if (eventType === 'done')     label = `done · ${payload.total_tokens ?? 0} tok · ${payload.intent ?? ''}`;
+    if (eventType === 'done')     label = `done · ${payload.total_tokens ?? 0} tok · ${(payload.required_outputs ?? []).join(', ')}`;
     if (eventType === 'error')    label = `error: ${payload.message ?? ''}`;
     if (eventType === 'speech_ready') label = `🔊 speech_ready`;
 
