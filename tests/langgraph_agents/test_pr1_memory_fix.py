@@ -66,44 +66,45 @@ async def test_memory_search_tenant_isolation():
         session_b, user_b,
     )
 
-    # Insert summaries with embeddings
-    vec_a = await embed.aembed_passage("User A's secret: bài tập squat cho đau lưng")
-    vec_b = await embed.aembed_passage("User B's secret: bài tập yoga cho cổ")
-    await pg.execute(
-        """INSERT INTO summaries (session_id, summary_text, covers_from_seq,
-           covers_up_to_seq, embedding, status) VALUES ($1, $2, 1, 10, $3, 'active')
-           ON CONFLICT ON CONSTRAINT uq_chunk DO NOTHING""",
-        session_a, "User A bị đau lưng mãn tính, được khuyên tập squat nhẹ", vec_a,
-    )
-    await pg.execute(
-        """INSERT INTO summaries (session_id, summary_text, covers_from_seq,
-           covers_up_to_seq, embedding, status) VALUES ($1, $2, 1, 10, $3, 'active')
-           ON CONFLICT ON CONSTRAINT uq_chunk DO NOTHING""",
-        session_b, "User B tập yoga thường xuyên, hỏi về động tác cổ", vec_b,
-    )
-
-    # ── Test: User A searches → must NOT see User B's summary ──────────
-    config_a = _make_config(user_id=user_a, session_id=str(uuid.uuid4()))
-    result_a = await memory_search.ainvoke({"query": "bài tập đau lưng"}, config_a)
-    assert result_a["found"] is True, f"User A should find their own summary, got {result_a}"
-    for r in result_a["results"]:
-        assert "User B" not in r["summary_text"], (
-            f"TENANT LEAK: User A saw User B's data: {r['summary_text']}"
+    try:
+        # Insert summaries with embeddings
+        vec_a = await embed.aembed_passage("User A's secret: bài tập squat cho đau lưng")
+        vec_b = await embed.aembed_passage("User B's secret: bài tập yoga cho cổ")
+        await pg.execute(
+            """INSERT INTO summaries (session_id, summary_text, covers_from_seq,
+               covers_up_to_seq, embedding, status) VALUES ($1, $2, 1, 10, $3, 'active')
+               ON CONFLICT ON CONSTRAINT uq_chunk DO NOTHING""",
+            session_a, "User A bị đau lưng mãn tính, được khuyên tập squat nhẹ", vec_a,
+        )
+        await pg.execute(
+            """INSERT INTO summaries (session_id, summary_text, covers_from_seq,
+               covers_up_to_seq, embedding, status) VALUES ($1, $2, 1, 10, $3, 'active')
+               ON CONFLICT ON CONSTRAINT uq_chunk DO NOTHING""",
+            session_b, "User B tập yoga thường xuyên, hỏi về động tác cổ", vec_b,
         )
 
-    # ── Test: User B searches → must NOT see User A's summary ──────────
-    config_b = _make_config(user_id=user_b, session_id=str(uuid.uuid4()))
-    result_b = await memory_search.ainvoke({"query": "bài tập yoga cổ"}, config_b)
-    assert result_b["found"] is True, f"User B should find their own summary, got {result_b}"
-    for r in result_b["results"]:
-        assert "User A" not in r["summary_text"], (
-            f"TENANT LEAK: User B saw User A's data: {r['summary_text']}"
-        )
+        # ── Test: User A searches → must NOT see User B's summary ──────────
+        config_a = _make_config(user_id=user_a, session_id=str(uuid.uuid4()))
+        result_a = await memory_search.ainvoke({"query": "bài tập đau lưng"}, config_a)
+        assert result_a["found"] is True, f"User A should find their own summary, got {result_a}"
+        for r in result_a["results"]:
+            assert "User B" not in r["summary_text"], (
+                f"TENANT LEAK: User A saw User B's data: {r['summary_text']}"
+            )
 
-    # ── Cleanup ───────────────────────────────────────────────────────
-    await pg.execute("DELETE FROM summaries WHERE session_id = ANY($1)", [session_a, session_b])
-    await pg.execute("DELETE FROM conversations WHERE session_id = ANY($1)", [session_a, session_b])
-    await pg.execute("DELETE FROM users WHERE id = ANY($1)", [user_a, user_b])
+        # ── Test: User B searches → must NOT see User A's summary ──────────
+        config_b = _make_config(user_id=user_b, session_id=str(uuid.uuid4()))
+        result_b = await memory_search.ainvoke({"query": "bài tập yoga cổ"}, config_b)
+        assert result_b["found"] is True, f"User B should find their own summary, got {result_b}"
+        for r in result_b["results"]:
+            assert "User A" not in r["summary_text"], (
+                f"TENANT LEAK: User B saw User A's data: {r['summary_text']}"
+            )
+    finally:
+        # ── Cleanup (always run, even on assert failure) ──────────────────
+        await pg.execute("DELETE FROM summaries WHERE session_id = ANY($1)", [session_a, session_b])
+        await pg.execute("DELETE FROM conversations WHERE session_id = ANY($1)", [session_a, session_b])
+        await pg.execute("DELETE FROM users WHERE id = ANY($1)", [user_a, user_b])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -134,9 +135,10 @@ def test_resume_last_session_schema_hides_user_id():
     from pydantic import BaseModel
     assert isinstance(schema, type) and issubclass(schema, BaseModel)
     fields = schema.model_fields
-    assert "since_days" in fields or True  # at least one arg visible
+    assert "since_days" in fields, "since_days must be visible to LLM"
     assert "user_id" not in fields, "user_id must NOT be in LLM schema"
-    assert "config" not in fields, "config must NOT be in LLM schema"
+    assert "current_session_id" not in fields, "current_session_id must NOT be in LLM schema"
+    assert "config" not in fields, "config must NOT be in LLM schema (RunnableConfig is hidden)"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

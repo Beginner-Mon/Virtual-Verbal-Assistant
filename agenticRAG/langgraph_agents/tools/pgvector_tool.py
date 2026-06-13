@@ -191,13 +191,29 @@ async def memory_search(
             for r in rows
         ]
 
+        # Ambiguity check (A1): top-2 results from different sessions with similarity gap < 0.05
+        is_ambiguous = False
+        if len(results) >= 2:
+            r0, r1 = results[0], results[1]
+            if r0["session_id"] != r1["session_id"] and (r0["similarity"] - r1["similarity"]) < 0.05:
+                is_ambiguous = True
+
+        response = {"found": True, "results": results}
+        if is_ambiguous:
+            response["ambiguous"] = True
+            response["candidates"] = [
+                {"summary_text": r["summary_text"][:80],
+                 "session_id": r["session_id"]}
+                for r in results[:3]
+            ]
+
         logger.info("memory_search_done", extra={
             "query": query[:80],
             "user_sessions": len(user_session_ids),
             "results": len(results),
             "since_days": since_days,
         })
-        return {"found": True, "results": results} if results else {"found": False}
+        return response if results else {"found": False}
 
     except Exception as exc:
         logger.error("memory_search_error", extra={"query": query[:80], "error": str(exc)})
@@ -234,37 +250,48 @@ async def resume_last_session(
         pg = get_pg_client()
         await pg.connect()
 
-        # Step 1: Find most recent session
+        # Step 1: Find top 2 most recent sessions for ambiguity check (A1)
+        base_sql = """
+            SELECT session_id, title, updated_at
+            FROM conversations
+            WHERE user_id = $1
+              AND session_id != $2
+        """
+        params = [user_id, current_session_id]
         if since_days is not None and since_days > 0:
-            row = await pg.fetchrow(
-                """
-                SELECT session_id, title, updated_at
-                FROM conversations
-                WHERE user_id = $1
-                  AND session_id != $2
-                  AND updated_at >= now() - ($3 || ' days')::interval
-                ORDER BY updated_at DESC
-                LIMIT 1
-                """,
-                user_id, current_session_id, str(since_days),
-            )
-        else:
-            row = await pg.fetchrow(
-                """
-                SELECT session_id, title, updated_at
-                FROM conversations
-                WHERE user_id = $1
-                  AND session_id != $2
-                ORDER BY updated_at DESC
-                LIMIT 1
-                """,
-                user_id, current_session_id,
-            )
+            base_sql += " AND updated_at >= now() - ($3 || ' days')::interval"
+            params.append(str(since_days))
 
-        if not row:
+        top2 = await pg.fetch(
+            base_sql + " ORDER BY updated_at DESC LIMIT 2", *params,
+        )
+
+        if not top2:
             return {"found": False}
 
-        target_session = str(row["session_id"])
+        target_session = str(top2[0]["session_id"])
+
+        # Ambiguity check (A1): ≥2 sessions + top-2 gap < 24h
+        is_ambiguous = False
+        candidates = []
+        if len(top2) >= 2:
+            gap_seconds = (
+                top2[0]["updated_at"] - top2[1]["updated_at"]
+            ).total_seconds()
+            if gap_seconds < 86400:  # 24 hours
+                is_ambiguous = True
+                for t in top2[:3]:
+                    # Get first user message as preview
+                    preview_row = await pg.fetchrow(
+                        "SELECT content FROM messages WHERE session_id = $1 AND role = 'user' ORDER BY seq_id LIMIT 1",
+                        t["session_id"],
+                    )
+                    preview = (preview_row["content"][:80] + "...") if preview_row else "(empty)"
+                    candidates.append({
+                        "session_id": str(t["session_id"]),
+                        "preview": preview,
+                        "updated_at": t["updated_at"].isoformat(),
+                    })
 
         # Step 2: Load summaries (frozen chunks)
         summary_rows = await pg.fetch(
@@ -301,12 +328,17 @@ async def resume_last_session(
             "recent_messages": len(recent_messages),
         })
 
-        return {
+        result = {
             "found": True,
             "session_id": target_session,
             "summary_chunks": summary_chunks,
             "recent_messages": recent_messages,
         }
+        if is_ambiguous:
+            result["ambiguous"] = True
+            result["candidates"] = candidates
+
+        return result
 
     except Exception as exc:
         logger.error("resume_last_session_error", extra={"error": str(exc)})

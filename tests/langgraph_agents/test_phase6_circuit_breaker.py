@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from core.circuit_breaker import CircuitBreaker
+from langgraph_agents.core.circuit_breaker import CircuitBreaker
 
 
 def _reset_llm_breaker(role: str = "test"):

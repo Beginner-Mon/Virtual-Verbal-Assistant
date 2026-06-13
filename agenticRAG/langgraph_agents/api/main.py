@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse
 
 from langgraph_agents.api.schemas import (
     ChatRequest, SessionListItem, SessionListResponse, SessionResumeResponse,
+    UserMemoryCreate, UserMemoryItem, UserMemoryListResponse,
 )
 from langgraph_agents.api.sse import encode_event, stream_response
 from langgraph_agents.graph import build_graph_async
@@ -55,9 +56,6 @@ _redis: aioredis.Redis | None = None
 # garbage collected mid-execution the task silently vanishes. Storing the
 # Task in this set + removing it via done_callback prevents GC.
 _pending_tts_tasks: set = set()
-
-# Strong references for summarizer tasks (M.5 background summarize)
-_pending_summarizer_tasks: set = set()
 
 # Node names that emit stage events (Phase 6.9: conversation node removed)
 _STAGE_NODES = {
@@ -220,6 +218,133 @@ def create_app() -> FastAPI:
         except Exception:
             pass
         return {"deleted": session_id, "result": result}
+
+    @application.post("/users/{user_id}/memory",
+                       response_model=UserMemoryItem)
+    async def create_user_memory(user_id: str, body: UserMemoryCreate):
+        """Create a user fact (Tier 1 always-on memory). D14 MVP: user self-reports."""
+        uid = _to_uuid(user_id)
+        pg = get_pg_client()
+        await pg.connect()
+
+        # Ensure user row exists
+        await pg.execute(
+            "INSERT INTO users (id) VALUES ($1::uuid) ON CONFLICT (id) DO NOTHING", uid,
+        )
+
+        row = await pg.fetchrow(
+            """INSERT INTO user_memory (user_id, fact_text, category)
+               VALUES ($1::uuid, $2, $3)
+               RETURNING id, created_at""",
+            uid, body.fact_text, body.category,
+        )
+        return UserMemoryItem(
+            id=str(row["id"]),
+            fact_text=body.fact_text,
+            category=body.category,
+            valid=True,
+            created_at=row["created_at"].isoformat(),
+        )
+
+    @application.get("/users/{user_id}/memory",
+                      response_model=UserMemoryListResponse)
+    async def list_user_memory(user_id: str):
+        """List user facts (valid=true, newest first)."""
+        uid = _to_uuid(user_id)
+        pg = get_pg_client()
+        await pg.connect()
+
+        rows = await pg.fetch(
+            """SELECT id, fact_text, category, valid, created_at
+               FROM user_memory
+               WHERE user_id = $1::uuid AND valid = true
+               ORDER BY created_at DESC
+               LIMIT 50""",
+            uid,
+        )
+        return UserMemoryListResponse(facts=[
+            UserMemoryItem(
+                id=str(r["id"]),
+                fact_text=r["fact_text"],
+                category=r["category"],
+                valid=r["valid"],
+                created_at=r["created_at"].isoformat(),
+            )
+            for r in rows
+        ])
+
+    @application.delete("/users/{user_id}/memory/{fact_id}")
+    async def delete_user_memory(user_id: str, fact_id: str):
+        """Hard-delete a user fact. Ownership verified: fact must belong to user."""
+        uid = _to_uuid(user_id)
+        pg = get_pg_client()
+        await pg.connect()
+
+        result = await pg.execute(
+            """DELETE FROM user_memory
+               WHERE id = $1::uuid AND user_id = $2::uuid""",
+            fact_id, uid,
+        )
+        if result == "DELETE 0":
+            raise HTTPException(404, "Fact not found or not owned by this user")
+        return {"deleted": fact_id}
+
+    @application.delete("/sessions/{session_id}/messages/{message_id}")
+    async def delete_message(session_id: str, message_id: str, user_id: str = Query(...)):
+        """GDPR: delete a single message + mark-dirty summaries + fire re-summarize."""
+        from langgraph_agents.db.gdpr import delete_message as gdpr_delete_message
+        from langgraph_agents.db.gdpr import get_dirty_chunks
+        from langgraph_agents.nodes.summarizer import rebuild_dirty_chunk, _pending_summarizer_tasks
+
+        uid = _to_uuid(user_id)
+
+        # Ownership verify: message must belong to user via session
+        pg = get_pg_client()
+        await pg.connect()
+        owner = await pg.fetchrow(
+            """SELECT 1 FROM messages m
+               JOIN conversations c ON m.session_id = c.session_id
+               WHERE m.id = $1::uuid AND c.user_id = $2::uuid""",
+            message_id, uid,
+        )
+        if not owner:
+            raise HTTPException(404, "Message not found or not owned by this user")
+
+        result = await gdpr_delete_message(message_id, session_id)
+
+        # Fire background re-summarize for dirty chunks
+        for chunk in await get_dirty_chunks(session_id):
+            task = asyncio.create_task(rebuild_dirty_chunk(session_id, chunk["id"]))
+            _pending_summarizer_tasks.add(task)
+            task.add_done_callback(_pending_summarizer_tasks.discard)
+
+        return result
+
+    @application.delete("/users/{user_id}")
+    async def delete_user_endpoint(user_id: str):
+        """GDPR: hard-delete user + cascade all data + clear Redis STM."""
+        from langgraph_agents.db.gdpr import delete_user as gdpr_delete_user
+
+        uid = _to_uuid(user_id)
+
+        # Collect session_ids for Redis cleanup
+        pg = get_pg_client()
+        await pg.connect()
+        sessions = await pg.fetch(
+            "SELECT session_id FROM conversations WHERE user_id = $1::uuid", uid,
+        )
+        session_ids = [str(r["session_id"]) for r in sessions]
+
+        result = await gdpr_delete_user(uid)
+
+        # Clear Redis STM for all user's sessions
+        for sid in session_ids:
+            try:
+                await _get_redis().delete(f"stm:{sid}")
+            except Exception:
+                pass
+
+        return result
 
     return application
 

@@ -25,6 +25,9 @@ from langgraph_agents.llm import get_chat_model
 
 logger = get_logger("langgraph.summarizer")
 
+# Strong references to fire-and-forget summarizer tasks (same pattern as TTS)
+_pending_summarizer_tasks: set = set()
+
 _SUMMARY_THRESHOLD = 10_000   # D13: single threshold
 _MAX_RETRY = 1                # Edge A: retry once
 
@@ -67,7 +70,6 @@ async def maybe_summarize(session_id: str) -> None:
             return
 
         # Fire background task (same pattern as _pending_tts_tasks)
-        from langgraph_agents.api.main import _pending_summarizer_tasks
         task = asyncio.create_task(
             _run_summarize(session_id, last_chunk or 0)
         )
@@ -78,6 +80,57 @@ async def maybe_summarize(session_id: str) -> None:
         logger.warning("summarizer_trigger_failed", extra={
             "session_id": session_id, "error": str(exc),
         })
+
+
+async def _summarize_messages(rows: list, session_id: str) -> str | None:
+    """LLM-summarize a list of message rows → summary_text or None if fail.
+
+    rows = records with {role, content, token_count}.
+    Uses the same prompt + retry logic as _run_summarize.
+    Extracted so rebuild_dirty_chunk can reuse it (M.8 #5).
+    """
+    lines = []
+    for r in rows:
+        label = "User" if r["role"] == "user" else "Assistant"
+        lines.append(f"{label}: {r['content']}")
+
+    conversation = "\n".join(lines)
+
+    llm = get_chat_model("planner")
+    prompt = (
+        "Tóm tắt đoạn hội thoại sau thành 2-4 câu tiếng Việt. "
+        "Giữ lại thông tin quan trọng: triệu chứng, bài tập được đề xuất, "
+        "chống chỉ định, tiến triển của người dùng.\n\n"
+        f"{conversation}"
+    )
+
+    summary_text = ""
+    for attempt in range(_MAX_RETRY + 1):
+        try:
+            ai_msg = await llm.ainvoke(prompt)
+            summary_text = ai_msg.content.strip() if ai_msg.content else ""
+            if summary_text:
+                break
+        except Exception as exc:
+            if attempt < _MAX_RETRY:
+                logger.warning("summarizer_llm_retry", extra={
+                    "session_id": session_id, "attempt": attempt + 1,
+                    "error": str(exc),
+                })
+                await asyncio.sleep(0.5)
+            else:
+                logger.error("summarizer_llm_failed", extra={
+                    "session_id": session_id, "errors": str(exc),
+                })
+                return None
+
+    if not summary_text:
+        logger.warning("summarizer_empty_response", extra={
+            "session_id": session_id,
+        })
+        return None
+
+    return summary_text
 
 
 async def _run_summarize(session_id: str, from_seq: int) -> None:
@@ -100,50 +153,15 @@ async def _run_summarize(session_id: str, from_seq: int) -> None:
         if not rows:
             return
 
-        # Build conversation text with light formatting
-        lines = []
         total_tokens = 0
         for r in rows:
-            label = "User" if r["role"] == "user" else "Assistant"
-            lines.append(f"{label}: {r['content']}")
             total_tokens += r["token_count"] or _token_estimate(r["content"] or "")
 
-        conversation = "\n".join(lines)
         covers_up_to_seq = rows[-1]["seq_id"]
 
         # ── LLM summarize (cheap model tier) ───────────────────────────
-        llm = get_chat_model("planner")
-        prompt = (
-            "Tóm tắt đoạn hội thoại sau thành 2-4 câu tiếng Việt. "
-            "Giữ lại thông tin quan trọng: triệu chứng, bài tập được đề xuất, "
-            "chống chỉ định, tiến triển của người dùng.\n\n"
-            f"{conversation}"
-        )
-
-        summary_text = ""
-        for attempt in range(_MAX_RETRY + 1):
-            try:
-                ai_msg = await llm.ainvoke(prompt)
-                summary_text = ai_msg.content.strip() if ai_msg.content else ""
-                if summary_text:
-                    break
-            except Exception as exc:
-                if attempt < _MAX_RETRY:
-                    logger.warning("summarizer_llm_retry", extra={
-                        "session_id": session_id, "attempt": attempt + 1,
-                        "error": str(exc),
-                    })
-                    await asyncio.sleep(0.5)
-                else:
-                    logger.error("summarizer_llm_failed", extra={
-                        "session_id": session_id, "errors": str(exc),
-                    })
-                    return
-
+        summary_text = await _summarize_messages(rows, session_id)
         if not summary_text:
-            logger.warning("summarizer_empty_response", extra={
-                "session_id": session_id,
-            })
             return
 
         # ── Embed + INSERT (same transaction) ───────────────────────────
@@ -173,3 +191,40 @@ async def _run_summarize(session_id: str, from_seq: int) -> None:
         logger.error("summarizer_fatal", extra={
             "session_id": session_id, "error": str(exc),
         })
+
+
+async def rebuild_dirty_chunk(session_id: str, chunk_id: str) -> bool:
+    """Re-summarize 1 dirty chunk from messages remaining in its range (M.8 #5,#6).
+
+    Returns True if chunk is back to active; False if skipped (empty/LLM fail).
+    """
+    pg = get_pg_client()
+    await pg.connect()
+
+    # 1. Get range of the dirty chunk
+    chunk = await pg.fetchrow(
+        "SELECT covers_from_seq, covers_up_to_seq FROM summaries "
+        "WHERE id = $1 AND session_id = $2 AND status = 'dirty'",
+        chunk_id, session_id,
+    )
+    if not chunk:
+        return False   # already handled / no longer dirty (idempotent)
+
+    # 2. Load messages REMAINING in range (deleted ones are gone)
+    rows = await pg.fetch(
+        "SELECT role, content, token_count FROM messages "
+        "WHERE session_id = $1 AND seq_id BETWEEN $2 AND $3 ORDER BY seq_id",
+        session_id, chunk["covers_from_seq"], chunk["covers_up_to_seq"],
+    )
+    if not rows:
+        return False   # empty-chunk: delete_message already removed it (M.8 #3)
+
+    # 3. Re-summarize + embed + UPDATE (call gdpr with correct 4-arg signature)
+    summary_text = await _summarize_messages(rows, session_id)
+    if not summary_text:
+        return False   # LLM fail → leave dirty, retry next time
+
+    embedding = await get_embedding_service().aembed_passage(summary_text)
+
+    from langgraph_agents.db.gdpr import re_summarize_chunk
+    return await re_summarize_chunk(session_id, chunk_id, summary_text, embedding)

@@ -6,7 +6,7 @@ class ChatRequest(BaseModel):
     query: str
     user_id: str = "anonymous"
     session_id: str = "default"
-    persona_id: str = "eca_default"
+    persona_id: str = Field(default="eca_default", pattern=r"^[A-Za-z0-9_-]{1,64}$")
     output_mode: Literal["text", "speech", "both"] = "text"
     token_limit: Optional[int] = None
     web_search: bool = False
@@ -43,3 +43,20 @@ class SessionResumeResponse(BaseModel):
     messages: list[dict]
     stm_populated: bool
     last_updated: str
+
+
+class UserMemoryCreate(BaseModel):
+    fact_text: str = Field(min_length=1, max_length=500)
+    category: Optional[str] = Field(default=None, max_length=100)
+
+
+class UserMemoryItem(BaseModel):
+    id: str
+    fact_text: str
+    category: Optional[str] = None
+    valid: bool = True
+    created_at: str
+
+
+class UserMemoryListResponse(BaseModel):
+    facts: list[UserMemoryItem]

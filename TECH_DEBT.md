@@ -1,7 +1,7 @@
 # Tech Debt & Pending Tasks
 
 > Checklist các việc đã biết nhưng CHƯA làm. Cập nhật khi đóng/ mở item.
-> Last update: 2026-06-12 (K — PR 1+2 review, 3 item 🔴 đóng). Nguồn: worklogs 05→12/06.
+> Last update: 2026-06-13 (K — review cụm A; A0/A3/A5 đóng, R1 GDPR bug mở). Nguồn: worklogs 05→12/06-cont.
 
 Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng · 🟡 nên làm · ⚪ optional
 
@@ -9,29 +9,16 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
 
 ## 🔴 Critical — chặn Phase 7
 
-- [ ] **Path traversal qua `persona_id`** — `nodes/_persona_loader.py:67` join thẳng
-      request-controlled string vào path, không validate → đọc file `.md` bất kỳ trên host
-      qua `persona_id="../../..."`, nội dung đổ vào system prompt → LLM echo = exfiltrate;
-      `_persona_cache` còn bị đầu độc tới khi restart. Fix: regex `^[A-Za-z0-9_-]+$` +
-      `resolved.relative_to(personas_dir)`. 30 phút. (Security review 12/06 — Vuln 2,
-      chi tiết `PREDEPLOY-AUDIT.md`)
 - [ ] **No-auth IDOR toàn bộ session endpoints** — `user_id` client tự khai + uuid5 đoán được
       → đọc/xóa session người khác, mạo danh `/chat` rút LTM. Localhost dev OK; **chặn mọi
-      deploy có network**. Fix = JWT middleware (nâng từ 🟠 "trước demo" lên 🔴).
-      (Security review 12/06 — Vuln 1, chi tiết `PREDEPLOY-AUDIT.md`)
+      deploy có network**. Fix = JWT/Cognito middleware (Cognito đã có ở nhánh
+      `feature/frontend` — tích hợp). (Security review 12/06 — Vuln 1, chi tiết `PREDEPLOY-AUDIT.md`)
 
 ## 🟠 Quan trọng
 
 - [ ] **Summarizer E2E với LLM thật** — PR 2 mới có unit test (mock LLM/PG). Cần chạy thủ công:
       hội thoại vượt 10k token → row `summaries` xuất hiện, turn sau memory node load chunk,
       `memory_search` từ session khác cùng user tìm thấy. (worklog 12/06 defer)
-- [ ] **Task registry `_pending_summarizer_tasks` đặt nhầm chỗ** — set sống ở `api/main.py`,
-      `summarizer.py` lazy-import ngược lại api.main để lấy nó (circular smell; unit test
-      maybe_summarize kéo cả FastAPI module). Chuyển set về `summarizer.py`, api.main chỉ gọi
-      `maybe_summarize`. Refactor 15', không khẩn. (K review PR 12/06)
-- [ ] **`user_memory` write path** — bảng `user_memory` (M.4 thay `users.profile`) chỉ có code
-      ĐỌC (`memory.py::_load_user_facts`), không chỗ nào ghi → facts luôn rỗng. Cần endpoint
-      user tự nhập facts (MVP per D14). (D1 / plan §4.4, cập nhật theo schema M.4)
 - [ ] **`users.auth` cho Phase 7** — bỏ uuid5 coercion ở production, thêm
       `auth_provider/auth_subject` (cột đã có trong schema M.4, chưa có flow).
       uuid5 giữ cho dev/anonymous. (F3 / plan §3.1)
@@ -81,6 +68,21 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
 
 ## Đã xong (tham chiếu — không phải pending)
 
+- ✅ **GDPR re-summarize bug (R1) + acceptance tests (R2)** — `rebuild_dirty_chunk` mới ở
+  `nodes/summarizer.py` (tái dùng `_summarize_messages` tách từ `_run_summarize`); api/main.py
+  fire đúng signature. +17 test (dirty-window, re-summarize round-trip, R1 regression, A1/A3).
+  Subagent code (Sonnet, karpathy-guidelines), K verify code + tự chạy 225/225 pass (PG thật,
+  không skip). worklog 13/06.
+- ✅ **Path traversal `persona_id` (A0)** — 2 tầng: Pydantic `pattern` ở `ChatRequest` +
+  validate regex + `relative_to` containment ở `_persona_loader`. 4 test pass. K verify 13/06.
+  worklog 12/06-cont (cụm A).
+- ✅ **`user_memory` write path (A3)** — 3 endpoints POST/GET/DELETE `/users/{id}/memory`,
+  ownership check ở DELETE. K verify 13/06. worklog 12/06-cont.
+- ✅ **Task registry `_pending_summarizer_tasks` (A5)** — chuyển về `nodes/summarizer.py`
+  module-level, bỏ lazy-import ngược. worklog 12/06-cont.
+- ✅ **Clarify động M.2b — tool emit ambiguity (A1 cụm A)** — `memory_search` (gap sim<0.05) +
+  `resume_last_session` (gap thời gian<24h) trả `{ambiguous, candidates}`; synthesizer clarify
+  nhận tool_results. K verify 13/06. worklog 12/06-cont. (⚠️ còn thiếu test — R2 ở trên.)
 - ✅ **`memory_search` tenant leak (A1 tái xuất)** — SQL thêm `session_id = ANY($ids)` cả 2
   nhánh; test tenant-isolation 2-user chạy PG thật PASS. K verify 12/06. worklog 12/06 (PR 1).
 - ✅ **`memory_search` + `resume_last_session` bind vào graph** — vào `RETRIEVER_BASE_TOOLS`,

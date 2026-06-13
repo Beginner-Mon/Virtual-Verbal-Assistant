@@ -129,11 +129,14 @@ Stay in the persona voice defined above.
 ## User's question
 {resolved_query}
 
+## Context (tool results may contain ambiguity candidates)
+{tool_results}
+
 Instructions:
 - Ask the user for the specific missing information in your persona voice
 - Be warm and professional — explain WHY you need this info
 - Keep concise (1-3 sentences)
-- If there are multiple possible interpretations, list them briefly (2-3 options)
+- If tool results contain candidates (multiple matching sessions/articles), list 2-3 briefly for the user to choose
 """
 
 _CHAT_TASK = """You are responding to a casual conversational message.
@@ -262,6 +265,7 @@ async def synthesizer_node(state: AgentState, config: RunnableConfig) -> dict:
         task_system = _CLARIFY_TASK.format(
             language_rule=_LANGUAGE_RULE,
             resolved_query=resolved_query,
+            tool_results=tool_results or "(no tool results — static clarification)",
         )
     elif mode == "refuse":
         task_system = _REFUSE_TASK.format(

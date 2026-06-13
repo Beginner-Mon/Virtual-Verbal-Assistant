@@ -63,14 +63,26 @@ def _parse_voice_identity(text: str) -> dict:
 
 
 def _load_persona(persona_id: str) -> dict:
-    personas_dir = _resolve_personas_dir()
-    filepath = personas_dir / f"{persona_id}.md"
-
-    if not filepath.exists():
-        logger.warning("Persona file not found: %s, using fallback", filepath)
+    # ── Defense in depth: validate persona_id before using as path ──
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", persona_id):
+        logger.warning("invalid_persona_id", extra={"persona_id": persona_id[:80]})
         return _fallback_persona(persona_id)
 
-    content = filepath.read_text(encoding="utf-8")
+    personas_dir = _resolve_personas_dir()
+    resolved = (personas_dir / f"{persona_id}.md").resolve()
+
+    # Containment check: resolved path must be inside personas_dir
+    try:
+        resolved.relative_to(personas_dir.resolve())
+    except ValueError:
+        logger.warning("persona_path_traversal_attempt", extra={"persona_id": persona_id[:80]})
+        return _fallback_persona(persona_id)
+
+    if not resolved.exists():
+        logger.warning("Persona file not found: %s, using fallback", resolved)
+        return _fallback_persona(persona_id)
+
+    content = resolved.read_text(encoding="utf-8")
 
     sections: dict[str, str] = {}
     current_header = "identity"
