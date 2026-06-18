@@ -64,6 +64,14 @@ class PostgresClient:
                 register_vector = None
 
             async def _init_conn(conn):
+                # Enable HNSW iterative index scan (pgvector >= 0.8) so filtered
+                # vector search (memory_search: WHERE session_id = ANY(...)) keeps
+                # recall when the filter prunes HNSW candidates. Best-effort:
+                # skipped silently on older pgvector / missing extension.
+                try:
+                    await conn.execute("SET hnsw.iterative_scan = 'relaxed_order'")
+                except Exception:
+                    pass
                 if register_vector is None:
                     return
                 try:

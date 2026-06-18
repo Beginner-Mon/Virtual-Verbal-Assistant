@@ -14,6 +14,7 @@ Decisions encoded:
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -23,6 +24,9 @@ from langgraph_agents.shared import get_embedding_service, get_pg_client
 from langgraph_agents.shared.logging import get_logger
 
 logger = get_logger("langgraph.tools")
+
+# ── YouTube transcript cap (D28: budget ~3k tokens ≈ 12000 chars) ─────────
+_YT_CHAR_CAP = 12_000
 
 
 def _to_uuid(value: str) -> str:
@@ -343,6 +347,62 @@ async def resume_last_session(
     except Exception as exc:
         logger.error("resume_last_session_error", extra={"error": str(exc)})
         raise
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# youtube_transcript — fetch spoken transcript of a YouTube video (no DB write)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@tool
+async def youtube_transcript(url: str) -> dict:
+    """Fetch the spoken transcript of a YouTube video the user pasted.
+
+    Use ONLY when the user's message contains a YouTube link (youtube.com/watch?v=
+    or youtu.be/). Returns the transcript text (truncated) for answering questions
+    about that specific video. Does NOT understand visuals — speech only.
+
+    Args:
+        url: The YouTube URL from the user's message (copy verbatim).
+
+    Returns:
+        {found: true, video_id, transcript, truncated: bool}  on success
+        {found: false, reason: "no_transcript"}                if video has no captions
+    """
+    from youtube_transcript_api import CouldNotRetrieveTranscript, YouTubeTranscriptApi
+
+    from langgraph_agents.tools.youtube_ingest import _extract_video_id
+
+    # Invalid URL format → return {found: false} without raising (D23: empty, not error)
+    try:
+        video_id = _extract_video_id(url)
+    except ValueError:
+        logger.info("youtube_transcript_invalid_url", extra={"url": url[:120]})
+        return {"found": False, "reason": "invalid_url"}
+
+    # Fetch transcript in thread (sync lib, don't block event loop)
+    try:
+        entries = await asyncio.to_thread(
+            YouTubeTranscriptApi.get_transcript,
+            video_id,
+            languages=["vi", "en"],
+        )
+    except CouldNotRetrieveTranscript:
+        # No captions / disabled / unavailable → D23 empty, do NOT raise
+        logger.info("youtube_transcript_no_captions", extra={"video_id": video_id})
+        return {"found": False, "reason": "no_transcript"}
+    # Any other exception (network, HTTP, parse) → raise so retriever/error_handler can handle (D23 service error)
+
+    full_text = " ".join(e["text"] for e in entries)
+
+    # Truncate to cap (D28 budget)
+    truncated = len(full_text) > _YT_CHAR_CAP
+    if truncated:
+        full_text = full_text[:_YT_CHAR_CAP]
+
+    logger.info("youtube_transcript_done", extra={
+        "video_id": video_id, "chars": len(full_text), "truncated": truncated,
+    })
+    return {"found": True, "video_id": video_id, "transcript": full_text, "truncated": truncated}
 
 
 # ── Exports ───────────────────────────────────────────────────────────────

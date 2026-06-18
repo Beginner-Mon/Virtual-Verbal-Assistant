@@ -46,5 +46,8 @@ class TestPersonaPathTraversal:
         # The valid entry must NOT be corrupted by the invalid lookup
         assert _persona_cache["eca_default"] is cached_default
 
+        # Invalid id returns fallback but is NOT cached (no unbounded growth from bad ids)
+        assert "../../etc/passwd" not in _persona_cache
+
         # Repeated invalid lookup stays a fallback (never reads an external file)
         assert get_persona("../../etc/passwd")["title"] == "ECA Default"

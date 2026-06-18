@@ -31,7 +31,16 @@
       "Bash(python -m pytest tests/langgraph_agents/test_phase2_5_integration.py -v -x -k \"not integration\")",
       "Bash(python -m pytest tests/langgraph_agents/test_phase2_5_integration.py -v -x -k \"TestPlan or TestGrader or TestMode or TestTag\")",
       "Bash(python -m pytest tests/langgraph_agents/test_phase2_5_integration.py -v -k \"TestPlan or TestGrader or TestMode or TestTag\")",
-      "PowerShell(python -m pytest tests/langgraph_agents/test_pr1_memory_fix.py tests/langgraph_agents/test_pr2_summarizer.py -v --no-header -x 2>$null)"
+      "PowerShell(python -m pytest tests/langgraph_agents/test_pr1_memory_fix.py tests/langgraph_agents/test_pr2_summarizer.py -v --no-header -x 2>$null)",
+      "PowerShell(git show --stat --name-status 47c67d0 | Select-Object -First 30; Write-Output \"---REUPDATE ours vs theirs---\"; git diff --stat :2:REUPDATE_PLAN.md :3:REUPDATE_PLAN.md 2>$null; git cat-file -s $\\(git rev-parse ':2:REUPDATE_PLAN.md'\\); git cat-file -s $\\(git rev-parse ':3:REUPDATE_PLAN.md'\\))",
+      "PowerShell(git checkout --ours REUPDATE_PLAN.md; git add REUPDATE_PLAN.md agenticRAG/langgraph_agents/alembic.ini agenticRAG/langgraph_agents/alembic/env.py agenticRAG/langgraph_agents/alembic/script.py.mako agenticRAG/langgraph_agents/alembic/versions/002_m4_fresh_schema.py agenticRAG/langgraph_agents/db/gdpr.py agenticRAG/langgraph_agents/db/migrations/001_normalize_messages.sql agenticRAG/langgraph_agents/db/migrations/migrate_messages.py agenticRAG/langgraph_agents/db/migrations/test_crud_lambda.sql agenticRAG/langgraph_agents/nodes/kimodo.py agenticRAG/langgraph_agents/nodes/summarizer.py agenticRAG/langgraph_agents/shared/context.py agenticRAG/langgraph_agents/shared/embedding.py agenticRAG/langgraph_agents/tools/youtube_ingest.py; git rm -q agenticRAG/langgraph_agents/nodes/conversation.py; git diff --name-only --diff-filter=U; Write-Output \"---REUPDATE size check---\"; \\(Get-Item REUPDATE_PLAN.md\\).Length)",
+      "PowerShell(python -m pytest tests/langgraph_agents/test_phase2_5_integration.py tests/langgraph_agents/test_phase3_mcp_client.py tests/langgraph_agents/test_phase5_sse.py tests/langgraph_agents/test_phase3_api.py tests/langgraph_agents/test_pr1_memory_fix.py tests/langgraph_agents/test_pr2_summarizer.py tests/langgraph_agents/test_phase2_5_memory.py tests/langgraph_agents/test_phase2_5_conversation.py tests/langgraph_agents/test_phase6_health.py tests/langgraph_agents/test_phase2_5_tools.py --tb=short -q 2>$null)",
+      "Bash(python -m pytest tests/langgraph_agents/ -q --tb=no)",
+      "Bash(python -m pytest tests/langgraph_agents/ -q --tb=no --co)",
+      "Bash(python -m pytest tests/langgraph_agents/test_pr2_summarizer.py -q --tb=short)",
+      "Bash(python -m pytest tests/langgraph_agents/test_a1_a2_a3.py -m unit -q --tb=short)",
+      "Bash(python -m pytest tests/langgraph_agents/test_a1_a2_a3.py -m integration -q --tb=short)",
+      "Bash(python -m pytest tests/langgraph_agents/ -q --tb=short)"
     ]
   }
 }

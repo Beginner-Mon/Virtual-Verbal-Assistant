@@ -30,42 +30,35 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
 
 - [ ] **`ai_understanding` (AI tự đúc kết về user)** — AI-auto trích facts vào `user_memory`
       (background, throttled mỗi 5 turn). Advisory; `valid` flag sẵn cho conflict. (D14 phase sau)
-- [ ] **HNSW iterative_scan** — khi memory_search có filter `session_id = ANY(...)`, HNSW
-      over-fetch cần `iterative_scan` (pgvector 0.8) để recall đúng. Verify sau khi fix
-      tenant-scope. (REUPDATE §M.4 note)
-- [ ] **User paste YouTube link — Q&A feature (MỚI)** — ĐÃ QUYẾT (29/05). User dán link YouTube
-      vào ô chat, AI lấy transcript của video đó → đưa vào context → trả lời ngay lượt đó.
-      **3 đường YouTube tách bạch, đừng lẫn:**
-      | Đường | Ai | Lưu | Nơi |
-      |---|---|---|---|
-      | `youtube_ingest.py` CLI | Admin (paste list link) | KB chung, mọi user thấy | `kb_embeddings` |
-      | Paste link khi chat | End-user | KHÔNG lưu transcript | context tức thời |
-      | LTM | Hệ thống tự | "user đưa video về ABC" | `summaries` (M.4 — không còn `memory_embeddings`) |
-      **Implement**: planner detect link YouTube trong query → tái dùng `_extract_video_id` +
-      `get_transcript` (từ `youtube_ingest.py`) → **truncate/tóm tắt transcript** (video dài =
-      hàng chục nghìn từ, sẽ vượt context — lấy ~2-3k token hoặc chunk theo câu hỏi) → nhét context
-      cho synthesizer. KHÔNG ghi KB.
-      **LTM nhớ**: dùng cơ chế LTM sẵn có (embed Q&A pair mỗi turn — plan §4.3), KHÔNG code riêng.
-      Câu trả lời của AI đã chứa "video nói về ABC" → embed tự nhiên → LTM nhớ. *Option thay thế
-      (A): tóm tắt transcript thành 1 dòng rồi embed riêng — tốn 1 LLM call, chỉ làm nếu thấy cần.*
-      **Giới hạn**: chỉ đọc lời nói (transcript), KHÔNG hiểu động tác hình ảnh. Video không phụ đề
-      → rỗng (trừ khi thêm Whisper STT, mà Whisper cũng chỉ ra lời nói, không phải động tác).
 ## ⚪ Optional / Phase sau
 
 - [ ] **User upload tài liệu riêng** — ĐÃ QUYẾT (29/05): **Option 1 — KB chỉ của hệ thống.**
       Bỏ `documents.user_id` (luôn = system KB), `search_kb` giữ "all public" an toàn, không có
       private doc nên không leak. Khi thật sự cần upload riêng → thêm bảng riêng (`user_documents`
       + `user_doc_embeddings`) lúc đó, design đúng kịch bản thật. Không schema cho feature chưa có.
-- [ ] **`vector(384)` hardcode** — gắn với MiniLM-L6-v2. Đổi embedding model → re-migrate cả 2
-      bảng vector. Giữ dim ở 1 config constant để đổi 1 chỗ. (plan §3.5 note)
 - [ ] **LLM gợi-ý profile** — LLM phát hiện fact (age/injury) → đề xuất → user confirm → ghi
-      `profile`. Không tự ghi thẳng. (plan §4.4 optional)
-- [ ] **Profile trigger nâng cao** — ngoài settings endpoint, cân nhắc trích từ hội thoại.
+      `user_memory`. Không tự ghi thẳng. (plan §4.4 optional) — FEATURE, cần Owner quyết build.
+- [ ] **Profile trigger nâng cao** — ngoài endpoint, cân nhắc trích từ hội thoại. = gộp vào
+      `ai_understanding` (🟡). FEATURE, cần Owner quyết.
+
+> **`vector(384)` hardcode — ĐÃ THỎA, không cần làm**: `E5_DIM=384` (shared/embedding.py) đã là
+> single constant bên Python; chỗ `vector(384)` còn lại nằm trong Alembic migration ĐÃ CHẠY —
+> đổi model = viết migration mới dù sao. Refactor thêm = cosmetic (karpathy #3). K 13/06.
 
 ---
 
 ## Đã xong (tham chiếu — không phải pending)
 
+- ✅ **HNSW iterative_scan** — pgvector 0.8.2 trên DB; bật `SET hnsw.iterative_scan='relaxed_order'`
+  ở pool `_init_conn` (postgres.py, best-effort guarded) → mọi connection có, không cần wrap
+  transaction. Recall đúng khi memory_search filter `session_id=ANY`. K 13/06.
+- ✅ **Persona cache không cache fallback** (R3 nit #2) — `_fallback_persona` gắn cờ `_fallback`;
+  `get_persona` chỉ cache persona thật → flood id xấu không phình cache. +1 assert test A0. K 13/06.
+- ✅ **YouTube paste-link Q&A (cụm B)** — `youtube_transcript(url)` tool (KHÔNG ghi KB/LTM,
+  reuse `_extract_video_id`, truncate 12k chars, empty≠error D23), trong `RETRIEVER_BASE_TOOLS`
+  + prompt retriever. Hướng TOOL thay "planner detect" (D2b/D16 — tái dùng đường evidence sẵn,
+  0 đổi graph/state/synthesizer). +12 test. Subagent (Sonnet), K verify 237/237. worklog 13/06.
+  Spec `FIX-YOUTUBE-PASTE.md`.
 - ✅ **`test-ui/app.js` done-label stale field** — `payload.intent` → `required_outputs` (SSE
   done event không còn `intent`). Phần resume rendering đã đúng shape M.4 (không tham chiếu
   `metadata/intent`). + assert thật cho test cache persona (R3 nit #1). K 13/06.

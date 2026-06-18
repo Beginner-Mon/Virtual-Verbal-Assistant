@@ -34,9 +34,10 @@ from langgraph_agents.tools.pgvector_tool import (
     kb_search as _kb_search,
     memory_search as _memory_search,
     resume_last_session as _resume_last_session,
+    youtube_transcript as _youtube_transcript,
 )
 
-RETRIEVER_BASE_TOOLS = [_kb_search, _memory_search, _resume_last_session]
+RETRIEVER_BASE_TOOLS = [_kb_search, _memory_search, _resume_last_session, _youtube_transcript]
 
 
 async def _build_tools(web_search_enabled: bool = True) -> list:
@@ -82,13 +83,18 @@ to search for. Do NOT write the final answer — that's the synthesizer's job.
 - **resume_last_session(since_days=None)**: Resume the most recent past session.
   Use for: "tiếp tục", "làm tiếp bài hôm trước", "quay lại bài tập".
   Returns both summary chunks and recent messages from that session.
+- **youtube_transcript(url)**: Fetch the spoken transcript of a YouTube video.
+  Use ONLY when the user's message contains a YouTube link (youtube.com/watch?v= or youtu.be/).
+  Pass the URL verbatim from the user's message. Speech-only — does NOT understand visuals.
 
 ## DECISION RULES
 1. **PT/wellness topic** (exercises, stretches, anatomy, physiotherapy) → kb_search FIRST
 2. **Real-time/external** (news, prices, weather, general non-PT facts) → search_medical
 3. **Past conversation recall** ("lần trước", "như đã nói", "tiếp tục") → memory_search
-4. **Multiple needs** → call tools IN PARALLEL (multiple tool_calls in one response)
-5. **NOT SURE which tool** → call kb_search (default, most common)
+4. **YouTube link in message** (youtube.com/watch or youtu.be) → call `youtube_transcript(url)`
+   with the exact URL from the user's message; use the returned transcript to answer.
+5. **Multiple needs** → call tools IN PARALLEL (multiple tool_calls in one response)
+6. **NOT SURE which tool** → call kb_search (default, most common)
 
 ## SEARCH QUERY TIPS
 - Use the resolved_query as base, enrich with relevant keywords from required_outputs tags

@@ -37,6 +37,7 @@ def _resolve_personas_dir() -> Path:
 def _fallback_persona(persona_id: str) -> dict:
     return {
         "persona_id": persona_id,
+        "_fallback": True,   # not cached by get_persona (avoid unbounded cache from bad ids)
         "title": "ECA Default",
         "identity": "Name: ECA | Role: Physical therapy AI assistant",
         "voice_identity": {"voice_path": None, "language": "vi"},
@@ -119,9 +120,15 @@ def _load_persona(persona_id: str) -> dict:
 
 
 def get_persona(persona_id: str) -> dict:
-    if persona_id not in _persona_cache:
-        _persona_cache[persona_id] = _load_persona(persona_id)
-    return _persona_cache[persona_id]
+    cached = _persona_cache.get(persona_id)
+    if cached is not None:
+        return cached
+    persona = _load_persona(persona_id)
+    # Only cache real personas — fallbacks (bad/missing id) are not cached so a
+    # flood of distinct invalid ids can't grow the cache unbounded.
+    if not persona.get("_fallback"):
+        _persona_cache[persona_id] = persona
+    return persona
 
 
 _MODE_HINTS = {

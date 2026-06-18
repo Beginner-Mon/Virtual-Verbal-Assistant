@@ -6,7 +6,7 @@ Step-by-step guide for deploying the VVA LangGraph backend + ECA UI on a single 
 
 | Requirement | Notes |
 |---|---|
-| **Python 3.10+** | Conda recommended (env name `vva` used below) |
+| **Python 3.10+** | Conda recommended (env name `firstconda` used below) |
 | **Docker Desktop** | For PostgreSQL + Redis (canonical setup) |
 | **Git** | To clone the repo |
 | **DeepSeek API key** | Set in `agenticRAG/agentic_rag_gemini/.env` (gitignored) |
@@ -24,8 +24,8 @@ git checkout feature/langgraph-rewrite
 Create conda environment:
 
 ```bash
-conda create -n vva python=3.10 -y
-conda activate vva
+conda create -n firstconda python=3.10 -y
+conda activate firstconda
 pip install -r requirements-langgraph.txt
 pip install sentence-transformers  # not pinned in requirements; needed by memory node
 ```
@@ -45,7 +45,10 @@ LOG_LEVEL=INFO
 LLM_HEALTHCHECK=0
 ```
 
-Voice output is optional and works out of the box via VieNeu-TTS in-process; no extra env needed.
+Voice output is **optional** and requires the separate SpeechLLm/VieNeu-TTS service on
+port 5000. If it is not running, `output_mode: text` works normally and speech requests
+degrade gracefully (the `/health/detailed` `speechllm` check reports `ok: false` →
+overall status `degraded`, which is expected — text chat is unaffected).
 
 ## 3. Containers setup (Docker)
 
@@ -57,7 +60,8 @@ docker ps  # verify vva-postgres (healthy) + vva-redis + vva-searxng are Up
 ```
 
 The compose file creates:
-- PostgreSQL: DB `vva`, user `vva`, password `vva_dev`, port 5432
+- PostgreSQL: DB `vva`, user `vva`, password `vva_dev`, **host port 5433** (mapped 5433→5432
+  to avoid clashing with a local PostgreSQL on 5432). All DSNs use 5433.
 - Redis: port 6379, 512MB maxmemory, LRU eviction
 - SearXNG: port 6666, web search aggregator (Google + Bing + DDG + Wikipedia)
 
@@ -90,7 +94,7 @@ docker exec -it vva-postgres psql -U vva -d vva -c "\dt"
 Terminal 1 — Backend (port 8080, logs to file):
 
 ```powershell
-conda activate vva
+conda activate firstconda
 cd agenticRAG
 # Redirect stdout to vva.log so log-analysis commands in §8 work.
 # Drop the `*> ..\vva.log` part if you prefer console output.
@@ -113,41 +117,43 @@ Health checks:
 curl http://localhost:8080/health
 # → {"status": "ok"}
 
-# Readiness (parallel PG/Redis/MCP/LLM checks, 3s timeout each)
-curl http://localhost:8080/health/detailed
+# Readiness (parallel checks, 3s timeout each). Use curl.exe on Windows to see the
+# body even on HTTP 503 (PowerShell's Invoke-RestMethod throws and hides it).
+curl.exe -s http://localhost:8080/health/detailed
 # → {
-#     "status": "ready",
+#     "status": "ready",          # "degraded" if a non-critical dep is down
 #     "checks": {
-#       "postgres":   {"ok": true, "latency_ms": 1.2},
-#       "redis":      {"ok": true, "latency_ms": 0.5},
-#       "graph":      {"ok": true, "latency_ms": 0.0},
-#       "llm":        {"ok": true, "latency_ms": 0.0, "detail": "skipped"},
-#       "mcp":        {"ok": true, "latency_ms": 1.8, "detail": "2 tool(s)"},
-#       "breaker:planner":      "closed",
-#       "breaker:synthesizer":  "closed",
-#       "breaker:conversation": "closed"
+#       "redis":     {"ok": true},
+#       "postgres":  {"ok": true},
+#       "graph":     {"ok": true},
+#       "llm":       {"ok": true, "detail": "skipped"},   # config check; not a live call unless LLM_HEALTHCHECK=1
+#       "mcp":       {"ok": true, "detail": "2 tool(s)"},
+#       "speechllm": {"ok": false},  # TTS :5000 not running → degraded, but text chat still works
+#       "searxng":   {"ok": true}
 #     }
 #   }
-# Status 503 if any check.ok=false (except mcp 0-tools which is graceful).
+# HTTP 503 when any check.ok=false (incl. speechllm down). "degraded" with only
+# speechllm false is the EXPECTED state when you haven't started the TTS service.
 ```
 
-Smoke test (SSE chat):
+Smoke test (SSE chat) — write the body to a file to avoid shell-quoting issues:
 
 ```bash
-echo '{"query":"Xin chao"}' | curl -s -N -X POST http://localhost:8080/chat \
-  -H "Content-Type: application/json" -d @-
+printf '%s' '{"query":"xin chao","user_id":"smoke","session_id":"smoke-1","output_mode":"text"}' > body.json
+curl -s -N -X POST http://localhost:8080/chat -H "Content-Type: application/json" -d @body.json
 ```
 
-You should see SSE events: `stage:` (memory, planner, conversation), `token:`, `done:`.
+You should see SSE events: `stage:` (memory → planner → synthesizer), a stream of
+`token:` events, then `done:` with `total_tokens` + `required_outputs`.
 
-Pytest smoke (unit ~10s, integration ~6min — live DeepSeek):
+Pytest (full suite ~3min; integration needs Docker PG/Redis + live DeepSeek key):
 
 ```powershell
-pytest tests/langgraph_agents/ -m unit -v            # 100 tests, <30s
-pytest tests/langgraph_agents/ -m integration -v     # 6 tests, ~6min
+python -m pytest tests/langgraph_agents/ -q          # 237 passed
+python -m pytest tests/langgraph_agents/ -m unit -q  # fast subset, no live services
 ```
 
-Expected: 100/100 unit pass, 6/6 integration pass.
+Expected: 237 passed (unit + integration on the running PostgreSQL/Redis).
 
 ## 6. Open the UI
 
@@ -176,7 +182,8 @@ docker compose -f docker-compose.langgraph.yml restart postgres
 
 ### `pgvector` extension missing
 Only an issue if you run PostgreSQL outside the `pgvector/pgvector:pg16` image. The
-docker-compose image ships the extension; init_schema creates it. To force-create:
+docker-compose image ships the extension; the Alembic migration (`alembic upgrade head`)
+runs `CREATE EXTENSION IF NOT EXISTS vector`. To force-create:
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
 ```
@@ -195,9 +202,10 @@ pip install sentence-transformers
 ```
 
 ### `ModuleNotFoundError: No module named 'langgraph_agents'` (in MCP subprocess)
-MCP subprocess PYTHONPATH is wrong. Verify `mcp/client.py:_package_root()` returns
-`parents[2]` (= `agentic_rag_gemini`), NOT `parents[3]` (= `agenticRAG`). Fixed in
-commit 858e8a8. Symptom in log:
+MCP subprocess PYTHONPATH is wrong. After the package relevel, the package lives at
+`agenticRAG/langgraph_agents/`, so `mcp/client.py:_package_root()` (`parents[2]`) must
+resolve to `agenticRAG/`. A healthy startup logs `mcp_discovery_ok` with `tool_count: 2`.
+Symptom of failure in log:
 ```json
 {"msg":"mcp_discovery_failed","error":"No module named 'langgraph_agents'"}
 ```
@@ -212,24 +220,21 @@ The graph still runs (graceful degradation) with only in-process `pgvector_searc
 tool. Retriever skips MCP-only intents (e.g. `visualize_motion`); grader routes to
 clarify when expected tool output is missing.
 
-### Greeting classified as `clarify` instead of `conversation`
+### Greeting classified as `clarify` instead of `chat`
 Old planner prompt (no few-shot, no ASCII-Vietnamese rule). Verify `nodes/planner.py`
-has the 6-example few-shot block including `"Xin chao"` (no diacritics) → conversation.
-Fixed in Phase 5 wrap-up commit.
+has the few-shot block including `"Xin chao"` (no diacritics) → `required_outputs: []`,
+`needs_clarification: false` → synthesizer chat mode. (3-axis model — there is no
+`conversation` node anymore; the synthesizer is the universal responder.)
 
-### `CircuitBreakerOpenError` from planner / synthesizer / conversation
+### `CircuitBreakerOpenError` from planner / synthesizer
 DeepSeek API has failed 3+ consecutive calls. Symptom in log:
 ```json
 {"msg":"node_failed","error":"LLM circuit breaker open for 'llm:planner'..."}
 ```
 Resolution: wait 30s for breaker cool-down (half-open probe), then retry. The breaker
 auto-closes after one successful call. Each role has its own breaker — one role
-opening does not affect others.
-
-Check current state via `/health/detailed`:
-```json
-{"checks":{"breaker:planner":"open", ...}}
-```
+opening does not affect others. (Breaker state is internal; it is not surfaced in
+`/health/detailed`.)
 
 ### SearXNG returns 403 / empty results
 - `limiter: true` in settings.yml → set to `false` for local dev
@@ -329,7 +334,8 @@ docker compose -f docker-compose.langgraph.yml down -v    # wipe volumes
 |-----------|------|--------------------------|
 | Backend   | 8080 | FastAPI + SSE streaming  |
 | Frontend  | 3000 | Static HTTP server       |
-| PostgreSQL| 5432 | Session + vector store   |
+| PostgreSQL| 5433 | Session + vector store (host 5433 → container 5432) |
+| SpeechLLm/TTS | 5000 | VieNeu TTS — optional, only for voice output |
 | Redis     | 6379 | STM + task results       |
 | SearXNG   | 6666 | Self-hosted metasearch (Google+Bing+DDG+Wikipedia) |
 
