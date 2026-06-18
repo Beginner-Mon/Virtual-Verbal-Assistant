@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VVA Pipeline Dashboard</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        .result-card { display:flex; flex-direction:column; gap:12px; padding:16px; }
+        .result-card-section { display:flex; flex-direction:column; gap:4px; }
+        .result-card-row { display:flex; flex-wrap:wrap; gap:16px; }
+        .result-card-label { font-size:0.72rem; font-weight:600; text-transform:uppercase;
+            letter-spacing:.05em; color:var(--text-muted,#888); }
+        .result-card-value { font-size:0.9rem; line-height:1.5; }
+        .result-card-row .result-card-section { flex:1; min-width:120px; }
+
+        /* Chat output */
+        #chat-output {
+            white-space: pre-wrap;
+            background: var(--bg-secondary, #1a1a2e);
+            border-radius: 6px;
+            padding: 12px;
+            min-height: 120px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-size: 0.88rem;
+            line-height: 1.7;
+            font-family: inherit;
+        }
+        #chat-events {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            padding: 8px 0 4px;
+            min-height: 28px;
+        }
+        .chat-controls { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+        .toggle-label { display:flex; align-items:center; gap:6px; font-size:0.85rem;
+            color:var(--text-muted,#aaa); cursor:pointer; user-select:none; }
+
+        /* Session table */
+        #result-sessions table th, #result-sessions table td {
+            padding: 6px 10px;
+            border-bottom: 1px solid var(--border, #2a2a4a);
+        }
+        #result-sessions table tr:last-child td { border-bottom: none; }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <div class="logo-icon">⚡</div>
+                    <div>
+                        <h1>Pipeline Dashboard</h1>
+                        <p class="subtitle">VVA LangGraph v2.5 — Service Tester</p>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <button class="btn btn-ghost" onclick="checkAllHealth()">
+                        <span class="btn-icon">🔄</span> Refresh All
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Service Status -->
+        <section class="section">
+            <h2 class="section-title">Service Status</h2>
+            <div class="status-grid">
+
+                <!-- LangGraph Agent -->
+                <div class="status-card" id="card-langgraph">
+                    <div class="status-header">
+                        <div class="status-dot" id="dot-langgraph"></div>
+                        <div class="status-info">
+                            <span class="service-name">LangGraph Agent</span>
+                            <span class="service-port">Port 8080 · FastAPI · main API</span>
+                        </div>
+                    </div>
+                    <div class="status-body">
+                        <span class="status-label" id="label-langgraph">Checking…</span>
+                    </div>
+                    <button class="btn btn-sm btn-outline" onclick="checkHealth('langgraph')">Check</button>
+                </div>
+
+                <!-- VieNeu TTS -->
+                <div class="status-card" id="card-speechllm">
+                    <div class="status-header">
+                        <div class="status-dot" id="dot-speechllm"></div>
+                        <div class="status-info">
+                            <span class="service-name">VieNeu TTS</span>
+                            <span class="service-port">Port 5000 · CPU-only Vietnamese TTS</span>
+                        </div>
+                    </div>
+                    <div class="status-body">
+                        <span class="status-label" id="label-speechllm">Checking…</span>
+                    </div>
+                    <button class="btn btn-sm btn-outline" onclick="checkHealth('speechllm')">Check</button>
+                </div>
+
+                <!-- SearXNG -->
+                <div class="status-card" id="card-searxng">
+                    <div class="status-header">
+                        <div class="status-dot" id="dot-searxng"></div>
+                        <div class="status-info">
+                            <span class="service-name">SearXNG</span>
+                            <span class="service-port">Port 6666 · Docker · web search</span>
+                        </div>
+                    </div>
+                    <div class="status-body">
+                        <span class="status-label" id="label-searxng">Checking…</span>
+                    </div>
+                    <button class="btn btn-sm btn-outline" onclick="checkHealth('searxng')">Check</button>
+                </div>
+
+                <!-- Kimodo MCP -->
+                <div class="status-card" id="card-kimodo">
+                    <div class="status-header">
+                        <div class="status-dot" id="dot-kimodo"></div>
+                        <div class="status-info">
+                            <span class="service-name">Kimodo MCP</span>
+                            <span class="service-port">Port 5001 · GPU motion synthesis</span>
+                        </div>
+                    </div>
+                    <div class="status-body">
+                        <span class="status-label" id="label-kimodo">Checking…</span>
+                    </div>
+                    <button class="btn btn-sm btn-outline" onclick="checkHealth('kimodo')">Check</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Test Panels -->
+        <section class="section">
+            <h2 class="section-title">Test Endpoints</h2>
+
+            <div class="tabs">
+                <button class="tab active" onclick="switchTab('chat')" id="tab-chat">
+                    💬 Chat (SSE)
+                </button>
+                <button class="tab" onclick="switchTab('sessions')" id="tab-sessions">
+                    📂 Sessions
+                </button>
+                <button class="tab" onclick="switchTab('tts')" id="tab-tts">
+                    🔊 VieNeu TTS
+                </button>
+                <button class="tab" onclick="switchTab('health')" id="tab-health">
+                    🩺 Health Detailed
+                </button>
+            </div>
+
+            <!-- Chat Panel -->
+            <div class="test-panel active" id="panel-chat">
+                <div class="panel-header">
+                    <h3>LangGraph Chat</h3>
+                    <span class="endpoint-badge">POST /chat → :8080 (SSE stream)</span>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group flex-2">
+                        <label>Query</label>
+                        <input type="text" id="chat-query" placeholder="e.g. Xin chào / bài tập cho đau lưng" value="Xin chào">
+                    </div>
+                    <div class="form-group flex-1">
+                        <label>Persona</label>
+                        <select id="chat-persona">
+                            <option value="eca_default">Seele (eca_default)</option>
+                            <option value="eca_friendly">ECA Buddy (eca_friendly)</option>
+                            <option value="eca_clinical">Dr. ECA (eca_clinical)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group flex-1">
+                        <label>User ID</label>
+                        <input type="text" id="chat-user-id" value="test-user">
+                    </div>
+                    <div class="form-group flex-2">
+                        <label>Session ID <span style="font-weight:400;color:var(--text-muted)">(auto-generated, or paste to resume)</span></label>
+                        <input type="text" id="chat-session-id" placeholder="UUID">
+                    </div>
+                </div>
+
+                <div class="chat-controls">
+                    <label class="toggle-label">
+                        <input type="checkbox" id="chat-web-search"> 🔍 Web search
+                    </label>
+                    <label class="toggle-label">
+                        <input type="checkbox" id="chat-tts"> 🔊 TTS
+                    </label>
+                </div>
+
+                <div class="form-actions" style="margin-top:12px">
+                    <button class="btn btn-primary" onclick="testChat()" id="btn-chat">
+                        <span class="btn-icon">▶</span> Send
+                    </button>
+                    <button class="btn btn-outline" onclick="stopChat()" id="btn-chat-stop"
+                            style="display:none;color:var(--error)">
+                        <span class="btn-icon">⏹</span> Stop
+                    </button>
+                    <span class="timer" id="timer-chat"></span>
+                </div>
+
+                <!-- SSE events badges -->
+                <div id="chat-events"></div>
+
+                <!-- Token stream output -->
+                <pre id="chat-output" style="margin-top:8px">Response will stream here…</pre>
+            </div>
+
+            <!-- Sessions Panel -->
+            <div class="test-panel" id="panel-sessions">
+                <div class="panel-header">
+                    <h3>Session Management</h3>
+                    <span class="endpoint-badge">GET · POST · DELETE /sessions → :8080</span>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group flex-1">
+                        <label>User ID</label>
+                        <input type="text" id="sess-user-id" value="test-user">
+                    </div>
+                    <div class="form-group" style="align-self:flex-end">
+                        <button class="btn btn-primary" onclick="listSessions()" id="btn-sessions">
+                            <span class="btn-icon">📂</span> List Sessions
+                        </button>
+                    </div>
+                </div>
+
+                <div class="form-note" style="font-size:0.8rem;color:var(--text-muted);margin-bottom:8px;
+                    padding:6px 10px;background:rgba(124,128,255,.08);border-radius:6px;border-left:3px solid var(--accent,#7c80ff)">
+                    Resume a session to pre-fill the Chat panel's Session ID field and continue the conversation.
+                </div>
+
+                <div class="result-container" id="result-sessions">
+                    <div class="result-placeholder">Click "List Sessions" to load.</div>
+                </div>
+            </div>
+
+            <!-- VieNeu TTS Panel -->
+            <div class="test-panel" id="panel-tts">
+                <div class="panel-header">
+                    <h3>VieNeu TTS</h3>
+                    <span class="endpoint-badge">POST /synthesize → :5000</span>
+                </div>
+
+                <div class="form-group">
+                    <label>Text to synthesize</label>
+                    <textarea id="tts-text" rows="3" placeholder="Enter Vietnamese or English text…">Xin chào! Tôi là trợ lý ảo của bạn.</textarea>
+                </div>
+                <div class="form-group">
+                    <label>Voice path <span style="font-weight:400;color:var(--text-muted)">(optional — leave blank for default)</span></label>
+                    <input type="text" id="tts-voice" placeholder="e.g. voices/seele_en.wav">
+                </div>
+
+                <div class="form-actions">
+                    <button class="btn btn-primary" onclick="testTTS()" id="btn-tts">
+                        <span class="btn-icon">🔊</span> Synthesize
+                    </button>
+                    <span class="timer" id="timer-tts"></span>
+                </div>
+
+                <div class="result-container" id="result-tts">
+                    <div class="result-placeholder">Results will appear here…</div>
+                </div>
+            </div>
+
+            <!-- Health Detailed Panel -->
+            <div class="test-panel" id="panel-health">
+                <div class="panel-header">
+                    <h3>Health Detailed</h3>
+                    <span class="endpoint-badge">GET /health/detailed → :8080</span>
+                </div>
+                <div class="form-note" style="font-size:0.8rem;color:var(--text-muted);margin-bottom:12px;
+                    padding:6px 10px;background:rgba(124,128,255,.08);border-radius:6px;border-left:3px solid var(--accent,#7c80ff)">
+                    Checks: PostgreSQL · Redis · LLM (if LLM_HEALTHCHECK=1) · MCP servers · circuit breaker state per role.
+                    Returns 200 if all ok, 503 if any check fails.
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary" onclick="checkHealthDetailed()">
+                        <span class="btn-icon">🩺</span> Run Checks
+                    </button>
+                </div>
+                <div class="result-container" id="result-health">
+                    <div class="result-placeholder">Click "Run Checks" to fetch /health/detailed.</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Response Log -->
+        <section class="section">
+            <div class="log-header">
+                <h2 class="section-title">Response Log</h2>
+                <button class="btn btn-ghost btn-sm" onclick="clearLog()">Clear</button>
+            </div>
+            <div class="log-container" id="log-container">
+                <div class="log-empty">No requests yet. Test an endpoint above.</div>
+            </div>
+        </section>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
