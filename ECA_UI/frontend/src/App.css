@@ -1,0 +1,497 @@
+/* ─── Custom scrollbar ─── */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* ─── Message entry animation ─── */
+@keyframes message-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.animate-message-in {
+  animation: message-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ─── Glow pulse for status indicators ─── */
+@keyframes glow-pulse {
+  0%, 100% {
+    box-shadow: 0 0 4px 1px rgba(52, 211, 153, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 8px 3px rgba(52, 211, 153, 0.6);
+  }
+}
+.animate-glow-pulse {
+  animation: glow-pulse 2s ease-in-out infinite;
+}
+
+/* ─── Auth Loading Screen ─── */
+.auth-loading-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  width: 100vw;
+  background: var(--background);
+}
+
+.auth-loading-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.auth-spinner {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  border: 2px solid var(--primary);
+  border-top-color: transparent;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.auth-loading-text {
+  font-size: 0.875rem;
+  color: var(--muted-foreground);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Auth Center Container — full-viewport centering
+   ═══════════════════════════════════════════════════════════════════ */
+.auth-center-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  width: 100vw;
+  background: var(--background);
+  /* Subtle radial gradient behind the form */
+  background-image:
+    radial-gradient(
+      ellipse 60% 50% at 50% 40%,
+      var(--muted),
+      transparent
+    );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Amplify Authenticator — dark theme overrides
+   ═══════════════════════════════════════════════════════════════════ */
+[data-amplify-authenticator] {
+  /* Amplify design tokens → our theme */
+  --amplify-colors-background-primary: var(--background);
+  --amplify-colors-background-secondary: var(--card);
+  --amplify-colors-background-tertiary: var(--secondary);
+
+  --amplify-colors-font-primary: var(--foreground);
+  --amplify-colors-font-secondary: var(--muted-foreground);
+  --amplify-colors-font-tertiary: var(--muted-foreground);
+  --amplify-colors-font-interactive: var(--primary);
+
+  --amplify-colors-brand-primary-10: var(--primary);
+  --amplify-colors-brand-primary-20: var(--primary);
+  --amplify-colors-brand-primary-40: var(--primary);
+  --amplify-colors-brand-primary-60: var(--primary);
+  --amplify-colors-brand-primary-80: var(--primary);
+  --amplify-colors-brand-primary-90: var(--primary);
+  --amplify-colors-brand-primary-100: var(--primary);
+
+  --amplify-colors-border-primary: var(--border);
+  --amplify-colors-border-secondary: var(--border);
+  --amplify-colors-border-focus: var(--primary);
+
+  --amplify-components-authenticator-router-background-color: var(--card);
+  --amplify-components-authenticator-router-border-color: var(--border);
+  --amplify-components-authenticator-router-box-shadow: 0 25px 60px -12px rgba(0, 0, 0, 0.6);
+
+  --amplify-components-button-primary-background-color: var(--primary);
+  --amplify-components-button-primary-hover-background-color: var(--primary);
+  --amplify-components-button-primary-active-background-color: var(--primary);
+  --amplify-components-button-primary-color: var(--primary-foreground);
+
+  --amplify-components-button-link-color: var(--primary);
+  --amplify-components-button-link-hover-color: var(--primary);
+  --amplify-components-button-link-hover-background-color: var(--muted);
+
+  --amplify-components-fieldcontrol-border-color: var(--border);
+  --amplify-components-fieldcontrol-focus-border-color: var(--primary);
+  --amplify-components-fieldcontrol-color: var(--foreground);
+  --amplify-components-fieldcontrol-background-color: var(--background);
+
+  --amplify-components-tabs-item-active-color: var(--primary);
+  --amplify-components-tabs-item-active-border-color: var(--primary);
+  --amplify-components-tabs-item-color: var(--muted-foreground);
+  --amplify-components-tabs-item-hover-color: var(--primary);
+
+  --amplify-radii-small: 0.5rem;
+  --amplify-radii-medium: 0.75rem;
+  --amplify-radii-large: 1rem;
+
+  --amplify-space-small: 0.75rem;
+  --amplify-space-medium: 1rem;
+  --amplify-space-large: 1.5rem;
+
+  --amplify-fonts-default-variable: var(--font-sans);
+  --amplify-fonts-default-static: var(--font-sans);
+
+  font-family: var(--font-sans);
+}
+
+/* Card / Router panel */
+[data-amplify-authenticator] [data-amplify-router] {
+  border-radius: 1.25rem;
+  border: 1px solid var(--border);
+  box-shadow:
+    0 25px 60px -12px rgba(0, 0, 0, 0.6),
+    0 0 0 1px var(--border);
+  backdrop-filter: blur(12px);
+  min-width: 400px;
+  max-width: 480px;
+  overflow: hidden;
+}
+
+/* Tab bar (Sign In / Create Account) */
+[data-amplify-authenticator] [data-amplify-router] [role="tablist"] {
+  background: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Input fields */
+[data-amplify-authenticator] .amplify-input,
+[data-amplify-authenticator] input {
+  background: var(--background) !important;
+  color: var(--foreground) !important;
+  border-color: var(--border) !important;
+  border-radius: 0.625rem !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+[data-amplify-authenticator] .amplify-input:focus,
+[data-amplify-authenticator] input:focus {
+  border-color: var(--primary) !important;
+  box-shadow: 0 0 0 3px var(--primary) !important;
+  outline: none;
+}
+
+/* Password field: one visual wrapper, transparent input + visibility button */
+[data-amplify-authenticator] .amplify-passwordfield .amplify-field-group {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 2.625rem;
+  overflow: hidden;
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 0.625rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+[data-amplify-authenticator] .amplify-passwordfield .amplify-field-group:hover {
+  border-color: var(--primary);
+}
+
+[data-amplify-authenticator] .amplify-passwordfield .amplify-field-group:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary);
+}
+
+[data-amplify-authenticator] .amplify-passwordfield .amplify-input,
+[data-amplify-authenticator] .amplify-passwordfield .amplify-input:focus {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+[data-amplify-authenticator] .amplify-passwordfield .amplify-field-group__inner-end {
+  display: contents !important;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}
+
+[data-amplify-authenticator] .amplify-passwordfield .amplify-field-group__inner-end .amplify-button,
+[data-amplify-authenticator] .amplify-passwordfield .amplify-field-group__inner-end .amplify-button:hover,
+[data-amplify-authenticator] .amplify-passwordfield .amplify-field-group__inner-end .amplify-button:focus,
+[data-amplify-authenticator] .amplify-passwordfield .amplify-field-group__inner-end .amplify-button:active {
+  width: 3rem;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  background: transparent !important;
+  border: none !important;
+  border-block: 0 !important;
+  border-inline: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  color: var(--muted-foreground) !important;
+  outline: none !important;
+}
+
+[data-amplify-authenticator] .amplify-passwordfield .amplify-field-group__control,
+[data-amplify-authenticator] .amplify-passwordfield button,
+[data-amplify-authenticator] .amplify-passwordfield button:hover,
+[data-amplify-authenticator] .amplify-passwordfield button:focus,
+[data-amplify-authenticator] .amplify-passwordfield button:active,
+[data-amplify-authenticator] .amplify-passwordfield button:focus-visible {
+  background: transparent !important;
+  border: none !important;
+  border-block: 0 !important;
+  border-inline: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+}
+
+/* Field labels */
+[data-amplify-authenticator] .amplify-label {
+  color: var(--muted-foreground);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+/* Primary button (Sign in / Create Account) */
+[data-amplify-authenticator] .amplify-button--primary {
+  border-radius: 0.625rem !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.02em;
+  transition: all 0.2s ease;
+}
+
+[data-amplify-authenticator] .amplify-button--primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px var(--primary);
+}
+
+/* Link buttons */
+[data-amplify-authenticator] .amplify-button--link {
+  font-size: 0.8125rem;
+}
+
+/* Error/alert messages */
+[data-amplify-authenticator] .amplify-alert {
+  border-radius: 0.5rem;
+  font-size: 0.8125rem;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Confirm Human Checkbox — custom styled
+   ═══════════════════════════════════════════════════════════════════ */
+.confirm-human-wrapper {
+  margin-top: 0.75rem;
+  padding: 0.875rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--muted);
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.confirm-human-wrapper:hover {
+  border-color: var(--primary);
+  background: var(--muted);
+}
+
+.confirm-human-label {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+/* Hide native checkbox */
+.confirm-human-checkbox {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+/* Custom checkmark box */
+.confirm-human-checkmark {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.375rem;
+  height: 1.375rem;
+  border: 2px solid var(--border);
+  border-radius: 0.375rem;
+  background: var(--background);
+  flex-shrink: 0;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Check icon (hidden by default) */
+.confirm-human-checkmark::after {
+  content: '';
+  position: absolute;
+  width: 6px;
+  height: 10px;
+  border: solid var(--primary-foreground);
+  border-width: 0 2.5px 2.5px 0;
+  transform: rotate(45deg) scale(0);
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Checked state */
+.confirm-human-checkbox:checked + .confirm-human-checkmark {
+  background: var(--primary);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary);
+}
+
+.confirm-human-checkbox:checked + .confirm-human-checkmark::after {
+  transform: rotate(45deg) scale(1);
+}
+
+/* Focus state */
+.confirm-human-checkbox:focus-visible + .confirm-human-checkmark {
+  box-shadow: 0 0 0 3px var(--primary);
+}
+
+/* Label text */
+.confirm-human-text {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  transition: color 0.2s ease;
+}
+
+.confirm-human-checkbox:checked ~ .confirm-human-text {
+  color: var(--foreground);
+}
+
+/* ─── Fade-in animation for auth form ─── */
+@keyframes auth-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+[data-amplify-authenticator] {
+  animation: auth-fade-in 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Floating Nav Bar — panel animation
+   ═══════════════════════════════════════════════════════════════════ */
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(8px);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+    filter: blur(0);
+  }
+}
+
+.animate-panel-in {
+  animation: panel-in 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* ─── Mobile menu slide-down ─── */
+@keyframes slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scaleY(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+  }
+}
+.animate-slide-down {
+  animation: slide-down 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: top center;
+}
+
+/* ─── Bottom sheet slide-up animation ─── */
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-slide-up {
+  animation: slide-up 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Nav icon button hover glow */
+.nav-icon-btn:hover {
+  box-shadow: 0 0 16px rgba(139, 92, 246, 0.12);
+}
+
+/* Floating nav bar subtle inner glow */
+.floating-nav-bar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.06) 0%,
+    transparent 50%,
+    rgba(139, 92, 246, 0.04) 100%
+  );
+  pointer-events: none;
+}
+
+/* Floating panel inner scrollbar */
+.floating-panel .scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+}
+.floating-panel .scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.floating-panel .scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+}
+.floating-panel .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+/* Fix Radix ScrollArea horizontal blowout */
+[data-radix-scroll-area-viewport] > div {
+  display: block !important;
+}

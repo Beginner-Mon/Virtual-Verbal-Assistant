@@ -1,0 +1,62 @@
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "predev": "node ./scripts/sync-npz-to-bvh.mjs",
+    "dev": "vite",
+    "prebuild": "node ./scripts/sync-npz-to-bvh.mjs",
+    "build": "tsc -b && vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@aws-amplify/ui-react": "^6.15.4",
+    "@aws-sdk/client-cognito-identity-provider": "^3.1065.0",
+    "@aws-sdk/client-dynamodb": "^3.1066.0",
+    "@aws-sdk/lib-dynamodb": "^3.1066.0",
+    "@dnd-kit/core": "^6.3.1",
+    "@dnd-kit/modifiers": "^9.0.0",
+    "@dnd-kit/utilities": "^3.2.2",
+    "@floating-ui/react": "^0.27.19",
+    "@pixiv/three-vrm": "^3.5.3",
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.6.1",
+    "@tailwindcss/typography": "^0.5.19",
+    "@types/three": "^0.184.1",
+    "aws-amplify": "^6.17.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.17.0",
+    "radix-ui": "^1.4.3",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-router-dom": "^7.16.0",
+    "react-textarea-autosize": "^8.5.9",
+    "tailwind-merge": "^3.6.0",
+    "three": "^0.184.0"
+  },
+  "devDependencies": {
+    "@aws-amplify/backend": "^1.2.1",
+    "@aws-amplify/backend-auth": "^1.9.4",
+    "@aws-amplify/backend-cli": "^1.8.3",
+    "@eslint/js": "^10.0.1",
+    "@tailwindcss/vite": "^4.3.0",
+    "@types/node": "^24.12.4",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.7.0",
+    "eslint": "^10.3.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.6.0",
+    "tailwindcss": "^4.3.0",
+    "typescript": "~6.0.2",
+    "typescript-eslint": "^8.59.2",
+    "vite": "^6.4.3"
+  },
+  "overrides": {
+    "semver": "7.8.1"
+  }
+}
