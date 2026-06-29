@@ -1,6 +1,6 @@
 import { defineBackend, defineFunction } from '@aws-amplify/backend';
 import { auth } from './auth/resource';
-import { Stack } from 'aws-cdk-lib'; // ← make sure this is imported
+import { Stack } from 'aws-cdk-lib';
 import { CfnUserPool, CfnUserPoolDomain } from 'aws-cdk-lib/aws-cognito';
 import { ServicePrincipal, PolicyStatement } from 'aws-cdk-lib/aws-iam';
 import { RestApi, LambdaIntegration, CognitoUserPoolsAuthorizer, AuthorizationType, ResponseType } from 'aws-cdk-lib/aws-apigateway';
@@ -29,16 +29,22 @@ const preTokenGenerationHandler = defineFunction({
   resourceGroupName: 'auth',
 });
 
-const setPasswordHandler = defineFunction({
-  name: 'set-password',
-  entry: './functions/set-password/handler.ts',
+const authStatusHandler = defineFunction({
+  name: 'auth-status',
+  entry: './functions/auth-status/handler.ts',
   timeoutSeconds: 10,
   resourceGroupName: 'auth',
 });
 
-const authStatusHandler = defineFunction({
-  name: 'auth-status',
-  entry: './functions/auth-status/handler.ts',
+const lookupEmailHandler = defineFunction({
+  name: 'lookup-email',
+  entry: './functions/lookup-email/handler.ts',
+  timeoutSeconds: 5,
+});
+
+const setPasswordHandler = defineFunction({
+  name: 'set-password',
+  entry: './functions/set-password/handler.ts',
   timeoutSeconds: 10,
   resourceGroupName: 'auth',
 });
@@ -48,8 +54,9 @@ const backend = defineBackend({
   preSignUpHandler,
   postConfirmationHandler,
   preTokenGenerationHandler,
-  setPasswordHandler,
   authStatusHandler,
+  lookupEmailHandler,
+  setPasswordHandler,
 });
 
 // --- Cognito User Pool ---
@@ -85,10 +92,6 @@ const emailLocksTable = new Table(backend.stack, 'EmailLocks', {
   billingMode: BillingMode.PAY_PER_REQUEST,
 });
 
-// Decoupled ARN — breaks the circular dependency
-const { region, account } = Stack.of(backend.stack);
-const userPoolArnDecoupled = `arn:aws:cognito-idp:${region}:${account}:userpool/*`;
-
 // Configure Lambdas
 const preSignUpFn = backend.preSignUpHandler.resources.lambda as Function;
 const postConfirmationFn = backend.postConfirmationHandler.resources.lambda as Function;
@@ -100,6 +103,11 @@ postConfirmationFn.addEnvironment('EMAIL_LOCKS_TABLE_NAME', emailLocksTable.tabl
 preTokenGenerationFn.addEnvironment('USER_MAPPINGS_TABLE_NAME', userMappingsTable.tableName);
 preSignUpFn.addEnvironment('USER_MAPPINGS_TABLE_NAME', userMappingsTable.tableName);
 (backend.authStatusHandler.resources.lambda as Function).addEnvironment('USER_MAPPINGS_TABLE_NAME', userMappingsTable.tableName);
+(backend.lookupEmailHandler.resources.lambda as Function).addEnvironment('USER_MAPPINGS_TABLE_NAME', userMappingsTable.tableName);
+(backend.setPasswordHandler.resources.lambda as Function).addEnvironment('USER_MAPPINGS_TABLE_NAME', userMappingsTable.tableName);
+
+const { region, account } = Stack.of(backend.stack);
+const userPoolArnDecoupled = `arn:aws:cognito-idp:${region}:${account}:userpool/*`;
 
 // Grant DynamoDB Permissions
 userMappingsTable.grantReadWriteData(postConfirmationFn);
@@ -113,6 +121,20 @@ emailLocksTable.grantReadWriteData(postConfirmationFn);
 userMappingsTable.grantReadData(preTokenGenerationFn);
 userMappingsTable.grantReadData(preSignUpFn);
 userMappingsTable.grantReadData(backend.authStatusHandler.resources.lambda as Function);
+userMappingsTable.grantReadData(backend.lookupEmailHandler.resources.lambda as Function);
+userMappingsTable.grantReadWriteData(backend.setPasswordHandler.resources.lambda as Function);
+
+// IAM for set-password Lambda
+(backend.setPasswordHandler.resources.lambda as Function).addToRolePolicy(
+  new PolicyStatement({
+    actions: [
+      'cognito-idp:AdminCreateUser',
+      'cognito-idp:AdminSetUserPassword',
+      'cognito-idp:AdminGetUser',
+    ],
+    resources: [userPoolArnDecoupled],
+  }),
+);
 
 // Attach Triggers
 cfnUserPool.addPropertyOverride('LambdaConfig.PreSignUp', preSignUpFn.functionArn);
@@ -123,13 +145,6 @@ const cognitoPrincipal = new ServicePrincipal('cognito-idp.amazonaws.com');
 preSignUpFn.addPermission('AllowCognitoPreSignUp', { principal: cognitoPrincipal });
 postConfirmationFn.addPermission('AllowCognitoPostConfirmation', { principal: cognitoPrincipal });
 preTokenGenerationFn.addPermission('AllowCognitoPreTokenGeneration', { principal: cognitoPrincipal });
-
-backend.setPasswordHandler.resources.lambda.addToRolePolicy(
-  new PolicyStatement({
-    actions: ['cognito-idp:AdminSetUserPassword'],
-    resources: [userPoolArnDecoupled],
-  }),
-);
 
 // Find the CfnUserPoolDomain that Amplify auto-creates
 const cfnDomain = userPool.node
@@ -173,24 +188,13 @@ api.addGatewayResponse('AccessDeniedResponse', {
   },
 });
 
-const apiUser = api.root.addResource('api').addResource('user');
+const apiResource = api.root.addResource('api');
+
+const apiUser = apiResource.addResource('user');
 apiUser.addCorsPreflight({
   allowOrigins: ['http://localhost:5173'],
   allowMethods: ['GET', 'POST', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
-});
-
-const setPasswordRes = apiUser.addResource('set-password');
-setPasswordRes.addCorsPreflight({
-  allowOrigins: ['http://localhost:5173'],
-  allowMethods: ['POST', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization'],
-});
-setPasswordRes.addMethod('POST', new LambdaIntegration(backend.setPasswordHandler.resources.lambda, {
-  proxy: true,
-}), {
-  authorizer,
-  authorizationType: AuthorizationType.COGNITO,
 });
 
 const authStatusRes = apiUser.addResource('auth-status');
@@ -200,6 +204,31 @@ authStatusRes.addCorsPreflight({
   allowHeaders: ['Content-Type', 'Authorization'],
 });
 authStatusRes.addMethod('GET', new LambdaIntegration(backend.authStatusHandler.resources.lambda, {
+  proxy: true,
+}), {
+  authorizer,
+  authorizationType: AuthorizationType.COGNITO,
+});
+
+const lookupRes = apiResource.addResource('lookup');
+lookupRes.addCorsPreflight({
+  allowOrigins: ['http://localhost:5173'],
+  allowMethods: ['GET', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization'],
+});
+lookupRes.addMethod('GET', new LambdaIntegration(backend.lookupEmailHandler.resources.lambda, {
+  proxy: true,
+}), {
+  authorizationType: AuthorizationType.NONE,
+});
+
+const setPasswordRes = apiUser.addResource('set-password');
+setPasswordRes.addCorsPreflight({
+  allowOrigins: ['http://localhost:5173'],
+  allowMethods: ['POST', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization'],
+});
+setPasswordRes.addMethod('POST', new LambdaIntegration(backend.setPasswordHandler.resources.lambda, {
   proxy: true,
 }), {
   authorizer,

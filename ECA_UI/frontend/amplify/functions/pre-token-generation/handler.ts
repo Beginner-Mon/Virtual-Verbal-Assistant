@@ -11,7 +11,7 @@ export const handler = async (event: any) => {
   const cognitoSub = request.userAttributes.sub;
 
   try {
-    let appUserId: string | undefined;
+    let record: Record<string, any> | undefined;
 
     const emailSubQuery = await docClient.send(new QueryCommand({
       TableName: TABLE_NAME,
@@ -22,7 +22,7 @@ export const handler = async (event: any) => {
     }));
 
     if (emailSubQuery.Items?.[0]) {
-      appUserId = emailSubQuery.Items[0].appUserId;
+      record = emailSubQuery.Items[0];
     } else {
       const googleSubQuery = await docClient.send(new QueryCommand({
         TableName: TABLE_NAME,
@@ -33,11 +33,11 @@ export const handler = async (event: any) => {
       }));
 
       if (googleSubQuery.Items?.[0]) {
-        appUserId = googleSubQuery.Items[0].appUserId;
+        record = googleSubQuery.Items[0];
       }
     }
 
-    if (!appUserId) {
+    if (!record) {
       console.error('USER_MAPPING_NOT_FOUND', JSON.stringify({ cognitoSub }));
       throw new Error('USER_MAPPING_NOT_FOUND');
     }
@@ -45,12 +45,21 @@ export const handler = async (event: any) => {
     event.response = {
       claimsOverrideDetails: {
         claimsToAddOrOverride: {
-          'custom:appUserId': appUserId,
+          'custom:appUserId': record.appUserId,
+          'custom:emailSub': record.emailSub || '',
+          'custom:googleSub': record.googleSub || '',
+          'custom:displayName': record.displayName || '',
+          'custom:email': record.email || '',
         },
       },
     };
 
-    console.log('INJECTED_APP_USER_ID', JSON.stringify({ cognitoSub, appUserId }));
+    console.log('INJECTED_CLAIMS', JSON.stringify({
+      cognitoSub,
+      appUserId: record.appUserId,
+      hasEmailSub: !!record.emailSub,
+      hasGoogleSub: !!record.googleSub,
+    }));
   } catch (error: any) {
     if (error.message === 'USER_MAPPING_NOT_FOUND') {
       throw error;

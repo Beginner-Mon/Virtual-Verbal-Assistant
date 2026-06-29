@@ -13,7 +13,6 @@ export const auth = defineAuth({
           emailVerified: 'email_verified',
           givenName: 'given_name',
           familyName: 'family_name',
-          preferredUsername: 'email',
         }
       },
       callbackUrls: [
@@ -25,7 +24,7 @@ export const auth = defineAuth({
     }
   },
   userAttributes: {
-    preferredUsername: { required: true, mutable: true },
+    preferredUsername: { required: false, mutable: true },
     givenName: { required: false, mutable: true },
     familyName: { required: false, mutable: true },
   },

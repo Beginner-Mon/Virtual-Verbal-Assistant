@@ -39,8 +39,8 @@ export const handler = async (event: any) => {
       const existing = queryResponse.Items?.[0];
 
       if (existing && existing.googleSub) {
-        console.log('DUPLICATE_EMAIL_DETECTED', JSON.stringify({ email }));
-        throw new Error('EMAIL_EXISTS_USE_GOOGLE');
+        console.log('EMAIL_LINKING_ATTEMPT', JSON.stringify({ email, existingGoogleSub: existing.googleSub }))
+        return event
       }
     } catch (error: any) {
       if (error.message === 'EMAIL_EXISTS_USE_GOOGLE') {
