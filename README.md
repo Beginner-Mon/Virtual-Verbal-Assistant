@@ -244,10 +244,10 @@ Virtual-Verbal-Assistant/
 
 | Document | Description |
 |---|---|
-| [docs/RUNBOOK.md](docs/RUNBOOK.md) | Deploy step-by-step, common errors, log analysis (`jq` / PowerShell filters) |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Phase 7 hybrid edge-cloud target (stub) |
-| [PLAN-v2.4-DRAFT.md](PLAN-v2.4-DRAFT.md) | Active architecture plan (v2.4.1) |
-| [PHASE-6-P0.md](PHASE-6-P0.md) | Production hardening implementation spec |
+| [docs/ops/runbook.md](docs/ops/runbook.md) | Deploy step-by-step, common errors, log analysis (`jq` / PowerShell filters) |
+| [docs/ops/deployment.md](docs/ops/deployment.md) | Phase 7 hybrid edge-cloud target (stub) |
+| [docs/plans/v2.4-plan.md](docs/plans/v2.4-plan.md) | Active architecture plan (v2.4.1) |
+| [docs/phases/phase-6-p0.md](docs/phases/phase-6-p0.md) | Production hardening implementation spec |
 | [.claude/CLAUDE.md](.claude/CLAUDE.md) | Project conventions, roles (K = architect, N = dev) |
 
 ---
@@ -263,7 +263,7 @@ Virtual-Verbal-Assistant/
 | Greeting classified as `clarify` | Old planner prompt | Verify `nodes/planner.py` has few-shot examples block |
 | SearXNG returns 403 / empty results | `limiter: true` or `formats` missing `json` in settings.yml | See RUNBOOK §7 |
 
-Full troubleshooting: [docs/RUNBOOK.md § 7](docs/RUNBOOK.md#7-common-errors).
+Full troubleshooting: [docs/ops/runbook.md § 7](docs/ops/runbook.md#7-common-errors).
 
 ---
 
@@ -291,7 +291,7 @@ Full troubleshooting: [docs/RUNBOOK.md § 7](docs/RUNBOOK.md#7-common-errors).
 - ⏳ **Phase 6.5 P1** — LangSmith tracing, pgvector index tuning, expanded per-node tests (data-driven)
 - ⏳ **Phase 7** — Hybrid edge-cloud (VPS + Supabase + edge worker GPU + AWS S3/CloudFront)
 
-Active plan: [PLAN-v2.4-DRAFT.md](PLAN-v2.4-DRAFT.md). Per-phase specs: `PHASE-*.md` files at repo root.
+Active plan: [docs/plans/v2.4-plan.md](docs/plans/v2.4-plan.md). Per-phase specs: `docs/phases/` directory.
 
 ---
 
