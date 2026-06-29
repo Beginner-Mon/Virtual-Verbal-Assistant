@@ -8,7 +8,7 @@
 
 > ## ⚠️ TRẠNG THÁI (02/06): SCHEMA SECTIONS SUPERSEDED
 > Phần **§3-6 (schema + code changes)** của tài liệu này đã bị **THAY** bởi
-> `REUPDATE_PLAN.md` mục **🔧 MEMORY & INTENT REBUILD (§M.4 schema, §M.5-M.8)** — bản đó
+> `plans/reupdate-plan.md` mục **🔧 MEMORY & INTENT REBUILD (§M.4 schema, §M.5-M.8)** — bản đó
 > hoàn thiện hơn: có `seq_id`, `summaries` (chunk đóng băng), `user_memory`, cột `status`
 > (GDPR), e5-small embedding. **N implement theo REUPDATE_PLAN, KHÔNG theo §3-6 dưới đây.**
 >
@@ -180,7 +180,7 @@ youtube string).
 **Quyết định Option 1 (29/05)** — `documents` KHÔNG có `user_id`: toàn bộ KB là **của hệ
 thống** (admin/CLI nạp). Không có user upload riêng → không leak qua `search_kb`. Khớp thực
 tế: codebase hiện không có endpoint upload nào. Khi thật sự cần upload riêng → thêm bảng riêng
-`user_documents` + `user_doc_embeddings` lúc đó (xem TECH_DEBT.md). Không schema sẵn cho
+`user_documents` + `user_doc_embeddings` lúc đó (xem tracking/tech-debt.md). Không schema sẵn cho
 feature chưa tồn tại.
 
 ### 3.5 `kb_embeddings` — KB CÔNG CỘNG (tách khỏi private)

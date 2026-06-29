@@ -112,8 +112,8 @@ def rollout(text_prompt, num_primitives=20):
 
 ## Related Notes
 
-- [[system_overview]] — Where DART fits in the service map
-- [[api_contract]] — Gateway contract for motion requests
+- [[system-overview]] — Where DART fits in the service map
+- [[api-contract]] — Gateway contract for motion requests
 - [[troubleshooting]] — If DART returns errors or timeouts
 
 ---

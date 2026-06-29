@@ -21,7 +21,7 @@ user query → memory (STM+facts) → planner (3-axis intent) → retriever (too
 
 ## 2. Đã hoàn thành ✅
 
-### Core architecture (REUPDATE_PLAN §M, 33 decisions D1-D33)
+### Core architecture (plans/reupdate-plan.md §M, 33 decisions D1-D33)
 - [x] **M.4 Schema**: 7 tables (users, conversations, messages, summaries, user_memory, documents, kb_embeddings). HNSW indexes. e5-small vector(384). No user_id trên messages/summaries (D19).
 - [x] **8 nodes**: memory → planner → retriever_agent ⇄ tools → kimodo → synthesizer → grader → error_handler
 - [x] **3-axis intent**: `required_outputs` / `resolved_query` / routing bits. Bỏ 6-enum cũ.
@@ -49,7 +49,7 @@ user query → memory (STM+facts) → planner (3-axis intent) → retriever (too
 
 ## 3. Đang làm 🟡
 
-- [ ] **STATUS.md** (file này — chưa có phiên bản trước 11/06)
+- [ ] **tracking/status.md** (file này — chưa có phiên bản trước 11/06)
 
 ---
 
@@ -59,7 +59,7 @@ user query → memory (STM+facts) → planner (3-axis intent) → retriever (too
 
 | # | Task | Effort | Where |
 |---|---|---|---|
-| 1 | ~~LTM write path~~ → ✅ XONG 12/06: background summarizer M.5 (`nodes/summarizer.py`) + bind memory tools + fix tenant scope. Xem worklog 12/06 + `PREDEPLOY-AUDIT.md` | — | done |
+| 1 | ~~LTM write path~~ → ✅ XONG 12/06: background summarizer M.5 (`nodes/summarizer.py`) + bind memory tools + fix tenant scope. Xem worklog 12/06 + `tracking/predeploy-audit.md` | — | done |
 | 2 | **users.profile write path**: 0 chỗ ghi → luôn `{}`. Cần `PATCH /users/{id}/profile` | 1h | `api/main.py` |
 | 3 | **Verify general_query**: test "giá vàng?" qua SearXNG thật, xác nhận web search hoạt động | 30m | manual |
 | 4 | **YouTube paste link**: detect link → get transcript → context cho synthesizer | 3h | `nodes/planner.py`, `tools/youtube_ingest.py` |
@@ -89,7 +89,7 @@ user query → memory (STM+facts) → planner (3-axis intent) → retriever (too
 
 ## 5. Phase 7 — Hybrid Cloud Deployment (chưa bắt đầu)
 
-[Xem REUPDATE_PLAN.md lines 716-883 để biết chi tiết.]
+[Xem plans/reupdate-plan.md lines 716-883 để biết chi tiết.]
 
 | # | Task |
 |---|---|
@@ -123,8 +123,8 @@ uvicorn langgraph_agents.api.main:create_app --port 8080
 
 | File | Nội dung | Khi nào đọc |
 |---|---|---|
-| `REUPDATE_PLAN.md §M` | 33 decisions + spec chi tiết | Cần hiểu "vì sao" |
-| `TECH_DEBT.md` | Danh sách việc tồn (có thể hơi cũ) | Check còn gì chưa làm |
+| `plans/reupdate-plan.md §M` | 33 decisions + spec chi tiết | Cần hiểu "vì sao" |
+| `tracking/tech-debt.md` | Danh sách việc tồn (có thể hơi cũ) | Check còn gì chưa làm |
 | `docs/worklogs/05-06-2026.md` | Phiên grill chốt kiến trúc | Hiểu 6 lần đảo ngược quyết định |
 | `docs/worklogs/06-06-2026.md` | N implement 15 bước M.9 | Biết ai code gì |
 | `docs/worklogs/11-06-2026.md` | Test suite rebuild + bug fixes | Biết đã sửa những gì |
@@ -133,7 +133,7 @@ uvicorn langgraph_agents.api.main:create_app --port 8080
 ## 8. Conventions
 
 - **Worklog**: ghi `docs/worklogs/DD-MM-YYYY.md` mỗi phiên làm việc
-- **Plan**: `REUPDATE_PLAN.md §M` là nguồn chân lý kiến trúc
+- **Plan**: `plans/reupdate-plan.md §M` là nguồn chân lý kiến trúc
 - **Test**: `pytest -m unit|integration -v`. 187 tests, tất cả phải xanh trước merge.
 - **Branch**: `feature/langgraph-rewrite`
 - **Roles**: K = Architect (AI, không code, viết plan, review). N = Developer (Human, code, test).

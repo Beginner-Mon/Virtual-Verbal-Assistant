@@ -12,7 +12,7 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
 - [ ] **No-auth IDOR toàn bộ session endpoints** — `user_id` client tự khai + uuid5 đoán được
       → đọc/xóa session người khác, mạo danh `/chat` rút LTM. Localhost dev OK; **chặn mọi
       deploy có network**. Fix = JWT/Cognito middleware (Cognito đã có ở nhánh
-      `feature/frontend` — tích hợp). (Security review 12/06 — Vuln 1, chi tiết `PREDEPLOY-AUDIT.md`)
+      `feature/frontend` — tích hợp). (Security review 12/06 — Vuln 1, chi tiết `tracking/predeploy-audit.md`)
 
 ## 🟠 Quan trọng
 
@@ -98,7 +98,7 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
   JSONB messages. worklog 06/06.
 - ✅ **3 test `test_phase3_api` fail** — Redis mock `AsyncMock` fix. worklog 11/06 (bug #9).
 - ✅ **Nút 📎 + `/documents/upload` chết** — đã gỡ nút khỏi UI (quyết: Option 1 KB-hệ-thống,
-  user upload không thuộc MVP). STATUS.md 11/06.
+  user upload không thuộc MVP). tracking/status.md 11/06.
 - ✅ **Tenant isolation (item cũ 29/05)** — superseded: cụ thể hóa thành 🔴 "`memory_search`
   tenant leak" phía trên (12/06).
 - ✅ Phase 6.10 — 8 tasks (CORS, log rotation, stop-gen, health checks, TTS cleanup, STM

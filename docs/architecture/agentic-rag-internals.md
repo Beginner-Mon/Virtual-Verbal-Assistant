@@ -176,10 +176,10 @@ rag:
 
 ## Related Notes
 
-- [[agents_catalog]] — Full list of all agents in the system
-- [[agentic_rag_refactor]] — May 2026 refactoring details
-- [[system_overview]] — Where AgenticRAG fits in the full stack
-- [[api_contract]] — `/query` request/response schemas
+- [[agents-catalog]] — Full list of all agents in the system
+- [[agentic-rag-refactor]] — May 2026 refactoring details
+- [[system-overview]] — Where AgenticRAG fits in the full stack
+- [[api-contract]] — `/query` request/response schemas
 - [[troubleshooting]] — Common AgenticRAG issues
 
 ---

@@ -16,7 +16,7 @@ tags:
 
 ## Context
 
-The May 2026 refactoring (tasks D1–D9) addressed critical architecture issues identified in [[ARCHITECTURE_REVIEW]]: intent vocabulary drift, Double-RAG inlined in orchestrator, implicit tool registry, lack of tracing, missing circuit breaker, and unbounded resource usage.
+The May 2026 refactoring (tasks D1–D9) addressed critical architecture issues identified in [[architecture-review]]: intent vocabulary drift, Double-RAG inlined in orchestrator, implicit tool registry, lack of tracing, missing circuit breaker, and unbounded resource usage.
 
 ## New Modules
 
@@ -69,10 +69,10 @@ The May 2026 refactoring (tasks D1–D9) addressed critical architecture issues 
 
 ## Related Notes
 
-- [[ARCHITECTURE_REVIEW]] — Original critique that drove this refactoring
-- [[agentic_rag_internals]] — Deep dive into AgenticRAG architecture and data flow
-- [[agents_catalog]] — Full inventory of all agents before and after refactor
-- [[system_overview]] — Service topology
+- [[architecture-review]] — Original critique that drove this refactoring
+- [[agentic-rag-internals]] — Deep dive into AgenticRAG architecture and data flow
+- [[agents-catalog]] — Full inventory of all agents before and after refactor
+- [[system-overview]] — Service topology
 - [[troubleshooting]] — If something breaks after refactor
 
 ---

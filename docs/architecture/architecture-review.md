@@ -424,9 +424,9 @@ thực hiện sau.
 
 ## Related Notes
 
-- [[agentic_rag_refactor]] — Implementation of D1-D9 fixes described in this review
-- [[system_overview]] — Service topology and query flow
-- [[api_contract]] — Gateway request/response schemas
-- [[setup_guide]] — Running the stack locally
+- [[agentic-rag-refactor]] — Implementation of D1-D9 fixes described in this review
+- [[system-overview]] — Service topology and query flow
+- [[api-contract]] — Gateway request/response schemas
+- [[setup-guide]] — Running the stack locally
 - [[troubleshooting]] — Debugging common issues
-- [[dart_architecture]] — DART motion synthesis internals
+- [[dart-architecture]] — DART motion synthesis internals

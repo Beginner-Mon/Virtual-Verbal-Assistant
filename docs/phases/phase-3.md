@@ -3,7 +3,7 @@
 **Architect**: K | **Developer**: N | **Date**: 2026-05-23
 **Branch**: `feature/langgraph-rewrite` (continue from Phase 2.5 commit `2293430`)
 **Estimated time**: ~8h
-**Reference**: [PLAN-v2.4-DRAFT.md](PLAN-v2.4-DRAFT.md) §6, §11, §13
+**Reference**: [../plans/v2.4-plan.md](../plans/v2.4-plan.md) §6, §11, §13
 
 ---
 

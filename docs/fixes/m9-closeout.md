@@ -1,7 +1,7 @@
 # FIX — §M.9 Closeout + Security Patch (Cụm A)
 
 > Author: K | Date: 2026-06-12 | Audience: N
-> Nguồn: `PREDEPLOY-AUDIT.md` Phần 2-A (Owner approve 12/06: A→B trước demo nội bộ).
+> Nguồn: `tracking/predeploy-audit.md` Phần 2-A (Owner approve 12/06: A→B trước demo nội bộ).
 > Path mới sau relevel: package ở `agenticRAG/langgraph_agents/`.
 > Effort tổng: ~2 ngày. Thứ tự bắt buộc: A0 trước (security), còn lại tùy N.
 
@@ -160,4 +160,4 @@ Re-summarize background của A2 dùng CHUNG registry này (hoặc set riêng tr
 1. Toàn bộ checklist nghiệm thu A0-A3 + A5-A6 pass; A4 có kết quả ghi worklog
 2. Full suite xanh (204 + tests mới), không test cũ nào bị sửa để "cho qua"
 3. Worklog `docs/worklogs/DD-MM-YYYY.md` + K review trước khi merge
-4. Sau cụm A: REUPDATE §M.9 = 15/15 trọn vẹn; TECH_DEBT 🔴 path-traversal đóng
+4. Sau cụm A: REUPDATE §M.9 = 15/15 trọn vẹn; tracking/tech-debt 🔴 path-traversal đóng

@@ -49,8 +49,8 @@ Text-to-Speech + Avatar control
 
 ## Related Notes
 
-- [[system_overview]] — Service topology
-- [[api_contract]] — Gateway polling contract (includes optional `tts` stage)
+- [[system-overview]] — Service topology
+- [[api-contract]] — Gateway polling contract (includes optional `tts` stage)
 - [[troubleshooting]] — If SpeechLLm fails to start
 
 ---

@@ -73,11 +73,11 @@ tags:
 
 ## Related Notes
 
-- [[ARCHITECTURE_REVIEW]] — Detailed architectural critique and proposed refactor
-- [[agentic_rag_refactor]] — May 2026 refactoring notes
-- [[api_contract]] — Full API schema
-- [[dart_architecture]] — DART internals
-- [[setup_guide]] — How to run the stack
+- [[architecture-review]] — Detailed architectural critique and proposed refactor
+- [[agentic-rag-refactor]] — May 2026 refactoring notes
+- [[api-contract]] — Full API schema
+- [[dart-architecture]] — DART internals
+- [[setup-guide]] — How to run the stack
 
 ---
 

@@ -181,10 +181,10 @@ tags:
 
 ## Related Notes
 
-- [[agentic_rag_internals]] — Deep dive into AgenticRAG architecture and data flow
-- [[agentic_rag_refactor]] — May 2026 refactoring that introduced Tool ABC, Registry, DoubleRAGAgent
-- [[system_overview]] — Where these agents fit in the full system
-- [[api_contract]] — How agents communicate via gateway endpoints
+- [[agentic-rag-internals]] — Deep dive into AgenticRAG architecture and data flow
+- [[agentic-rag-refactor]] — May 2026 refactoring that introduced Tool ABC, Registry, DoubleRAGAgent
+- [[system-overview]] — Where these agents fit in the full system
+- [[api-contract]] — How agents communicate via gateway endpoints
 
 ---
 

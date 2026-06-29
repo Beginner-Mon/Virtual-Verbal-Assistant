@@ -1,8 +1,8 @@
 # FIX — Memory Layer Gaps (post M-rebuild)
 
 > Author: K | Date: 2026-06-12 | Audience: N
-> Nguồn gốc: K takeover review 12/06 — 3 defect 🔴 + 1 🟠 trong `TECH_DEBT.md`.
-> Design KHÔNG đổi — mọi quyết định đã có trong `REUPDATE_PLAN.md §M.5/M.6` (D13, D16, D19).
+> Nguồn gốc: K takeover review 12/06 — 3 defect 🔴 + 1 🟠 trong `tracking/tech-debt.md`.
+> Design KHÔNG đổi — mọi quyết định đã có trong `plans/reupdate-plan.md §M.5/M.6` (D13, D16, D19).
 > Đây là spec NỐI DÂY phần đã thiết kế nhưng chưa nối / nối sai.
 
 ---
@@ -84,7 +84,7 @@ Quyết: **reader thích nghi writer** (writer `stm:{session_id}` có 3 call sit
 
 ## PR 2 — Background summarizer (M.5 — phần còn thiếu)
 
-> Spec đầy đủ: `REUPDATE_PLAN.md §M.5` + D13. Tóm tắt vận hành:
+> Spec đầy đủ: `plans/reupdate-plan.md §M.5` + D13. Tóm tắt vận hành:
 
 ### Task 2.1 — Trigger sau mỗi turn
 
@@ -129,7 +129,7 @@ Trong `write_session_turn` (hoặc hook sau nó ở `api/main.py`):
 
 ## Ngoài phạm vi (đừng kéo vào)
 
-- `user_memory` write path / endpoint facts — item 🟠 riêng trong TECH_DEBT.
+- `user_memory` write path / endpoint facts — item 🟠 riêng trong tracking/tech-debt.
 - Grounding check, query-rewrite — M.11 defer.
 - `iterative_scan` pgvector — verify sau PR 1, item 🟡.
 - Nâng cấp grader — Mr. N để bàn lại sau khi chạy thực tế.

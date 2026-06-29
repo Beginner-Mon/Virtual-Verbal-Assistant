@@ -82,9 +82,9 @@ docker compose down
 
 ## Related Notes
 
-- [[system_overview]] — Architecture and ports
+- [[system-overview]] — Architecture and ports
 - [[troubleshooting]] — If setup fails
-- [[api_contract]] — Test the running API
+- [[api-contract]] — Test the running API
 
 ---
 

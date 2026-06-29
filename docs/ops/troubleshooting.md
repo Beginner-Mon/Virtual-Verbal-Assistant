@@ -66,9 +66,9 @@ Then inspect `agent_trace` field in `/query` JSON response for per-stage timings
 
 ## Related Notes
 
-- [[setup_guide]] — Re-run setup if env is broken
-- [[api_contract]] — Verify expected request/response shapes
-- [[agentic_rag_refactor]] — Recent changes that may affect behavior
+- [[setup-guide]] — Re-run setup if env is broken
+- [[api-contract]] — Verify expected request/response shapes
+- [[agentic-rag-refactor]] — Recent changes that may affect behavior
 
 ---
 

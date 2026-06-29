@@ -1,14 +1,14 @@
 # FEATURE — YouTube paste-link Q&A (cụm B)
 
 > Author: K | Date: 2026-06-13 | Audience: implementer (subagent) + N review sau
-> Nguồn: TECH_DEBT 🟡 "User paste YouTube link". Owner approve build 13/06.
+> Nguồn: tracking/tech-debt 🟡 "User paste YouTube link". Owner approve build 13/06.
 > Path: `agenticRAG/langgraph_agents/`. Tests: `pytest tests/langgraph_agents/`.
 
 ---
 
 ## Quyết định kiến trúc (K) — đọc trước
 
-TECH_DEBT (29/05, TRƯỚC rebuild 3-axis) ghi "planner detect link". **Bỏ cách đó.**
+tracking/tech-debt (29/05, TRƯỚC rebuild 3-axis) ghi "planner detect link". **Bỏ cách đó.**
 Kiến trúc hiện tại: **transcript = 1 retrieval tool** mà retriever tự gọi (đúng D2b/D16
 "manager giao WHAT, dev chọn tool"). Lợi:
 - Tái dùng NGUYÊN đường evidence: ToolMessage → `synthesizer._extract_tool_results`

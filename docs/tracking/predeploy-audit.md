@@ -1,7 +1,7 @@
 # Pre-Deploy Audit — Tasks còn lại + Lỗ hổng trước Phase 7
 
 > Author: K | Date: 2026-06-12 | Audience: N (Developer), Owner
-> Nguồn: REUPDATE_PLAN.md §M + STATUS.md + TECH_DEBT.md + security review 12/06
+> Nguồn: plans/reupdate-plan.md §M + tracking/status.md + tracking/tech-debt.md + security review 12/06
 > (multi-agent, 2 findings confirmed ≥8/10 confidence).
 
 ---
@@ -61,7 +61,7 @@
 | A2 | **GDPR wiring (M.8)** — endpoint DELETE message-level → `gdpr.py` mark-dirty → re-summarize nền; DELETE user | 3h | logic có sẵn, chỉ nối API + test cửa sổ dirty |
 | A3 | **`user_memory` write path** — endpoint user nhập facts (D14 MVP) | 1h | Tier 1 hiện vĩnh viễn rỗng |
 | A4 | **Summarizer E2E verify** — hội thoại 10k+ token thật → row summaries → memory_search thấy | 1h manual | kèm verify general_query SearXNG ("giá vàng?") cùng phiên |
-| A5 | Task registry refactor (`_pending_summarizer_tasks` về summarizer.py) | 15m | TECH_DEBT 🟠 |
+| A5 | Task registry refactor (`_pending_summarizer_tasks` về summarizer.py) | 15m | tracking/tech-debt 🟠 |
 | A6 | Test nits: no-op assert resume schema, try/finally cleanup tenant test | 15m | tiện tay PR gần nhất |
 
 ### B. Trước user thật (~4h)

@@ -319,10 +319,10 @@ Owner fill after research:
 ## 8. References
 
 - Plan v2.4 source: `.claude/plans/purrfect-herding-kahn.md`
-- Phase 6 P0 spec: `PHASE-6-P0.md`
-- Phase 6.6 SearXNG: `PHASE-6.6-SEARXNG.md`
-- Phase 6.7 Web toggle: `PHASE-6.7-WEB-TOGGLE.md`
-- Architecture options doc: `ARCHITECTURE-DECISION-RESPONSE-NODES.md`
+- Phase 6 P0 spec: `phases/phase-6-p0.md`
+- Phase 6.6 SearXNG: `phases/phase-6.6-searxng.md`
+- Phase 6.7 Web toggle: `phases/phase-6.7-web-toggle.md`
+- Architecture options doc: `architecture/decision-response-nodes.md`
 - Runbook: `docs/RUNBOOK.md`
 - Deployment stub: `docs/DEPLOYMENT.md`
 - DeepSeek prompt caching: <https://api-docs.deepseek.com/guides/kv_cache>

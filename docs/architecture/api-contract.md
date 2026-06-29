@@ -111,7 +111,7 @@ The pipeline orchestrator was patched in D8c to accept both keys for backward co
 
 ## Related Notes
 
-- [[system_overview]] — Architecture and service map
+- [[system-overview]] — Architecture and service map
 - [[troubleshooting]] — Common API errors
 
 ---

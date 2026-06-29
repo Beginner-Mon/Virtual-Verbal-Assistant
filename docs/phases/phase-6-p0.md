@@ -2,7 +2,7 @@
 
 > Architect: K | Developer: N | Date: 2026-05-25
 > Branch: `feature/langgraph-rewrite`
-> Scope: **P0 — deploy-blocking only.** P1 (LangSmith tracing, pgvector index tuning, expanded per-node unit tests) tách thành PHASE-6.5 sau khi P0 ổn.
+> Scope: **P0 — deploy-blocking only.** P1 (LangSmith tracing, pgvector index tuning, expanded per-node unit tests) tách thành phase-6.5 sau khi P0 ổn.
 
 ---
 
@@ -454,7 +454,7 @@ Total: ~850 LOC code + ~300 LOC tests + ~400 LOC docs. Estimated 2 days N's time
 
 ---
 
-## Out of P0 scope (defer to PHASE-6.5)
+## Out of P0 scope (defer to phase-6.5)
 
 - **LangSmith tracing**: just set env vars `LANGCHAIN_TRACING_V2=true`, `LANGCHAIN_API_KEY=...`. No code change needed. Document in RUNBOOK §3.
 - **pgvector index tuning**: defer until Phase 7 prod data shows p95 > 500ms on vector search. Current IVFFlat lists=100 fine for <100k docs.
@@ -475,4 +475,4 @@ Tôi (K) sẽ review code N theo checklist:
 - [ ] RUNBOOK §5 smoke test reproducible on N's machine starting from `docker compose down -v`.
 - [ ] Worklog `docs/worklogs/<date>.md` documents each commit + any spec deviations.
 
-Pass → merge to `feature/langgraph-rewrite`, tag `phase-6-p0`, move to PHASE-6.5 P1.
+Pass → merge to `feature/langgraph-rewrite`, tag `phase-6-p0`, move to phase-6.5 P1.

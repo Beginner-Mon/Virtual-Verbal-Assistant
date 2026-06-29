@@ -2,7 +2,7 @@
 
 > Architect: K | Cập nhật: 2026-06-02
 > Audience: N (Developer), T (Reviewer), Owner
-> Scope: file kế hoạch sửa đổi so với `PLAN-v2.4-DRAFT.md`. PLAN-v2.4 KHÔNG sửa cho tới khi rebuild xong.
+> Scope: file kế hoạch sửa đổi so với `plans/v2.4-plan.md`. plans/v2.4-plan KHÔNG sửa cho tới khi rebuild xong.
 
 ---
 
@@ -12,7 +12,7 @@ Tài liệu này tổng hợp quyết định kiến trúc qua các session 26/0
 **Quyết định lớn (02/06): rebuild Memory + Intent layer** trên nhánh `feature/langgraph-rewrite`
 (làm trực tiếp, không nhánh con). Phần "Memory & Intent Rebuild" (§M) bên dưới là **nguồn chân lý
 duy nhất** — gồm cả spec lẫn giải thích (đã gộp file `planner-refactor-explained.md` vào §M.intuition,
-file đó đã xóa). Nó **thay thế** `SCHEMA-REDESIGN-PLAN.md §3-6` và phần 6.10.1 (normalize messages) cũ.
+file đó đã xóa). Nó **thay thế** `architecture/schema-redesign.md §3-6` và phần 6.10.1 (normalize messages) cũ.
 
 > ⚠️ Mục "Phase 6.10 — Pre-deploy Hardening" phía sau phần lớn ĐÃ XONG (worklog 27-28/05) hoặc
 > bị **superseded** bởi rebuild bên dưới (đặc biệt 6.10.1 DB normalize → thay bằng schema mới §M.1).
@@ -678,7 +678,7 @@ Cách hoạt động: Redis vẫn lưu tối đa 3 pairs gần nhất (FIFO writ
 
 Không dùng tokenizer thực (tốn CPU, cần load model). Estimate `// 4` đủ chính xác cho mục đích này — sai số ±20% không ảnh hưởng đến chất lượng response.
 
-Spec code xem Task 2 trong `PHASE-6.10-PREDEPLOY.md`.
+Spec code xem Task 2 trong `phases/phase-6.10-predeploy.md`.
 
 **Thứ tự thực hiện**
 
@@ -696,7 +696,7 @@ Note: codebase dùng raw `asyncpg`, không có SQLAlchemy. Không cần sửa OR
 
 ### 6.10.2 Pre-deploy Checklist (bắt buộc trước Phase 7)
 
-Các item này đã được document trong `ARCHITECTURE-FULL-FLOW-PREDEPLOY.md` nhưng chưa implement:
+Các item này đã được document trong `architecture/full-flow-predeploy.md` nhưng chưa implement:
 
 | Item | File cần sửa | Lý do bắt buộc |
 |------|-------------|----------------|
