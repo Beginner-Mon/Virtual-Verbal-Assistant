@@ -99,6 +99,12 @@ class PostgresClient:
         async with self._pool.acquire() as conn:
             return await conn.execute(query, *args)
 
+    async def executemany(self, query: str, args):
+        """Execute a query against many arg tuples (batch INSERT)."""
+        await self.connect()
+        async with self._pool.acquire() as conn:
+            return await conn.executemany(query, args)
+
     async def fetch(self, query: str, *args) -> list:
         """Fetch multiple rows."""
         await self.connect()

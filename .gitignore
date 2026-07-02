@@ -50,6 +50,7 @@ ECA_UI/frontend/amplify_outputs.json
 opencode.json
 
 # Local tooling state (per-machine, not project state)
+.playwright-cli/
 .opencode/
 .agents/
 .claude/worktrees/

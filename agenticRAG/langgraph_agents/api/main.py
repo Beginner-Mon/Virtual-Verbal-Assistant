@@ -22,6 +22,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from langgraph_agents.api.auth import resolve_user_id
 from langgraph_agents.api.schemas import (
     ChatRequest, SessionListItem, SessionListResponse, SessionResumeResponse,
     UserMemoryCreate, UserMemoryItem, UserMemoryListResponse,
@@ -33,7 +34,7 @@ from langgraph_agents.services.vieneu_tts.tasks import synthesize_speech_async
 from langgraph_agents.nodes.summarizer import maybe_summarize
 from langgraph_agents.db.session_store import (
     list_user_sessions, load_session_messages,
-    populate_stm_from_messages, write_session_turn, _to_uuid,
+    populate_stm_from_messages, write_session_turn,
 )
 from langgraph_agents.shared.logging import (
     configure_root_logger, get_logger, with_request_id,
@@ -104,7 +105,10 @@ def create_app() -> FastAPI:
     # FastAPI returns 405 Method Not Allowed and the browser blocks the request.
     _ALLOWED_ORIGINS = [
         o.strip()
-        for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8080").split(",")
+        for o in os.getenv(
+            "ALLOWED_ORIGINS",
+            "http://localhost:3000,http://localhost:8080,http://localhost:5173",
+        ).split(",")
         if o.strip()
     ]
     application.add_middleware(
@@ -139,6 +143,8 @@ def create_app() -> FastAPI:
             raise HTTPException(503, "Graph not loaded yet")
         request_id = str(uuid.uuid4())
 
+        uid = await resolve_user_id(request, req.user_id)
+
         # Lazy STM warm-up: if Redis STM is empty (new session or resumed from
         # history), backfill it from PostgreSQL before the graph runs. This is a
         # prerequisite of /chat — not a side effect of session resume — so it
@@ -146,7 +152,7 @@ def create_app() -> FastAPI:
         try:
             if not await _get_redis().get(f"stm:{req.session_id}"):
                 recent = await load_session_messages(
-                    user_id=req.user_id, session_id=req.session_id, limit=6,
+                    user_id=uid, session_id=req.session_id, limit=6,
                 )
                 if recent and recent["messages"]:
                     await populate_stm_from_messages(req.session_id, recent["messages"])
@@ -155,7 +161,7 @@ def create_app() -> FastAPI:
 
         state = {"messages": [], "errors": [], "retry_count": 0, "total_tokens": 0}
         config = {"configurable": {
-            "user_id": req.user_id,
+            "user_id": uid,
             "session_id": req.session_id,
             "query": req.query,
             "persona_id": req.persona_id,
@@ -167,7 +173,7 @@ def create_app() -> FastAPI:
 
         async def event_generator():
             with with_request_id(request_id):
-                async for sse_event in _stream_chat(req, request_id, config, state, background_tasks, request):
+                async for sse_event in _stream_chat(req, request_id, config, state, background_tasks, request, uid):
                     yield sse_event
 
         return stream_response(event_generator())
@@ -183,16 +189,18 @@ def create_app() -> FastAPI:
             raise HTTPException(500, "Corrupt task result in cache")
 
     @application.get("/sessions", response_model=SessionListResponse)
-    async def list_sessions(user_id: str = Query(...), limit: int = 50):
-        rows = await list_user_sessions(user_id=user_id, limit=limit)
+    async def list_sessions(request: Request, user_id: str = Query(...), limit: int = 50):
+        uid = await resolve_user_id(request, user_id)
+        rows = await list_user_sessions(user_id=uid, limit=limit)
         return SessionListResponse(
             sessions=[SessionListItem(**r) for r in rows],
             total=len(rows),
         )
 
     @application.get("/sessions/{session_id}", response_model=SessionResumeResponse)
-    async def get_session(session_id: str, user_id: str = Query(...), limit: int = 50):
-        row = await load_session_messages(user_id=user_id, session_id=session_id, limit=limit)
+    async def get_session(session_id: str, request: Request, user_id: str = Query(...), limit: int = 50):
+        uid = await resolve_user_id(request, user_id)
+        row = await load_session_messages(user_id=uid, session_id=session_id, limit=limit)
         if not row:
             raise HTTPException(404, "Session not found")
         return SessionResumeResponse(
@@ -203,14 +211,15 @@ def create_app() -> FastAPI:
         )
 
     @application.delete("/sessions/{user_id}/{session_id}")
-    async def delete_session(user_id: str, session_id: str):
+    async def delete_session(user_id: str, session_id: str, request: Request):
         """Delete a session row + clear its Redis STM."""
+        uid = await resolve_user_id(request, user_id)
         from langgraph_agents.shared import get_pg_client
         pg = get_pg_client()
         await pg.connect()
         result = await pg.execute(
             "DELETE FROM conversations WHERE user_id = $1::uuid AND session_id = $2::uuid",
-            _to_uuid(user_id), session_id,
+            uid, session_id,
         )
         # Clear Redis STM (best-effort)
         try:
@@ -221,9 +230,9 @@ def create_app() -> FastAPI:
 
     @application.post("/users/{user_id}/memory",
                        response_model=UserMemoryItem)
-    async def create_user_memory(user_id: str, body: UserMemoryCreate):
+    async def create_user_memory(user_id: str, body: UserMemoryCreate, request: Request):
         """Create a user fact (Tier 1 always-on memory). D14 MVP: user self-reports."""
-        uid = _to_uuid(user_id)
+        uid = await resolve_user_id(request, user_id)
         pg = get_pg_client()
         await pg.connect()
 
@@ -248,9 +257,9 @@ def create_app() -> FastAPI:
 
     @application.get("/users/{user_id}/memory",
                       response_model=UserMemoryListResponse)
-    async def list_user_memory(user_id: str):
+    async def list_user_memory(user_id: str, request: Request):
         """List user facts (valid=true, newest first)."""
-        uid = _to_uuid(user_id)
+        uid = await resolve_user_id(request, user_id)
         pg = get_pg_client()
         await pg.connect()
 
@@ -274,9 +283,9 @@ def create_app() -> FastAPI:
         ])
 
     @application.delete("/users/{user_id}/memory/{fact_id}")
-    async def delete_user_memory(user_id: str, fact_id: str):
+    async def delete_user_memory(user_id: str, fact_id: str, request: Request):
         """Hard-delete a user fact. Ownership verified: fact must belong to user."""
-        uid = _to_uuid(user_id)
+        uid = await resolve_user_id(request, user_id)
         pg = get_pg_client()
         await pg.connect()
 
@@ -290,13 +299,13 @@ def create_app() -> FastAPI:
         return {"deleted": fact_id}
 
     @application.delete("/sessions/{session_id}/messages/{message_id}")
-    async def delete_message(session_id: str, message_id: str, user_id: str = Query(...)):
+    async def delete_message(session_id: str, message_id: str, request: Request, user_id: str = Query(...)):
         """GDPR: delete a single message + mark-dirty summaries + fire re-summarize."""
         from langgraph_agents.db.gdpr import delete_message as gdpr_delete_message
         from langgraph_agents.db.gdpr import get_dirty_chunks
         from langgraph_agents.nodes.summarizer import rebuild_dirty_chunk, _pending_summarizer_tasks
 
-        uid = _to_uuid(user_id)
+        uid = await resolve_user_id(request, user_id)
 
         # Ownership verify: message must belong to user via session
         pg = get_pg_client()
@@ -321,11 +330,11 @@ def create_app() -> FastAPI:
         return result
 
     @application.delete("/users/{user_id}")
-    async def delete_user_endpoint(user_id: str):
+    async def delete_user_endpoint(user_id: str, request: Request):
         """GDPR: hard-delete user + cascade all data + clear Redis STM."""
         from langgraph_agents.db.gdpr import delete_user as gdpr_delete_user
 
-        uid = _to_uuid(user_id)
+        uid = await resolve_user_id(request, user_id)
 
         # Collect session_ids for Redis cleanup
         pg = get_pg_client()
@@ -352,7 +361,7 @@ def create_app() -> FastAPI:
 # ── Chat stream helper ─────────────────────────────────────────────
 
 
-async def _stream_chat(req, request_id, config, state, background_tasks, request=None):
+async def _stream_chat(req, request_id, config, state, background_tasks, request=None, resolved_user_id=None):
     """Core SSE stream: graph execution + post-processing.
 
     Wrapped in with_request_id by the caller so every log line from this
@@ -418,7 +427,7 @@ async def _stream_chat(req, request_id, config, state, background_tasks, request
     if final_state.get("final_answer"):
         try:
             await write_session_turn(
-                user_id=req.user_id,
+                user_id=resolved_user_id or req.user_id,
                 session_id=req.session_id,
                 user_query=req.query,
                 assistant_answer=final_answer,

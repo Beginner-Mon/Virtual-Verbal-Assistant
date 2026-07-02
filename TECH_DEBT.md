@@ -9,10 +9,13 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
 
 ## 🔴 Critical — chặn Phase 7
 
-- [ ] **No-auth IDOR toàn bộ session endpoints** — `user_id` client tự khai + uuid5 đoán được
-      → đọc/xóa session người khác, mạo danh `/chat` rút LTM. Localhost dev OK; **chặn mọi
-      deploy có network**. Fix = JWT/Cognito middleware (Cognito đã có ở nhánh
-      `feature/frontend` — tích hợp). (Security review 12/06 — Vuln 1, chi tiết `PREDEPLOY-AUDIT.md`)
+- [ ] **No-auth IDOR — FIX ĐÃ CÓ, đang GATED (phải bật cờ trước deploy)** — `api/auth.py::
+      resolve_user_id` verify Cognito ID token (JWKS RS256 + audience + issuer + token_use),
+      `user_id = sub`, wired vào mọi endpoint. Cờ `REQUIRE_AUTH` default **false** (demo nội bộ
+      vẫn nhận client user_id — không chặn demo). **Hành động bắt buộc trước network deploy: set
+      `REQUIRE_AUTH=true` + 3 biến Cognito** → token-less/invalid → 401, IDOR đóng. Còn lại:
+      deploy Cognito (`ampx sandbox`/AWS) để có pool thật. (Security review 12/06 Vuln 1;
+      integration 18/06, worklog 18/06)
 
 ## 🟠 Quan trọng
 

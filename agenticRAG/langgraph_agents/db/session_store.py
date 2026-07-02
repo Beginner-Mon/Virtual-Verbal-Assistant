@@ -259,12 +259,15 @@ async def write_session_turn(
            ON CONFLICT (session_id) DO UPDATE SET updated_at = now()""",
         session_id, user_id,
     )
+    # created_at omitted → DB DEFAULT now() fills it. Ordering within a turn is
+    # by seq_id (BIGSERIAL, insert order), not created_at. Passing an ISO string
+    # for a timestamptz param fails under executemany() binary binding.
     await pg.executemany(
-        """INSERT INTO messages (session_id, role, content, token_count, created_at)
-           VALUES ($1::uuid, $2, $3, $4, $5::timestamptz)""",
+        """INSERT INTO messages (session_id, role, content, token_count)
+           VALUES ($1::uuid, $2, $3, $4)""",
         [
-            (session_id, "user",      user_query,       None,         ts),
-            (session_id, "assistant", assistant_answer, total_tokens, ts),
+            (session_id, "user",      user_query,       None),
+            (session_id, "assistant", assistant_answer, total_tokens),
         ],
     )
     await _append_stm(session_id, user_query, assistant_answer, ts)

@@ -4,6 +4,7 @@ import TextareaAutosize from 'react-textarea-autosize'
 import { ScrollArea } from './ui/scroll-area'
 import ChatMessage from './ChatMessage'
 import type { Message } from './ChatMessage'
+import { streamChat } from '../lib/api'
 
 /* ─── Demo data ─── */
 const INITIAL_MESSAGES: Message[] = [
@@ -15,14 +16,6 @@ const INITIAL_MESSAGES: Message[] = [
   },
 ]
 
-const DEMO_RESPONSES = [
-  "That's a great question! Let me think about that for a moment… 🤔",
-  "I'd be happy to help you with that! Here's what I think…",
-  'Interesting! Let me process that and give you my best answer.',
-  "Thanks for sharing that. Here's my perspective on it…",
-  `I understand what you're looking for. Let me explain…`,
-]
-
 /* ─── ChatPanel ─── */
 export default function ChatPanel() {
   const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES)
@@ -30,10 +23,11 @@ export default function ChatPanel() {
   const [isTyping, setIsTyping] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
   const [showAddMenu, setShowAddMenu] = useState(false)
+  const [webSearch, setWebSearch] = useState(false)
   
   const bottomRef = useRef<HTMLDivElement>(null)
-  const networkTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const streamIntervalRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const sessionIdRef = useRef<string>(crypto.randomUUID())
   const addMenuRef = useRef<HTMLDivElement>(null)
 
   /* close add menu on outside click */
@@ -54,9 +48,9 @@ export default function ChatPanel() {
   }, [messages, isTyping])
 
   /* send handler */
-  const handleSend = () => {
+  const handleSend = async () => {
     const text = input.trim()
-    if (!text) return
+    if (!text || isGenerating) return
 
     const userMsg: Message = {
       id: crypto.randomUUID(),
@@ -70,72 +64,55 @@ export default function ChatPanel() {
     setIsTyping(true)
     setIsGenerating(true)
 
-    // Simulate initial network delay
-    networkTimeoutRef.current = setTimeout(() => {
-      setIsTyping(false)
+    // Prepare an empty assistant message to stream into
+    const assistantMsgId = crypto.randomUUID()
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: assistantMsgId,
+        role: 'assistant',
+        content: '',
+        timestamp: new Date(),
+      },
+    ])
+    setIsTyping(false)
 
-      // Prepare an empty assistant message to stream into
-      const assistantMsgId = crypto.randomUUID()
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: assistantMsgId,
-          role: 'assistant',
-          content: '',
-          timestamp: new Date(),
-        },
-      ])
+    abortControllerRef.current = new AbortController()
 
-      // Select a random response to simulate
-      const targetResponse = DEMO_RESPONSES[Math.floor(Math.random() * DEMO_RESPONSES.length)]
-
-      // TODO: Replace with actual SSE / Fetch Stream logic when backend is ready
-      /* Example implementation:
-      abortControllerRef.current = new AbortController()
-      const res = await fetch('/api/chat', { 
-        method: 'POST', 
-        body: JSON.stringify({ message: text }),
-        signal: abortControllerRef.current.signal
-      })
-      const reader = res.body?.getReader()
-      const decoder = new TextDecoder()
-      while (true) {
-        const { value, done } = await reader.read()
-        if (done) break
-        const chunk = decoder.decode(value)
-        // parse chunk and update state
-      }
-      setIsGenerating(false)
-      */
-      
-      let currentContent = ''
-      const words = targetResponse.split(' ')
-      let i = 0
-
-      // Mock streaming effect
-      streamIntervalRef.current = setInterval(() => {
-        if (i < words.length) {
-          currentContent += words[i] + (i < words.length - 1 ? ' ' : '')
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === assistantMsgId ? { ...msg, content: currentContent } : msg
+    try {
+      await streamChat(
+        { query: text, sessionId: sessionIdRef.current, webSearch },
+        (type, data) => {
+          if (type === 'token') {
+            const content = (data as { content: string }).content
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMsgId ? { ...msg, content: msg.content + content } : msg
+              )
             )
+          } else if (type === 'done') {
+            setIsGenerating(false)
+          }
+        },
+        abortControllerRef.current.signal,
+      )
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') {
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantMsgId
+              ? { ...msg, content: 'Sorry, something went wrong. Please try again.' }
+              : msg
           )
-          i++
-        } else {
-          if (streamIntervalRef.current) clearInterval(streamIntervalRef.current)
-          setIsGenerating(false)
-        }
-      }, 70) // ~70ms delay per word
-
-    }, 800)
+        )
+      }
+    } finally {
+      setIsGenerating(false)
+    }
   }
 
   const handleStop = () => {
-    if (networkTimeoutRef.current) clearTimeout(networkTimeoutRef.current)
-    if (streamIntervalRef.current) clearInterval(streamIntervalRef.current)
-    // if (abortControllerRef.current) abortControllerRef.current.abort()
-    
+    abortControllerRef.current?.abort()
     setIsTyping(false)
     setIsGenerating(false)
   }
@@ -198,6 +175,16 @@ export default function ChatPanel() {
           />
           
           <div className="flex items-center justify-between gap-1 shrink-0 pt-2 px-1 pb-1">
+            {webSearch && (
+              <button
+                onClick={() => setWebSearch(false)}
+                title="Web search on — click to turn off"
+                className="flex items-center gap-1 bg-secondary rounded-lg px-2 py-1 text-xs text-muted-foreground"
+              >
+                <Globe className="w-3 h-3" />
+                Web
+              </button>
+            )}
             <div className="relative" ref={addMenuRef}>
               <button
                 onClick={() => setShowAddMenu((prev) => !prev)}
@@ -210,11 +197,12 @@ export default function ChatPanel() {
               {showAddMenu && (
                 <div className="absolute bottom-full left-0 mb-2 w-48 bg-card border border-border/50 rounded-xl shadow-xl overflow-hidden z-50 animate-panel-in">
                   <button
-                    onClick={() => { setShowAddMenu(false) }}
+                    onClick={() => { setWebSearch((v) => !v); setShowAddMenu(false) }}
                     className="w-full flex items-center gap-3 px-4 py-3 text-sm text-foreground hover:bg-secondary/60 transition-colors"
                   >
                     <Globe className="w-4 h-4 text-muted-foreground" />
                     Search online
+                    {webSearch && <span className="ml-auto text-xs text-primary">On</span>}
                   </button>
                   <div className="h-px bg-border/40 mx-3" />
                   <button

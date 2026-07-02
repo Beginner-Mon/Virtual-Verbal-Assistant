@@ -22,7 +22,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
-from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 
 from langgraph.config import get_stream_writer
@@ -301,7 +301,16 @@ async def synthesizer_node(state: AgentState, config: RunnableConfig) -> dict:
         writer = None
 
     try:
-        msgs = [SystemMessage(content=system), HumanMessage(content=resolved_query)]
+        # Include prior conversation (loaded by memory node into state messages)
+        # so the model has context for follow-ups ("what did I just say"). Keep
+        # plain user/assistant turns only — drop the memory SystemMessage, tool-call
+        # AIMessages, and ToolMessages (tool evidence is already in the system prompt).
+        history = [
+            m for m in state.get("messages", [])
+            if isinstance(m, HumanMessage)
+            or (isinstance(m, AIMessage) and not getattr(m, "tool_calls", None))
+        ]
+        msgs = [SystemMessage(content=system), *history, HumanMessage(content=resolved_query)]
         if writer is not None:
             final = ""
             tokens = 0

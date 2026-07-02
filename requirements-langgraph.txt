@@ -40,3 +40,6 @@ pytest-asyncio>=0.23.0
 
 # YouTube transcript ingestion (Phase 6.10)
 youtube-transcript-api>=0.6.0
+
+# JWT verification — Cognito RS256 (PART A auth integration)
+PyJWT[crypto]>=2.8.0

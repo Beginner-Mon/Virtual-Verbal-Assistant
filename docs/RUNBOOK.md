@@ -101,10 +101,33 @@ cd agenticRAG
 python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8080 --host 0.0.0.0 *> ..\vva.log
 ```
 
-Terminal 2 — Frontend (port 3000):
+**Auth:** by default `REQUIRE_AUTH=false` — the backend accepts the client-supplied
+`user_id` (no login needed, correct for internal demo). When a valid Cognito **ID token**
+is sent as `Authorization: Bearer <jwt>`, the backend ignores the client `user_id` and
+uses the token's `sub`. Set `REQUIRE_AUTH=true` (+ `COGNITO_REGION` /
+`COGNITO_USER_POOL_ID` / `COGNITO_APP_CLIENT_ID`) to **require** a valid token — this is
+the production setting that closes the IDOR gap and MUST be on before any network exposure.
+
+Terminal 2 — Frontend. There are two UIs:
+
+**(a) Main UI — new React app (recommended for demo), port 5173:**
 
 ```bash
-cd ECA_UI
+cd ECA_UI/frontend
+npm install            # first time only
+npm run dev            # Vite dev server → http://localhost:5173
+```
+
+It reads the backend URL from `VITE_API_BASE_URL` (default `http://localhost:8080`).
+Without `amplify_outputs.json` (i.e. you haven't run `npx ampx sandbox`) it runs in
+**demo mode** — no login screen, chat works against the backend with a generated demo
+user id. `npm run build` (production bundle) needs `amplify_outputs.json`; `npm run dev`
+does not.
+
+**(b) SSE test UI — old vanilla page (debugging), port 3000:**
+
+```bash
+cd ECA_UI/test-ui/sse-test
 python -m http.server 3000
 ```
 
@@ -149,15 +172,22 @@ You should see SSE events: `stage:` (memory → planner → synthesizer), a stre
 Pytest (full suite ~3min; integration needs Docker PG/Redis + live DeepSeek key):
 
 ```powershell
-python -m pytest tests/langgraph_agents/ -q          # 237 passed
+python -m pytest tests/langgraph_agents/ -q          # 245 passed
 python -m pytest tests/langgraph_agents/ -m unit -q  # fast subset, no live services
 ```
 
-Expected: 237 passed (unit + integration on the running PostgreSQL/Redis).
+Expected: 245 passed (unit + integration on the running PostgreSQL/Redis). If you see
+many `SKIPPED ... PostgreSQL not available on port 5433` + a few integration failures,
+the Docker containers are down (postgres/redis have no restart policy) — bring them back
+with `docker compose -f docker-compose.langgraph.yml up -d postgres redis`.
 
 ## 6. Open the UI
 
-Browser: `http://localhost:3000/?api_base=http://localhost:8080`
+New React UI (demo): **`http://localhost:5173`** — talks to the backend on :8080 via
+`VITE_API_BASE_URL` (default). No login needed in demo mode.
+
+Old SSE test UI (debugging): `http://localhost:3000/?api_base=http://localhost:8080`
+(served from `ECA_UI/test-ui/sse-test/`).
 
 The `?api_base=` query parameter points the frontend at the Phase 5 backend.
 
@@ -235,6 +265,14 @@ Resolution: wait 30s for breaker cool-down (half-open probe), then retry. The br
 auto-closes after one successful call. Each role has its own breaker — one role
 opening does not affect others. (Breaker state is internal; it is not surfaced in
 `/health/detailed`.)
+
+### React UI (:5173) chat fails with `net::ERR_FAILED` / CORS blocked
+`.env` `ALLOWED_ORIGINS` overrides the code default and must list the Vite origin.
+Ensure `agenticRAG/agentic_rag_gemini/.env` has:
+```ini
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080,http://localhost:5173
+```
+Then restart the backend.
 
 ### SearXNG returns 403 / empty results
 - `limiter: true` in settings.yml → set to `false` for local dev
@@ -333,7 +371,8 @@ docker compose -f docker-compose.langgraph.yml down -v    # wipe volumes
 | Service   | Port | Notes                    |
 |-----------|------|--------------------------|
 | Backend   | 8080 | FastAPI + SSE streaming  |
-| Frontend  | 3000 | Static HTTP server       |
+| Frontend (React) | 5173 | Vite dev server — main UI for demo |
+| Frontend (SSE test) | 3000 | Old vanilla page, `ECA_UI/test-ui/sse-test/` |
 | PostgreSQL| 5433 | Session + vector store (host 5433 → container 5432) |
 | SpeechLLm/TTS | 5000 | VieNeu TTS — optional, only for voice output |
 | Redis     | 6379 | STM + task results       |
@@ -345,3 +384,7 @@ docker compose -f docker-compose.langgraph.yml down -v    # wipe volumes
 |---|---|---|
 | `LOG_LEVEL` | `INFO` | Set to `DEBUG` for verbose, `WARNING` to suppress noise |
 | `LLM_HEALTHCHECK` | `0` | Set to `1` to actually call LLM in `/health/detailed` (burns API credits) |
+| `REQUIRE_AUTH` | `false` | `true` = reject requests without a valid Cognito ID token (closes IDOR; production). Requires the 3 Cognito vars below. |
+| `COGNITO_REGION` / `COGNITO_USER_POOL_ID` / `COGNITO_APP_CLIENT_ID` | — | Cognito user-pool identifiers used to verify the JWT (JWKS + audience + issuer). Only needed when `REQUIRE_AUTH=true`. |
+| `ALLOWED_ORIGINS` | `localhost:3000,5173,8080` | CORS allow-list. The Vite UI origin `http://localhost:5173` is included by default. |
+| `VITE_API_BASE_URL` (frontend) | `http://localhost:8080` | Where the React UI sends API calls. Set at build/dev time in `ECA_UI/frontend`. |
