@@ -3,10 +3,11 @@ set -e
 
 SKELETON_DIR="/workspace/kimodo/assets/skeletons/smplx22"
 S3_BUCKET="${S3_ASSETS_BUCKET:-s3://eca-kimodo-assets}"
-CHECKPOINT_DIR="/workspace/checkpoints"
-TEXT_ENCODERS_DIR="/workspace/text-encoders"
+HF_STORE="/workspace/.cache/huggingface"
+CHECKPOINT_DIR="$HF_STORE/checkpoints"
+TEXT_ENCODERS_DIR="$HF_STORE/text-encoders"
 
-mkdir -p "$SKELETON_DIR" "$CHECKPOINT_DIR" "$TEXT_ENCODERS_DIR"
+mkdir -p "$SKELETON_DIR" "$HF_STORE" "$CHECKPOINT_DIR" "$TEXT_ENCODERS_DIR"
 
 # Download SMPLX_NEUTRAL from S3
 echo "[entrypoint] Downloading SMPLX_NEUTRAL.npz..."
@@ -26,7 +27,7 @@ for cfg in \
     "$TEXT_ENCODERS_DIR/McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised/adapter_config.json"
 do
     if [ -f "$cfg" ]; then
-        sed -i 's|"meta-llama/Meta-Llama-3-8B-Instruct"|"/workspace/text-encoders/meta-llama/Meta-Llama-3-8B-Instruct"|' "$cfg"
+        sed -i 's|"meta-llama/Meta-Llama-3-8B-Instruct"|"/workspace/.cache/huggingface/text-encoders/meta-llama/Meta-Llama-3-8B-Instruct"|' "$cfg"
         echo "[entrypoint] Patched adapter path in $cfg"
     fi
 done

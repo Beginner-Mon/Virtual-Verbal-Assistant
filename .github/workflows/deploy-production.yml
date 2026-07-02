@@ -50,38 +50,38 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  deploy-to-ecs:
-    name: Deploy to Amazon ECS
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    env:
-      ECS_CLUSTER: kimodo-cluster
-      ECS_SERVICE: kimodo-service
-      CONTAINER_NAME: kimodo-mcp
+  # deploy-to-ecs:
+  #   name: Deploy to Amazon ECS
+  #   needs: build-and-push
+  #   runs-on: ubuntu-latest
+  #   env:
+  #     ECS_CLUSTER: kimodo-cluster
+  #     ECS_SERVICE: kimodo-service
+  #     CONTAINER_NAME: kimodo-mcp
   
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/GitHubActionsECRRole
-          aws-region: ${{ env.AWS_REGION }}
+  #   steps:
+  #     - name: Configure AWS credentials
+  #       uses: aws-actions/configure-aws-credentials@v4
+  #       with:
+  #         role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/GitHubActionsECRRole
+  #         aws-region: ${{ env.AWS_REGION }}
   
-      - name: Download task definition
-        run: |
-          aws ecs describe-task-definition --task-definition kimodo-task --query taskDefinition > task-definition.json
+  #     - name: Download task definition
+  #       run: |
+  #         aws ecs describe-task-definition --task-definition kimodo-task --query taskDefinition > task-definition.json
   
-      - name: Fill in the new image ID in the Amazon ECS task definition
-        id: task-def
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: task-definition.json
-          container-name: ${{ env.CONTAINER_NAME }}
-          image: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+  #     - name: Fill in the new image ID in the Amazon ECS task definition
+  #       id: task-def
+  #       uses: aws-actions/amazon-ecs-render-task-definition@v1
+  #       with:
+  #         task-definition: task-definition.json
+  #         container-name: ${{ env.CONTAINER_NAME }}
+  #         image: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
   
-      - name: Deploy Amazon ECS task definition
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-        with:
-          task-definition: ${{ steps.task-def.outputs.task-definition }}
-          service: ${{ env.ECS_SERVICE }}
-          cluster: ${{ env.ECS_CLUSTER }}
-          wait-for-service-stability: true
+  #     - name: Deploy Amazon ECS task definition
+  #       uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+  #       with:
+  #         task-definition: ${{ steps.task-def.outputs.task-definition }}
+  #         service: ${{ env.ECS_SERVICE }}
+  #         cluster: ${{ env.ECS_CLUSTER }}
+  #         wait-for-service-stability: true
