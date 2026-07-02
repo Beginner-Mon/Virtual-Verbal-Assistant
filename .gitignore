@@ -60,4 +60,10 @@ opencode.json
 skills-lock.json
 .opencode/*
 
+# Kimodo — license-restricted SMPL-X models (MPI); user must download separately
+text-to-motion/kimodo/**/model.pkl
+text-to-motion/kimodo/**/SMPLX_NEUTRAL.npz
+
+# Kimodo — embedded git repo; use submodule or vendor properly
+text-to-motion/kimodo/kimodo-viser/
 
