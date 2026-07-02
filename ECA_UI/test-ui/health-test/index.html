@@ -78,28 +78,13 @@
                         <div class="status-dot" id="dot-langgraph"></div>
                         <div class="status-info">
                             <span class="service-name">LangGraph Agent</span>
-                            <span class="service-port">Port 8080 · FastAPI · main API</span>
+                            <span class="service-port">Port 8000 · FastAPI · main API</span>
                         </div>
                     </div>
                     <div class="status-body">
                         <span class="status-label" id="label-langgraph">Checking…</span>
                     </div>
                     <button class="btn btn-sm btn-outline" onclick="checkHealth('langgraph')">Check</button>
-                </div>
-
-                <!-- VieNeu TTS -->
-                <div class="status-card" id="card-speechllm">
-                    <div class="status-header">
-                        <div class="status-dot" id="dot-speechllm"></div>
-                        <div class="status-info">
-                            <span class="service-name">VieNeu TTS</span>
-                            <span class="service-port">Port 5000 · CPU-only Vietnamese TTS</span>
-                        </div>
-                    </div>
-                    <div class="status-body">
-                        <span class="status-label" id="label-speechllm">Checking…</span>
-                    </div>
-                    <button class="btn btn-sm btn-outline" onclick="checkHealth('speechllm')">Check</button>
                 </div>
 
                 <!-- SearXNG -->
@@ -145,9 +130,6 @@
                 <button class="tab" onclick="switchTab('sessions')" id="tab-sessions">
                     📂 Sessions
                 </button>
-                <button class="tab" onclick="switchTab('tts')" id="tab-tts">
-                    🔊 VieNeu TTS
-                </button>
                 <button class="tab" onclick="switchTab('health')" id="tab-health">
                     🩺 Health Detailed
                 </button>
@@ -157,7 +139,7 @@
             <div class="test-panel active" id="panel-chat">
                 <div class="panel-header">
                     <h3>LangGraph Chat</h3>
-                    <span class="endpoint-badge">POST /chat → :8080 (SSE stream)</span>
+                    <span class="endpoint-badge">POST /chat → :8000 (SSE stream)</span>
                 </div>
 
                 <div class="form-row">
@@ -217,7 +199,7 @@
             <div class="test-panel" id="panel-sessions">
                 <div class="panel-header">
                     <h3>Session Management</h3>
-                    <span class="endpoint-badge">GET · POST · DELETE /sessions → :8080</span>
+                    <span class="endpoint-badge">GET · POST · DELETE /sessions → :8000</span>
                 </div>
 
                 <div class="form-row">
@@ -242,39 +224,11 @@
                 </div>
             </div>
 
-            <!-- VieNeu TTS Panel -->
-            <div class="test-panel" id="panel-tts">
-                <div class="panel-header">
-                    <h3>VieNeu TTS</h3>
-                    <span class="endpoint-badge">POST /synthesize → :5000</span>
-                </div>
-
-                <div class="form-group">
-                    <label>Text to synthesize</label>
-                    <textarea id="tts-text" rows="3" placeholder="Enter Vietnamese or English text…">Xin chào! Tôi là trợ lý ảo của bạn.</textarea>
-                </div>
-                <div class="form-group">
-                    <label>Voice path <span style="font-weight:400;color:var(--text-muted)">(optional — leave blank for default)</span></label>
-                    <input type="text" id="tts-voice" placeholder="e.g. voices/seele_en.wav">
-                </div>
-
-                <div class="form-actions">
-                    <button class="btn btn-primary" onclick="testTTS()" id="btn-tts">
-                        <span class="btn-icon">🔊</span> Synthesize
-                    </button>
-                    <span class="timer" id="timer-tts"></span>
-                </div>
-
-                <div class="result-container" id="result-tts">
-                    <div class="result-placeholder">Results will appear here…</div>
-                </div>
-            </div>
-
             <!-- Health Detailed Panel -->
             <div class="test-panel" id="panel-health">
                 <div class="panel-header">
                     <h3>Health Detailed</h3>
-                    <span class="endpoint-badge">GET /health/detailed → :8080</span>
+                    <span class="endpoint-badge">GET /health/detailed → :8000</span>
                 </div>
                 <div class="form-note" style="font-size:0.8rem;color:var(--text-muted);margin-bottom:12px;
                     padding:6px 10px;background:rgba(124,128,255,.08);border-radius:6px;border-left:3px solid var(--accent,#7c80ff)">

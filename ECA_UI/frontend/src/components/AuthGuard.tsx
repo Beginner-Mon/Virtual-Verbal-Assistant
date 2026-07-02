@@ -106,9 +106,11 @@ export default function AuthGuard() {
     )
   }
 
-  if (!session) {
-    return <Navigate to="/login" replace />
-  }
+  // ⚠️ TEMP — test không có Cognito/Google login: tạm bỏ qua cổng auth để vào thẳng chat.
+  // KHÔI PHỤC (khi Cognito đã cấu hình): bỏ comment 3 dòng dưới. `Navigate` vẫn đang import sẵn.
+  // if (!session) {
+  //   return <Navigate to="/login" replace />
+  // }
 
   return (
     <AuthContext.Provider value={{ signOut: handleSignOut, user, userAttributes: attrs }}>

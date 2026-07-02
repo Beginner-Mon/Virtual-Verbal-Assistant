@@ -64,5 +64,12 @@ class AgentState(TypedDict):
     # ── Token tracking (reducer auto-accumulates) ──────────────────────
     total_tokens: Annotated[int, operator.add]
 
+    # ── Retriever loop counter (hard cap — P2) ─────────────────────────
+    # Incremented each time retriever_agent_node runs. route_after_retriever
+    # checks this against MAX_RETRIEVER_ROUNDS=2 and forces → synthesizer
+    # when the cap is hit, regardless of pending tool_calls. Hard per-turn
+    # ceiling (covers grader-triggered retries too — simplest choice).
+    retriever_rounds: int
+
     # ── Error tracking (append-only) ───────────────────────────────────
     errors: Annotated[list[dict], operator.add]

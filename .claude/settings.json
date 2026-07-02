@@ -12,7 +12,8 @@
       "PowerShell(python -m pytest tests/langgraph_agents/test_a0_persona_security.py tests/langgraph_agents/test_pr1_memory_fix.py tests/langgraph_agents/test_a1_a2_a3.py -q --tb=short 2>$null)",
       "PowerShell($env:PYTHONPATH=\"D:\\\\Project_A\\\\Virtual-Verbal-Assistant\\\\agenticRAG\"; python -c \"import asyncio; from langgraph_agents.graph import build_graph_async; g=asyncio.run\\(build_graph_async\\(\\)\\); print\\('GRAPH BUILT OK, nodes:', list\\(g.get_graph\\(\\).nodes\\)[:12]\\)\")",
       "PowerShell($ok=$false; for \\($i=0; $i -lt 20; $i++\\) { try { $r = Invoke-RestMethod -Uri \"http://127.0.0.1:8080/health\" -TimeoutSec 3; Write-Output \"HEALTH: $\\($r | ConvertTo-Json -Compress\\)\"; $ok=$true; break } catch { Start-Sleep -Seconds 2 } }; if \\(-not $ok\\) { Write-Output \"health not up after retries\" })",
-      "PowerShell(curl.exe -s http://127.0.0.1:8080/health/detailed)"
+      "PowerShell(curl.exe -s http://127.0.0.1:8080/health/detailed)",
+      "Bash(playwright-cli -s=vva close)"
     ]
   }
 }

@@ -1,11 +1,12 @@
 // ── Base URL resolution ────────────────────────────────────────────
-// Priority: ?api_base= query param → window.TEST_UI_API_BASE_URL → default :8080
+// Priority: ?api_base= query param → window.TEST_UI_API_BASE_URL → default :8000
+// NOTE: 8080 is reserved for the Owner's Spring service — the VVA backend runs on :8000.
 function resolveBase(paramName, globalName, fallback) {
     const p = new URLSearchParams(window.location.search).get(paramName);
     return String(p || window[globalName] || fallback).replace(/\/$/, '');
 }
 
-const API_BASE    = resolveBase('api_base',    'TEST_UI_API_BASE_URL',    'http://localhost:8080');
+const API_BASE    = resolveBase('api_base',    'TEST_UI_API_BASE_URL',    'http://localhost:8000');
 const SPEECH_BASE = resolveBase('speech_base', 'TEST_UI_SPEECH_BASE_URL', 'http://localhost:5000');
 const SEARXNG_BASE= resolveBase('searxng_base','TEST_UI_SEARXNG_BASE_URL','http://localhost:6666');
 const KIMODO_BASE = resolveBase('kimodo_base', 'TEST_UI_KIMODO_BASE_URL', 'http://localhost:5001');
@@ -13,10 +14,21 @@ const KIMODO_BASE = resolveBase('kimodo_base', 'TEST_UI_KIMODO_BASE_URL', 'http:
 console.log('[test-ui] endpoints', { API_BASE, SPEECH_BASE, SEARXNG_BASE, KIMODO_BASE });
 
 // ── Service registry ───────────────────────────────────────────────
+// External services (TTS/SearXNG/Kimodo) don't send CORS headers, so a direct
+// browser fetch always fails cross-origin (false negative) regardless of file://
+// or http origin. Instead we read their real status from the backend's
+// /health/detailed, which probes each dependency server-side (no CORS). The
+// `detailedKey` maps a card to the matching `checks.<key>` field.
+// speechllm/searxng map to real server-side probes in /health/detailed (accurate).
+// kimodo (:5001) has NO server-side probe — backend's `mcp` check counts MCP tools,
+// which is decoupled from the :5001 HTTP server — so we probe it directly. That means
+// a cross-origin browser fetch shows "down" when :5001 is offline (correct) but also
+// when it's up without CORS headers (false negative — a fundamental browser limit).
+// VieNeu TTS (:5000) removed — no TTS server exists in this repo (client-only);
+// nothing to monitor. Re-add a card + `speechllm` entry if a server is stood up.
 const SERVICES = {
     langgraph: { name: 'LangGraph Agent', baseUrl: API_BASE,     healthUrl: `${API_BASE}/health` },
-    speechllm: { name: 'VieNeu TTS',      baseUrl: SPEECH_BASE,  healthUrl: `${SPEECH_BASE}/health` },
-    searxng:   { name: 'SearXNG',         baseUrl: SEARXNG_BASE, healthUrl: `${SEARXNG_BASE}/healthz` },
+    searxng:   { name: 'SearXNG',         baseUrl: SEARXNG_BASE, detailedKey: 'searxng' },
     kimodo:    { name: 'Kimodo MCP',      baseUrl: KIMODO_BASE,  healthUrl: `${KIMODO_BASE}/health` },
 };
 
@@ -93,30 +105,43 @@ function switchTab(id) {
 }
 
 // ── Health checks ──────────────────────────────────────────────────
-async function checkHealth(key) {
-    const svc   = SERVICES[key];
-    const dot   = document.getElementById(`dot-${key}`);
-    const label = document.getElementById(`label-${key}`);
-    dot.className = 'status-dot checking';
-    label.textContent = 'Checking…';
+function _setDot(key, ok, text) {
+    document.getElementById(`dot-${key}`).className =
+        `status-dot ${ok ? 'online' : 'offline'}`;
+    document.getElementById(`label-${key}`).textContent = text;
+}
 
+async function checkHealth(key) {
+    const svc = SERVICES[key];
+    document.getElementById(`dot-${key}`).className = 'status-dot checking';
+    document.getElementById(`label-${key}`).textContent = 'Checking…';
+
+    // External deps have no CORS → read their status from backend /health/detailed.
+    if (svc.detailedKey) {
+        try {
+            const res  = await fetch(`${API_BASE}/health/detailed`, { signal: AbortSignal.timeout(8000) });
+            const data = await res.json();
+            const chk  = data.checks?.[svc.detailedKey];
+            if (!chk) throw new Error(`no "${svc.detailedKey}" in /health/detailed`);
+            const ms = chk.latency_ms != null ? Math.round(chk.latency_ms) : '?';
+            _setDot(key, chk.ok, chk.ok ? `✅ OK (${ms}ms, via backend)` : `❌ down (${chk.detail ?? 'no response'})`);
+            addLog(chk.ok ? 'success' : 'error', svc.name, chk.ok ? `Healthy (server-side, ${ms}ms)` : 'Down (server-side probe)');
+        } catch (err) {
+            _setDot(key, false, `❔ backend unreachable`);
+            addLog('error', svc.name, `Can't reach backend /health/detailed: ${err.message}`);
+        }
+        return;
+    }
+
+    // Direct check (LangGraph backend itself).
     try {
-        const t0 = performance.now();
+        const t0  = performance.now();
         const res = await fetch(svc.healthUrl, { signal: AbortSignal.timeout(3000) });
         const ms  = Math.round(performance.now() - t0);
-
-        // SearXNG returns HTML on /healthz — just check HTTP 200
-        let data = {};
-        const ct = res.headers.get('content-type') || '';
-        if (ct.includes('json')) data = await res.json();
-
-        const ok = res.ok;
-        dot.className  = ok ? 'status-dot online' : 'status-dot offline';
-        label.textContent = ok ? `✅ OK (${ms}ms)` : `⚠️ HTTP ${res.status}`;
-        addLog(ok ? 'success' : 'error', svc.name, ok ? `Healthy in ${ms}ms` : `HTTP ${res.status}`);
+        _setDot(key, res.ok, res.ok ? `✅ OK (${ms}ms)` : `⚠️ HTTP ${res.status}`);
+        addLog(res.ok ? 'success' : 'error', svc.name, res.ok ? `Healthy in ${ms}ms` : `HTTP ${res.status}`);
     } catch (err) {
-        dot.className = 'status-dot offline';
-        label.textContent = `❌ ${err.message}`;
+        _setDot(key, false, `❌ ${err.message}`);
         addLog('error', svc.name, err.message);
     }
 }
@@ -130,7 +155,7 @@ async function checkHealthDetailed() {
         const ms  = Math.round(performance.now() - t0);
         const data = await res.json();
         showResult(container, data, ms, res.status);
-        addLog(data.all_ok ? 'success' : 'error', 'LangGraph', `Detailed health in ${ms}ms — ${data.status}`);
+        addLog(res.ok ? 'success' : 'error', 'LangGraph', `Detailed health in ${ms}ms — ${data.status ?? res.status}`);
     } catch (err) {
         showError(container, err.message, Math.round(performance.now() - t0));
         addLog('error', 'LangGraph', err.message);
@@ -138,7 +163,34 @@ async function checkHealthDetailed() {
 }
 
 async function checkAllHealth() {
-    await Promise.all(Object.keys(SERVICES).map(k => checkHealth(k)));
+    const detailedKeys = Object.keys(SERVICES).filter(k => SERVICES[k].detailedKey);
+    const directKeys   = Object.keys(SERVICES).filter(k => !SERVICES[k].detailedKey);
+
+    // Direct checks (LangGraph) in parallel.
+    const jobs = directKeys.map(k => checkHealth(k));
+
+    // One /health/detailed fetch feeds all external-dep dots.
+    detailedKeys.forEach(k => {
+        document.getElementById(`dot-${k}`).className = 'status-dot checking';
+        document.getElementById(`label-${k}`).textContent = 'Checking…';
+    });
+    jobs.push((async () => {
+        try {
+            const res  = await fetch(`${API_BASE}/health/detailed`, { signal: AbortSignal.timeout(8000) });
+            const data = await res.json();
+            for (const k of detailedKeys) {
+                const chk = data.checks?.[SERVICES[k].detailedKey];
+                if (!chk) { _setDot(k, false, '❔ not in /health/detailed'); continue; }
+                const ms = chk.latency_ms != null ? Math.round(chk.latency_ms) : '?';
+                _setDot(k, chk.ok, chk.ok ? `✅ OK (${ms}ms, via backend)` : `❌ down (${chk.detail ?? 'no response'})`);
+            }
+        } catch (err) {
+            detailedKeys.forEach(k => _setDot(k, false, '❔ backend unreachable'));
+            addLog('error', 'LangGraph', `/health/detailed: ${err.message}`);
+        }
+    })());
+
+    await Promise.all(jobs);
 }
 
 // ── SSE Chat test ──────────────────────────────────────────────────
@@ -360,62 +412,6 @@ async function deleteSession(sessionId) {
     }
 }
 
-// ── VieNeu TTS test ────────────────────────────────────────────────
-async function testTTS() {
-    const text  = document.getElementById('tts-text').value.trim();
-    const voice = document.getElementById('tts-voice').value.trim();
-    const btn   = document.getElementById('btn-tts');
-    const container = document.getElementById('result-tts');
-    const timer = document.getElementById('timer-tts');
-
-    if (!text) return;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Generating…';
-    container.innerHTML = '<div class="result-placeholder">Calling VieNeu TTS…</div>';
-    const t0 = performance.now();
-    startTimer(timer, t0);
-
-    try {
-        const body = { text };
-        if (voice) body.voice_path = voice;
-
-        const res = await fetch(`${SPEECH_BASE}/synthesize`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        });
-        stopTimer();
-        const ms   = Math.round(performance.now() - t0);
-        if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-        const data = await res.json();
-
-        const audioFile = data.audio_file ?? '';
-        const audioUrl  = audioFile ? `${SPEECH_BASE}/audio/${encodeURIComponent(audioFile.split(/[\\/]/).pop())}` : null;
-
-        container.className = 'result-container result-success';
-        container.innerHTML = `
-            <div class="result-card">
-                ${audioUrl ? `<div class="result-card-section">
-                    <div class="result-card-label">🔊 Audio</div>
-                    <audio controls style="width:100%"><source src="${audioUrl}" type="audio/wav"></audio>
-                    <a href="${audioUrl}" target="_blank" style="color:var(--accent);font-size:0.85rem">📥 Download</a>
-                </div>` : ''}
-                <details><summary style="cursor:pointer;color:var(--text-muted);font-size:0.8rem">Full JSON</summary>
-                    <pre class="result-json">${syntaxHighlight(JSON.stringify(data, null, 2))}</pre>
-                </details>
-            </div>
-            <div class="result-meta"><span>✅ 200</span><span>⏱️ ${ms}ms</span></div>`;
-        addLog('success', 'VieNeu TTS', `Generated in ${ms}ms`);
-    } catch (err) {
-        stopTimer();
-        showError(container, err.message, Math.round(performance.now() - t0));
-        addLog('error', 'VieNeu TTS', err.message);
-    } finally {
-        btn.disabled = false;
-        btn.innerHTML = '<span class="btn-icon">🔊</span> Synthesize';
-    }
-}
-
 // ── Init ───────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
     // Pre-fill a random session id for chat
@@ -429,5 +425,4 @@ document.addEventListener('keydown', e => {
     if (!panel) return;
     if (panel.id === 'panel-chat')     testChat();
     if (panel.id === 'panel-sessions') listSessions();
-    if (panel.id === 'panel-tts')      testTTS();
 });

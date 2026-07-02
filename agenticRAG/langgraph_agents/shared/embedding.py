@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import os
 from functools import lru_cache
 from typing import List, Union
 
@@ -39,10 +40,15 @@ class E5EmbeddingService:
 
     @property
     def model(self):
-        """Lazy-load the SentenceTransformer on first use."""
+        """Lazy-load the SentenceTransformer on first use.
+
+        Loads from local cache by default (no HF-Hub round-trips on restart).
+        Set EMBEDDING_ALLOW_DOWNLOAD=1 for a one-time download on a clean machine.
+        """
         if self._model is None:
             from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer(self.model_name)
+            _offline = os.getenv("EMBEDDING_ALLOW_DOWNLOAD") != "1"
+            self._model = SentenceTransformer(self.model_name, local_files_only=_offline)
         return self._model
 
     # ── Public API ──────────────────────────────────────────────────────

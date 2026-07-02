@@ -139,7 +139,8 @@ def shared_embedder(model_name: str = "sentence-transformers/all-MiniLM-L6-v2") 
         try:
             from sentence_transformers import SentenceTransformer  # type: ignore
 
-            embedder = SentenceTransformer(model_name)
+            _offline = os.getenv("EMBEDDING_ALLOW_DOWNLOAD") != "1"
+            embedder = SentenceTransformer(model_name, local_files_only=_offline)
             _embedder_cache[model_name] = embedder
             logger.info("ResourceGuard: loaded shared embedder '%s'", model_name)
             return embedder

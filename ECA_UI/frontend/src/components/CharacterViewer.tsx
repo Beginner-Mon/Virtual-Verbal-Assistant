@@ -330,7 +330,14 @@ return (
       />
 
       {theme === 'dark' && <Stars radius={50} depth={50} count={1000} factor={2} saturation={0.5} fade speed={0.5} />}
-      <Environment preset={theme === 'dark' ? 'night' : 'city'} />
+      {/*
+        resolution={64}: the default PMREM environment texture (256px cubemap) is large
+        enough that PMREM prefiltering (PMREMGGXConvolution) triggers a D3D11 device
+        removal (DXGI 0x887A0020) → WebGL context loss → blank canvas on GPUs with a
+        tight texture budget (repro'd via ANGLE/D3D11). A 64px IBL map keeps the
+        image-based lighting while staying well under the allocation limit.
+      */}
+      <Environment preset={theme === 'dark' ? 'night' : 'city'} resolution={64} />
 
       {/* Orbital camera: follows hips, enforces minimum distance (radius) */}
       <OrbitControls

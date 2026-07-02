@@ -19,7 +19,7 @@ export default function ChatMessage({ message }: ChatMessageProps) {
     const cleaned = message.content.replace(/<\/?evidence_citation>/g, '')
     return (
       <div className="px-3 md:px-5 py-1 md:py-3 animate-message-in w-full max-w-full">
-        <div className="prose prose-invert prose-p:leading-relaxed prose-pre:bg-secondary/50 prose-pre:border prose-pre:border-border/40 max-w-none text-[clamp(0.75rem,0.68rem+0.3vw,0.875rem)] text-foreground/90">
+        <div className="prose dark:prose-invert prose-p:leading-relaxed prose-strong:text-foreground prose-headings:text-foreground prose-pre:bg-secondary/50 prose-pre:border prose-pre:border-border/40 max-w-none text-[clamp(0.75rem,0.68rem+0.3vw,0.875rem)] text-foreground/90">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{cleaned}</ReactMarkdown>
         </div>
       </div>

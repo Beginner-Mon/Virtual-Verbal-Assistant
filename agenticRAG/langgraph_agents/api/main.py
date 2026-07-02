@@ -17,6 +17,16 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
+# P1: force huggingface_hub fully offline BEFORE any HF-importing module loads, so the
+# embedding model (intfloat/multilingual-e5-small, already cached) makes ZERO network
+# calls on load. huggingface_hub reads HF_HUB_OFFLINE once at import — setting it here (top
+# of the uvicorn entrypoint, before `from langgraph_agents...` pulls sentence_transformers)
+# is the only reliable point. setdefault → an EMBEDDING_ALLOW_DOWNLOAD=1 run can still
+# download on a clean machine (set HF_HUB_OFFLINE=0 explicitly to override).
+if os.getenv("EMBEDDING_ALLOW_DOWNLOAD") != "1":
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Request
 from fastapi.middleware.cors import CORSMiddleware

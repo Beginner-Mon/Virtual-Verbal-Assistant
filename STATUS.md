@@ -1,140 +1,145 @@
 # VVA — Status & Roadmap
 
-> Last update: 2026-06-11 | Branch: `feature/langgraph-rewrite`
-> Audience: new team members, manager takeover
+> Last update: 2026-07-02 (K) | Branch: `feature/langgraph-rewrite`
+> Audience: new team members, manager/K takeover after context compaction
+
+---
+
+## 0. TRẠNG THÁI ĐANG TREO (đọc trước — dễ mất khi compact)
+
+- **Git**: local đã **sync với origin** — merge `1b734b1` (kéo về 3 commit auth-FE của Tri) trên
+  commit của tôi `b857c36` (auth backend + 3 fix memory + FE wire + markdown + web-search + tests).
+  Local đang **ahead 2, CHƯA PUSH**. (Owner đã nói "ok push" nhưng bị ngắt → push còn treo.)
+- **TEMP đang bật để test local** (uncommitted, PHẢI khôi phục trước deploy):
+  - `ECA_UI/frontend/src/components/AuthGuard.tsx`: đã **comment khối redirect `/login`** (có marker
+    `⚠️ TEMP`) để vào thẳng chat không cần Cognito/Google login. Khôi phục = bỏ comment 3 dòng.
+  - `agenticRAG/agentic_rag_gemini/.env`: `ALLOWED_ORIGINS` đã thêm `:5173` (local, gitignored).
+- **Backend chạy trên :8000** (conda `firstconda`; DeepSeek key đã nạp balance). ⚠️ **8080 dành
+  cho service Spring của Owner — KHÔNG bind backend vào 8080.** Frontend trỏ :8000 qua
+  `ECA_UI/frontend/.env.local` (gitignored) + default trong `src/lib/api.ts`.
+- **Không nhắc chuyện commit** với Owner trừ khi Owner chủ động (feedback 19/06). Không commit/push
+  khi chưa được lệnh. Gọi Owner là **Mr. Senryuu**.
+- **Demo chạy UI React** `:5173` (Vite dev), backend `:8000`, Docker PG(5433)/Redis/SearXNG.
 
 ---
 
 ## 1. Tổng quan
 
-Healthcare/wellness AI assistant — bài tập physical therapy, tư vấn chống chỉ định, 3D motion synthesis, voice I/O. Kiến trúc: **LangGraph 1.2.4 + DeepSeek v4 + PostgreSQL/pgvector + Redis**.
+Healthcare/wellness AI assistant — bài tập physical therapy, chống chỉ định, 3D motion, voice.
+Kiến trúc: **LangGraph 1.2.4 + DeepSeek + PostgreSQL/pgvector + Redis + React/Vite FE + Cognito**.
 
 ```
-user query → memory (STM+facts) → planner (3-axis intent) → retriever (tool selection)
-   ├─ needs_retrieval=false → synthesizer (persona-styled) → grader (tag-driven) → response
-   └─ needs_retrieval=true  → kb_search ∥ memory_search ∥ web_search → synthesizer → grader
+user query → memory (STM+facts+history) → planner (3-axis) → retriever (tool select)
+   ├─ needs_retrieval=false → synthesizer (persona + markdown, đọc history) → grader → SSE
+   └─ needs_retrieval=true  → kb_search ∥ memory_search ∥ web_search ∥ youtube_transcript → synthesizer → grader
 ```
-
-8 nodes, 2 cổng routing độc lập (D15): retriever ⟸ `needs_retrieval`, grader ⟸ `required_outputs != []`
+8 nodes, 2 cổng routing độc lập (D15). Package: `agenticRAG/langgraph_agents/` (đã relevel từ
+`agentic_rag_gemini/`). **247 tests** (unit + integration LLM/PG).
 
 ---
 
 ## 2. Đã hoàn thành ✅
 
-### Core architecture (REUPDATE_PLAN §M, 33 decisions D1-D33)
-- [x] **M.4 Schema**: 7 tables (users, conversations, messages, summaries, user_memory, documents, kb_embeddings). HNSW indexes. e5-small vector(384). No user_id trên messages/summaries (D19).
-- [x] **8 nodes**: memory → planner → retriever_agent ⇄ tools → kimodo → synthesizer → grader → error_handler
-- [x] **3-axis intent**: `required_outputs` / `resolved_query` / routing bits. Bỏ 6-enum cũ.
-- [x] **Grader rule-based**: TAG_RULES 8 tag (3 safety + 5 quality), deterministic regex, no LLM.
-- [x] **Prompt caching layout**: tĩnh đầu/động cuối (M.7), DeepSeek auto-cache prefix.
-- [x] **GDPR from day 1**: gdpr.py — mark-dirty, hard-delete, empty-chunk cleanup (M.8).
+### Core (REUPDATE_PLAN §M, D1-D33) — nền tảng, xong từ 06-11/06
+- M.4 schema 7 bảng, HNSW, e5-small 384, no user_id trên messages/summaries (D19).
+- 8 nodes, 3-axis intent, grader rule-based (TAG_RULES 8 tag), prompt caching M.7, GDPR M.8.
+- Alembic 002, Docker (PG16/Redis7/SearXNG), embedding e5-small.
 
-### Infrastructure
-- [x] **Docker**: PostgreSQL 16 (pgvector), Redis 7, SearXNG (docker-compose.langgraph.yml)
-- [x] **Alembic migration**: 002_m4_fresh chạy thành công, 7 tables created
-- [x] **Embedding**: `intfloat/multilingual-e5-small` (384 dims) + prefix query:/passage:
-- [x] **Config**: langgraph.yaml (DSN, breaker, memory, persona)
+### Cụm A closeout + R1/R2 (12-13/06)
+- **Background summarizer M.5** (`nodes/summarizer.py`): trigger 10k token, CAS, retry.
+- **Memory tools bind + tenant scope fix** (memory_search `session_id=ANY`, inject scope qua config).
+- **Clarify động M.2b**: memory_search/resume_last_session emit `{ambiguous, candidates}`.
+- **GDPR wiring**: endpoint delete message/user → mark-dirty → `rebuild_dirty_chunk` (fix R1).
+- **user_memory write path** (A3): `POST/GET/DELETE /users/{id}/memory`.
+- **Path traversal `persona_id`** (A0) vá; **iterative_scan** bật ở pool; persona cache không cache fallback.
+- **YouTube paste-link**: `youtube_transcript` tool (retrieval tool, không ghi KB).
 
-### Testing
-- [x] **187/187 tests passing** (60+ unit, 5 integration LLM, SSE, circuit breaker, health, logging)
-- [x] Session store sync M.4 schema
-- [x] API schemas sync 3-axis model
-- [x] Persona loader sync 4 modes (chat/clarify/refuse/synthesize)
+### Auth + Frontend + Memory fixes (18/06 → nay)
+- **Auth integration** (`api/auth.py`): verify Cognito ID token (JWKS RS256 + aud + iss + token_use),
+  `user_id=sub`, gated cờ `REQUIRE_AUTH` (default false = demo). Wired mọi endpoint. CORS +:5173.
+- **Frontend nối backend thật**: `src/lib/api.ts` streamChat SSE; ChatPanel bỏ mock; **web-search toggle**
+  (chip xám "Web"); **ChatMessage render markdown** (react-markdown + remark-gfm); `amplify.ts`
+  `import.meta.glob` → dev chạy không cần amplify_outputs.json (demo mode).
+- **3 bug memory "câm" đã fix** (bug sau che bug trước): (1) `PostgresClient.executemany` thiếu;
+  (2) `write_session_turn` truyền chuỗi ISO cho timestamptz dưới executemany; (3) synthesizer không
+  đưa history vào LLM call. → memory đa lượt CHẠY (verify: "Tên bạn là Nguyễn"). +2 regression test.
+- **Merge feature/frontend của Tri** (React UI + Cognito login/create-account/set-password pages +
+  Amplify functions). Sync sạch, git tự 3-way merge (amplify.ts gộp cả 2, package.json cả 2 bộ dep).
 
-### Cleanup
-- [x] Gỡ 4 test files cũ (planner, grader, memory, retriever)
-- [x] Gỡ nút 📎 upload khỏi UI (tàn dư kiến trúc orchestrator cũ)
+### FE debug 02/07 (verify qua playwright-cli)
+- **VRM không hiện**: `<Environment preset>` (PMREM HDR 256px) làm D3D11 device-removal
+  (`DXGI 0x887A0020`) → WebGL context lost → canvas trắng. Fix: `resolution={64}` trong
+  `CharacterViewer.tsx` (giữ IBL, texture nhỏ). VRM render OK.
+- **Bold chữ trắng ẩn**: `ChatMessage.tsx` hardcode `prose-invert` (light theme → bold trắng).
+  Fix: `dark:prose-invert` + `prose-strong/headings:text-foreground`.
+- **Chat "something went wrong" tức thì**: FE gọi `/chat` ở :8080 (Spring Owner) → 404.
+  Fix: default API base 8080→8000 (`api.ts`) + `.env.local` (gitignored). Verify: `POST /chat 200`,
+  trợ lý Seele trả lời thật.
 
 ---
 
-## 3. Đang làm 🟡
+## 3. Còn thiếu (theo ưu tiên)
 
-- [ ] **STATUS.md** (file này — chưa có phiên bản trước 11/06)
+### 🔴 Trước khi có user / mở ra mạng
+| # | Task | Ghi chú |
+|---|---|---|
+| 1 | **Bật auth thật**: `REQUIRE_AUTH=true` + 3 biến Cognito + deploy Cognito (`ampx sandbox`). Khôi phục AuthGuard redirect (đang comment TEMP). Đóng IDOR. | chặn deploy mạng |
+| 2 | **Fix `MobileNavBar.tsx` TS6133** (`onOpenModal` unused) — chặn `npm run build` production. Lỗi pre-existing của Tri. | chặn build FE |
+| 3 | **Persist sessionId FE** (localStorage) — đóng/mở panel Chat hiện tạo session mới → mất memory. | UX memory |
+| 4 | **Verify E2E thủ công**: summarizer 10k token → row summaries; general_query "giá vàng?" SearXNG. | cần services |
 
----
-
-## 4. Còn thiếu (theo thứ tự ưu tiên)
-
-### 🔴 Trước khi có user thật
-
-| # | Task | Effort | Where |
-|---|---|---|---|
-| 1 | ~~LTM write path~~ → ✅ XONG 12/06: background summarizer M.5 (`nodes/summarizer.py`) + bind memory tools + fix tenant scope. Xem worklog 12/06 + `PREDEPLOY-AUDIT.md` | — | done |
-| 2 | **users.profile write path**: 0 chỗ ghi → luôn `{}`. Cần `PATCH /users/{id}/profile` | 1h | `api/main.py` |
-| 3 | **Verify general_query**: test "giá vàng?" qua SearXNG thật, xác nhận web search hoạt động | 30m | manual |
-| 4 | **YouTube paste link**: detect link → get transcript → context cho synthesizer | 3h | `nodes/planner.py`, `tools/youtube_ingest.py` |
-
-### 🟠 Trước demo
-
-| # | Task | Effort | Where |
-|---|---|---|---|
-| 5 | **CI pipeline**: GitHub Actions chạy pytest toàn bộ suite | 1h | `.github/workflows/` |
-| 6 | **Eval dataset**: 50 case golden test (5 chat, 10 safety, 15 exercise, 10 clarify, 10 refuse) | 3h | `tests/eval/` |
-| 7 | **LLM fallback**: DeepSeek → Gemini qua circuit breaker | 2h | `llm.py` |
-| 8 | **Auth JWT middleware**: bỏ `user_id="anonymous"` cho production | 2h | `api/main.py` |
-| 9 | **Rate limiting**: `slowapi` hoặc Redis-based, 20 req/min/user | 1h | `api/main.py` |
-| 10 | **Persona prompt versioning**: snapshot prompt version mỗi lần đổi | 1h | `nodes/_persona_loader.py` |
+### 🟠 Trước demo rộng
+CI pipeline (GitHub Actions pytest) · Eval dataset 50 golden case · LLM fallback DeepSeek→Gemini
+(hiện hết balance = cả hệ câm) · Rate limiting · Persona prompt versioning.
 
 ### 🟡 Nice to have
-
-| # | Task | Effort |
-|---|---|---|
-| 11 | `ai_understanding` — AI tự đúc kết facts về user từ hội thoại (background, throttled) | 3h |
-| 12 | LangSmith tracing — full graph trace cho debug production | 1h |
-| 13 | User upload document — bảng `user_documents` + `user_doc_embeddings` (defer per M.10) | 4h |
-| 14 | Multi-turn clarification loop | 3h |
-| 15 | A/B testing framework cho prompt | 5h |
+`ai_understanding` (AI tự trích facts) · LLM gợi-ý profile · LangSmith tracing · user upload doc.
 
 ---
 
-## 5. Phase 7 — Hybrid Cloud Deployment (chưa bắt đầu)
-
-[Xem REUPDATE_PLAN.md lines 716-883 để biết chi tiết.]
-
-| # | Task |
-|---|---|
-| 1 | Init `infra/` CDK project (TypeScript): VPC, RDS, ElastiCache, ECS Fargate, Lambda, CloudFront |
-| 2 | SQS + TTS worker (reactivate `celery_app.py` với SQS broker) |
-| 3 | Encryption at rest + RLS (khi có nhiều đường vào DB) |
-| 4 | DNS + SSL |
-| 5 | Supabase vs self-hosted RDS decision |
-| 6 | Push-to-talk vs continuous streaming voice decision |
+## 4. Phase 7 — Hybrid Cloud (ON HOLD, chờ Owner bàn)
+- Tri's `infra/` CDK (Python) đã merge: VPC isolated + RDS Proxy + Lambda CRUD + API Gateway.
+- **Đã chốt**: Alembic = nguồn migration duy nhất (xóa `infra/sql/init_schema.sql`); `/chat` KHÔNG
+  qua API Gateway (timeout 29s) → ECS Fargate; Kimodo host = edge RTX 3060 + SQS pull.
+- **Còn treo (cần Owner)**: Supabase vs RDS (chi phí AWS-full ~$80/mo vs lean ~$30); chốt trước khi K
+  viết PHASE-7.x specs. Voice = push-to-talk (đã chốt, giữ SSE).
+- **Sync với Tri**: cần branch-protection/PR để hết va (đã va merge 2 lần).
 
 ---
 
-## 6. Cách chạy
+## 5. Cách chạy (local demo)
 
 ```bash
-# Docker services
-docker compose -f docker-compose.langgraph.yml up -d postgres redis
+# 1. Docker (postgres/redis không có restart policy — Docker restart là phải bật lại)
+docker compose -f docker-compose.langgraph.yml up -d postgres redis searxng
 
-# Migration (port 5433 — host may conflict with local PostgreSQL)
-cd agenticRAG/langgraph_agents
-alembic upgrade head
+# 2. Migration
+cd agenticRAG/langgraph_agents && alembic upgrade head
+
+# 3. Backend (:8000 — 8080 dành cho Spring của Owner) — conda env firstconda
+cd agenticRAG
+python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8000
+
+# 4. Frontend React (:5173) — demo mode, không cần login (AuthGuard đang TEMP-bypass)
+cd ECA_UI/frontend && npm install && npm run dev
 
 # Tests
-pytest ../../tests/langgraph_agents/ -v
-
-# API (dev)
-uvicorn langgraph_agents.api.main:create_app --port 8080
+python -m pytest tests/langgraph_agents/ -q       # 247 passed (cần PG/Redis + DeepSeek key)
 ```
+Chi tiết + troubleshooting: `docs/RUNBOOK.md` (đã cập nhật: 2 UI, REQUIRE_AUTH, CORS :5173, Docker-down).
 
-## 7. Key files — đọc nếu muốn đào sâu
+## 6. Key files
+| File | Nội dung |
+|---|---|
+| `REUPDATE_PLAN.md §M` | 33 decisions D1-D33 — nguồn chân lý kiến trúc |
+| `TECH_DEBT.md` | Việc tồn (cập nhật 13/06) |
+| `PREDEPLOY-AUDIT.md` | Security review + lộ trình pre-deploy (A/B/C) |
+| `FIX-*.md` (root) | Spec/handoff các cụm (memory, R1, auth, chatpanel, youtube) |
+| `docs/worklogs/*` | Nhật ký từng phiên |
+| `.claude/CLAUDE.md` | Roles K/N/Owner, conventions |
 
-| File | Nội dung | Khi nào đọc |
-|---|---|---|
-| `REUPDATE_PLAN.md §M` | 33 decisions + spec chi tiết | Cần hiểu "vì sao" |
-| `TECH_DEBT.md` | Danh sách việc tồn (có thể hơi cũ) | Check còn gì chưa làm |
-| `docs/worklogs/05-06-2026.md` | Phiên grill chốt kiến trúc | Hiểu 6 lần đảo ngược quyết định |
-| `docs/worklogs/06-06-2026.md` | N implement 15 bước M.9 | Biết ai code gì |
-| `docs/worklogs/11-06-2026.md` | Test suite rebuild + bug fixes | Biết đã sửa những gì |
-| `.claude/CLAUDE.md` | Roles, conventions, skills | Role của K, N, Owner |
-
-## 8. Conventions
-
-- **Worklog**: ghi `docs/worklogs/DD-MM-YYYY.md` mỗi phiên làm việc
-- **Plan**: `REUPDATE_PLAN.md §M` là nguồn chân lý kiến trúc
-- **Test**: `pytest -m unit|integration -v`. 187 tests, tất cả phải xanh trước merge.
-- **Branch**: `feature/langgraph-rewrite`
-- **Roles**: K = Architect (AI, không code, viết plan, review). N = Developer (Human, code, test).
-- **Ngôn ngữ**: Code = English, docs = Vietnamese + English mix
+## 7. Conventions
+- Worklog `docs/worklogs/DD-MM-YYYY.md` mỗi phiên. Test phải xanh trước merge.
+- K = Architect (plan/review, thường không code — phiên gần đây K spawn subagent implement rồi tự
+  verify code + playwright trước khi report). N = Developer. Owner = "Mr. Senryuu", chốt vision.
+- Code = English, docs = Việt + Anh. UI verify bằng skill `playwright-cli` (không npx). Không dùng port 8080 cho smoke-test.

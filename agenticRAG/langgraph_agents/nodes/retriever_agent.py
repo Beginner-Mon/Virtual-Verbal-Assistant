@@ -63,9 +63,21 @@ async def _build_tools(web_search_enabled: bool = True) -> list:
     return tools
 
 
-# ── System prompt ─────────────────────────────────────────────────────────
+# ── System prompt (P3: conditional web search block) ─────────────────────
 
-_RETRIEVER_SYSTEM_PROMPT = """You are a KNOWLEDGE RETRIEVER for a physical therapy & wellness AI assistant.
+# Web-search tool description + decision rule — injected only when web_search_enabled.
+_WEB_SEARCH_TOOL_BLOCK = """\
+- **search_medical(query)**: Search the web via metasearch engine.
+  Use for: real-time info (news, prices, current events), general facts outside PT domain.
+"""
+
+_WEB_SEARCH_RULE_LINE = """\
+2. **Real-time/external** (news, prices, weather, general non-PT facts) → search_medical
+"""
+
+# Static sections (always present regardless of web_search flag)
+_RETRIEVER_PROMPT_BASE = """\
+You are a KNOWLEDGE RETRIEVER for a physical therapy & wellness AI assistant.
 
 ## YOUR ROLE (Dev metaphor)
 You are a DEVELOPER — you decide HOW to find information. The planner (manager) told you WHAT
@@ -75,8 +87,7 @@ to search for. Do NOT write the final answer — that's the synthesizer's job.
 ## TOOLS AVAILABLE
 - **kb_search(query, top_k=5)**: Search the internal PT/wellness knowledge base.
   Use for: exercises, stretches, anatomy, physiotherapy techniques, health facts.
-- **search_medical(query)**: Search the web via metasearch engine.
-  Use for: real-time info (news, prices, current events), general facts outside PT domain.
+{web_search_tool_block}\
 - **memory_search(query, since_days=None, top_k=3)**: Search user's past conversation summaries.
   Use for: "lần trước", "tuần trước", "tôi đã hỏi", "nhắc lại".
   Scope is automatically scoped to the current user — no need to pass user_id.
@@ -89,12 +100,12 @@ to search for. Do NOT write the final answer — that's the synthesizer's job.
 
 ## DECISION RULES
 1. **PT/wellness topic** (exercises, stretches, anatomy, physiotherapy) → kb_search FIRST
-2. **Real-time/external** (news, prices, weather, general non-PT facts) → search_medical
-3. **Past conversation recall** ("lần trước", "như đã nói", "tiếp tục") → memory_search
-4. **YouTube link in message** (youtube.com/watch or youtu.be) → call `youtube_transcript(url)`
+{web_search_rule_line}\
+2. **Past conversation recall** ("lần trước", "như đã nói", "tiếp tục") → memory_search
+3. **YouTube link in message** (youtube.com/watch or youtu.be) → call `youtube_transcript(url)`
    with the exact URL from the user's message; use the returned transcript to answer.
-5. **Multiple needs** → call tools IN PARALLEL (multiple tool_calls in one response)
-6. **NOT SURE which tool** → call kb_search (default, most common)
+4. **Multiple needs** → call tools IN PARALLEL (multiple tool_calls in one response)
+5. **NOT SURE which tool** → call kb_search (default, most common)
 
 ## SEARCH QUERY TIPS
 - Use the resolved_query as base, enrich with relevant keywords from required_outputs tags
@@ -117,6 +128,28 @@ Resolved query: {resolved_query}
 """
 
 
+def _build_retriever_system_prompt(
+    *,
+    web_search_enabled: bool,
+    retry_note: str,
+    required_outputs: str,
+    resolved_query: str,
+) -> str:
+    """Build the retriever system prompt.
+
+    When web_search_enabled=False, the search_medical tool description and its
+    decision rule are omitted entirely — the LLM is never told web search exists.
+    This is the first layer of P3 defense (conditional prompt).
+    """
+    return _RETRIEVER_PROMPT_BASE.format(
+        web_search_tool_block=_WEB_SEARCH_TOOL_BLOCK if web_search_enabled else "",
+        web_search_rule_line=_WEB_SEARCH_RULE_LINE if web_search_enabled else "",
+        retry_note=retry_note,
+        required_outputs=required_outputs,
+        resolved_query=resolved_query,
+    )
+
+
 # ── Node ──────────────────────────────────────────────────────────────────
 
 async def retriever_agent_node(state: AgentState, config: RunnableConfig) -> dict:
@@ -132,8 +165,11 @@ async def retriever_agent_node(state: AgentState, config: RunnableConfig) -> dic
     required_outputs = state.get("required_outputs", [])
     feedback = state.get("grader_feedback")
 
+    # Hard-cap round counter (P2): increment each node execution
+    current_rounds = state.get("retriever_rounds", 0) + 1
+
     # Web search toggle (D27): user config overrides retriever choice
-    web_search_enabled = config["configurable"].get("web_search", True)
+    web_search_enabled = config["configurable"].get("web_search", False)
 
     retry_note = ""
     if feedback:
@@ -154,7 +190,8 @@ async def retriever_agent_node(state: AgentState, config: RunnableConfig) -> dic
 
     tools = await _build_tools(web_search_enabled=web_search_enabled)
 
-    system = _RETRIEVER_SYSTEM_PROMPT.format(
+    system = _build_retriever_system_prompt(
+        web_search_enabled=web_search_enabled,
         retry_note=retry_note,
         required_outputs=", ".join(required_outputs) if required_outputs else "(none — general/chat)",
         resolved_query=resolved_query,
@@ -174,6 +211,7 @@ async def retriever_agent_node(state: AgentState, config: RunnableConfig) -> dic
             "elapsed_ms": elapsed_ms, "error": str(exc),
         }, exc_info=True)
         return {
+            "retriever_rounds": current_rounds,
             "errors": [{
                 "node": "retriever_agent",
                 "severity": ErrorSeverity.CRITICAL,
@@ -199,4 +237,5 @@ async def retriever_agent_node(state: AgentState, config: RunnableConfig) -> dic
     return {
         "messages": [ai_msg],
         "total_tokens": tokens,
+        "retriever_rounds": current_rounds,
     }

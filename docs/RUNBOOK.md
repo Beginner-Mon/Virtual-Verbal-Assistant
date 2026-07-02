@@ -91,14 +91,17 @@ docker exec -it vva-postgres psql -U vva -d vva -c "\dt"
 
 ## 4. Start services
 
-Terminal 1 — Backend (port 8080, logs to file):
+Terminal 1 — Backend (port 8000, logs to file):
+
+> ⚠️ **Port 8080 is reserved** on this machine for the Owner's Spring service — do NOT
+> bind the VVA backend to 8080. Use **8000**.
 
 ```powershell
 conda activate firstconda
 cd agenticRAG
 # Redirect stdout to vva.log so log-analysis commands in §8 work.
 # Drop the `*> ..\vva.log` part if you prefer console output.
-python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8080 --host 0.0.0.0 *> ..\vva.log
+python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8000 --host 0.0.0.0 *> ..\vva.log
 ```
 
 **Auth:** by default `REQUIRE_AUTH=false` — the backend accepts the client-supplied
@@ -118,7 +121,8 @@ npm install            # first time only
 npm run dev            # Vite dev server → http://localhost:5173
 ```
 
-It reads the backend URL from `VITE_API_BASE_URL` (default `http://localhost:8080`).
+It reads the backend URL from `VITE_API_BASE_URL` (default `http://localhost:8000`;
+set in `ECA_UI/frontend/.env.local`).
 Without `amplify_outputs.json` (i.e. you haven't run `npx ampx sandbox`) it runs in
 **demo mode** — no login screen, chat works against the backend with a generated demo
 user id. `npm run build` (production bundle) needs `amplify_outputs.json`; `npm run dev`
@@ -137,12 +141,12 @@ Health checks:
 
 ```bash
 # Liveness (no dependency checks, <10ms)
-curl http://localhost:8080/health
+curl http://localhost:8000/health
 # → {"status": "ok"}
 
 # Readiness (parallel checks, 3s timeout each). Use curl.exe on Windows to see the
 # body even on HTTP 503 (PowerShell's Invoke-RestMethod throws and hides it).
-curl.exe -s http://localhost:8080/health/detailed
+curl.exe -s http://localhost:8000/health/detailed
 # → {
 #     "status": "ready",          # "degraded" if a non-critical dep is down
 #     "checks": {
@@ -163,7 +167,7 @@ Smoke test (SSE chat) — write the body to a file to avoid shell-quoting issues
 
 ```bash
 printf '%s' '{"query":"xin chao","user_id":"smoke","session_id":"smoke-1","output_mode":"text"}' > body.json
-curl -s -N -X POST http://localhost:8080/chat -H "Content-Type: application/json" -d @body.json
+curl -s -N -X POST http://localhost:8000/chat -H "Content-Type: application/json" -d @body.json
 ```
 
 You should see SSE events: `stage:` (memory → planner → synthesizer), a stream of
@@ -183,10 +187,10 @@ with `docker compose -f docker-compose.langgraph.yml up -d postgres redis`.
 
 ## 6. Open the UI
 
-New React UI (demo): **`http://localhost:5173`** — talks to the backend on :8080 via
+New React UI (demo): **`http://localhost:5173`** — talks to the backend on :8000 via
 `VITE_API_BASE_URL` (default). No login needed in demo mode.
 
-Old SSE test UI (debugging): `http://localhost:3000/?api_base=http://localhost:8080`
+Old SSE test UI (debugging): `http://localhost:3000/?api_base=http://localhost:8000`
 (served from `ECA_UI/test-ui/sse-test/`).
 
 The `?api_base=` query parameter points the frontend at the Phase 5 backend.
@@ -290,9 +294,13 @@ curl -s "http://localhost:6666/search?q=test&format=json" | head
 Redis is reachable at TCP level but hanging at protocol (memory pressure, AOF rewrite,
 network blip). Liveness `/health` still 200. Investigate Redis health (`redis-cli info memory`).
 
-### Frontend shows "API Error" or blank responses
-Check browser console. Frontend defaults to port 8000 — use
-`?api_base=http://localhost:8080` to point at the Phase 5 backend.
+### Frontend shows "API Error" / "Sorry, something went wrong"
+Check browser console for the failing request URL. The React UI defaults to
+`http://localhost:8000` (via `VITE_API_BASE_URL`). A **404 from :8080** means the
+request hit the Owner's Spring service, not the VVA backend — confirm the backend is
+running on **:8000** (`curl http://localhost:8000/health`) and that
+`ECA_UI/frontend/.env.local` sets `VITE_API_BASE_URL=http://localhost:8000`. The old
+test UI can be pointed with `?api_base=http://localhost:8000`.
 
 ## 8. Log analysis
 
@@ -370,7 +378,7 @@ docker compose -f docker-compose.langgraph.yml down -v    # wipe volumes
 
 | Service   | Port | Notes                    |
 |-----------|------|--------------------------|
-| Backend   | 8080 | FastAPI + SSE streaming  |
+| Backend   | 8000 | FastAPI + SSE streaming (8080 reserved for Owner's Spring — do not use) |
 | Frontend (React) | 5173 | Vite dev server — main UI for demo |
 | Frontend (SSE test) | 3000 | Old vanilla page, `ECA_UI/test-ui/sse-test/` |
 | PostgreSQL| 5433 | Session + vector store (host 5433 → container 5432) |
@@ -387,4 +395,5 @@ docker compose -f docker-compose.langgraph.yml down -v    # wipe volumes
 | `REQUIRE_AUTH` | `false` | `true` = reject requests without a valid Cognito ID token (closes IDOR; production). Requires the 3 Cognito vars below. |
 | `COGNITO_REGION` / `COGNITO_USER_POOL_ID` / `COGNITO_APP_CLIENT_ID` | — | Cognito user-pool identifiers used to verify the JWT (JWKS + audience + issuer). Only needed when `REQUIRE_AUTH=true`. |
 | `ALLOWED_ORIGINS` | `localhost:3000,5173,8080` | CORS allow-list. The Vite UI origin `http://localhost:5173` is included by default. |
-| `VITE_API_BASE_URL` (frontend) | `http://localhost:8080` | Where the React UI sends API calls. Set at build/dev time in `ECA_UI/frontend`. |
+| `VITE_API_BASE_URL` (frontend) | `http://localhost:8000` | Where the React UI sends API calls. Set in `ECA_UI/frontend/.env.local` (gitignored) at build/dev time. |
+| `EMBEDDING_ALLOW_DOWNLOAD` | `(unset)` | **Embedding model cache.** Default (unset): loads `intfloat/multilingual-e5-small` from `~/.cache/huggingface/hub/` only — no HF-Hub round-trips on restart. Set to `1` for a one-time download on a fresh machine without a local cache. Must be pre-cached before first run on the production machine; see `pip install sentence-transformers && python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('intfloat/multilingual-e5-small')"`. |

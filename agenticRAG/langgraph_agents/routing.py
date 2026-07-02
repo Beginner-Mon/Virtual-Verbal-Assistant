@@ -64,34 +64,36 @@ def route_after_planner(state: AgentState) -> str:
 
 # ── After retriever ───────────────────────────────────────────────────────
 
-_MAX_TOOL_ROUNDS = 2  # Hard cap on retriever⇄tools iterations
+MAX_RETRIEVER_ROUNDS = 2  # Hard cap: retriever_agent may run at most this many times
 
 
 def route_after_retriever(state: AgentState) -> str:
     """Retriever → tools (more calls) | kimodo (if needs_motion) | synthesizer | error_handler.
 
-    Hard-caps tool call rounds to prevent infinite loops (D24: retry only
-    for service errors, not empty results).
+    Hard cap (P2): uses state.retriever_rounds (incremented by retriever_agent_node each
+    execution). If rounds >= MAX_RETRIEVER_ROUNDS, force → synthesizer regardless of
+    pending tool_calls. This is a hard per-turn ceiling — it covers both normal loops and
+    grader-triggered retries (simplest choice: counter is never reset mid-turn).
     After retrieval done: chain to kimodo if needs_motion (D26: motion after retrieval).
     """
     if check_errors(state) == "error_handler":
         return "error_handler"
 
+    # Hard cap: if we've already hit the max rounds, skip to synthesizer
+    retriever_rounds = state.get("retriever_rounds", 0)
+    if retriever_rounds >= MAX_RETRIEVER_ROUNDS:
+        if state.get("needs_motion"):
+            return "kimodo"
+        return "synthesizer"
+
     from langchain_core.messages import AIMessage
     messages = state.get("messages", [])
-
-    # Count tool-call rounds
-    tool_rounds = sum(
-        1 for m in messages
-        if isinstance(m, AIMessage) and getattr(m, "tool_calls", None)
-    )
-
     last_msg = messages[-1] if messages else None
     last_has_tool_calls = bool(
         last_msg and getattr(last_msg, "tool_calls", None)
     )
 
-    if last_has_tool_calls and tool_rounds <= _MAX_TOOL_ROUNDS:
+    if last_has_tool_calls:
         return "tools"
 
     # Retrieval done — chain to kimodo if motion needed (D26)

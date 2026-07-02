@@ -19,6 +19,7 @@ Nodes (8 total):
 
 import asyncio
 
+from langchain_core.messages import ToolMessage
 from langgraph.graph import StateGraph, END, START
 from langgraph.prebuilt import ToolNode
 
@@ -37,6 +38,9 @@ from langgraph_agents.routing import (
     route_after_grader,
     check_errors,
 )
+from langgraph_agents.shared.logging import get_logger
+
+_logger = get_logger("langgraph.graph")
 
 _RECURSION_LIMIT = 20  # planner→retriever⇄tools→kimodo→synth→grader (retry once)
 
@@ -85,6 +89,74 @@ def route_after_retriever_or_tools(state: AgentState) -> str:
     return "synthesizer"
 
 
+def _make_guarded_tools_node(base_tool_node: ToolNode):
+    """P3 execution guard: wraps ToolNode to block search_medical when web_search=False.
+
+    If web_search is off and the last AIMessage contains a search_medical tool_call,
+    that call is short-circuited with a synthetic ToolMessage (content:
+    '{"blocked": "web_search_disabled"}') so the graph keeps flowing. All other
+    tool_calls are delegated to the underlying ToolNode unchanged.
+
+    This is the second layer of P3 defense (execution guard). The first layer
+    (conditional prompt) should prevent the LLM from calling search_medical at all
+    when web_search=False; this guard is a hard backstop in case it still does.
+    """
+    async def _guarded_tools(state: AgentState, config) -> dict:
+        from langchain_core.messages import AIMessage
+
+        cfg = config.get("configurable", {}) if isinstance(config, dict) else getattr(config, "configurable", {}) or {}
+        web_search_on = cfg.get("web_search", False)
+
+        if web_search_on:
+            # Fast path: delegate entirely to ToolNode
+            return await base_tool_node.ainvoke(state, config)
+
+        # Web search is OFF — scan last AIMessage for blocked calls
+        messages = state.get("messages", [])
+        last_msg = messages[-1] if messages else None
+        if not (isinstance(last_msg, AIMessage) and getattr(last_msg, "tool_calls", None)):
+            return await base_tool_node.ainvoke(state, config)
+
+        # Partition tool_calls: blocked vs allowed
+        blocked = [tc for tc in last_msg.tool_calls if tc.get("name") == "search_medical"]
+        allowed = [tc for tc in last_msg.tool_calls if tc.get("name") != "search_medical"]
+
+        if not blocked:
+            return await base_tool_node.ainvoke(state, config)
+
+        _logger.warning("web_search_guard_blocked", extra={
+            "tool": "search_medical",
+            "blocked_count": len(blocked),
+            "request_id": cfg.get("request_id", "-"),
+        })
+
+        # Build synthetic ToolMessages for blocked calls
+        synthetic = [
+            ToolMessage(
+                content='{"blocked": "web_search_disabled"}',
+                tool_call_id=tc["id"],
+                name=tc["name"],
+            )
+            for tc in blocked
+        ]
+
+        if not allowed:
+            # All calls blocked — return synthetic messages directly
+            return {"messages": synthetic}
+
+        # Some calls are allowed: rebuild AIMessage with only allowed tool_calls,
+        # run ToolNode, then prepend synthetic blocked results.
+        import copy
+        pruned_msg = copy.copy(last_msg)
+        pruned_msg.tool_calls = allowed
+        pruned_state = {**state, "messages": [*messages[:-1], pruned_msg]}
+        tool_result = await base_tool_node.ainvoke(pruned_state, config)
+        tool_messages = tool_result.get("messages", [])
+        return {"messages": [*synthetic, *tool_messages]}
+
+    return _guarded_tools
+
+
 async def build_graph_async():
     """Build the LangGraph state graph with MCP tools discovered at startup.
 
@@ -108,7 +180,7 @@ async def build_graph_async():
     g.add_node("memory", memory_node)
     g.add_node("planner", planner_node)
     g.add_node("retriever_agent", retriever_agent_node)
-    g.add_node("tools", ToolNode(all_tools))
+    g.add_node("tools", _make_guarded_tools_node(ToolNode(all_tools)))
     g.add_node("kimodo", kimodo_node)
     g.add_node("synthesizer", synthesizer_node)
     g.add_node("grader", grader_node)
