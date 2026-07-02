@@ -11,19 +11,8 @@ export const auth = defineAuth({
         attributeMapping: {
           email: 'email',
           emailVerified: 'email_verified',
-          profilePicture: 'picture',
           givenName: 'given_name',
-          familyName: 'family_name'
-        }
-      },
-      github: {
-        clientId: secret('GITHUB_CLIENT_ID'),
-        clientSecret: secret('GITHUB_CLIENT_SECRET'),
-        scopes: ['user:email'],
-        attributeMapping: {
-          email: 'email',
-          profilePicture: 'avatar_url',
-          givenName: 'name'
+          familyName: 'family_name',
         }
       },
       callbackUrls: [
@@ -35,8 +24,8 @@ export const auth = defineAuth({
     }
   },
   userAttributes: {
-    givenName: { required: true, mutable: true },
-    familyName: { required: true, mutable: true },
-    profilePicture: { mutable: true }
+    preferredUsername: { required: false, mutable: true },
+    givenName: { required: false, mutable: true },
+    familyName: { required: false, mutable: true },
   },
 });

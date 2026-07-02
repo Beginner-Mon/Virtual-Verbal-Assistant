@@ -1,24 +1,7 @@
-import { useState, useEffect, useCallback, useRef, type MouseEvent } from 'react'
-import { isAmplifyConfigured } from '../config/amplify'
-import { Outlet } from 'react-router-dom'
-import { Amplify } from 'aws-amplify'
-import { fetchAuthSession, fetchUserAttributes, signInWithRedirect } from 'aws-amplify/auth'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Outlet, Navigate } from 'react-router-dom'
+import { fetchAuthSession, fetchUserAttributes } from 'aws-amplify/auth'
 import { AuthContext, type FetchUserAttributesOutput } from '../contexts/AuthContext'
-
-function getCognitoConfig() {
-  /* eslint-disable @typescript-eslint/no-explicit-any */
-  const cfg = Amplify.getConfig() as any
-  const cognito = cfg?.Auth?.Cognito
-  /* eslint-enable @typescript-eslint/no-explicit-any */
-
-  return cognito as
-    | {
-        userPoolId?: string
-        userPoolClientId?: string
-        userPoolEndpoint?: string
-      }
-    | undefined
-}
 
 function clearLocalAuthStorage() {
   const purge = (storage: Storage) => {
@@ -28,7 +11,8 @@ function clearLocalAuthStorage() {
       if (
         key &&
         (key.startsWith('CognitoIdentityServiceProvider') ||
-          key.startsWith('amplify-'))
+          key.startsWith('amplify-') ||
+          key.startsWith('com.amplify.'))
       ) {
         doomed.push(key)
       }
@@ -40,133 +24,75 @@ function clearLocalAuthStorage() {
   purge(sessionStorage)
 }
 
-async function globalSignOutFromCognito() {
-  const session = await fetchAuthSession()
-  const accessToken = session.tokens?.accessToken?.toString()
-  const cognito = getCognitoConfig()
-
-  if (!accessToken || !cognito?.userPoolId) return
-
-  const region = cognito.userPoolId.split('_')[0]
-  const endpoint = cognito.userPoolEndpoint ?? `https://cognito-idp.${region}.amazonaws.com/`
-
-  await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-amz-json-1.1',
-      'X-Amz-Target': 'AWSCognitoIdentityProviderService.GlobalSignOut',
-    },
-    body: JSON.stringify({ AccessToken: accessToken }),
-  })
-}
-
-function AuthInner({ user }: any) {
+export default function AuthGuard() {
+  const [user, setUser] = useState<any>(null)
   const [attrs, setAttrs] = useState<FetchUserAttributesOutput | undefined>(undefined)
+  const [ready, setReady] = useState(false)
+  const [session, setSession] = useState<any>(null)
   const signingOutRef = useRef(false)
 
   useEffect(() => {
-    fetchUserAttributes()
-      .then((data) => {
-        console.log('[Auth] User attributes:', data)
-        setAttrs(data as FetchUserAttributesOutput)
+    fetchAuthSession()
+      .then(async s => {
+        if (s.tokens) {
+          const linkingEmail = sessionStorage.getItem('linkingEmail') || localStorage.getItem('linkingEmail')
+          sessionStorage.removeItem('linkingEmail')
+          localStorage.removeItem('linkingEmail')
+
+          let tokenSource = s
+          if (linkingEmail) {
+            const fresh = await fetchAuthSession({ forceRefresh: true })
+            if (fresh.tokens) {
+              tokenSource = fresh
+            }
+
+            const currentEmail = tokenSource.tokens.idToken?.payload?.email as string
+            if (currentEmail && currentEmail !== linkingEmail) {
+              clearLocalAuthStorage()
+              window.location.replace('/login?error=email_mismatch')
+              return undefined
+            }
+          }
+
+          setSession(tokenSource)
+          setUser({ signInDetails: { loginId: tokenSource.tokens.idToken?.payload?.email as string || '' } })
+          return fetchUserAttributes()
+        }
+        return undefined
       })
-      .catch((err) => {
-        console.warn('[Auth] Failed to fetch attributes:', err)
-        setAttrs(undefined)
+      .then(data => {
+        if (data) setAttrs(data as FetchUserAttributesOutput)
       })
-  }, [user])
+      .catch(() => {
+        setSession(null)
+        setUser(null)
+      })
+      .finally(() => setReady(true))
+  }, [])
 
   const handleSignOut = useCallback(async () => {
     if (signingOutRef.current) return
     signingOutRef.current = true
 
     try {
-      await globalSignOutFromCognito().catch((err) => {
-        console.warn('[Auth] Cognito global sign-out failed:', err)
-      })
-      clearLocalAuthStorage()
-      window.location.replace('/')
+      const s = await fetchAuthSession()
+      const accessToken = s.tokens?.accessToken?.toString()
+      if (accessToken) {
+        await fetch('', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-amz-json-1.1',
+            'X-Amz-Target': 'AWSCognitoIdentityProviderService.GlobalSignOut',
+          },
+          body: JSON.stringify({ AccessToken: accessToken }),
+        })
+      }
     } catch (err) {
-      console.warn('[Auth] Sign-out failed, clearing local auth state:', err)
-      clearLocalAuthStorage()
-      window.location.replace('/')
-    }
-  }, [])
-
-  return (
-    <AuthContext.Provider value={{ signOut: handleSignOut, user, userAttributes: attrs }}>
-      <div className="flex h-screen w-screen bg-background">
-        <Outlet />
-      </div>
-    </AuthContext.Provider>
-  )
-}
-
-const formFields = {
-  signUp: {
-    given_name: {
-      order: 1,
-      label: 'First Name',
-      placeholder: 'Enter your first name',
-      isRequired: true,
-    },
-    family_name: {
-      order: 2,
-      label: 'Last Name',
-      placeholder: 'Enter your last name',
-      isRequired: true,
-    },
-    email: {
-      order: 3,
-      label: 'Email',
-      placeholder: 'Enter your email',
-    },
-    password: {
-      order: 4,
-      label: 'Password',
-      placeholder: 'Create a password',
-    },
-    confirm_password: {
-      order: 5,
-      label: 'Confirm Password',
-      placeholder: 'Confirm your password',
-    },
-  },
-}
-
-function signInWithGoogleAccountPicker() {
-  void signInWithRedirect({
-    provider: 'Google',
-    options: {
-      prompt: 'SELECT_ACCOUNT',
-    },
-  })
-}
-
-export default function AuthGuard() {
-  /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
-  const [AuthModule, setAuthModule] = useState<{
-    Authenticator: any
-    useAuthenticator: () => any
-  } | null>(null)
-  const [ready, setReady] = useState(false)
-
-  useEffect(() => {
-    if (!isAmplifyConfigured) {
-      setReady(true)
-      return
+      console.warn('[Auth] Global sign-out failed:', err)
     }
 
-    Promise.all([
-      import('@aws-amplify/ui-react'),
-      import('@aws-amplify/ui-react/styles.css'),
-    ]).then(([mod]) => {
-      setAuthModule({
-        Authenticator: mod.Authenticator,
-        useAuthenticator: mod.useAuthenticator,
-      })
-      setReady(true)
-    })
+    clearLocalAuthStorage()
+    window.location.replace('/')
   }, [])
 
   if (!ready) {
@@ -180,47 +106,15 @@ export default function AuthGuard() {
     )
   }
 
-  if (AuthModule) {
-    const { Authenticator } = AuthModule
-
-    const CustomSignUpFormFields = () => (
-      <>
-        <Authenticator.SignUp.FormFields />
-      </>
-    )
-
-    const handleAuthenticatorClickCapture = (event: MouseEvent<HTMLDivElement>) => {
-      const button = (event.target as HTMLElement).closest('button')
-      if (!button?.textContent?.toLowerCase().includes('google')) return
-
-      event.preventDefault()
-      event.stopPropagation()
-      signInWithGoogleAccountPicker()
-    }
-
-    return (
-      <div className="auth-center-container" onClickCapture={handleAuthenticatorClickCapture}>
-        <Authenticator
-          socialProviders={['google']}
-          signUpAttributes={['given_name', 'family_name']}
-          formFields={formFields}
-          components={{
-            SignUp: {
-              FormFields: CustomSignUpFormFields,
-            },
-          }}
-        >
-          {({ user }: any) => (
-            <AuthInner user={user} />
-          )}
-        </Authenticator>
-      </div>
-    )
+  if (!session) {
+    return <Navigate to="/login" replace />
   }
 
   return (
-    <AuthContext.Provider value={{}}>
-      <Outlet />
+    <AuthContext.Provider value={{ signOut: handleSignOut, user, userAttributes: attrs }}>
+      <div className="flex h-screen w-screen bg-background">
+        <Outlet />
+      </div>
     </AuthContext.Provider>
   )
 }

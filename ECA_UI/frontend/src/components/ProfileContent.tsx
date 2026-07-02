@@ -1,19 +1,45 @@
-import { useState, useRef } from 'react'
-import { IdCard, User, Link2, LogOut } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { IdCard, User, KeyRound, Link2, LogOut } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
+import { fetchAuthSession, signInWithRedirect } from 'aws-amplify/auth'
 import { Avatar, AvatarImage, AvatarFallback } from './ui/avatar'
 
-export default function ProfileContent() {
-  const { signOut, user, userAttributes } = useAuth()
-  const email = user?.signInDetails?.loginId ?? userAttributes?.email ?? 'Unknown user'
-  const displayName = userAttributes?.given_name
-    ? `${userAttributes.given_name} ${userAttributes.family_name ?? ''}`.trim()
-    : email?.split('@')[0] ?? 'User'
-  const profilePicture = userAttributes?.picture
-  const isGoogleLinked = !!profilePicture
+interface Props {
+  onClose?: () => void
+}
 
-  const [activeSection, setActiveSection] = useState<string>('profile')
+export default function ProfileContent({ onClose }: Props) {
+  const { signOut, user, userAttributes } = useAuth()
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const [activeSection, setActiveSection] = useState<string>('profile')
+
+  const [payload, setPayload] = useState<Record<string, any> | null>(null)
+
+  useEffect(() => {
+    fetchAuthSession().then(session => {
+      setPayload(session.tokens?.idToken?.payload as any)
+    })
+  }, [])
+
+  const emailSub = payload?.['custom:emailSub'] || null
+  const googleSub = payload?.['custom:googleSub'] || null
+  const displayName = payload?.['custom:displayName'] || null
+  const email = payload?.['custom:email'] || user?.signInDetails?.loginId || userAttributes?.email || 'Unknown user'
+
+  const profilePicture = userAttributes?.picture
+  const navigate = useNavigate()
+
+  const handleOpenSetPassword = () => {
+    onClose?.()
+    navigate('/set-password')
+  }
+
+  const handleLinkGoogle = () => {
+    sessionStorage.setItem('linkingEmail', email)
+    localStorage.setItem('linkingEmail', email)
+    signInWithRedirect({ provider: 'Google', options: { prompt: 'select_account' } })
+  }
 
   const scrollTo = (id: string) => {
     setActiveSection(id)
@@ -34,12 +60,12 @@ export default function ProfileContent() {
   const navItems = [
     { id: 'profile', icon: IdCard, label: 'Profile' },
     { id: 'display-name', icon: User, label: 'Display Name' },
+    { id: 'security', icon: KeyRound, label: 'Security' },
     { id: 'account-linked', icon: Link2, label: 'Account Linked' },
   ]
 
   return (
     <div className="flex flex-1 overflow-hidden">
-      {/* Sidebar nav — hidden on mobile, shown on desktop */}
       <nav className="hidden md:flex w-1/4 border-r border-border/40 p-3 flex-col justify-between shrink-0">
         <div className="space-y-1">
           {navItems.map((item) => {
@@ -66,19 +92,17 @@ export default function ProfileContent() {
         </button>
       </nav>
 
-      {/* Content — full width on mobile, 3/4 on desktop */}
       <div className="flex-1 md:w-3/4 overflow-y-auto p-6">
-        {/* Profile */}
         <div ref={setRef('profile')} className="scroll-mt-6 pb-5">
           <h3 className="text-base font-semibold text-foreground mb-5">Profile</h3>
           <div className="flex items-center gap-4">
             <Avatar className="w-14 h-14">
-              <AvatarImage src={profilePicture} alt={displayName} referrerPolicy="no-referrer" />
+              <AvatarImage src={profilePicture} alt={displayName ?? ''} referrerPolicy="no-referrer" />
               <AvatarFallback className="bg-primary/10" />
             </Avatar>
             <div>
               <p className="text-xs text-muted-foreground">Signed in as</p>
-              <p className="text-sm font-medium text-foreground">{displayName}</p>
+              <p className="text-sm font-medium text-foreground">{displayName ?? email.split('@')[0]}</p>
               <p className="text-sm text-muted-foreground">{email}</p>
             </div>
           </div>
@@ -86,7 +110,6 @@ export default function ProfileContent() {
 
         <div className="border-b border-border/40" />
 
-        {/* Display Name */}
         <div ref={setRef('display-name')} className="scroll-mt-6 py-5 space-y-4">
           <h3 className="text-base font-semibold text-foreground">Display Name</h3>
           <p className="text-sm text-muted-foreground">This is your public display name. It can be your real name or a pseudonym.</p>
@@ -94,7 +117,7 @@ export default function ProfileContent() {
             <label className="text-xs text-muted-foreground mb-1 block">Display name</label>
             <input
               type="text"
-              defaultValue={displayName}
+              defaultValue={displayName ?? ''}
               placeholder="Enter your display name"
               className="w-full text-sm text-foreground bg-secondary/40 rounded-lg px-3 py-2 border border-border/30 outline-none focus:border-primary/50 transition-colors"
             />
@@ -106,12 +129,24 @@ export default function ProfileContent() {
 
         <div className="border-b border-border/40" />
 
-        {/* Account Linked */}
+        <div ref={setRef('security')} className="scroll-mt-6 py-5 space-y-4">
+          <h3 className="text-base font-semibold text-foreground">Security</h3>
+          <p className="text-sm text-muted-foreground">Set a password for email sign-in.</p>
+          <button
+            onClick={handleOpenSetPassword}
+            disabled={!!emailSub}
+            className="px-4 py-2 rounded-lg text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Set my Password
+          </button>
+        </div>
+
+        <div className="border-b border-border/40" />
+
         <div ref={setRef('account-linked')} className="scroll-mt-6 py-5 space-y-4">
           <h3 className="text-base font-semibold text-foreground">Account Linked</h3>
           <p className="text-sm text-muted-foreground">Connect your accounts for seamless sign-in across platforms.</p>
           <div className="space-y-3">
-            {/* Google */}
             <div className="flex items-center justify-between p-3 rounded-xl border border-border/40 bg-card">
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded-full bg-secondary/60 flex items-center justify-center">
@@ -124,21 +159,23 @@ export default function ProfileContent() {
                 </div>
                 <div>
                   <p className="text-sm font-medium text-foreground">Google</p>
-                  <p className="text-xs text-muted-foreground">{isGoogleLinked ? 'Connected' : 'Not connected'}</p>
+                  <p className="text-xs text-muted-foreground">{googleSub ? 'Connected' : 'Not connected'}</p>
                 </div>
               </div>
-              {isGoogleLinked ? (
+              {googleSub ? (
                 <span className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary">
                   Linked
                 </span>
               ) : (
-                <button className="px-3 py-1.5 rounded-lg text-xs font-medium border border-border/40 text-foreground hover:bg-secondary/60 transition-colors">
+                <button
+                  onClick={handleLinkGoogle}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium border border-border/40 text-foreground hover:bg-secondary/60 transition-colors"
+                >
                   Link
                 </button>
               )}
             </div>
 
-            {/* GitHub */}
             <div className="flex items-center justify-between p-3 rounded-xl border border-border/40 bg-card">
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded-full bg-secondary/60 flex items-center justify-center">

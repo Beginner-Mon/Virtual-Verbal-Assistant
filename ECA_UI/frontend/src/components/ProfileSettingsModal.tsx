@@ -86,7 +86,7 @@ export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileS
 
         <Suspense fallback={<div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">Loading...</div>}>
           {type === 'profile' ? (
-            <ProfileContent />
+            <ProfileContent onClose={onClose} />
           ) : settingsView === 'providers' ? (
             <SettingsContent
               view="providers"
