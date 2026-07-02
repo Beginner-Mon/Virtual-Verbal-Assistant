@@ -9,9 +9,9 @@ TEXT_ENCODERS_DIR="$HF_STORE/text-encoders"
 
 mkdir -p "$SKELETON_DIR" "$HF_STORE" "$CHECKPOINT_DIR" "$TEXT_ENCODERS_DIR"
 
-# Download SMPLX_NEUTRAL from S3
-echo "[entrypoint] Downloading SMPLX_NEUTRAL.npz..."
-aws s3 cp "$S3_BUCKET/smplx/SMPLX_NEUTRAL.npz" "$SKELETON_DIR/SMPLX_NEUTRAL.npz"
+# Download skeleton files from S3
+echo "[entrypoint] Syncing skeleton files..."
+aws s3 sync "$S3_BUCKET/skeletons/smplx22/" "$SKELETON_DIR/"
 
 # Sync Kimodo diffusion checkpoint from S3
 echo "[entrypoint] Syncing checkpoints..."
