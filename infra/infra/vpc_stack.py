@@ -1,16 +1,12 @@
 """VPC Stack — project-vva network foundation.
 
-Creates a VPC with 4 isolated subnets (2 'Public' reserved for future IGW/NAT,
-2 'Private' for Lambda/RDS). No Internet Gateway, no NAT Gateway.
+Creates a VPC with 4 subnets across 2 AZs:
+  - 2 'EcsPublic' subnets (PUBLIC + IGW, auto-assign public IP, for ECS GPU tasks)
+  - 2 'Private' subnets (PRIVATE_ISOLATED, for Lambda + RDS)
 
 VPC Endpoints for SSM Parameter Store, STS, and CloudWatch Logs enable Lambda
 functions in isolated subnets to access these AWS services without internet
-connectivity. SSM provides DB connection config, STS is used internally by
-boto3 to generate IAM auth tokens for RDS Proxy.
-
-To add IGW later:
-  - Change 'Public' subnet_type to ec2.SubnetType.PUBLIC
-  - CDK will auto-create IGW + route table entries
+connectivity. S3 Gateway Endpoint on EcsPublic subnets for free internal S3 access.
 
 To add NAT Gateway later:
   - Change 'Private' subnet_type to ec2.SubnetType.PRIVATE_WITH_EGRESS
@@ -19,6 +15,7 @@ To add NAT Gateway later:
 
 from aws_cdk import (
     Stack,
+    Tags,
     CfnOutput,
     aws_ec2 as ec2,
 )
@@ -38,12 +35,13 @@ class VpcStack(Stack):
             max_azs=2,
             nat_gateways=0,  # No NAT — add later if Lambda needs internet
             subnet_configuration=[
-                # Reserved for future IGW/ALB/public-facing resources.
-                # Currently PRIVATE_ISOLATED because no IGW is provisioned.
+                # PUBLIC subnets for ECS GPU tasks (Kimodo MCP).
+                # IGW auto-created by CDK when subnet_type=PUBLIC.
                 ec2.SubnetConfiguration(
-                    name="Public",
-                    subnet_type=ec2.SubnetType.PRIVATE_ISOLATED,
+                    name="EcsPublic",
+                    subnet_type=ec2.SubnetType.PUBLIC,
                     cidr_mask=24,
+                    map_public_ip_on_launch=True,
                 ),
                 # Lambda functions, RDS, RDS Proxy live here.
                 ec2.SubnetConfiguration(
@@ -97,6 +95,17 @@ class VpcStack(Stack):
             subnets=ec2.SubnetSelection(subnet_group_name="Private"),
             security_groups=[self.sg_vpc_endpoints],
         )
+
+        # S3 Gateway Endpoint — free, route-table level. EC2 User Data uses
+        # this to download SMPLX_NEUTRAL.npz without internet.
+        self.vpc.add_gateway_endpoint(
+            "S3Endpoint",
+            service=ec2.GatewayVpcEndpointAwsService.S3,
+            subnets=[ec2.SubnetSelection(subnet_group_name="EcsPublic")],
+        )
+
+        # ── Tags ─────────────────────────────────────────────────────────
+        Tags.of(self).add("Project", "ECA")
 
         # ── Outputs ─────────────────────────────────────────────────────
         CfnOutput(self, "VpcId", value=self.vpc.vpc_id)

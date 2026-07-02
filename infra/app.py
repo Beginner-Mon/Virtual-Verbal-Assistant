@@ -2,10 +2,12 @@
 """VVA Infrastructure — CDK App Entry Point.
 
 Stack dependency chain:
-    VpcStack → DatabaseStack → LambdaStack → ApiGatewayStack
+    VpcStack ──┬── DatabaseStack → LambdaStack → ApiGatewayStack
+               └── KimodoEcsStack
 
 Deploy all:  cdk deploy --all
 Deploy one:  cdk deploy VvaVpcStack
+Deploy GPU:  cdk deploy VvaKimodoEcsStack
 Diff:        cdk diff
 Synth:       cdk synth
 """
@@ -18,6 +20,7 @@ from infra.vpc_stack import VpcStack
 from infra.database_stack import DatabaseStack
 from infra.lambda_stack import LambdaStack
 from infra.api_gateway_stack import ApiGatewayStack
+from infra.kimodo_ecs_stack import KimodoEcsStack
 
 app = cdk.App()
 
@@ -55,6 +58,13 @@ api_stack = ApiGatewayStack(
     fn_list_sessions=lambda_stack.fn_list_sessions,
     fn_delete_session=lambda_stack.fn_delete_session,
     fn_resume_session=lambda_stack.fn_resume_session,
+    env=env,
+)
+
+# ── 5. Kimodo ECS (GPU MCP Server) ──────────────────────────────────
+kimodo_ecs = KimodoEcsStack(
+    app, "VvaKimodoEcsStack",
+    vpc=vpc_stack.vpc,
     env=env,
 )
 

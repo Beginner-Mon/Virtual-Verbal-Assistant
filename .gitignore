@@ -63,6 +63,9 @@ skills-lock.json
 text-to-motion/kimodo/**/model.pkl
 text-to-motion/kimodo/**/SMPLX_NEUTRAL.npz
 
+# Kimodo — S3-downloaded assets (models, configs, etc.)
+kimodo-s3-assets/
+
 # Kimodo — embedded git repo; use submodule or vendor properly
 text-to-motion/kimodo/kimodo-viser/
 

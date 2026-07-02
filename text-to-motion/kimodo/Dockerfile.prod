@@ -25,14 +25,16 @@ RUN pip install -U pip setuptools wheel uv
 # Copy requirements and metadata first to cache layers
 COPY docker_requirements_prod.in setup.py pyproject.toml /workspace/
 
-# Copy necessary source code for editable installs and C++ compilation
+# Compile requirements using uv and install heavy 3rd-party dependencies FIRST
+RUN uv pip compile docker_requirements_prod.in -o docker_requirements_prod.txt \
+    && pip install -r docker_requirements_prod.txt --extra-index-url https://download.pytorch.org/whl/cu124
+
+# Copy necessary source code for editable installs and C++ compilation (changes frequently)
 COPY kimodo /workspace/kimodo
 COPY MotionCorrection /workspace/MotionCorrection
 
-# Compile requirements using uv and install dependencies
-RUN uv pip compile docker_requirements_prod.in -o docker_requirements_prod.txt \
-    && pip install -r docker_requirements_prod.txt --extra-index-url https://download.pytorch.org/whl/cu124 \
-    && SKIP_MOTION_CORRECTION_IN_SETUP=1 pip install ./MotionCorrection
+# Compile C++ MotionCorrection
+RUN SKIP_MOTION_CORRECTION_IN_SETUP=1 pip install ./MotionCorrection
 
 # Verify MotionCorrection compiled correctly
 RUN python3.10 -c "import motion_correction; print('MotionCorrection OK')"
