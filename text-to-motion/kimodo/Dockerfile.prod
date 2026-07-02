@@ -22,16 +22,14 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 RUN pip install -U pip setuptools wheel uv
 
-# Copy requirements and metadata first to cache layers
+# Copy requirements, metadata, and source code (needed for local package installs)
 COPY docker_requirements_prod.in setup.py pyproject.toml /workspace/
+COPY kimodo /workspace/kimodo
+COPY MotionCorrection /workspace/MotionCorrection
 
 # Compile requirements using uv and install heavy 3rd-party dependencies FIRST
 RUN uv pip compile docker_requirements_prod.in -o docker_requirements_prod.txt \
     && pip install -r docker_requirements_prod.txt --extra-index-url https://download.pytorch.org/whl/cu124
-
-# Copy necessary source code for editable installs and C++ compilation (changes frequently)
-COPY kimodo /workspace/kimodo
-COPY MotionCorrection /workspace/MotionCorrection
 
 # Compile C++ MotionCorrection
 RUN SKIP_MOTION_CORRECTION_IN_SETUP=1 pip install ./MotionCorrection
