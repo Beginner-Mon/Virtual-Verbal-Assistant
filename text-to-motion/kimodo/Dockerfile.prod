@@ -1,74 +1,14 @@
-# ==========================================
-# STAGE 1: BUILDER
-# ==========================================
-FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 AS builder
+ARG BASE_TAG=v1
+FROM 244203483654.dkr.ecr.us-east-1.amazonaws.com/kimodo-base:${BASE_TAG}
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+ENV PYTHONUNBUFFERED=1
 
 WORKDIR /workspace
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3.10 python3-pip python3.10-dev python3.10-venv \
-      git curl ca-certificates cmake build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-# Setup Python Virtual Environment
-RUN python3.10 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-RUN pip install -U pip setuptools wheel uv
-
-# Copy requirements, metadata, and source code (needed for local package installs)
-COPY docker_requirements_prod.in setup.py pyproject.toml /workspace/
 COPY kimodo /workspace/kimodo
-COPY MotionCorrection /workspace/MotionCorrection
-
-# Compile requirements using uv and install heavy 3rd-party dependencies FIRST
-RUN uv pip compile docker_requirements_prod.in -o docker_requirements_prod.txt \
-    && pip install -r docker_requirements_prod.txt --extra-index-url https://download.pytorch.org/whl/cu124
-
-# Compile C++ MotionCorrection
-RUN SKIP_MOTION_CORRECTION_IN_SETUP=1 pip install ./MotionCorrection
-
-# Verify MotionCorrection compiled correctly
-RUN python3.10 -c "import motion_correction; print('MotionCorrection OK')"
-
-# Copy application script
 COPY mcp_server.py /workspace/mcp_server.py
 
-# ==========================================
-# STAGE 2: RUNTIME
-# ==========================================
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
-
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1
-
-WORKDIR /workspace
-
-# Install minimal runtime dependencies + AWS CLI for S3 syncing
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3.10 python3-venv curl unzip \
-    && curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" \
-    && unzip awscliv2.zip && ./aws/install && rm -rf aws awscliv2.zip \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy pre-built Python environment and source code
-COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /workspace /workspace
-ENV PATH="/opt/venv/bin:$PATH"
-
-# Quick smoke test for shared libraries
-RUN ldd /opt/venv/lib/python3.10/site-packages/motion_correction/*.so \
-    && python3.10 -c "import torch; import kimodo; print('Runtime OK')"
-
-# Configure entrypoint script
-COPY scripts/inference-entrypoint.sh /usr/local/bin/inference-entrypoint
-RUN chmod +x /usr/local/bin/inference-entrypoint
+RUN pip install -e /workspace --no-deps
 
 EXPOSE 8000
 ENTRYPOINT ["inference-entrypoint"]
