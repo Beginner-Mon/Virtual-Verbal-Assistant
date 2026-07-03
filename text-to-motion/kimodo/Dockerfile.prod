@@ -8,7 +8,7 @@ WORKDIR /workspace
 COPY kimodo /workspace/kimodo
 COPY mcp_server.py /workspace/mcp_server.py
 
-RUN pip install -e /workspace --no-deps
+RUN SKIP_MOTION_CORRECTION_IN_SETUP=1 pip install -e /workspace --no-deps
 
 EXPOSE 8000
 ENTRYPOINT ["inference-entrypoint"]
