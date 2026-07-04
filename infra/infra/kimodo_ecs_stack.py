@@ -8,7 +8,7 @@ Imports (pre-existing, created manually):
 
 Creates:
     - Security Group (port 8000)
-    - Task Definition (1 vCPU, 4 GB RAM, 1 GPU, CloudWatch logs)
+    - Task Definition (4 vCPU, 12 GB RAM, 1 GPU, CloudWatch logs)
     - ECS Service (EC2 direct launch, EcsPublic subnets, public IP)
 """
 
@@ -94,8 +94,8 @@ class KimodoEcsStack(Stack):
             network_mode=ecs.NetworkMode.AWS_VPC,
             execution_role=execution_role,
             task_role=task_role,
-            cpu="1024",
-            memory_mib="4096",
+            cpu="4096",
+            memory_mib="12288",
         )
 
         task_def.add_volume(
