@@ -27,7 +27,7 @@ from langchain_core.runnables import RunnableConfig
 
 from langgraph.config import get_stream_writer
 from langgraph_agents.state import AgentState, ErrorSeverity
-from langgraph_agents.llm import get_chat_model
+from langgraph_agents.llm import get_chat_model, get_fallback_chat_model, extract_cache_tokens
 from langgraph_agents.nodes._persona_loader import get_persona, build_persona_prompt
 from langgraph_agents.shared.logging import get_logger
 
@@ -94,7 +94,7 @@ Instructions:
 - For contraindication: list conditions where the exercise should NOT be done
 - For motion_descriptor: describe the movement + joints involved clearly
 - For evidence_citation: mention sources (document title, web source)
-- Keep under 500 words unless the topic requires detail
+- Keep under 350 words. Do not pad or repeat safety disclaimers — state each once.
 """
 
 _REFUSE_TASK = """You are a physical therapy & wellness AI assistant.
@@ -300,17 +300,21 @@ async def synthesizer_node(state: AgentState, config: RunnableConfig) -> dict:
     except RuntimeError:
         writer = None
 
+    # Include prior conversation (loaded by memory node into state messages)
+    # so the model has context for follow-ups ("what did I just say"). Keep
+    # plain user/assistant turns only — drop the memory SystemMessage, tool-call
+    # AIMessages, and ToolMessages (tool evidence is already in the system prompt).
+    history = [
+        m for m in state.get("messages", [])
+        if isinstance(m, HumanMessage)
+        or (isinstance(m, AIMessage) and not getattr(m, "tool_calls", None))
+    ]
+    msgs = [SystemMessage(content=system), *history, HumanMessage(content=resolved_query)]
+
+    ai_msg = None  # kept for prompt-cache telemetry (fix #1)
+    used_fallback = False
+
     try:
-        # Include prior conversation (loaded by memory node into state messages)
-        # so the model has context for follow-ups ("what did I just say"). Keep
-        # plain user/assistant turns only — drop the memory SystemMessage, tool-call
-        # AIMessages, and ToolMessages (tool evidence is already in the system prompt).
-        history = [
-            m for m in state.get("messages", [])
-            if isinstance(m, HumanMessage)
-            or (isinstance(m, AIMessage) and not getattr(m, "tool_calls", None))
-        ]
-        msgs = [SystemMessage(content=system), *history, HumanMessage(content=resolved_query)]
         if writer is not None:
             final = ""
             tokens = 0
@@ -321,6 +325,9 @@ async def synthesizer_node(state: AgentState, config: RunnableConfig) -> dict:
                     writer({"content": content})
                 if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
                     tokens = chunk.usage_metadata.get("total_tokens", 0)
+                    ai_msg = chunk
+                elif (getattr(chunk, "response_metadata", None) or {}).get("token_usage"):
+                    ai_msg = chunk
         else:
             ai_msg = await llm.ainvoke(msgs)
             final = ai_msg.content
@@ -328,21 +335,61 @@ async def synthesizer_node(state: AgentState, config: RunnableConfig) -> dict:
             if hasattr(ai_msg, "usage_metadata") and ai_msg.usage_metadata:
                 tokens = ai_msg.usage_metadata.get("total_tokens", 0)
     except Exception as exc:
-        elapsed_ms = round((time.perf_counter() - t0) * 1000)
-        logger.error("node_failed", extra={
+        # Primary DeepSeek call failed/timed out — try ONE-shot Gemini fallback
+        # before falling through to the existing CRITICAL error handling.
+        #
+        # Guard: if the primary stream already emitted some tokens via writer()
+        # before failing (e.g. times out mid-generation, not at first byte), those
+        # tokens are ALREADY on the wire to the browser (writer() is a live SSE
+        # channel, independent of this function's return value — see api/main.py).
+        # Appending a full fallback answer on top would concatenate into a garbled,
+        # duplicated-looking response. In that case, skip the fallback and fall
+        # through to the existing error path instead of compounding the output.
+        # `final` is always bound by this point when writer is not None (assigned
+        # "" before the astream loop starts) — safe to reference directly.
+        already_streamed = writer is not None and bool(final)
+        final = None
+        fallback_model = None if already_streamed else get_fallback_chat_model("synthesizer")
+        if fallback_model is not None:
+            try:
+                fb_ai_msg = await fallback_model.ainvoke(msgs)
+                final = fb_ai_msg.content or ""
+                tokens = 0
+                if hasattr(fb_ai_msg, "usage_metadata") and fb_ai_msg.usage_metadata:
+                    tokens = fb_ai_msg.usage_metadata.get("total_tokens", 0)
+                ai_msg = fb_ai_msg
+                used_fallback = True
+                # Fallback does not stream — emit the whole answer as one chunk
+                # so the SSE `token` event contract is preserved for the frontend.
+                if writer is not None and final:
+                    writer({"content": final})
+            except Exception:
+                final = None
+
+        if final is None:
+            elapsed_ms = round((time.perf_counter() - t0) * 1000)
+            logger.error("node_failed", extra={
+                "node": "synthesizer", "request_id": request_id,
+                "elapsed_ms": elapsed_ms, "error": str(exc),
+            }, exc_info=True)
+            fallback = "Xin lỗi, tôi không thể trả lời ngay lúc này. Vui lòng thử lại."
+            return {
+                "final_answer": fallback,
+                "errors": [{
+                    "node": "synthesizer",
+                    "severity": ErrorSeverity.CRITICAL,
+                    "message": f"Synthesizer LLM failed ({elapsed_ms:.0f}ms): {exc}",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }],
+            }
+
+        logger.info("llm_fallback_used", extra={
             "node": "synthesizer", "request_id": request_id,
-            "elapsed_ms": elapsed_ms, "error": str(exc),
-        }, exc_info=True)
-        fallback = "Xin lỗi, tôi không thể trả lời ngay lúc này. Vui lòng thử lại."
-        return {
-            "final_answer": fallback,
-            "errors": [{
-                "node": "synthesizer",
-                "severity": ErrorSeverity.CRITICAL,
-                "message": f"Synthesizer LLM failed ({elapsed_ms:.0f}ms): {exc}",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }],
-        }
+            "llm_fallback_used": True,
+            "primary_error": str(exc),
+        })
+
+    cache_hit_tokens, cache_miss_tokens = extract_cache_tokens(ai_msg)
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000)
     logger.info("node_complete", extra={
@@ -350,6 +397,9 @@ async def synthesizer_node(state: AgentState, config: RunnableConfig) -> dict:
         "elapsed_ms": elapsed_ms, "tokens": tokens, "mode": mode,
         "output_chars": len(final) if final else 0,
         "streamed": writer is not None,
+        "cache_hit_tokens": cache_hit_tokens,
+        "cache_miss_tokens": cache_miss_tokens,
+        "llm_fallback_used": used_fallback,
     })
 
     return {

@@ -51,7 +51,7 @@ export default function LoginPage() {
   }
 
   const handleGoogleSignIn = () => {
-    signInWithRedirect({ provider: 'Google', options: { prompt: 'select_account' } })
+    signInWithRedirect({ provider: 'Google', options: { prompt: 'SELECT_ACCOUNT' } })
   }
 
   const showGoogleOnly = result && !result.hasEmail && result.hasGoogle

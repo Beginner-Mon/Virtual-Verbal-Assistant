@@ -15,7 +15,6 @@ interface MobileNavBarProps {
 export default function MobileNavBar({
   activePanel,
   onIconClick,
-  onOpenModal,
   navItems,
   panelContent,
 }: MobileNavBarProps) {

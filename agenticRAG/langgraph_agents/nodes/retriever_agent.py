@@ -21,7 +21,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from langgraph_agents.state import AgentState, ErrorSeverity
-from langgraph_agents.llm import get_chat_model
+from langgraph_agents.llm import get_chat_model, extract_cache_tokens
 from langgraph_agents.shared.logging import get_logger
 
 logger = get_logger("langgraph.retriever")
@@ -128,6 +128,35 @@ Resolved query: {resolved_query}
 """
 
 
+def _dedupe_tool_calls(tool_calls: list[dict]) -> tuple[list[dict], int]:
+    """Drop exact-duplicate tool_calls emitted in the same round (fix #4).
+
+    A duplicate = same tool ``name`` AND identical ``args``. Calls with the
+    same name but different args (e.g. two different kb_search queries) are
+    kept as-is — that's a legitimate parallel search, not waste. Benchmark
+    showed rounds like [kb_search, kb_search] with identical args wasting a
+    full ToolNode execution.
+
+    Returns (deduped_list, removed_count).
+    """
+    seen: set[tuple] = set()
+    deduped: list[dict] = []
+    for tc in tool_calls:
+        name = tc.get("name")
+        args = tc.get("args") or {}
+        try:
+            key = (name, frozenset(args.items()))
+        except TypeError:
+            # Unhashable arg value (nested list/dict) — fall back to a stable
+            # repr so exact repeats still dedupe without crashing.
+            key = (name, repr(sorted(args.items())))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(tc)
+    return deduped, len(tool_calls) - len(deduped)
+
+
 def _build_retriever_system_prompt(
     *,
     web_search_enabled: bool,
@@ -225,14 +254,30 @@ async def retriever_agent_node(state: AgentState, config: RunnableConfig) -> dic
         tokens = ai_msg.usage_metadata.get("total_tokens", 0)
 
     tool_calls = getattr(ai_msg, "tool_calls", []) or []
+
+    # Dedupe identical (name+args) tool_calls before ToolNode executes them (fix #4).
+    deduped_tool_calls, deduped_count = _dedupe_tool_calls(tool_calls)
+    if deduped_count > 0:
+        try:
+            ai_msg.tool_calls = deduped_tool_calls
+        except Exception:
+            object.__setattr__(ai_msg, "tool_calls", deduped_tool_calls)
+        tool_calls = deduped_tool_calls
+
+    cache_hit_tokens, cache_miss_tokens = extract_cache_tokens(ai_msg)
     elapsed_ms = round((time.perf_counter() - t0) * 1000)
 
-    logger.info("node_complete", extra={
+    log_extra = {
         "node": "retriever_agent", "request_id": request_id,
         "elapsed_ms": elapsed_ms, "tokens": tokens,
         "tool_calls": len(tool_calls),
         "tool_names": [tc.get("name") for tc in tool_calls],
-    })
+        "cache_hit_tokens": cache_hit_tokens,
+        "cache_miss_tokens": cache_miss_tokens,
+    }
+    if deduped_count > 0:
+        log_extra["tool_calls_deduped"] = deduped_count
+    logger.info("node_complete", extra=log_extra)
 
     return {
         "messages": [ai_msg],

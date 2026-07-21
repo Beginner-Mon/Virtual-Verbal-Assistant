@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 from langchain_core.runnables import RunnableConfig
 
 from langgraph_agents.state import AgentState, ErrorSeverity
-from langgraph_agents.llm import get_chat_model
+from langgraph_agents.llm import get_chat_model, get_fallback_chat_model, extract_cache_tokens
 from langgraph_agents.shared.logging import get_logger
 
 logger = get_logger("langgraph.planner")
@@ -198,7 +198,9 @@ async def planner_node(state: AgentState, config: RunnableConfig) -> dict:
     })
 
     llm = get_chat_model("planner")
-    structured_llm = llm.with_structured_output(PlanOutput, method="json_mode")
+    # include_raw=True so we can read response_metadata/usage_metadata for
+    # DeepSeek prompt-cache telemetry (fix #1) alongside the parsed plan.
+    structured_llm = llm.with_structured_output(PlanOutput, method="json_mode", include_raw=True)
 
     # Build user message: query + context hint from recent messages
     messages = state.get("messages", [])
@@ -214,31 +216,67 @@ async def planner_node(state: AgentState, config: RunnableConfig) -> dict:
 
     user_msg = query + context_hint
 
+    prompt_msgs = [
+        ("system", _PLANNER_SYSTEM_PROMPT),
+        ("user", user_msg),
+    ]
+
+    def _unpack(result):
+        """include_raw=True returns {"raw": AIMessage, "parsed": PlanOutput|None, ...}.
+        Existing unit tests mock ainvoke to return a bare PlanOutput directly —
+        handle both shapes."""
+        if isinstance(result, dict):
+            return result.get("raw"), result.get("parsed")
+        return None, result
+
+    ai_msg = None
+    used_fallback = False
+
     try:
-        plan: PlanOutput = await structured_llm.ainvoke([
-            ("system", _PLANNER_SYSTEM_PROMPT),
-            ("user", user_msg),
-        ])
+        raw_result = await structured_llm.ainvoke(prompt_msgs)
+        ai_msg, plan = _unpack(raw_result)
     except Exception as exc:
-        elapsed_ms = round((time.perf_counter() - t0) * 1000)
-        logger.warning("node_failed", extra={
+        # Primary DeepSeek call failed/timed out — try ONE-shot Gemini fallback
+        # before falling through to the existing safe-fallback error handling.
+        plan = None
+        fallback_model = get_fallback_chat_model("planner")
+        if fallback_model is not None:
+            try:
+                fallback_structured = fallback_model.with_structured_output(
+                    PlanOutput, method="json_mode", include_raw=True,
+                )
+                fb_result = await fallback_structured.ainvoke(prompt_msgs)
+                ai_msg, plan = _unpack(fb_result)
+                used_fallback = plan is not None
+            except Exception:
+                plan = None
+
+        if plan is None:
+            elapsed_ms = round((time.perf_counter() - t0) * 1000)
+            logger.warning("node_failed", extra={
+                "node": "planner", "request_id": request_id,
+                "elapsed_ms": elapsed_ms, "error": str(exc),
+            })
+            # Safe fallback: assume chat, no tags, no retrieval
+            return {
+                "required_outputs": [],
+                "resolved_query": query,
+                "needs_retrieval": False,
+                "needs_motion": False,
+                "needs_clarification": True,
+                "errors": [{
+                    "node": "planner",
+                    "severity": ErrorSeverity.RECOVERABLE,
+                    "message": f"LLM call failed ({elapsed_ms:.0f}ms): {exc}",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }],
+            }
+
+        logger.info("llm_fallback_used", extra={
             "node": "planner", "request_id": request_id,
-            "elapsed_ms": elapsed_ms, "error": str(exc),
+            "llm_fallback_used": True,
+            "primary_error": str(exc),
         })
-        # Safe fallback: assume chat, no tags, no retrieval
-        return {
-            "required_outputs": [],
-            "resolved_query": query,
-            "needs_retrieval": False,
-            "needs_motion": False,
-            "needs_clarification": True,
-            "errors": [{
-                "node": "planner",
-                "severity": ErrorSeverity.RECOVERABLE,
-                "message": f"LLM call failed ({elapsed_ms:.0f}ms): {exc}",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }],
-        }
 
     # ── Handle None plan (circuit breaker open / chain returns None) ───
     if plan is None:
@@ -282,6 +320,8 @@ async def planner_node(state: AgentState, config: RunnableConfig) -> dict:
     # Resolved query fallback
     resolved_query = plan.resolved_query.strip() or query
 
+    cache_hit_tokens, cache_miss_tokens = extract_cache_tokens(ai_msg)
+
     elapsed_ms = round((time.perf_counter() - t0) * 1000)
     logger.info("node_complete", extra={
         "node": "planner", "request_id": request_id,
@@ -290,6 +330,9 @@ async def planner_node(state: AgentState, config: RunnableConfig) -> dict:
         "needs_retrieval": plan.needs_retrieval,
         "needs_motion": plan.needs_motion,
         "needs_clarification": needs_clarification,
+        "cache_hit_tokens": cache_hit_tokens,
+        "cache_miss_tokens": cache_miss_tokens,
+        "llm_fallback_used": used_fallback,
     })
 
     return {

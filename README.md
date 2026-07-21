@@ -1,298 +1,224 @@
 <p align="center">
   <h1 align="center">🧠 Virtual Verbal Assistant (VVA)</h1>
   <p align="center">
-    <strong>Healthcare/wellness multimodal AI assistant — LangGraph multi-agent supervisor for physical therapy exercise recommendations with clinical safety.</strong>
+    <strong>A multimodal, bilingual (Vietnamese / English) healthcare assistant for physical-therapy exercise guidance — built on a LangGraph multi-agent supervisor with clinical-safety grading, long-term memory, retrieval-augmented generation, token streaming, and an optional 3D avatar.</strong>
   </p>
-  <p align="center">
-    <a href="docs/RUNBOOK.md"><img src="https://img.shields.io/badge/📘_Runbook-blue?style=for-the-badge" alt="Runbook"></a>
-    <a href="docs/DEPLOYMENT.md"><img src="https://img.shields.io/badge/🚀_Deployment-4B32C3?style=for-the-badge" alt="Deployment"></a>
-    <a href=".claude/plans/purrfect-herding-kahn.md"><img src="https://img.shields.io/badge/📐_Plan_v2.4.1-00B4D8?style=for-the-badge" alt="Plan"></a>
-  </p>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/LangGraph-multi--agent-00B4D8?style=flat-square">
+  <img src="https://img.shields.io/badge/FastAPI-SSE_streaming-009688?style=flat-square">
+  <img src="https://img.shields.io/badge/PostgreSQL-pgvector-4169E1?style=flat-square">
+  <img src="https://img.shields.io/badge/React_19-Vite_·_TS-61DAFB?style=flat-square">
+  <img src="https://img.shields.io/badge/tests-256-success?style=flat-square">
 </p>
 
 ---
 
 ## ✨ What it does
 
-User asks *"Tôi bị đau lưng dưới khi ngồi lâu, có bài tập nào không?"* — VVA returns:
+A user asks *"Tôi bị đau lưng dưới khi ngồi lâu, có bài tập nào không?"* ("I get lower-back pain from sitting too long — any exercises?") and VVA:
 
-1. **Clinical recommendation** — exercise list with sets/reps and safety warnings, styled in selected persona (warm / clinical / friendly)
-2. **Token-streamed response** — text streams to browser via SSE as the LLM generates it
-3. **Optional 3D motion** — if user requests visualization, Kimodo renders the movement (5-10s GPU)
-4. **Optional speech** — VieNeu-TTS synthesizes Vietnamese audio in-process (FastAPI BackgroundTasks)
+1. **Classifies intent** and plans which knowledge sources are needed.
+2. **Retrieves** from an internal PT knowledge base (vector search) and, when the user opts in, the live web.
+3. **Synthesizes** a clinically-framed answer — exercises with sets/reps and **safety warnings** — styled in the chosen persona (warm / clinical / friendly).
+4. **Streams** the answer token-by-token to the browser over SSE.
+5. Optionally renders a **3D motion** demonstration (avatar) and **Vietnamese speech**.
 
-Built on a **7-node LangGraph state machine** with structured plan/execute pattern, conditional long-term memory, rule-based quality grading, and graceful error routing.
+Every answer that carries a safety-relevant tag passes a **rule-based quality gate** before it reaches the user.
 
 ---
 
-## 🏗️ Architecture (v2.4.1)
+## 🗺️ How it works — request flow
 
+```mermaid
+flowchart TD
+    U([User query]) --> MEM[memory<br/>Redis STM + Postgres/pgvector LTM]
+    MEM -->|CRITICAL error| ERR[error_handler]
+    MEM --> PLN[planner<br/>3-axis intent · fast LLM]
+
+    PLN -->|needs retrieval| RET[retriever_agent<br/>selects tools · fast LLM]
+    PLN -->|motion only| KIM[kimodo]
+    PLN -->|direct answer| SYN[synthesizer]
+    PLN -->|error| ERR
+
+    RET <-->|≤ 2 rounds| TOOL[tools<br/>kb_search · search_medical · memory_search · youtube]
+    RET -->|needs motion| KIM
+    RET --> SYN
+
+    KIM --> SYN[synthesizer<br/>persona + clinical answer · heavy LLM]
+
+    SYN -->|safety tags present| GRD[grader<br/>rule-based gate]
+    SYN -->|no tags| OUT([SSE token stream ✓])
+    GRD -->|pass| OUT
+    GRD -->|retry ≤1| RET
+    ERR --> OUT
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  ECA UI (HTML/JS, Port 3000)                                │
-│  EventSource SSE + REST POST                                │
-└─────────────────────────────┬───────────────────────────────┘
-                              │
-┌─────────────────────────────▼───────────────────────────────┐
-│  FastAPI (Port 8080)                                        │
-│  POST /chat        → SSE stream                             │
-│  GET  /sessions    → list user sessions                     │
-│  POST /sessions/{id}/resume → reopen + populate STM         │
-│  GET  /health      → liveness                               │
-│  GET  /health/detailed → readiness (PG/Redis/MCP/LLM)       │
-└─────────────────────────────┬───────────────────────────────┘
-                              │
-┌─────────────────────────────▼───────────────────────────────┐
-│  LangGraph StateGraph (7 nodes)                             │
-│                                                             │
-│  memory ─► planner ─┬─► conversation (greeting/clarify)     │
-│                     │                                       │
-│                     └─► retriever_agent ─► synthesizer      │
-│                              │                  │           │
-│                       (pgvector @tool +         ▼           │
-│                        MCP tools parallel)    grader        │
-│                                              ↓ ↓ ↓          │
-│                                       pass / retry / warn   │
-│                                              │              │
-│                                              ▼              │
-│                                       conversation ─► END   │
-│                                                             │
-│  error_handler ─► conversation (any CRITICAL error)         │
-└──┬──────────────────────────────────────────────────────────┘
-   │
-┌──▼────────────────────┬──────────────────────┬──────────────┐
-│  Data Layer           │  External (MCP)      │  TTS         │
-│  ├─ PostgreSQL 5432  │  ├─ Kimodo (5001)   │  ├─ VieNeu   │
-│  │  + pgvector       │  │  generate_motion │  │  (FastAPI  │
-│  └─ Redis 6379       │  └─ Web Search      │  │   bg task) │
-│     STM + task_result│     (5020)          │  └─ Redis    │
-│                      │                      │     persist  │
-└──────────────────────┴──────────────────────┴──────────────┘
-```
+
+**8 nodes, two independent routing gates** (retrieval gate + grader gate), a bounded retriever⇄tools loop, and a graceful error path on every edge.
 
 | Node | Role | LLM calls |
 |------|------|-----------|
-| `memory` | Redis STM (3 Q&A FIFO) + conditional pgvector LTM | 0 |
-| `planner` | Intent classification + structured plan (Pydantic) | 1 (fast) |
-| `retriever_agent` | Execute plan: pgvector @tool + MCP tools parallel | 1+ |
-| `synthesizer` | Generate clinical response from tool results | 1 (heavy) |
-| `grader` | Rule-based quality check, max 1 retry | 0 |
-| `conversation` | Dual-mode: styling existing content OR generating greeting/clarify | 1 |
-| `error_handler` | Graceful Vietnamese error → reasoning_output | 0 |
-
-**Production hardening (Phase 6 P0)**: structured JSON logging with `request_id` correlation, parallel dependency health checks, per-role circuit breakers (DeepSeek + MCP), socket-timeout bounded Redis ops.
+| `memory` | Redis short-term memory (FIFO) + conditional Postgres/pgvector long-term recall | 0 |
+| `planner` | 3-axis intent (required outputs · resolved query · needs-retrieval/motion) | 1 (fast) |
+| `retriever_agent` | Chooses & calls tools per plan; loops with `tools` (hard cap 2 rounds) | 1+ (fast) |
+| `tools` | ToolNode: `kb_search`, `search_medical`, `memory_search`, `resume_last_session`, `youtube_transcript` | 0 |
+| `kimodo` | Fires 3D motion synthesis (MCP, GPU) | 0 |
+| `synthesizer` | Persona-styled clinical answer from evidence | 1 (heavy) |
+| `grader` | Rule-based quality/safety check, ≤1 retry | 0 |
+| `error_handler` | Graceful Vietnamese fallback on CRITICAL errors | 0 |
 
 ---
 
-## 🚀 Quick Start
+## 🧱 System & stack
 
-### Prerequisites
+```mermaid
+flowchart LR
+    FE["React 19 + Vite + TS<br/>VRM 3D avatar · :5173"] -->|SSE + REST · Cognito JWT| API["FastAPI<br/>:8000"]
+    API --> GRAPH["LangGraph<br/>8-node state machine"]
+    GRAPH --> PG[("PostgreSQL 16<br/>+ pgvector · :5433")]
+    GRAPH --> RD[("Redis 7<br/>STM · :6379")]
+    GRAPH -->|MCP| SX["SearXNG<br/>web search · :6666"]
+    GRAPH -->|MCP| KM["Kimodo<br/>3D motion · GPU"]
+    GRAPH -->|OpenAI-compat| DS["DeepSeek<br/>LLM (fast + heavy)"]
+    GRAPH --> EMB["multilingual-e5<br/>embeddings · CPU · offline"]
+```
 
-| Requirement | Notes |
+| Layer | Technology |
 |---|---|
-| **Python 3.10+** | Conda `firstconda` recommended |
-| **Docker Desktop** | For PostgreSQL + Redis + SearXNG containers |
-| **DeepSeek API key** | Set in `agenticRAG/agentic_rag_gemini/.env` |
-
-### Run in 4 commands
-
-```powershell
-# 1. Start PostgreSQL + Redis + SearXNG
-docker compose -f docker-compose.langgraph.yml up -d
-
-# 2. Activate env + install deps (first time only)
-conda activate firstconda
-pip install -r requirements-langgraph.txt
-
-# 3. Start backend (Terminal 1)
-cd agenticRAG
-python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8080
-
-# 4. Start frontend (Terminal 2)
-cd ECA_UI
-python -m http.server 3000
-```
-
-Open: <http://localhost:3000/?api_base=http://localhost:8080>
-
-### Verify
-
-```powershell
-# Liveness (instant, no dep checks)
-curl http://localhost:8080/health
-
-# Readiness (parallel checks: PG, Redis, MCP, LLM)
-curl http://localhost:8080/health/detailed
-```
-
-Smoke chat:
-
-```powershell
-'{"query":"Xin chào"}' | curl -s -N -X POST http://localhost:8080/chat `
-  -H "Content-Type: application/json" -d '@-'
-```
-
-Expected SSE events: `stage` (memory, planner, conversation) → `token` (...) → `done`.
-
-### Tests
-
-```powershell
-pytest tests/langgraph_agents/ -m unit -v          # 100 tests, ~10s
-pytest tests/langgraph_agents/ -m integration -v   # 6 tests, ~6min (live DeepSeek)
-```
-
-Expected: **100/100 unit + 6/6 integration**.
-
-> For detailed setup, troubleshooting, and log analysis, see [docs/RUNBOOK.md](docs/RUNBOOK.md).
+| **Orchestration** | LangGraph state machine (pure-async nodes), MCP tool servers, per-role circuit breakers |
+| **LLM** | DeepSeek (OpenAI-compatible) — fast model for planner/retriever, heavy model for synthesizer |
+| **Retrieval** | PostgreSQL 16 + **pgvector** (HNSW, 384-dim), `intfloat/multilingual-e5-small` (query:/passage: prefixes), SearXNG metasearch |
+| **Memory** | Redis STM + Postgres/pgvector LTM, background summarizer, GDPR delete + re-summarize |
+| **API** | FastAPI, Server-Sent Events (token streaming), Pydantic schemas |
+| **Auth** | AWS Cognito ID-token verification (JWKS · RS256 · audience · issuer), env-gated |
+| **Frontend** | React 19, Vite, TypeScript, Tailwind/shadcn, three.js + `@pixiv/three-vrm` avatar, axios (REST) + fetch (SSE stream) |
+| **Infra** | Docker Compose (Postgres · Redis · SearXNG), Alembic migrations |
 
 ---
 
-## 🔌 API Reference
+## 📊 By the numbers
+
+| | |
+|---|---|
+| **LangGraph nodes** | 8 (memory → planner → retriever⇄tools → kimodo → synthesizer → grader → error_handler) |
+| **Test cases** | 256 (unit + integration; circuit-breaker, routing, memory-regression, GDPR, auth) |
+| **Backend** | ~7,800 LOC Python |
+| **Frontend** | ~4,200 LOC TypeScript/React |
+| **Data model** | 7 Postgres tables (`users`, `conversations`, `messages`, `summaries`, `user_memory`, `documents`, `kb_embeddings`) |
+| **Architecture decisions** | 33 recorded (D1–D33) in [docs/plans/reupdate-plan.md](docs/plans/reupdate-plan.md) |
+| **Languages** | Vietnamese + English (multilingual embeddings & prompts) |
+| **Personas** | 3 (default / friendly / clinical) as editable Markdown |
+
+---
+
+## 🔬 Engineering highlights
+
+- **Multi-agent supervisor, not a single prompt** — intent, retrieval, reasoning and grading are separate nodes with independent routing; the retriever⇄tools loop is **hard-capped** in the graph (not left to the model).
+- **Clinical safety gate** — answers tagged with safety-relevant contracts must pass a deterministic grader (with a bounded retry) before streaming.
+- **Real memory** — short-term (Redis FIFO) + long-term vector recall, a background summarizer, and **GDPR** message/user deletion that re-summarizes affected chunks.
+- **Security-aware** — Cognito JWT verification (JWKS/RS256/audience/issuer); when enabled it ignores client-supplied IDs and derives the user from the token, closing an IDOR class.
+- **User-controlled web search (enforced at every layer)** — turning it off removes the tool from the model's bind list, omits it from the prompt, **and** blocks it at execution — mirroring how mature assistants gate "search off".
+- **Resilience** — per-role circuit breakers on DeepSeek + MCP, three-tier error severity (CRITICAL / RECOVERABLE / IGNORABLE), parallel dependency health checks, socket-timeout-bounded Redis ops.
+- **Offline, CPU-only embeddings** — the e5 model loads fully from local cache (zero HuggingFace-Hub calls at startup), freeing the GPU for 3D motion.
+- **Observability** — structured JSON logs correlated by `request_id`, SSE `stage` events for live pipeline tracing.
+
+---
+
+## 🚀 Quick start
+
+> Full setup, troubleshooting and log-analysis: **[docs/ops/runbook.md](docs/ops/runbook.md)** · **[docs/ops/setup-guide.md](docs/ops/setup-guide.md)**
+
+```bash
+# 1. Infra
+docker compose -f docker-compose.langgraph.yml up -d      # Postgres :5433 · Redis · SearXNG :6666
+
+# 2. Backend (Python) — conda env, port 8000
+conda activate firstconda
+pip install -r requirements-langgraph.txt                 # first time
+cd agenticRAG && alembic -c langgraph_agents/alembic.ini upgrade head
+python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8000 --host 0.0.0.0
+
+# 3. Frontend (React) — port 5173
+cd ECA_UI/frontend && npm install && npm run dev
+```
+
+Open **http://localhost:5173** (demo mode: no login required). Backend URL is read from `ECA_UI/frontend/.env.local` (`VITE_API_BASE_URL`, default `http://localhost:8000`).
+
+**Verify:**
+
+```bash
+curl http://localhost:8000/health            # {"status":"ok"}
+curl http://localhost:8000/health/detailed   # parallel PG/Redis/MCP/LLM/SearXNG checks
+python -m pytest tests/langgraph_agents/ -m unit -q   # unit suite (no live services)
+```
+
+---
+
+## 🔌 API
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/chat` | POST | Submit query, stream SSE response (`stage` / `token` / `speech_ready` / `done`) |
-| `/sessions?user_id=X` | GET | List user sessions sorted by `updated_at`, with first-message preview |
-| `/sessions/{id}/resume` | POST | Load session messages + populate Redis STM |
-| `/tts/{task_id}/result` | GET | Poll TTS result (fallback when SSE missed) |
-| `/health` | GET | Liveness — process alive |
-| `/health/detailed` | GET | Readiness — parallel PG/Redis/MCP/LLM checks, breaker states |
+| `/chat` | POST | Submit a query, stream SSE (`stage` → `token` → `done`) |
+| `/sessions?user_id=` | GET | List a user's sessions (with first-message preview) |
+| `/sessions/{id}` | GET | Load a session's messages (resume) |
+| `/users/{id}/memory` | GET · POST · DELETE | User long-term facts (GDPR-aware) |
+| `/health` · `/health/detailed` | GET | Liveness · readiness (dependency + breaker states) |
 
-### POST /chat request body
+<details>
+<summary><code>POST /chat</code> body & SSE events</summary>
 
-```json
-{
-  "query": "Bài tập cho đau lưng",
-  "user_id": "anonymous",
-  "session_id": "session-uuid",
-  "persona_id": "eca_default",
-  "output_mode": "text"
-}
+```jsonc
+// request
+{ "query": "Bài tập cho đau lưng", "user_id": "…", "session_id": "…",
+  "persona_id": "eca_default", "output_mode": "text", "web_search": false }
 ```
-
-| Field | Default | Options |
-|---|---|---|
-| `persona_id` | `eca_default` | `eca_default` / `eca_friendly` / `eca_clinical` |
-| `output_mode` | `text` | `text` / `speech` / `both` |
-
-### SSE event types
-
 ```
-event: stage           data: {"node": "planner", "status": "complete", "intent": "exercise_recommendation"}
-event: token           data: {"content": "Bài "}
-event: session_persisted   data: {"session_id": "..."}
-event: speech_pending  data: {"task_id": "..."}
-event: speech_ready    data: {"task_id": "...", "url": "..."}
-event: done            data: {"request_id": "...", "total_tokens": 423, "intent": "..."}
+event: stage   data: {"node":"planner","status":"complete"}
+event: token   data: {"content":"Bài "}
+event: done    data: {"request_id":"…","total_tokens":423,"required_outputs":["exercise_protocol"]}
 ```
+</details>
 
 ---
 
-## 📁 Project Structure
+## 📁 Layout
 
 ```
-Virtual-Verbal-Assistant/
-├── README.md                      ← you are here
-├── docs/
-│   ├── RUNBOOK.md                 # Step-by-step deploy + troubleshooting + log analysis
-│   └── DEPLOYMENT.md              # Phase 7 hybrid edge-cloud (stub)
-├── docker-compose.langgraph.yml   # PostgreSQL + Redis + SearXNG for local dev
-├── requirements-langgraph.txt     # Python deps (pinned)
-│
-├── agenticRAG/agentic_rag_gemini/
-│   └── langgraph_agents/
-│       ├── api/
-│       │   ├── main.py            # FastAPI app, /chat SSE, /sessions, /health
-│       │   ├── health.py          # Parallel dep checks (PG, Redis, MCP, LLM)
-│       │   ├── sse.py             # SSE encoding + StreamingResponse
-│       │   └── schemas.py         # Pydantic request/response models
-│       ├── nodes/                 # 7 graph nodes (pure async fn)
-│       │   ├── memory.py          # STM (Redis) + conditional LTM (pgvector)
-│       │   ├── planner.py         # Intent + structured plan (Pydantic)
-│       │   ├── retriever_agent.py # LLM + ToolNode (pgvector @tool + MCP)
-│       │   ├── synthesizer.py     # Heavy LLM → clinical response
-│       │   ├── grader.py          # Rule-based quality check + retry
-│       │   ├── conversation.py    # Persona styling OR generation
-│       │   └── error_handler.py   # Graceful error message
-│       ├── tools/
-│       │   └── pgvector_tool.py   # @tool wrapper for in-process vector search
-│       ├── mcp/                   # MCP server implementations + client
-│       │   ├── client.py          # MultiServerMCPClient + circuit breaker
-│       │   ├── kimodo_server.py   # Kimodo motion (mock for local dev)
-│       │   └── web_search_server.py # SearXNG metasearch wrapper
-│       ├── shared/
-│       │   ├── logging.py         # JSON formatter + request_id ContextVar
-│       │   └── __init__.py        # EmbeddingService + PostgresClient singletons
-│       ├── db/                    # asyncpg client + vector backend + session store
-│       ├── personas/              # MD files (eca_default, friendly, clinical)
-│       ├── services/vieneu_tts/   # TTS client + BackgroundTask
-│       ├── graph.py               # StateGraph construction
-│       ├── routing.py             # Conditional edges + error routing
-│       ├── llm.py                 # ChatOpenAI (DeepSeek) + circuit breakers per role
-│       └── state.py               # AgentState TypedDict
-│
-├── ECA_UI/                        # Frontend
-│   ├── index.html                 # Chat + persona + sessions UI
-│   └── api.js                     # streamChat (SSE) + listSessions + resumeSession
-│
-└── tests/langgraph_agents/        # 100 unit + 6 integration tests
+agenticRAG/langgraph_agents/
+├── api/           # FastAPI app · SSE · auth (Cognito) · health
+├── nodes/         # memory · planner · retriever_agent · synthesizer · grader · kimodo · error_handler
+├── tools/         # in-process @tool wrappers (kb_search, …)
+├── mcp/           # MCP servers (web search, kimodo) + client w/ circuit breaker
+├── shared/        # embeddings (offline e5) · structured logging
+├── db/ · alembic/ # asyncpg client · session store · migrations (7 tables)
+├── personas/      # eca_default / eca_friendly / eca_clinical (Markdown)
+├── graph.py · routing.py · state.py · llm.py
+ECA_UI/frontend/   # React 19 + Vite + TS + Tailwind · VRM avatar · lib/api.ts (axios + SSE)
+docs/              # architecture/ · ops/ · plans/ · phases/ · fixes/
+tests/langgraph_agents/   # 256 tests
 ```
 
 ---
 
 ## 📚 Documentation
 
-| Document | Description |
+| Doc | What |
 |---|---|
-| [docs/ops/runbook.md](docs/ops/runbook.md) | Deploy step-by-step, common errors, log analysis (`jq` / PowerShell filters) |
-| [docs/ops/deployment.md](docs/ops/deployment.md) | Phase 7 hybrid edge-cloud target (stub) |
-| [docs/plans/v2.4-plan.md](docs/plans/v2.4-plan.md) | Active architecture plan (v2.4.1) |
-| [docs/phases/phase-6-p0.md](docs/phases/phase-6-p0.md) | Production hardening implementation spec |
-| [.claude/CLAUDE.md](.claude/CLAUDE.md) | Project conventions, roles (K = architect, N = dev) |
+| [docs/architecture/system-overview.md](docs/architecture/system-overview.md) | High-level architecture |
+| [docs/architecture/full-flow-predeploy.md](docs/architecture/full-flow-predeploy.md) | End-to-end request flow |
+| [docs/plans/reupdate-plan.md](docs/plans/reupdate-plan.md) | Design decisions D1–D33 (source of truth) |
+| [docs/ops/runbook.md](docs/ops/runbook.md) · [docs/ops/troubleshooting.md](docs/ops/troubleshooting.md) | Run · debug · common errors |
+| [.claude/CLAUDE.md](.claude/CLAUDE.md) | Conventions & roles |
 
 ---
 
-## 🛠️ Common Errors
+## 🧭 Status & roadmap
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| `ConnectionRefusedError [WinError 1225]` | Docker Desktop not running | Start Docker Desktop, then `docker compose up -d` |
-| `/health/detailed` returns 503 (`redis: timeout`) | Redis hanging at protocol level | Investigate via `redis-cli info memory`; restart container if needed |
-| `CircuitBreakerOpenError` from planner/synthesizer | 3+ DeepSeek failures | Wait 30s for breaker cool-down, retry. Check `/health/detailed` for `breaker:planner` |
-| `MCP discovery loaded 0 tools` | Subprocess crash (PYTHONPATH, import) | Graceful — graph runs without MCP. Check log `mcp_discovery_failed` for cause |
-| Greeting classified as `clarify` | Old planner prompt | Verify `nodes/planner.py` has few-shot examples block |
-| SearXNG returns 403 / empty results | `limiter: true` or `formats` missing `json` in settings.yml | See RUNBOOK §7 |
+- ✅ Core pipeline (8-node graph), memory, RAG, personas, SSE streaming, session resume
+- ✅ Auth mechanism (Cognito JWT), GDPR memory ops, circuit breakers, health checks
+- ✅ Web-search user-toggle enforcement · offline embeddings · retriever loop cap
+- 🔜 **Pre-cloud hardening** — enable auth, rate limiting, secret management, LLM fallback (DeepSeek → Gemini)
+- 🔜 **Phase 7** — hybrid edge-cloud (cloud API + edge GPU worker for 3D motion)
 
-Full troubleshooting: [docs/ops/runbook.md § 7](docs/ops/runbook.md#7-common-errors).
-
----
-
-## 🔧 Environment Toggles
-
-| Variable | Default | Effect |
-|---|---|---|
-| `LOG_LEVEL` | `INFO` | `DEBUG` verbose, `WARNING` quiet |
-| `LLM_HEALTHCHECK` | `0` | `1` = `/health/detailed` actually calls DeepSeek (costs API credits) |
-| `DEEPSEEK_API_KEY` | — | Required for live LLM calls |
-| `DEEPSEEK_MODEL` | `deepseek-v4-pro` | Override model name |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | Override endpoint (e.g. proxy) |
-| `SEARXNG_URL` | `http://localhost:6666` | SearXNG endpoint for web search tool |
-
----
-
-## 🗺️ Roadmap
-
-- ✅ **Phase 0-2.5** — Foundation, planner, memory, retriever, synthesizer (LangGraph v2.4)
-- ✅ **Phase 3** — MCP servers (Kimodo mock, web search), FastAPI BackgroundTasks
-- ✅ **Phase 3.5** — v2.4.1 simplification (drop Celery, drop session summary, drop token interrupt)
-- ✅ **Phase 4** — Persona system (3 MD files, dual-mode conversation)
-- ✅ **Phase 5** — SSE streaming, session reopen, frontend rework
-- ✅ **Phase 6 P0** — Structured logging, health endpoints, circuit breakers, runbook
-- ⏳ **Phase 6.5 P1** — LangSmith tracing, pgvector index tuning, expanded per-node tests (data-driven)
-- ⏳ **Phase 7** — Hybrid edge-cloud (VPS + Supabase + edge worker GPU + AWS S3/CloudFront)
-
-Active plan: [docs/plans/v2.4-plan.md](docs/plans/v2.4-plan.md). Per-phase specs: `docs/phases/` directory.
-
----
-
-<p align="center"><sub>Built with LangGraph · DeepSeek · pgvector · MCP · VieNeu-TTS · SSE</sub></p>
+<p align="center"><sub>LangGraph · FastAPI · DeepSeek · PostgreSQL/pgvector · Redis · MCP · React · three.js/VRM · SSE</sub></p>

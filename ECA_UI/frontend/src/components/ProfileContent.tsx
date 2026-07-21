@@ -38,7 +38,7 @@ export default function ProfileContent({ onClose }: Props) {
   const handleLinkGoogle = () => {
     sessionStorage.setItem('linkingEmail', email)
     localStorage.setItem('linkingEmail', email)
-    signInWithRedirect({ provider: 'Google', options: { prompt: 'select_account' } })
+    signInWithRedirect({ provider: 'Google', options: { prompt: 'SELECT_ACCOUNT' } })
   }
 
   const scrollTo = (id: string) => {

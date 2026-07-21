@@ -46,7 +46,7 @@ export default function AuthGuard() {
               tokenSource = fresh
             }
 
-            const currentEmail = tokenSource.tokens.idToken?.payload?.email as string
+            const currentEmail = tokenSource.tokens?.idToken?.payload?.email as string
             if (currentEmail && currentEmail !== linkingEmail) {
               clearLocalAuthStorage()
               window.location.replace('/login?error=email_mismatch')
@@ -55,7 +55,7 @@ export default function AuthGuard() {
           }
 
           setSession(tokenSource)
-          setUser({ signInDetails: { loginId: tokenSource.tokens.idToken?.payload?.email as string || '' } })
+          setUser({ signInDetails: { loginId: tokenSource.tokens?.idToken?.payload?.email as string || '' } })
           return fetchUserAttributes()
         }
         return undefined
@@ -106,11 +106,12 @@ export default function AuthGuard() {
     )
   }
 
-  // ⚠️ TEMP — test không có Cognito/Google login: tạm bỏ qua cổng auth để vào thẳng chat.
-  // KHÔI PHỤC (khi Cognito đã cấu hình): bỏ comment 3 dòng dưới. `Navigate` vẫn đang import sẵn.
-  // if (!session) {
-  //   return <Navigate to="/login" replace />
-  // }
+  // Auth gate. Bypassed in demo mode via VITE_AUTH_DISABLED=true (set in .env.local) so
+  // the app runs without Cognito configured. In production (var unset) a missing session
+  // redirects to /login — mirrors the backend REQUIRE_AUTH flag.
+  if (import.meta.env.VITE_AUTH_DISABLED !== 'true' && !session) {
+    return <Navigate to="/login" replace />
+  }
 
   return (
     <AuthContext.Provider value={{ signOut: handleSignOut, user, userAttributes: attrs }}>

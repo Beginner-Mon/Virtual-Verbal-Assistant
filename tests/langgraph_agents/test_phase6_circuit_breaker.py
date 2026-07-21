@@ -165,7 +165,11 @@ async def test_planner_handles_breaker_open_as_recoverable():
         "persona_id": "eca_default",
     }}
 
-    result = await planner_node(state, config)
+    # Gemini fallback (fix #2) is disabled here so this test stays a pure
+    # unit test — a real GEMINI_API_KEYS may be present in .env, but we must
+    # not let a unit test attempt a live fallback call.
+    with patch("langgraph_agents.nodes.planner.get_fallback_chat_model", return_value=None):
+        result = await planner_node(state, config)
 
     assert result["needs_clarification"] is True
     errors = result.get("errors", [])

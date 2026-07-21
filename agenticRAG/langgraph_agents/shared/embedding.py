@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 from functools import lru_cache
 from typing import List, Union
 
@@ -37,6 +38,7 @@ class E5EmbeddingService:
         self.model_name = model_name
         self.dim = E5_DIM
         self._model = None
+        self._load_lock = threading.Lock()
 
     @property
     def model(self):
@@ -44,11 +46,26 @@ class E5EmbeddingService:
 
         Loads from local cache by default (no HF-Hub round-trips on restart).
         Set EMBEDDING_ALLOW_DOWNLOAD=1 for a one-time download on a clean machine.
+
+        Double-checked locking: aembed_query/aembed_passage run this via
+        asyncio.to_thread, so concurrent tool calls (e.g. a retriever round that
+        fires several kb_search calls in parallel) can all reach this property
+        before any of them finishes loading. Without a lock, each thread sees
+        self._model is None and independently constructs its own
+        SentenceTransformer — loading the model N times simultaneously, spiking
+        peak memory (crashed the process under memory pressure — reproduced
+        live: 3 parallel kb_search calls → 3 concurrent loads → OOM). The lock
+        only serializes the ONE-TIME load; every call after that takes the fast
+        path (no lock) since self._model is no longer None. This does not change
+        the lazy-loading behavior itself — still nothing loads until first use.
         """
-        if self._model is None:
-            from sentence_transformers import SentenceTransformer
-            _offline = os.getenv("EMBEDDING_ALLOW_DOWNLOAD") != "1"
-            self._model = SentenceTransformer(self.model_name, local_files_only=_offline)
+        if self._model is not None:
+            return self._model
+        with self._load_lock:
+            if self._model is None:
+                from sentence_transformers import SentenceTransformer
+                _offline = os.getenv("EMBEDDING_ALLOW_DOWNLOAD") != "1"
+                self._model = SentenceTransformer(self.model_name, local_files_only=_offline)
         return self._model
 
     # ── Public API ──────────────────────────────────────────────────────

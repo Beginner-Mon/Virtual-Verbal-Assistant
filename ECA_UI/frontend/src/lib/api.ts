@@ -9,6 +9,7 @@
  * - Sessions + user_memory CRUD helpers
  */
 
+import axios from 'axios'
 import { fetchAuthSession } from 'aws-amplify/auth'
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -28,6 +29,20 @@ async function authHeader(): Promise<Record<string, string>> {
     return {}
   }
 }
+
+// ── Axios instance (REST only) ──────────────────────────────────────────────────
+// Used for non-streaming CRUD (sessions, user_memory). The request interceptor
+// attaches the Cognito idToken once, so callers don't repeat auth wiring; axios
+// also throws on non-2xx, unifying error handling.
+// NOTE: streamChat() below intentionally stays on fetch — axios (XHR) cannot stream
+// SSE tokens progressively.
+const http = axios.create({ baseURL: API_BASE })
+
+http.interceptors.request.use(async (config) => {
+  const auth = await authHeader()
+  if (auth.Authorization) config.headers.set('Authorization', auth.Authorization)
+  return config
+})
 
 /** Stable user id: Cognito sub when authed, else a persistent demo UUID. */
 async function currentUserId(): Promise<string> {
@@ -175,66 +190,47 @@ export async function streamChat(
 
 export async function listSessions() {
   const userId = await currentUserId()
-  const headers = await authHeader()
-  const resp = await fetch(
-    `${API_BASE}/sessions?user_id=${encodeURIComponent(userId)}`,
-    { headers },
-  )
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-  return resp.json()
+  const { data } = await http.get('/sessions', { params: { user_id: userId } })
+  return data
 }
 
 export async function getSession(sessionId: string) {
   const userId = await currentUserId()
-  const headers = await authHeader()
-  const resp = await fetch(
-    `${API_BASE}/sessions/${encodeURIComponent(sessionId)}?user_id=${encodeURIComponent(userId)}`,
-    { headers },
-  )
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-  return resp.json()
+  const { data } = await http.get(`/sessions/${encodeURIComponent(sessionId)}`, {
+    params: { user_id: userId },
+  })
+  return data
 }
 
 export async function deleteSession(sessionId: string) {
   const userId = await currentUserId()
-  const headers = await authHeader()
-  const resp = await fetch(
-    `${API_BASE}/sessions/${encodeURIComponent(userId)}/${encodeURIComponent(sessionId)}`,
-    { method: 'DELETE', headers },
+  const { data } = await http.delete(
+    `/sessions/${encodeURIComponent(userId)}/${encodeURIComponent(sessionId)}`,
   )
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-  return resp.json()
+  return data
 }
 
 // ── User memory CRUD ───────────────────────────────────────────────────────────
 
 export async function listUserMemory() {
   const userId = await currentUserId()
-  const headers = await authHeader()
-  const resp = await fetch(`${API_BASE}/users/${encodeURIComponent(userId)}/memory`, { headers })
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-  return resp.json()
+  const { data } = await http.get(`/users/${encodeURIComponent(userId)}/memory`)
+  return data
 }
 
 export async function createUserMemory(factText: string, category?: string) {
   const userId = await currentUserId()
-  const extraHeaders = await authHeader()
-  const resp = await fetch(`${API_BASE}/users/${encodeURIComponent(userId)}/memory`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...extraHeaders },
-    body: JSON.stringify({ fact_text: factText, category }),
+  const { data } = await http.post(`/users/${encodeURIComponent(userId)}/memory`, {
+    fact_text: factText,
+    category,
   })
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-  return resp.json()
+  return data
 }
 
 export async function deleteUserMemory(factId: string) {
   const userId = await currentUserId()
-  const extraHeaders = await authHeader()
-  const resp = await fetch(
-    `${API_BASE}/users/${encodeURIComponent(userId)}/memory/${encodeURIComponent(factId)}`,
-    { method: 'DELETE', headers: { ...extraHeaders } },
+  const { data } = await http.delete(
+    `/users/${encodeURIComponent(userId)}/memory/${encodeURIComponent(factId)}`,
   )
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-  return resp.json()
+  return data
 }

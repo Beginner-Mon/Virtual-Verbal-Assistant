@@ -169,11 +169,12 @@ class TestPlannerNode:
 
     @pytest.mark.asyncio
     async def test_planner_llm_error_fallback(self):
-        """Planner returns safe fallback on LLM error."""
+        """Planner returns safe fallback on LLM error (Gemini fallback unavailable)."""
         from langgraph_agents.nodes.planner import planner_node
         from langchain_core.runnables import RunnableConfig
 
-        with patch("langgraph_agents.nodes.planner.get_chat_model") as mock_llm:
+        with patch("langgraph_agents.nodes.planner.get_chat_model") as mock_llm, \
+             patch("langgraph_agents.nodes.planner.get_fallback_chat_model", return_value=None):
             mock_llm.return_value.with_structured_output.return_value.ainvoke = AsyncMock(
                 side_effect=RuntimeError("LLM down")
             )

@@ -57,7 +57,7 @@ export default function CreateAccountPage() {
   }
 
   const handleGoogleSignIn = () => {
-    signInWithRedirect({ provider: 'Google', options: { prompt: 'select_account' } })
+    signInWithRedirect({ provider: 'Google', options: { prompt: 'SELECT_ACCOUNT' } })
   }
 
   return (
