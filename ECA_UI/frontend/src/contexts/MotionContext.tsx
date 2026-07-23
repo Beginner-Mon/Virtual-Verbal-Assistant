@@ -1,4 +1,5 @@
 import { createContext, useContext, useRef, useState, type ReactNode } from 'react'
+import type { AvatarController } from '../avatar/AvatarController'
 
 type AssetOption = {
   id: string
@@ -52,6 +53,13 @@ interface MotionContextType {
   motionOptions: AssetOption[]
   onResetRef: React.MutableRefObject<(() => void) | null>
   handleReset: () => void
+  /**
+   * Imperative handle to the active facial-animation controller. Set by
+   * CharacterViewer when a VRM attaches; consumed by DevPanel (and later the
+   * chat SSE handler) to drive emotions WITHOUT routing frame data through React
+   * state (facial-animation-plan.md §8 rule 3).
+   */
+  avatarRef: React.MutableRefObject<AvatarController | null>
 }
 
 const MotionContext = createContext<MotionContextType | null>(null)
@@ -65,6 +73,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
   const [cameraMode, setCameraMode] = useState<CameraMode>('head')
 
   const onResetRef = useRef<(() => void) | null>(null)
+  const avatarRef = useRef<AvatarController | null>(null)
 
   const handleReset = () => {
     if (onResetRef.current) {
@@ -91,6 +100,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
         motionOptions: BUILTIN_MOTION_OPTIONS,
         onResetRef,
         handleReset,
+        avatarRef,
       }}
     >
       {children}

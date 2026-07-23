@@ -10,12 +10,12 @@
 - **Backend + Docker hiện ĐANG CHẠY** (verify lúc viết file này: `curl :8000/health` →
   `{"status":"ok"}`, `docker ps` → postgres/redis/searxng healthy, up 31h). Không cần khởi động
   lại — nếu tắt, lệnh chạy vẫn ở §5.
-- **Git**: batch 21 file của phiên 21/07 (model-tier switch + fallback fixes + FE axios + docs
-  reorg) **đã được commit** bởi N: `621fcd5 local_version_finalize` +
-  `878c6ed status_update`. Working tree hiện chỉ còn phiên 22/07 (Gemini caching) **CHƯA commit**:
-  `M agenticRAG/langgraph_agents/llm.py`, `M nodes/planner.py`,
-  `M tests/langgraph_agents/test_fix_latency_1234.py`, `?? docs/worklogs/21-07-2026.md`,
-  `?? docs/worklogs/22-07-2026.md`. Không tự commit/push khi chưa được lệnh.
+- **Git**: batch phiên 21-22/07 (Gemini caching + D34 web fallback + stage indicator) **đã
+  commit** bởi N: `35985d5 fix bugs in UI streaming` (đè lên `621fcd5` + `878c6ed`). Working
+  tree hiện còn phiên 23/07 (2 fix streaming) **CHƯA commit**:
+  `M agenticRAG/langgraph_agents/nodes/synthesizer.py` (sleep(0) drain fix),
+  `M ECA_UI/frontend/src/lib/api.ts` (CRLF boundary fix),
+  `?? docs/worklogs/23-07-2026.md`. Không tự commit/push khi chưa được lệnh.
 - **Docs đã reorg** (đã ổn định từ phiên trước): root `FIX-*.md` cũ giờ ở
   `docs/{architecture,ops,plans,fixes,tracking,archive}/`. File này ở **`docs/tracking/status.md`**.
 - **Auth demo bypass**: env-gate `VITE_AUTH_DISABLED=true` trong `ECA_UI/frontend/.env.local` →

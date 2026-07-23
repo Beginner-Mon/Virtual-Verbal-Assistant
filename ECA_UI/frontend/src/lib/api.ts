@@ -157,10 +157,19 @@ export async function streamChat(
         const { done, value } = await reader.read()
         if (done) break
         buffer += decoder.decode(value, { stream: true })
-        const lastBoundary = buffer.lastIndexOf('\n\n')
+        // sse-starlette terminates blocks with \r\n\r\n — a literal '\n\n'
+        // search never matches, deferring ALL parsing to the post-loop flush
+        // (= the whole answer appears in one burst). Match both CRLF and LF.
+        let lastBoundary = -1
+        let boundaryLen = 0
+        const boundaryRe = /\r?\n\r?\n/g
+        for (let m = boundaryRe.exec(buffer); m !== null; m = boundaryRe.exec(buffer)) {
+          lastBoundary = m.index
+          boundaryLen = m[0].length
+        }
         if (lastBoundary === -1) continue
         const ready = buffer.slice(0, lastBoundary)
-        buffer = buffer.slice(lastBoundary + 2)
+        buffer = buffer.slice(lastBoundary + boundaryLen)
         _parseSSEBlocks(ready, wrappedEmit)
       }
       if (buffer.trim()) _parseSSEBlocks(buffer, wrappedEmit)

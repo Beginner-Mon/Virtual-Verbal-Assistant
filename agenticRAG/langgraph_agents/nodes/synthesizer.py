@@ -19,6 +19,7 @@ Mode derivation (D29 — derive, don't store):
 
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import datetime, timezone
 
@@ -323,6 +324,17 @@ async def synthesizer_node(state: AgentState, config: RunnableConfig) -> dict:
                 if content:
                     final += content
                     writer({"content": content})
+                    # LangGraph's "custom" stream mode only drains this node's
+                    # writer() queue when a sibling "waiter" task gets scheduled
+                    # by asyncio (see PregelRunner.atick's asyncio.wait(...,
+                    # FIRST_COMPLETED) race). This loop's own awaits (network
+                    # reads from llm.astream) keep resuming THIS task fast enough
+                    # that the waiter never gets a turn — so every token silently
+                    # queues up and only flushes to the SSE client in one burst
+                    # right as the node finishes. sleep(0) forces one real event-
+                    # loop tick per token, giving the waiter a chance to run and
+                    # actually deliver tokens as they're generated.
+                    await asyncio.sleep(0)
                 if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
                     tokens = chunk.usage_metadata.get("total_tokens", 0)
                     ai_msg = chunk

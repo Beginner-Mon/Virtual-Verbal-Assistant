@@ -15,6 +15,9 @@ import { useRef, useEffect, useState, Suspense, useMemo } from 'react'
 import * as THREE from 'three'
 import { loadAndRetargetBVH } from '../lib/bvhToVrm'
 import { type CameraMode, useMotion } from '../contexts/MotionContext'
+import { AvatarController } from '../avatar/AvatarController'
+import { loadProfile } from '../avatar/AvatarProfile'
+import AvatarDevPanel from '../avatar/AvatarDevPanel'
 
 const CAMERA_MODES: Record<CameraMode, { boneName: VRMHumanBoneName; cameraOffset: THREE.Vector3 }> = {
   head: {
@@ -31,22 +34,26 @@ const CAMERA_MODES: Record<CameraMode, { boneName: VRMHumanBoneName; cameraOffse
 
 interface VRMCharacterProps {
   vrmUrl: string
+  modelId: string
   animationUrl: string
   isPlaying: boolean
   speed: number
   onResetRef: React.MutableRefObject<(() => void) | null>
   onLoaded: (info: { tracks: number; duration: number }) => void
   vrmRef: React.MutableRefObject<VRM | null>
+  avatarRef: React.MutableRefObject<AvatarController | null>
 }
 
 function VRMCharacter({
   vrmUrl,
+  modelId,
   animationUrl,
   isPlaying,
   speed,
   onResetRef,
   onLoaded,
   vrmRef,
+  avatarRef,
 }: VRMCharacterProps) {
   const gltf = useLoader(GLTFLoader, vrmUrl, (loader) => {
     loader.register((parser) => new VRMLoaderPlugin(parser))
@@ -63,7 +70,23 @@ function VRMCharacter({
   }, [vrm, vrmRef])
 
   const mixerRef = useRef<THREE.AnimationMixer | null>(null)
+  const avatarControllerRef = useRef<AvatarController | null>(null)
   const [animLoaded, setAnimLoaded] = useState(false)
+
+  // Facial-animation controller lifecycle: attach on VRM load, detach on
+  // model change / unmount. Kept out of React state — this ref IS the handle
+  // (facial-animation-plan.md §8 rules 2-4).
+  useEffect(() => {
+    if (!vrm) return
+    const controller = new AvatarController(vrm, loadProfile(modelId))
+    avatarControllerRef.current = controller
+    avatarRef.current = controller
+    return () => {
+      controller.detach()
+      if (avatarRef.current === controller) avatarRef.current = null
+      avatarControllerRef.current = null
+    }
+  }, [vrm, modelId, avatarRef])
 
   // Load and apply BVH animation after VRM is ready
   useEffect(() => {
@@ -127,10 +150,16 @@ function VRMCharacter({
     }
   }, [animLoaded])
 
-  // Update both the animation mixer and VRM (for SpringBone physics) every frame
+  // Update body animation, then facial expressions, then the VRM itself.
+  // Order is mandatory (§8 rule 1): the avatar controller calls setValue, and
+  // vrm.update applies those weights via expressionManager.update() — so the
+  // tick must land BETWEEN mixer.update and vrm.update.
   useFrame((_state, delta) => {
     if (mixerRef.current) {
       mixerRef.current.update(delta)
+    }
+    if (avatarControllerRef.current) {
+      avatarControllerRef.current.tick(delta)
     }
     if (vrm) {
       vrm.update(delta)
@@ -190,21 +219,25 @@ function FloatingParticles() {
 interface SceneProps {
   theme: 'light' | 'dark'
   vrmUrl: string
+  modelId: string
   animationUrl: string
   isPlaying: boolean
   speed: number
   onResetRef: React.MutableRefObject<(() => void) | null>
   onLoaded: (info: { tracks: number; duration: number }) => void
+  avatarRef: React.MutableRefObject<AvatarController | null>
 }
 
 function Scene({
   theme,
   vrmUrl,
+  modelId,
   animationUrl,
   isPlaying,
   speed,
   onResetRef,
   onLoaded,
+  avatarRef,
 }: SceneProps) {
   const controlsRef = useRef<any>(null)
   const vrmRef = useRef<VRM | null>(null)
@@ -269,11 +302,13 @@ return (
       <VRMCharacter
         vrmRef={vrmRef}
         vrmUrl={vrmUrl}
+        modelId={modelId}
         animationUrl={animationUrl}
         isPlaying={isPlaying}
         speed={speed}
         onResetRef={onResetRef}
         onLoaded={onLoaded}
+        avatarRef={avatarRef}
       />
       <FloatingParticles />
 
@@ -365,9 +400,17 @@ export default function CharacterViewer() {
     setClipInfo,
     vrmOptions,
     motionOptions,
+    avatarRef,
   } = useMotion()
 
-  const vrmUrl = vrmOptions.find((o) => o.id === selectedVrmId)?.url ?? seeleUrl
+  const selectedVrm = vrmOptions.find((o) => o.id === selectedVrmId)
+  const vrmUrl = selectedVrm?.url ?? seeleUrl
+  // Derive a stable model id ("seele", "bronya", "bronya_long") from the asset
+  // label so loadProfile can pick a per-model override.
+  const modelId = (selectedVrm?.label ?? 'seele.vrm')
+    .replace(/\.vrm$/i, '')
+    .replace(/^.*\//, '')
+    .toLowerCase()
   const animationUrl = motionOptions.find((o) => o.id === selectedMotionId)?.url ?? ''
 
   useEffect(() => {
@@ -391,17 +434,22 @@ export default function CharacterViewer() {
           <Scene
             theme={theme}
             vrmUrl={vrmUrl}
+            modelId={modelId}
             animationUrl={animationUrl}
             isPlaying={isPlaying}
             speed={speed}
             onResetRef={onResetRef}
             onLoaded={setClipInfo}
+            avatarRef={avatarRef}
           />
         </Suspense>
       </Canvas>
 
       {/* Bottom gradient */}
       <div className="absolute bottom-0 left-0 right-0 h-24 pointer-events-none bg-gradient-to-t from-background/80 to-transparent" />
+
+      {/* Dev-only facial-animation test panel (§10 Phase A acceptance). */}
+      {import.meta.env.DEV && <AvatarDevPanel />}
     </div>
   )
 }
