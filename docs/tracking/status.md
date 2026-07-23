@@ -1,34 +1,45 @@
 # VVA — Status & Roadmap
 
-> Last update: 2026-07-21 (K) | Branch: `feature/langgraph-rewrite`
+> Last update: 2026-07-22 (K) | Branch: `feature/langgraph-rewrite`
 > Audience: K/N/Owner takeover after context compaction — đọc mục 0 trước tiên.
 
 ---
 
 ## 0. TRẠNG THÁI ĐANG TREO (đọc trước — dễ mất khi compact)
 
-- **Backend + Docker hiện ĐANG TẮT** (verify lúc viết file này: `curl :8000/health` → down,
-  `docker ps` → không có postgres/redis/searxng). Muốn chạy tiếp:
-  ```bash
-  docker compose -f docker-compose.langgraph.yml up -d postgres redis searxng
-  cd agenticRAG && conda activate firstconda
-  python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8000 --host 0.0.0.0
-  ```
-  ⚠️ **Port 8080 = service Spring của Owner, KHÔNG bind backend vào đó.** Luôn dùng **8000**.
-- **Git**: toàn bộ thay đổi phiên này đang ở trạng thái **STAGED** (`git status` ra cột index
-  `M`/`A`/`R` — không rõ do lệnh nào add, có thể Owner tự add ở terminal khác). **21 file, chưa
-  commit.** Không tự commit/push khi chưa được lệnh (quy tắc cũ vẫn giữ). Danh sách file ở §8.
-- **Docs đã bị reorg** (không phải do K chủ động, phát hiện giữa phiên qua git log
-  "re structure docs"): root `FIX-*.md`, `TECH_DEBT.md`, `REUPDATE_PLAN.md`, `RUNBOOK.md` đã dời
-  vào `docs/{architecture,ops,plans,fixes,tracking,archive}/`. File này giờ nằm ở
-  **`docs/tracking/status.md`** (không phải root `STATUS.md` nữa). Xem §6 cho path đầy đủ.
-- **Auth demo bypass** giờ là **env-gate sạch** (không còn TEMP-comment-hack cũ):
-  `ECA_UI/frontend/.env.local` có `VITE_AUTH_DISABLED=true` → vào thẳng chat không cần Cognito.
-  Production: bỏ/`=false` biến này + set `REQUIRE_AUTH=true` + 3 biến Cognito backend.
-- **DeepSeek + Gemini**: cả hai đã từng hết tiền/quota cùng lúc trong phiên này (đã verify sống,
-  không phải bug) → Owner đã nạp lại DeepSeek. Nếu gặp lỗi `402`/`429` lại, đó là vấn đề tài
-  khoản, không phải code.
-- **Test hiện tại: 296 collected (259 unit pass + 37 integration cần Docker/DeepSeek)**.
+- **Backend + Docker hiện ĐANG CHẠY** (verify lúc viết file này: `curl :8000/health` →
+  `{"status":"ok"}`, `docker ps` → postgres/redis/searxng healthy, up 31h). Không cần khởi động
+  lại — nếu tắt, lệnh chạy vẫn ở §5.
+- **Git**: batch 21 file của phiên 21/07 (model-tier switch + fallback fixes + FE axios + docs
+  reorg) **đã được commit** bởi N: `621fcd5 local_version_finalize` +
+  `878c6ed status_update`. Working tree hiện chỉ còn phiên 22/07 (Gemini caching) **CHƯA commit**:
+  `M agenticRAG/langgraph_agents/llm.py`, `M nodes/planner.py`,
+  `M tests/langgraph_agents/test_fix_latency_1234.py`, `?? docs/worklogs/21-07-2026.md`,
+  `?? docs/worklogs/22-07-2026.md`. Không tự commit/push khi chưa được lệnh.
+- **Docs đã reorg** (đã ổn định từ phiên trước): root `FIX-*.md` cũ giờ ở
+  `docs/{architecture,ops,plans,fixes,tracking,archive}/`. File này ở **`docs/tracking/status.md`**.
+- **Auth demo bypass**: env-gate `VITE_AUTH_DISABLED=true` trong `ECA_UI/frontend/.env.local` →
+  vào thẳng chat không cần Cognito. Production: bỏ/`=false` + `REQUIRE_AUTH=true` + 3 biến Cognito.
+- **DeepSeek + Gemini**: từng hết tiền/quota cùng lúc phiên 21/07 (đã verify sống, không phải
+  bug) → Owner đã nạp lại DeepSeek. Lỗi `402`/`429` lại = vấn đề tài khoản, không phải code.
+- **Gemini context caching** (phiên 22/07, `docs/worklogs/22-07-2026.md`): hạ tầng đã code + test
+  xong, nhưng **luôn inert** — free-tier API key có cache-storage quota = 0 (verify live, 429).
+  Chỉ áp dụng cho `planner` fallback (prompt tĩnh). Không tối ưu latency hiện tại — chuẩn bị cho
+  tính năng BYO-key tương lai. Chưa commit (xem mục Git ở trên).
+  Xem `docs/architecture/streaming-vs-validated.md` nếu tồn tại — **chưa có**, quyết định
+  "stream trước hay sau grader" đang treo, xem mục dưới.
+- **Design treo, chưa code**: Owner hỏi liệu guardrail/grader có làm chậm response không (do lo
+  ngại pattern "stream thẳng rồi ghi đè khi grader reject"). K đọc code thật, phát hiện **bug thật
+  chưa fix**: khi grader trigger retry, `ChatPanel.tsx` không có xử lý `stage` event nên 2 lần
+  sinh của synthesizer bị nối chữ liền nhau trên UI (không tách/xoá buffer). Owner sau đó đề xuất
+  hướng triệt để hơn: **bỏ hẳn live-stream, chỉ gửi câu trả lời sau khi qua grader** — K đã phân
+  tích trade-off (tổng thời gian xử lý không đổi, nhưng UI sẽ im lặng hoàn toàn 7-21s thay vì thấy
+  chữ chạy dần từ ~1-3s) và đề xuất giữ typing-indicator suốt thời gian chờ để giảm nhẹ. **Owner
+  chưa chốt hướng nào** — chưa động tới `synthesizer.py`/`main.py`/`ChatPanel.tsx`.
+- **Test hiện tại: 296 collected (270 unit pass + 37 integration cần Docker/DeepSeek), 0 fail**
+  (verify lại lúc viết file này, dùng đúng `firstconda` env — `python` trên PATH mặc định của
+  Bash tool KHÔNG có `langchain_google_genai`, phải gọi thẳng
+  `/c/Users/Nguyen/miniconda3/envs/firstconda/python` hoặc `conda activate firstconda` trước).
 - Gọi Owner là **Mr. Senryuu**. Không nhắc chuyện commit trừ khi Owner chủ động.
 
 ---
@@ -127,6 +138,36 @@ tham khảo CV/portfolio.
   ⚠️ Các hàm REST axios **chưa có UI caller** (`ChatSessionsPanel` vẫn là mock tĩnh) — verify
   bằng tsc (0 lỗi) + chat end-to-end vẫn chạy, không verify được qua UI thật vì chưa ai gọi.
 
+### Synthesizer model tier: deepseek-v4-pro → deepseek-v4-flash — `docs/worklogs/21-07-2026.md`
+- Live A/B test thật (5 kịch bản × 7 lần/model, không mock): flash thắng **mọi** lần đo (1.5-4x
+  nhanh hơn), kể cả worst-case flash < best-case pro. Đọc tay chất lượng output (kể cả kịch bản
+  an toàn cao — đau ngực): không thấy khoảng cách, flash còn cụ thể hơn (có số cấp cứu 115).
+- `_HEAVY_ROLES` rỗng, tách riêng `_LONG_OUTPUT_ROLES = {"synthesizer"}` để giữ `max_tokens=1024`/
+  `timeout=35s` dù đổi model nhẹ (tránh cắt cụt response dài). Fallback Gemini synthesizer đồng bộ
+  theo sang flash tier.
+- Verify live qua Docker + backend thật: request đau lưng thật, grader reject lần đầu → retry,
+  2 lần synthesizer flash (8.57s+7.93s=16.5s) **vẫn nhanh hơn** 1 lần heavy cũ (21.05s benchmark
+  trước) dù chạy gấp đôi.
+- Follow-up cùng ngày: đổi Gemini fallback model `gemini-2.0-flash` → `gemini-2.5-flash`. Verify
+  trực tiếp bằng API thật trước khi chọn — phát hiện `gemini-3.1-flash-lite` trả `.content` dạng
+  list cấu trúc (không phải string) qua `langchain_google_genai==4.2.3` hiện cài, sẽ **crash**
+  code production đúng lúc fallback cần chạy nhất → loại, chọn `2.5-flash` (verify sạch).
+
+### Gemini explicit context caching (hạ tầng, inert trên free tier) — `docs/worklogs/22-07-2026.md`
+- Owner: "cứ tạo đi" — chuẩn bị hạ tầng cho tính năng tương lai (user tự upload API key + chọn
+  provider). Research trước khi code: Gemini caching không tự động (khác DeepSeek) — phải tạo
+  tường minh `CachedContent` + TTL, ràng buộc `cached_content` không đi kèm `system_instruction`
+  riêng. Thử tạo cache thật với đúng prompt planner → **429 quota=0** (giới hạn free-tier, không
+  phải lỗi code) — đã honest-disclose, không overclaim đã verify được cache thật giảm latency.
+- Scope: chỉ `planner` fallback (prompt tĩnh 100%, giống lý do DeepSeek cache ăn ~91% ở đó).
+  Tách `get_warm_gemini_cache()` (tra cứu, không gọi mạng, an toàn dùng trong fallback hot path)
+  khỏi `warm_gemini_cache()` (gọi API thật, cố ý KHÔNG auto-invoke từ fallback — tránh lặp lại
+  bug "fallback chậm hơn không-fallback" đã sửa trước đó).
+  `llm.py` +130 dòng, `planner.py` thêm nhánh thử cached model trước khi cache đã ấm.
+- Test: 10 test mới, full suite 270 passed 0 regression. Live thật (không mock): bắt đúng lỗi 429,
+  trả `None`, không exception lọt lên trên — xác nhận degrade an toàn trên điều kiện lỗi thật.
+- **Chưa commit** (xem §0).
+
 ---
 
 ## 3. Còn thiếu / pending (theo mức ưu tiên)
@@ -145,7 +186,11 @@ tham khảo CV/portfolio.
   critical vs optional trước khi có LB/orchestrator thật.
 
 ### 🟡 Việc code cụ thể
-- **21 file đang staged, chưa commit** (xem §8) — rủi ro nếu máy có sự cố.
+- **5 file phiên 22/07 chưa commit** (Gemini caching — `llm.py`, `planner.py`,
+  `test_fix_latency_1234.py`, 2 worklog mới) — xem §0. Batch 21 file phiên 21/07 đã commit.
+- **Bug thật chưa fix, đang chờ Owner chốt hướng**: grader-retry làm `ChatPanel.tsx` nối chữ 2
+  lần sinh của synthesizer liền nhau (không tách buffer). Owner đề xuất hướng triệt để hơn (bỏ
+  live-stream, chỉ gửi sau grader) thay vì vá buffer — xem §0, chưa code.
 - Memory FE reset khi đóng sidebar (Owner đã chủ động bỏ persistence — biết và chấp nhận).
 - Animation nhân vật "cúi đầu" lúc load trang — Owner nói để sau khi logic xong.
 - Bundle FE nặng (JS ~1.9MB gzip 549KB + VRM asset 9-29MB bundle thẳng) — chưa lazy-load/CDN.
@@ -208,22 +253,13 @@ python -m pytest tests/langgraph_agents/ -q            # 296 (cần Docker + Dee
 - Code = English, docs = Việt + Anh. UI verify bằng skill `playwright-cli` (không npx). Backend
   port cố định **8000** (8080 = Spring của Owner, không đụng).
 
-## 8. Danh sách file đang staged (git status lúc viết file này)
+## 8. Danh sách file chưa commit (git status lúc viết file này, 22/07)
 ```
-M  ECA_UI/frontend/package-lock.json, package.json
-M  ECA_UI/frontend/src/components/{AuthGuard,MobileNavBar,ProfileContent}.tsx
-M  ECA_UI/frontend/src/lib/api.ts
-M  ECA_UI/frontend/src/pages/{CreateAccountPage,EnterPasswordPage,LoginPage}.tsx
-M  README.md
-M  agenticRAG/langgraph_agents/{llm.py, nodes/planner.py, nodes/retriever_agent.py,
-   nodes/synthesizer.py, shared/embedding.py}
-R  FIX-AUTH-INTEGRATION.md → docs/fixes/auth-integration.md
-R  FIX-CHATPANEL-WIRE.md → docs/fixes/chatpanel-wire.md
-R  FIX-RETRIEVAL-PERF-P123.md → docs/fixes/retrieval-perf-p123.md
-A  docs/fixes/latency-optimization-1234.md
-A  docs/worklogs/06-07-2026.md
-A  tests/langgraph_agents/test_fix_latency_1234.py
-M  requirements-langgraph.txt
-M  tests/langgraph_agents/{test_phase2_5_planner.py, test_phase6_circuit_breaker.py}
+M  agenticRAG/langgraph_agents/llm.py
+M  agenticRAG/langgraph_agents/nodes/planner.py
+M  tests/langgraph_agents/test_fix_latency_1234.py
+?? docs/worklogs/21-07-2026.md
+?? docs/worklogs/22-07-2026.md
 ```
-Chưa commit — chờ lệnh Owner.
+Batch 21 file phiên 21/07 (liệt kê ở bản trước của file này) **đã commit** —
+`621fcd5 local_version_finalize` + `878c6ed status_update`. Chưa commit đợt mới — chờ lệnh Owner.

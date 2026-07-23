@@ -23,7 +23,10 @@ from pydantic import BaseModel, Field
 from langchain_core.runnables import RunnableConfig
 
 from langgraph_agents.state import AgentState, ErrorSeverity
-from langgraph_agents.llm import get_chat_model, get_fallback_chat_model, extract_cache_tokens
+from langgraph_agents.llm import (
+    get_chat_model, get_fallback_chat_model, get_gemini_cached_chat_model,
+    extract_cache_tokens,
+)
 from langgraph_agents.shared.logging import get_logger
 
 logger = get_logger("langgraph.planner")
@@ -239,17 +242,40 @@ async def planner_node(state: AgentState, config: RunnableConfig) -> dict:
         # Primary DeepSeek call failed/timed out — try ONE-shot Gemini fallback
         # before falling through to the existing safe-fallback error handling.
         plan = None
-        fallback_model = get_fallback_chat_model("planner")
-        if fallback_model is not None:
+
+        # Cached-context Gemini fallback: only taken if a cache is ALREADY warm
+        # (in-memory lookup, no network call — see llm.get_gemini_cached_chat_model).
+        # Nothing warms the cache today, so this is currently always a no-op and
+        # falls through to the regular fallback below — kept ready for when
+        # something calls llm.warm_gemini_cache("planner", ...) (e.g. a startup
+        # hook, once Gemini is on a tier that actually allows caching).
+        cached_model = get_gemini_cached_chat_model("planner")
+        if cached_model is not None:
             try:
-                fallback_structured = fallback_model.with_structured_output(
+                cached_structured = cached_model.with_structured_output(
                     PlanOutput, method="json_mode", include_raw=True,
                 )
-                fb_result = await fallback_structured.ainvoke(prompt_msgs)
+                # cached_content already carries the system prompt — sending it
+                # again would violate the API's "no system_instruction with
+                # cached_content" constraint, so send only the user turn.
+                fb_result = await cached_structured.ainvoke([("user", user_msg)])
                 ai_msg, plan = _unpack(fb_result)
                 used_fallback = plan is not None
             except Exception:
                 plan = None
+
+        if plan is None:
+            fallback_model = get_fallback_chat_model("planner")
+            if fallback_model is not None:
+                try:
+                    fallback_structured = fallback_model.with_structured_output(
+                        PlanOutput, method="json_mode", include_raw=True,
+                    )
+                    fb_result = await fallback_structured.ainvoke(prompt_msgs)
+                    ai_msg, plan = _unpack(fb_result)
+                    used_fallback = plan is not None
+                except Exception:
+                    plan = None
 
         if plan is None:
             elapsed_ms = round((time.perf_counter() - t0) * 1000)

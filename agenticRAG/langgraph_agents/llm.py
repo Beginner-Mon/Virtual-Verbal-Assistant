@@ -33,6 +33,8 @@ is installed.
 import asyncio
 import logging
 import os
+import threading
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -84,12 +86,24 @@ _DEFAULT_TEMPS = {
     "health_check": 0.0,
 }
 
-# Roles that use the HEAVY model (reasoning-intensive). All others use FAST.
-_HEAVY_ROLES = {"synthesizer"}
+# Roles that use the HEAVY model (reasoning-intensive). Empty — synthesizer (the last
+# role still on deepseek-v4-pro) moved to the fast model after a live head-to-head A/B
+# test: deepseek-v4-flash was faster on EVERY sample across 5 diverse scenarios (exercise
+# recommendation, safety-critical red-flag, out-of-scope refuse) — 1.5-4x, with pro's worst
+# case still slower than flash's worst case — and no observed quality/safety gap (checked
+# by hand incl. the red-flag scenario). Kept as a set (not deleted) so a role can move back
+# to heavy with a one-line change if a real quality regression shows up later.
+_HEAVY_ROLES: set[str] = set()
 
-# Per-role request timeout (seconds). Heavy (synthesizer) gets more headroom —
-# benchmark showed synthesizer p90 ~30s / max ~55s vs planner p90 ~24s / max ~38s.
-# Bounds the previously-unbounded httpx/OS default (fix #2).
+# Roles whose output can legitimately run long (clinical answers with citations) and so
+# need a generous max_tokens/timeout ceiling REGARDLESS of model tier. Kept separate from
+# _HEAVY_ROLES so switching a role's model doesn't silently also shrink its output budget —
+# synthesizer's live test samples ranged up to ~480 words (~700+ tokens for Vietnamese
+# text), which would risk truncation under the FAST budget (512 tokens).
+_LONG_OUTPUT_ROLES = {"synthesizer"}
+
+# Per-role request timeout (seconds). Bounds the previously-unbounded httpx/OS default
+# (fix #2). _LONG_OUTPUT_ROLES gets the larger ceiling as headroom, even on the fast model.
 _TIMEOUT_HEAVY = 35.0
 _TIMEOUT_FAST = 20.0
 
@@ -97,15 +111,22 @@ _TIMEOUT_FAST = 20.0
 # slow-but-succeeding call isn't retried 3x and made worse (fix #2).
 _MAX_RETRIES = 1
 
-# Output token ceiling per role (fix #3). Heavy (synthesizer) needs headroom for
-# longer clinical answers with citations; fast roles (planner JSON / retriever
-# tool-call decisions) rarely produce long output — bounded as a safety net too.
+# Output token ceiling per role (fix #3). _LONG_OUTPUT_ROLES needs headroom for longer
+# clinical answers with citations; other roles (planner JSON / retriever tool-call
+# decisions) rarely produce long output — bounded as a safety net too.
 _MAX_TOKENS_HEAVY = 1024
 _MAX_TOKENS_FAST = 512
 
 # Gemini fallback model per role class (fix #2).
+# FAST tier verified live 21/07: gemini-3.1-flash-lite REJECTED — its response content
+# comes back as a list of content blocks ([{"type": "text", "text": ..., "extras": {...}}])
+# via langchain_google_genai==4.2.3, not a plain string; production code (e.g.
+# `final += content` in synthesizer.py) assumes string content and would crash on it —
+# exactly when the fallback is needed most. gemini-2.5-flash tested clean (plain string,
+# ~6s, correct Vietnamese output) — used instead. Revisit 3.1-flash-lite if the
+# langchain_google_genai dependency is upgraded and re-verified.
 _FALLBACK_MODEL_HEAVY = "gemini-2.5-pro"
-_FALLBACK_MODEL_FAST = "gemini-2.0-flash"
+_FALLBACK_MODEL_FAST = "gemini-2.5-flash"
 
 
 def _model_for_role(role: str) -> str:
@@ -117,11 +138,11 @@ def _model_for_role(role: str) -> str:
 
 
 def _timeout_for_role(role: str) -> float:
-    return _TIMEOUT_HEAVY if role in _HEAVY_ROLES else _TIMEOUT_FAST
+    return _TIMEOUT_HEAVY if role in _HEAVY_ROLES or role in _LONG_OUTPUT_ROLES else _TIMEOUT_FAST
 
 
 def _max_tokens_for_role(role: str) -> int:
-    return _MAX_TOKENS_HEAVY if role in _HEAVY_ROLES else _MAX_TOKENS_FAST
+    return _MAX_TOKENS_HEAVY if role in _HEAVY_ROLES or role in _LONG_OUTPUT_ROLES else _MAX_TOKENS_FAST
 
 
 def _fallback_model_for_role(role: str) -> str:
@@ -324,3 +345,126 @@ def extract_cache_tokens(ai_msg: Any) -> tuple[int | None, int | None]:
         miss = _first(details, _CACHE_MISS_KEYS)
 
     return hit, miss
+
+
+# ── Gemini explicit context caching (forward-looking; not yet active) ──────
+#
+# Unlike DeepSeek, Gemini does NOT auto-cache repeated prompt prefixes — this
+# was verified live (same 1300-token static planner prompt sent 3x back to
+# back via ChatGoogleGenerativeAI: cache_read stayed 0 every time). Gemini
+# caching only works if you EXPLICITLY create a CachedContent resource (with a
+# TTL) and reference it via `cached_content=` on later calls — and, critically,
+# you then CANNOT send a separate system_instruction; it must live in the
+# cache itself.
+#
+# Only planner's Gemini fallback uses this: planner's system prompt is 100%
+# static (same reasoning as its ~91% DeepSeek cache-hit rate — see fix #1),
+# so caching it can genuinely pay off across repeated fallback calls.
+# synthesizer's system prompt embeds per-request evidence and is NOT reused
+# call-to-call, so caching it would cost a create-cache round-trip for a
+# cache that's immediately stale — not implemented there, on purpose.
+#
+# Split into two functions so the cache NEVER adds latency to the fallback's
+# critical path (that would repeat the exact "fallback slower than no
+# fallback" mistake fixed earlier for the Gemini retry-storm bug):
+#   - get_warm_gemini_cache(): synchronous, in-memory lookup ONLY, no network
+#     call, safe to call inline during a live fallback attempt.
+#   - warm_gemini_cache(): the one that actually calls the API to create (or
+#     reuse if still valid) a cache. Deliberately NOT invoked from inside the
+#     planner fallback path — call it explicitly (e.g. a startup hook or a
+#     periodic task) once Gemini is a viable, billed provider.
+#
+# CURRENTLY INERT on the project's shared free-tier Gemini key: creating any
+# cache fails immediately with 429 TotalCachedContentStorageTokensPerModelFreeTier
+# limit=0 (verified live) — a tier/billing limit, not a prompt-size or code
+# issue. warm_gemini_cache() catches this (and any other failure) and returns
+# None; get_warm_gemini_cache() then simply finds nothing warmed, and callers
+# fall through to the existing uncached fallback — zero behavior change until
+# a paid-tier (or user-supplied) key actually allows a cache to be created.
+
+_GEMINI_CACHE_TTL_SECONDS = 3600  # re-created automatically ~1min before expiry
+_gemini_cache_lock = threading.Lock()
+_gemini_cache_registry: dict[tuple[str, str], tuple[str, float]] = {}  # (role, model) -> (cache_name, expires_at)
+
+
+def get_warm_gemini_cache(role: str, model_name: str) -> str | None:
+    """Return an already-warm Gemini cache name for (role, model_name), or None.
+
+    Pure in-memory lookup — no network call, cannot fail, safe to call from a
+    live fallback's critical path.
+    """
+    with _gemini_cache_lock:
+        entry = _gemini_cache_registry.get((role, model_name))
+    if entry and entry[1] > time.time():
+        return entry[0]
+    return None
+
+
+async def warm_gemini_cache(role: str, model_name: str, system_prompt: str) -> str | None:
+    """Create (or reuse, if still valid) a Gemini CachedContent for this role's
+    static system prompt. Makes a real API call — call this explicitly/eagerly
+    (NOT from inside a live fallback attempt), e.g. at startup or on a timer,
+    once Gemini caching is actually usable (paid tier / user-supplied key).
+
+    Never raises. Returns None on any failure (including the current
+    zero-quota free tier) — that is an expected, non-fatal outcome.
+    """
+    warm = get_warm_gemini_cache(role, model_name)
+    if warm is not None:
+        return warm
+
+    api_key = _resolve_first_gemini_key()
+    if not api_key:
+        return None
+
+    try:
+        from langchain_core.messages import SystemMessage
+        from langchain_google_genai import ChatGoogleGenerativeAI, create_context_cache
+
+        base_model = ChatGoogleGenerativeAI(
+            model=model_name, temperature=_DEFAULT_TEMPS.get(role, 0.7),
+            google_api_key=api_key, timeout=_timeout_for_role(role),
+        )
+        cache_name = await asyncio.to_thread(
+            create_context_cache,
+            base_model,
+            [SystemMessage(content=system_prompt)],
+            ttl=f"{_GEMINI_CACHE_TTL_SECONDS}s",
+        )
+        with _gemini_cache_lock:
+            _gemini_cache_registry[(role, model_name)] = (
+                cache_name, time.time() + _GEMINI_CACHE_TTL_SECONDS - 60,
+            )
+        logger.info("gemini_cache_warmed", extra={"role": role, "model": model_name})
+        return cache_name
+    except Exception as exc:
+        logger.warning("gemini_cache_unavailable", extra={
+            "role": role, "model": model_name, "error": str(exc),
+        })
+        return None
+
+
+def get_gemini_cached_chat_model(role: str) -> "Any | None":
+    """Return a Gemini ChatModel with `cached_content` bound (constructor-time,
+    not per-call — more reliable through `.with_structured_output()` wrapping),
+    IF a warm cache already exists for this role. Returns None otherwise —
+    callers must fall back to the regular uncached fallback model + full
+    system message; do NOT send a system message alongside this model
+    (the cache already carries it, and the API rejects both being set).
+    """
+    model_name = _fallback_model_for_role(role)
+    cache_name = get_warm_gemini_cache(role, model_name)
+    if cache_name is None:
+        return None
+
+    api_key = _resolve_first_gemini_key()
+    if not api_key:
+        return None
+
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    return ChatGoogleGenerativeAI(
+        model=model_name, temperature=_DEFAULT_TEMPS.get(role, 0.7),
+        google_api_key=api_key, timeout=_timeout_for_role(role),
+        max_output_tokens=_max_tokens_for_role(role), max_retries=0,
+        cached_content=cache_name,
+    )

@@ -211,6 +211,7 @@ class TestP3WebSearchPrompt:
         from langgraph_agents.nodes.retriever_agent import _build_retriever_system_prompt
         prompt = _build_retriever_system_prompt(
             web_search_enabled=False,
+            allow_web_fallback=True,
             retry_note="",
             required_outputs="test",
             resolved_query="thời tiết hôm nay",
@@ -224,6 +225,7 @@ class TestP3WebSearchPrompt:
         from langgraph_agents.nodes.retriever_agent import _build_retriever_system_prompt
         prompt = _build_retriever_system_prompt(
             web_search_enabled=True,
+            allow_web_fallback=True,
             retry_note="",
             required_outputs="test",
             resolved_query="thời tiết hôm nay",
@@ -238,6 +240,7 @@ class TestP3WebSearchPrompt:
         for flag in (True, False):
             prompt = _build_retriever_system_prompt(
                 web_search_enabled=flag,
+                allow_web_fallback=True,
                 retry_note="",
                 required_outputs="ex",
                 resolved_query="bài tập squat",
@@ -249,11 +252,128 @@ class TestP3WebSearchPrompt:
         from langgraph_agents.nodes.retriever_agent import _build_retriever_system_prompt
         prompt = _build_retriever_system_prompt(
             web_search_enabled=False,
+            allow_web_fallback=True,
             retry_note="",
             required_outputs="",
             resolved_query="weather",
         )
         assert "Real-time/external" not in prompt
+
+
+@pytest.mark.unit
+class TestD34KbEmptyWebFallback:
+    """Verify DECISION RULES / EMPTY-handling switch based on allow_web_fallback (D34).
+
+    Fallback must fire as a PARALLEL round-1 call (rule 1b), not a sequential
+    "wait for kb empty, then retry" — route_after_retriever force-drops round 2's
+    tool_calls unconditionally (P2 hard cap), so a sequential retry can never execute.
+    """
+
+    def test_fallback_text_present_when_web_on_and_low_risk(self):
+        from langgraph_agents.nodes.retriever_agent import _build_retriever_system_prompt
+        prompt = _build_retriever_system_prompt(
+            web_search_enabled=True,
+            allow_web_fallback=True,
+            retry_note="",
+            required_outputs="exercise_steps",
+            resolved_query="giãn cơ vai gáy dân văn phòng",
+        )
+        assert "TOGETHER in this same round" in prompt
+        assert "1b." in prompt
+
+    def test_fallback_text_absent_when_high_safety(self):
+        """High-safety tags (red_flag_screen/referral_advice) must never see the fallback rule,
+        even when web_search is on."""
+        from langgraph_agents.nodes.retriever_agent import _build_retriever_system_prompt
+        prompt = _build_retriever_system_prompt(
+            web_search_enabled=True,
+            allow_web_fallback=False,
+            retry_note="",
+            required_outputs="red_flag_screen",
+            resolved_query="đau ngực khi tập thể dục",
+        )
+        assert "TOGETHER in this same round" not in prompt
+        assert "1b." not in prompt
+        assert "that's OK, synthesizer will handle no-source" in prompt
+
+    def test_fallback_text_absent_when_web_off_even_if_low_risk(self):
+        """Toggle stays the master gate — fallback text never appears when web is off."""
+        from langgraph_agents.nodes.retriever_agent import _build_retriever_system_prompt
+        prompt = _build_retriever_system_prompt(
+            web_search_enabled=False,
+            allow_web_fallback=True,
+            retry_note="",
+            required_outputs="exercise_steps",
+            resolved_query="giãn cơ vai gáy dân văn phòng",
+        )
+        assert "TOGETHER in this same round" not in prompt
+        assert "1b." not in prompt
+
+    @pytest.mark.asyncio
+    async def test_node_computes_allow_web_fallback_false_for_red_flag(self, monkeypatch):
+        """retriever_agent_node must NOT allow fallback when tags include red_flag_screen."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from langgraph_agents.nodes import retriever_agent as ra
+
+        captured = {}
+
+        def fake_build_prompt(**kwargs):
+            captured.update(kwargs)
+            return "system prompt"
+
+        mock_ai = MagicMock()
+        mock_ai.tool_calls = []
+        mock_ai.usage_metadata = None
+        mock_llm = MagicMock()
+        mock_llm.bind_tools.return_value = mock_llm
+        mock_llm.ainvoke = AsyncMock(return_value=mock_ai)
+
+        state = {
+            "resolved_query": "đau ngực khi tập thể dục",
+            "required_outputs": ["red_flag_screen", "referral_advice"],
+            "retriever_rounds": 0,
+        }
+        config = {"configurable": {"request_id": "r1", "web_search": True}}
+
+        with patch.object(ra, "_build_retriever_system_prompt", side_effect=fake_build_prompt), \
+             patch.object(ra, "_build_tools", AsyncMock(return_value=[])), \
+             patch.object(ra, "get_chat_model", return_value=mock_llm):
+            await ra.retriever_agent_node(state, config)
+
+        assert captured["allow_web_fallback"] is False
+
+    @pytest.mark.asyncio
+    async def test_node_computes_allow_web_fallback_true_for_low_risk(self, monkeypatch):
+        """retriever_agent_node allows fallback when tags have no high-safety marker."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        from langgraph_agents.nodes import retriever_agent as ra
+
+        captured = {}
+
+        def fake_build_prompt(**kwargs):
+            captured.update(kwargs)
+            return "system prompt"
+
+        mock_ai = MagicMock()
+        mock_ai.tool_calls = []
+        mock_ai.usage_metadata = None
+        mock_llm = MagicMock()
+        mock_llm.bind_tools.return_value = mock_llm
+        mock_llm.ainvoke = AsyncMock(return_value=mock_ai)
+
+        state = {
+            "resolved_query": "giãn cơ vai gáy dân văn phòng",
+            "required_outputs": ["exercise_steps", "contraindication"],
+            "retriever_rounds": 0,
+        }
+        config = {"configurable": {"request_id": "r2", "web_search": True}}
+
+        with patch.object(ra, "_build_retriever_system_prompt", side_effect=fake_build_prompt), \
+             patch.object(ra, "_build_tools", AsyncMock(return_value=[])), \
+             patch.object(ra, "get_chat_model", return_value=mock_llm):
+            await ra.retriever_agent_node(state, config)
+
+        assert captured["allow_web_fallback"] is True
 
 
 @pytest.mark.unit

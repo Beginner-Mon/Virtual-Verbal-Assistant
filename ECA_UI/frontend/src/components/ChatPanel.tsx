@@ -21,6 +21,7 @@ export default function ChatPanel() {
   const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES)
   const [input, setInput] = useState('')
   const [isTyping, setIsTyping] = useState(false)
+  const [stageLabel, setStageLabel] = useState<string | null>(null)
   const [isGenerating, setIsGenerating] = useState(false)
   const [showAddMenu, setShowAddMenu] = useState(false)
   const [webSearch, setWebSearch] = useState(false)
@@ -45,7 +46,7 @@ export default function ChatPanel() {
   /* auto-scroll on new messages */
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, isTyping])
+  }, [messages, isTyping, stageLabel])
 
   /* send handler */
   const handleSend = async () => {
@@ -75,7 +76,9 @@ export default function ChatPanel() {
         timestamp: new Date(),
       },
     ])
-    setIsTyping(false)
+    // isTyping stays true (bouncing dots) until a stage/token signal arrives —
+    // otherwise the assistant bubble sits blank with zero feedback during
+    // memory→planner→retriever, which can take several seconds.
 
     abortControllerRef.current = new AbortController()
 
@@ -83,7 +86,19 @@ export default function ChatPanel() {
       await streamChat(
         { query: text, sessionId: sessionIdRef.current, webSearch },
         (type, data) => {
-          if (type === 'token') {
+          if (type === 'stage') {
+            const { node, status } = data as { node: string; status: string }
+            if (node === 'planner' && status === 'complete') {
+              setIsTyping(false)
+              setStageLabel('🔍 Đang tìm kiếm thông tin...')
+            } else if (node === 'retriever_agent' && status === 'complete') {
+              setStageLabel('✍️ Đang soạn câu trả lời...')
+            } else if (node === 'synthesizer' && status === 'started') {
+              setStageLabel(null)
+            }
+          } else if (type === 'token') {
+            setIsTyping(false)
+            setStageLabel(null)
             const content = (data as { content: string }).content
             setMessages((prev) =>
               prev.map((msg) =>
@@ -91,6 +106,7 @@ export default function ChatPanel() {
               )
             )
           } else if (type === 'done') {
+            setStageLabel(null)
             setIsGenerating(false)
           }
         },
@@ -107,6 +123,8 @@ export default function ChatPanel() {
         )
       }
     } finally {
+      setIsTyping(false)
+      setStageLabel(null)
       setIsGenerating(false)
     }
   }
@@ -114,6 +132,7 @@ export default function ChatPanel() {
   const handleStop = () => {
     abortControllerRef.current?.abort()
     setIsTyping(false)
+    setStageLabel(null)
     setIsGenerating(false)
   }
 
@@ -146,14 +165,18 @@ export default function ChatPanel() {
             <ChatMessage key={msg.id} message={msg} />
           ))}
 
-          {/* typing indicator */}
-          {isTyping && (
+          {/* typing / stage indicator */}
+          {(isTyping || stageLabel) && (
             <div className="px-3 md:px-5 py-2 md:py-3 animate-message-in">
-              <div className="flex gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.3s]" />
-                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.15s]" />
-                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50 animate-bounce" />
-              </div>
+              {stageLabel ? (
+                <p className="text-xs text-muted-foreground italic">{stageLabel}</p>
+              ) : (
+                <div className="flex gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.3s]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.15s]" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50 animate-bounce" />
+                </div>
+              )}
             </div>
           )}
           <div ref={bottomRef} />

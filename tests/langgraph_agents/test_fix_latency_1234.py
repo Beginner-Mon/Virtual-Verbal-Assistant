@@ -193,13 +193,29 @@ class TestFix2LlmClientTimeoutRetries:
         assert m.request_timeout == 20.0
         assert m.max_retries == 1
 
-    def test_heavy_role_timeout_and_retries(self, monkeypatch):
+    def test_long_output_role_timeout_and_retries(self, monkeypatch):
+        """synthesizer is in _LONG_OUTPUT_ROLES (not _HEAVY_ROLES) — still gets the
+        generous timeout ceiling even though it now runs on the fast model."""
         monkeypatch.setenv("DEEPSEEK_API_KEY", "fake")
         from langgraph_agents import llm as llm_mod
         llm_mod.get_chat_model.cache_clear()
         m = llm_mod.get_chat_model("synthesizer")
         assert m.request_timeout == 35.0
         assert m.max_retries == 1
+
+    def test_synthesizer_uses_fast_model_not_heavy(self, monkeypatch):
+        """Live A/B test (5 scenarios, 7 calls/model): flash faster on every sample,
+        no observed quality/safety gap — synthesizer moved off _HEAVY_ROLES. Its
+        max_tokens/timeout stay at the generous tier via _LONG_OUTPUT_ROLES (separate
+        test) — only the model name changes."""
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "fake")
+        monkeypatch.setenv("DEEPSEEK_MODEL_FAST", "deepseek-v4-flash")
+        monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
+        from langgraph_agents import llm as llm_mod
+        llm_mod.get_chat_model.cache_clear()
+        m = llm_mod.get_chat_model("synthesizer")
+        assert m.model_name == "deepseek-v4-flash"
+        assert m.max_tokens == 1024  # long-output budget preserved despite fast model
 
 
 @pytest.mark.unit
@@ -216,12 +232,25 @@ class TestFix2GetFallbackChatModel:
         llm_mod.get_fallback_chat_model.cache_clear()
         model = llm_mod.get_fallback_chat_model("planner")
         assert model is not None
-        assert model.model.endswith("gemini-2.0-flash")
+        assert model.model.endswith("gemini-2.5-flash")
 
-    def test_heavy_role_uses_pro_model(self, monkeypatch):
+    def test_synthesizer_fallback_uses_flash_model(self, monkeypatch):
+        """synthesizer moved off _HEAVY_ROLES (live A/B test: flash faster, no quality
+        gap) — its Gemini fallback follows suit, same fast tier as its DeepSeek primary."""
         monkeypatch.setenv("GEMINI_API_KEYS", "key-one")
         from langgraph_agents import llm as llm_mod
         llm_mod.get_fallback_chat_model.cache_clear()
+        model = llm_mod.get_fallback_chat_model("synthesizer")
+        assert model is not None
+        assert model.model.endswith("gemini-2.5-flash")
+
+    def test_heavy_role_fallback_path_still_uses_pro_model(self, monkeypatch):
+        """Regression guard for the revert path: _HEAVY_ROLES is currently empty, but if a
+        role is ever added back to it, its fallback must still resolve to the pro model."""
+        monkeypatch.setenv("GEMINI_API_KEYS", "key-one")
+        from langgraph_agents import llm as llm_mod
+        llm_mod.get_fallback_chat_model.cache_clear()
+        monkeypatch.setattr(llm_mod, "_HEAVY_ROLES", {"synthesizer"})
         model = llm_mod.get_fallback_chat_model("synthesizer")
         assert model is not None
         assert model.model.endswith("gemini-2.5-pro")
@@ -533,3 +562,138 @@ class TestFix4DedupeToolCalls:
 
         calls = [c for c in mock_logger.info.call_args_list if c.args[0] == "node_complete"]
         assert "tool_calls_deduped" not in calls[0].kwargs["extra"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Gemini explicit context caching (forward-looking, planner-only) — NOT auto-
+# warmed by anything today; verifies the lookup/create/degrade mechanics work
+# correctly in isolation, and that planner's wiring uses it without regressing
+# the existing (cache-cold) fallback path when no cache is warm.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.unit
+class TestGeminiContextCaching:
+    def _reset_registry(self):
+        from langgraph_agents import llm as llm_mod
+        with llm_mod._gemini_cache_lock:
+            llm_mod._gemini_cache_registry.clear()
+
+    def test_get_warm_gemini_cache_empty_registry_returns_none(self):
+        self._reset_registry()
+        from langgraph_agents.llm import get_warm_gemini_cache
+        assert get_warm_gemini_cache("planner", "gemini-2.5-flash") is None
+
+    def test_get_warm_gemini_cache_returns_name_when_not_expired(self):
+        self._reset_registry()
+        import time
+        from langgraph_agents import llm as llm_mod
+        with llm_mod._gemini_cache_lock:
+            llm_mod._gemini_cache_registry[("planner", "gemini-2.5-flash")] = (
+                "cachedContents/abc123", time.time() + 999,
+            )
+        assert llm_mod.get_warm_gemini_cache("planner", "gemini-2.5-flash") == "cachedContents/abc123"
+
+    def test_get_warm_gemini_cache_returns_none_when_expired(self):
+        self._reset_registry()
+        import time
+        from langgraph_agents import llm as llm_mod
+        with llm_mod._gemini_cache_lock:
+            llm_mod._gemini_cache_registry[("planner", "gemini-2.5-flash")] = (
+                "cachedContents/stale", time.time() - 1,
+            )
+        assert llm_mod.get_warm_gemini_cache("planner", "gemini-2.5-flash") is None
+
+    @pytest.mark.asyncio
+    async def test_warm_gemini_cache_success_registers_and_returns_name(self, monkeypatch):
+        self._reset_registry()
+        monkeypatch.setenv("GEMINI_API_KEYS", "key-one")
+        from langgraph_agents import llm as llm_mod
+
+        with patch("langchain_google_genai.create_context_cache", return_value="cachedContents/new") as mock_create:
+            name = await llm_mod.warm_gemini_cache("planner", "gemini-2.5-flash", "static system prompt")
+
+        assert name == "cachedContents/new"
+        assert mock_create.called
+        # second call within TTL must NOT hit create_context_cache again
+        with patch("langchain_google_genai.create_context_cache") as mock_create2:
+            name2 = await llm_mod.warm_gemini_cache("planner", "gemini-2.5-flash", "static system prompt")
+        assert name2 == "cachedContents/new"
+        assert not mock_create2.called
+
+    @pytest.mark.asyncio
+    async def test_warm_gemini_cache_failure_returns_none_never_raises(self, monkeypatch):
+        """Simulates the live-verified 429 TotalCachedContentStorageTokensPerModelFreeTier
+        limit=0 case (current free-tier key) — must degrade silently, not raise."""
+        self._reset_registry()
+        monkeypatch.setenv("GEMINI_API_KEYS", "key-one")
+        from langgraph_agents import llm as llm_mod
+
+        with patch("langchain_google_genai.create_context_cache", side_effect=RuntimeError("429 RESOURCE_EXHAUSTED")):
+            name = await llm_mod.warm_gemini_cache("planner", "gemini-2.5-flash", "static system prompt")
+
+        assert name is None
+        assert llm_mod.get_warm_gemini_cache("planner", "gemini-2.5-flash") is None
+
+    @pytest.mark.asyncio
+    async def test_warm_gemini_cache_returns_none_when_no_api_key(self, monkeypatch):
+        self._reset_registry()
+        monkeypatch.delenv("GEMINI_API_KEYS", raising=False)
+        from langgraph_agents import llm as llm_mod
+        name = await llm_mod.warm_gemini_cache("planner", "gemini-2.5-flash", "prompt")
+        assert name is None
+
+    def test_get_gemini_cached_chat_model_none_when_not_warm(self, monkeypatch):
+        self._reset_registry()
+        monkeypatch.setenv("GEMINI_API_KEYS", "key-one")
+        from langgraph_agents.llm import get_gemini_cached_chat_model
+        assert get_gemini_cached_chat_model("planner") is None
+
+    def test_get_gemini_cached_chat_model_binds_cached_content_when_warm(self, monkeypatch):
+        self._reset_registry()
+        monkeypatch.setenv("GEMINI_API_KEYS", "key-one")
+        import time
+        from langgraph_agents import llm as llm_mod
+        model_name = llm_mod._fallback_model_for_role("planner")
+        with llm_mod._gemini_cache_lock:
+            llm_mod._gemini_cache_registry[("planner", model_name)] = ("cachedContents/warm", time.time() + 999)
+
+        model = llm_mod.get_gemini_cached_chat_model("planner")
+        assert model is not None
+        assert model.cached_content == "cachedContents/warm"
+
+
+@pytest.mark.unit
+class TestPlannerUsesGeminiCacheWhenWarm:
+    @pytest.mark.asyncio
+    async def test_planner_fallback_uses_cached_model_and_sends_only_user_turn(self, monkeypatch):
+        """When a warm Gemini cache is available, planner must NOT send the
+        system prompt again (API rejects system_instruction + cached_content
+        together) — only the user turn should be sent to the cached model."""
+        from langgraph_agents.nodes import planner as planner_mod
+        from langgraph_agents.nodes.planner import PlanOutput
+
+        fake_plan = PlanOutput(
+            required_outputs=[], resolved_query="hello",
+            needs_retrieval=False, needs_motion=False, needs_clarification=False,
+        )
+        cached_model = MagicMock()
+        cached_structured = MagicMock()
+        cached_structured.ainvoke = AsyncMock(return_value=fake_plan)
+        cached_model.with_structured_output.return_value = cached_structured
+
+        state = {"messages": []}
+        config = RunnableConfig(configurable={
+            "request_id": "rcache", "query": "hello", "persona_id": "eca_default",
+        })
+
+        with patch.object(planner_mod, "get_chat_model") as mock_llm, \
+             patch.object(planner_mod, "get_gemini_cached_chat_model", return_value=cached_model):
+            mock_llm.return_value.with_structured_output.return_value.ainvoke = AsyncMock(
+                side_effect=RuntimeError("DeepSeek down")
+            )
+            result = await planner_mod.planner_node(state, config)
+
+        assert result["resolved_query"] == "hello"
+        sent_messages = cached_structured.ainvoke.call_args[0][0]
+        assert len(sent_messages) == 1
+        assert sent_messages[0][0] == "user"
