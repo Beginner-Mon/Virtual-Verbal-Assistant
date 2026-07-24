@@ -330,36 +330,13 @@ return (
       />
       <FloatingParticles />
 
-     {/* Ground disc — XZ plane in a Y-up world */}
-      <mesh position={[0, -1.5, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-        <circleGeometry args={[4, 64]} />
-        <meshStandardMaterial
-          color={theme === 'dark' ? '#7c3aed' : '#7c3aed'}
-          roughness={0.8}
-          metalness={0.1}
-          transparent
-          opacity={0.65}
-        />
-      </mesh>
-
-      {/* Grid on XZ plane */}
-      <mesh position={[0, -1.5, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-        <planeGeometry args={[8, 8, 16, 16]} />
-        <meshStandardMaterial
-          color={theme === 'dark' ? '#7c3aed' : '#7c3aed'}
-          roughness={1}
-          metalness={0}
-          transparent
-          opacity={0.4}
-          wireframe
-        />
-      </mesh>
-
       {/* Grid overlay */}
-      <gridHelper
-        args={[8, 16, theme === 'dark' ? '#6d28d9' : '#c084fc', theme === 'dark' ? '#3b1265' : '#ddd6fe']}
-        position={[0, -1.5, 0]}
-      />
+      <group rotation={[Math.PI / 2, 0, 0]}>
+        <gridHelper
+          args={[8, 16, theme === 'dark' ? '#444466' : '#c0c0c0', theme === 'dark' ? '#1a1a2e' : '#e8e8e8']}
+          position={[0, 0, -1.5]}
+        />
+      </group>
       <primitive object={new THREE.AxesHelper(3)} />
 
       {/* Axis labels */}
@@ -374,7 +351,7 @@ return (
       </Html>
 
       <ContactShadows
-        position={[0, -1.5, 0]}
+        position={[0, 0, -1.5]}
         opacity={theme === 'dark' ? 0.4 : 0.15}
         scale={8}
         blur={2.5}
@@ -453,9 +430,7 @@ export default function CharacterViewer() {
       className="relative w-full h-full overflow-hidden"
       onMouseMove={handleMouseMove}
       style={{
-        background: theme === 'dark'
-          ? 'radial-gradient(ellipse at center, #1a0533 0%, #0a0a12 70%)'
-          : 'radial-gradient(ellipse at center, #f3e8ff 0%, #ffffff 70%)',
+        background: 'transparent',
       }}
     >
       <Canvas camera={{ position: [0, 2.05, 0], fov: 45 }} gl={{ antialias: true, alpha: true }}>
