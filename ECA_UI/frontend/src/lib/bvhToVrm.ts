@@ -16,6 +16,17 @@ const RETARGET_OPTIONS = {
   mirrorZ: true,
 }
 
+/**
+ * Compensation quaternion applied to the hips (root) bone's retargeted rotation.
+ *
+ * The VRM renderer uses a group with rotation [π/2, 0, 0] (X+90°) so the rest
+ * pose is natively Z-up and faces the camera. However, BVH files were authored
+ * for a legacy group [0, π, 0]. This quaternion = X(-90°) * Y(180°) maps the
+ * old group-space orientation to the new group-space so the final world pose is
+ * identical regardless of which group rotation is in effect.
+ */
+const HIPS_ORIENT_COMPENSATION = new THREE.Quaternion(0, Math.SQRT1_2, -Math.SQRT1_2, 0)
+
 /* ────────────────────────── Bone Name Mapping ────────────────────── */
 
 /**
@@ -202,7 +213,13 @@ export function retargetBVHToVRM(
         // Convert source local rotation to delta from source rest,
         // then re-apply on top of target rest orientation.
         deltaQuat.copy(sourceRestInv).multiply(sourceQuat)
-        targetQuat.copy(targetRest).multiply(deltaQuat).normalize()
+        targetQuat.copy(targetRest).multiply(deltaQuat)
+        // Compensate for group-rotation change: the renderer switched from
+        // [0, π, 0] (legacy) to [π/2, 0, 0] (Z-up native rest pose).
+        if (vrmBoneName === 'hips') {
+          targetQuat.premultiply(HIPS_ORIENT_COMPENSATION)
+        }
+        targetQuat.normalize()
         targetQuat.toArray(retargetedValues, i)
       }
 
@@ -216,16 +233,20 @@ export function retargetBVHToVRM(
 
     // For position tracks, only apply to hips (root motion)
     if (property === 'position' && vrmBoneName === 'hips') {
-      // Scale BVH positions down (BVH uses cm, VRM uses meters typically)
-      // Also apply coordinate system correction if needed
+      // Scale BVH positions down (BVH uses cm, VRM uses meters).
+      // Under X+90° group: world = (trackX, -trackZ, trackY).
+      // These NPZ/BVH files use Z=vertical, Y=horizontal (non-standard).
+      // Swap Y↔Z so: BVH_Z→world Z (jump), BVH_Y→world Y (walk F/B).
       const scaledValues = new Float32Array(track.values.length)
       const scale = 0.01 // BVH centimeters → meters
 
       for (let i = 0; i < track.values.length; i += 3) {
-        scaledValues[i] = track.values[i] * scale       // X
-        scaledValues[i + 1] = track.values[i + 1] * scale // Y
-        const z = track.values[i + 2] * scale // Z
-        scaledValues[i + 2] = RETARGET_OPTIONS.mirrorZ ? -z : z
+        const bx = track.values[i] * scale
+        const by = track.values[i + 1] * scale
+        const bz = track.values[i + 2] * scale
+        scaledValues[i] = bx        // X → world X (L/R)
+        scaledValues[i + 1] = bz   // Z → world Z (vertical, flipped)
+        scaledValues[i + 2] = -by   // Y → world Y (walk F/B, flipped)
       }
 
       const newTrack = new THREE.VectorKeyframeTrack(

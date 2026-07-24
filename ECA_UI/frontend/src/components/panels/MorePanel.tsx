@@ -100,6 +100,7 @@ export default function MorePanel() {
               onChange={(e) => setSelectedMotionId(e.target.value)}
               className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-0.5"
             >
+              <option value="" className="bg-card text-muted-foreground">None (default pose)</option>
               {motionOptions.map((option) => (
                 <option key={option.id} value={option.id} className="bg-card text-foreground">
                   {option.label}

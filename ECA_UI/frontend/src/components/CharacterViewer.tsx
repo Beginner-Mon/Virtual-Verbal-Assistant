@@ -69,6 +69,7 @@ function VRMCharacter({
   }, [vrm, vrmRef])
 
   const mixerRef = useRef<THREE.AnimationMixer | null>(null)
+  const actionRef = useRef<THREE.AnimationAction | null>(null)
   const avatarControllerRef = useRef<AvatarController | null>(null)
   const [animLoaded, setAnimLoaded] = useState(false)
 
@@ -87,8 +88,9 @@ function VRMCharacter({
     }
   }, [vrm, modelId, avatarRef])
 
-  // Load and apply BVH animation after VRM is ready. Skip when no motion is
-  // selected (animationUrl === '') so the avatar rests in its natural pose.
+  // Load BVH clip when a motion source is selected. The clip is prepared
+  // (mixer + action) but NOT played — the avatar stays at rest pose until the
+  // user presses Play in Motion Controls.
   useEffect(() => {
     if (!vrm || !animationUrl) return
 
@@ -104,12 +106,12 @@ function VRMCharacter({
         const mixer = new THREE.AnimationMixer(vrm.scene)
         const action = mixer.clipAction(clip)
 
-        // Set loop mode for idle animation
         action.setLoop(THREE.LoopRepeat, Infinity)
         action.clampWhenFinished = false
-        action.play()
+        // Don't play yet — motion only starts when isPlaying flips to true.
 
         mixerRef.current = mixer
+        actionRef.current = action
         setAnimLoaded(true)
         onLoaded({ tracks: clip.tracks.length, duration: clip.duration })
 
@@ -129,26 +131,42 @@ function VRMCharacter({
         mixerRef.current.stopAllAction()
         mixerRef.current = null
       }
+      actionRef.current = null
+      setAnimLoaded(false)
     }
   }, [vrm, animationUrl])
 
-  // Handle play/pause and speed changes
+  // Handle play/pause and speed changes. When paused, the action is fully
+  // stopped (not just timeScale=0) so the avatar returns to rest pose.
   useEffect(() => {
-    if (!mixerRef.current) return
-    mixerRef.current.timeScale = isPlaying ? speed : 0
+    const action = actionRef.current
+    const mixer = mixerRef.current
+    if (!action || !mixer || !animLoaded) return
+    if (isPlaying) {
+      if (!action.isRunning()) {
+        action.reset()
+        action.play()
+      } else {
+        action.paused = false
+      }
+      mixer.timeScale = speed
+    } else {
+      action.stop()
+    }
   }, [isPlaying, speed, animLoaded])
 
-  // Expose reset action
+  // Expose reset action — restarts if currently playing, no-op otherwise.
   useEffect(() => {
     onResetRef.current = () => {
-      if (mixerRef.current) {
-        mixerRef.current.setTime(0)
-      }
+      const action = actionRef.current
+      if (!action) return
+      action.reset()
+      if (isPlaying) action.play()
     }
     return () => {
       onResetRef.current = null
     }
-  }, [animLoaded])
+  }, [animLoaded, isPlaying])
 
   // Update body animation, then facial expressions, then the VRM itself.
   // Order is mandatory (§8 rule 1): the avatar controller calls setValue, and
@@ -167,7 +185,7 @@ function VRMCharacter({
   })
 
   return (
-    <group position={[0, -1.5, 0]} rotation={[0, Math.PI, 0]}>
+    <group position={[0, -1.5, 0]} rotation={[Math.PI / 2, 0, 0]}>
       <primitive object={vrm.scene} />
     </group>
   )

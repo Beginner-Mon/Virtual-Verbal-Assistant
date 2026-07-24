@@ -45,15 +45,16 @@ camera.up.set(0, 0, 1)
 
 ```tsx
 // CharacterViewer.tsx, VRMCharacter return
-<group position={[0, -1.5, 0]} rotation={[0, Math.PI, 0]}>
+<group position={[0, -1.5, 0]} rotation={[Math.PI / 2, 0, 0]}>
   <primitive object={vrm.scene} />
 </group>
 ```
 
-- **VRM model local**: faces **+Z** (three-vrm convention sau khi load — VRM 0.x files được rotateVRM0 để hướng +Z).
-- **Group rotation `[0, π, 0]`** xoay model 180° quanh Y → model faces **-Z** trong world space.
-- **Group position `[0, -1.5, 0]`**: chân model chạm ground plane (y = -1.5).
-- **Tác động đến EyeController**: vì model bị xoay 180° Y, hướng +X local của model = -X world. Yaw dương trong `VRMLookAt` (hướng model-left = +X local) maps thành **screen-right** từ góc nhìn camera. Đây là lý do eye tracking trái/phải vẫn đúng dù model bị flip.
+- **VRM rest pose** (three-vrm normalized): body up = +Y local, face ±Z local.
+- **Group rotation X+90°** (`[π/2, 0, 0]`): maps local +Y → world +Z (body upright trong Z-up world), local +Z → world -Y (face direction).
+- Nhờ rotation này, rest pose luôn Z-up + face hướng về camera mà KHÔNG cần BVH.
+- **BVH retargeting**: `bvhToVrm.ts` áp dụng `HIPS_ORIENT_COMPENSATION` lên hips bone mỗi frame, đảm bảo BVH animation vẫn đúng dù group rotation đã thay đổi (từ `[0, π, 0]` legacy → `[π/2, 0, 0]`). Xem `bvhToVrm.ts` dòng 18-27.
+- Group position `[0, -1.5, 0]`: chân model chạm ground.
 
 ---
 
