@@ -1,6 +1,6 @@
 # VVA — Status & Roadmap
 
-> Last update: 2026-07-22 (K) | Branch: `feature/langgraph-rewrite`
+> Last update: 2026-07-24 (K) | Branch: `feature/langgraph-rewrite`
 > Audience: K/N/Owner takeover after context compaction — đọc mục 0 trước tiên.
 
 ---
@@ -10,12 +10,13 @@
 - **Backend + Docker hiện ĐANG CHẠY** (verify lúc viết file này: `curl :8000/health` →
   `{"status":"ok"}`, `docker ps` → postgres/redis/searxng healthy, up 31h). Không cần khởi động
   lại — nếu tắt, lệnh chạy vẫn ở §5.
-- **Git**: batch phiên 21-22/07 (Gemini caching + D34 web fallback + stage indicator) **đã
-  commit** bởi N: `35985d5 fix bugs in UI streaming` (đè lên `621fcd5` + `878c6ed`). Working
-  tree hiện còn phiên 23/07 (2 fix streaming) **CHƯA commit**:
-  `M agenticRAG/langgraph_agents/nodes/synthesizer.py` (sleep(0) drain fix),
-  `M ECA_UI/frontend/src/lib/api.ts` (CRLF boundary fix),
-  `?? docs/worklogs/23-07-2026.md`. Không tự commit/push khi chưa được lệnh.
+- **Git**: các batch trước đã commit — `35985d5 fix bugs in UI streaming` (Gemini caching +
+  D34 web fallback + stage indicator) và `05687f5 SSE fix and phase A animation` (2 fix streaming
+  + facial animation Phase A). Working tree hiện còn **avatar Phase B/C/D + tắt default animation**
+  **CHƯA commit**: `M avatar/AvatarController.ts, AvatarDevPanel.tsx`, `M CharacterViewer.tsx`,
+  `M contexts/MotionContext.tsx`, `M docs/architecture/api-contract.md`, `?? avatar/EyeController.ts,
+  IdleBehaviorController.ts, LipSyncController.ts, lipSyncAudio.ts`. Không tự commit/push khi chưa
+  được lệnh.
 - **Docs đã reorg** (đã ổn định từ phiên trước): root `FIX-*.md` cũ giờ ở
   `docs/{architecture,ops,plans,fixes,tracking,archive}/`. File này ở **`docs/tracking/status.md`**.
 - **Auth demo bypass**: env-gate `VITE_AUTH_DISABLED=true` trong `ECA_UI/frontend/.env.local` →
@@ -25,21 +26,25 @@
 - **Gemini context caching** (phiên 22/07, `docs/worklogs/22-07-2026.md`): hạ tầng đã code + test
   xong, nhưng **luôn inert** — free-tier API key có cache-storage quota = 0 (verify live, 429).
   Chỉ áp dụng cho `planner` fallback (prompt tĩnh). Không tối ưu latency hiện tại — chuẩn bị cho
-  tính năng BYO-key tương lai. Chưa commit (xem mục Git ở trên).
-  Xem `docs/architecture/streaming-vs-validated.md` nếu tồn tại — **chưa có**, quyết định
-  "stream trước hay sau grader" đang treo, xem mục dưới.
-- **Design treo, chưa code**: Owner hỏi liệu guardrail/grader có làm chậm response không (do lo
-  ngại pattern "stream thẳng rồi ghi đè khi grader reject"). K đọc code thật, phát hiện **bug thật
-  chưa fix**: khi grader trigger retry, `ChatPanel.tsx` không có xử lý `stage` event nên 2 lần
-  sinh của synthesizer bị nối chữ liền nhau trên UI (không tách/xoá buffer). Owner sau đó đề xuất
-  hướng triệt để hơn: **bỏ hẳn live-stream, chỉ gửi câu trả lời sau khi qua grader** — K đã phân
-  tích trade-off (tổng thời gian xử lý không đổi, nhưng UI sẽ im lặng hoàn toàn 7-21s thay vì thấy
-  chữ chạy dần từ ~1-3s) và đề xuất giữ typing-indicator suốt thời gian chờ để giảm nhẹ. **Owner
-  chưa chốt hướng nào** — chưa động tới `synthesizer.py`/`main.py`/`ChatPanel.tsx`.
-- **Test hiện tại: 296 collected (270 unit pass + 37 integration cần Docker/DeepSeek), 0 fail**
+  tính năng BYO-key tương lai.
+- **SSE streaming ĐÃ hoạt động thật** (phiên 23/07, `docs/worklogs/23-07-2026.md`): trước đây token
+  không stream sống — fix 2 root cause: (A) LangGraph custom-stream drain starvation →
+  `await asyncio.sleep(0)` sau mỗi `writer()` trong `synthesizer.py`; (B) CRLF boundary mismatch
+  trong `api.ts` (`lastIndexOf('\n\n')` không match `\r\n\r\n`) → regex `/\r?\n\r?\n/g`. Verify:
+  token trải đều suốt quá trình sinh, stage indicator "🔍 đang tìm kiếm" hiện đúng.
+- **Facial animation avatar** (phiên 23/07, `docs/worklogs/23-07-2026-avatar.md`): Phase A-D xong,
+  verify live. Module `ECA_UI/frontend/src/avatar/` (13 file): channel-based expression mixer,
+  cross-fade, blink, idle wander, eye gaze, lip-sync amplitude. Độc lập với body motion (Kimodo).
+  Default body animation đã TẮT (placeholder tạm, chờ Kimodo cloud); default model = seele. Backend
+  chưa emit `avatar.emotion` — contract ở `api-contract.md`.
+- **Design treo (không còn cấp bách sau khi streaming fix)**: "bỏ live-stream, chỉ gửi sau grader"
+  — Owner chưa chốt. Giờ streaming sống chạy thật nên trade-off K phân tích trước áp dụng đúng
+  nguyên văn; bug nối-chữ-khi-grader-retry vẫn có thể xảy ra nếu retry (chưa fix riêng, chờ quyết).
+- **Test hiện tại: 312 collected (275 unit pass + 37 integration cần Docker/DeepSeek), 0 fail**
   (verify lại lúc viết file này, dùng đúng `firstconda` env — `python` trên PATH mặc định của
   Bash tool KHÔNG có `langchain_google_genai`, phải gọi thẳng
   `/c/Users/Nguyen/miniconda3/envs/firstconda/python` hoặc `conda activate firstconda` trước).
+  Frontend: `npx tsc --noEmit` 0 lỗi, `vite build` 0 lỗi.
 - Gọi Owner là **Mr. Senryuu**. Không nhắc chuyện commit trừ khi Owner chủ động.
 
 ---
@@ -166,7 +171,32 @@ tham khảo CV/portfolio.
   `llm.py` +130 dòng, `planner.py` thêm nhánh thử cached model trước khi cache đã ấm.
 - Test: 10 test mới, full suite 270 passed 0 regression. Live thật (không mock): bắt đúng lỗi 429,
   trả `None`, không exception lọt lên trên — xác nhận degrade an toàn trên điều kiện lỗi thật.
-- **Chưa commit** (xem §0).
+
+### KB-empty web fallback (D34) + SSE stage indicator + 2 fix streaming — `docs/worklogs/23-07-2026.md`
+- **D34**: câu hỏi PT phổ thông bị refuse vì KB pgvector RỖNG (0 rows) — không phải grader. Fix:
+  tag không-safety-cao + web toggle bật → gọi `kb_search` + `search_medical` SONG SONG round 1
+  (P2 hard-cap drop round 2 nên không thể fallback tuần tự). Verify live: trả lời đủ + trích nguồn.
+- **Stage indicator**: `ChatPanel.tsx` nghe `stage` event → "🔍 đang tìm kiếm" / "✍️ đang soạn".
+- **2 root cause khiến SSE không stream sống** (xem §0): drain starvation (`sleep(0)`) + CRLF
+  boundary (`api.ts`). Sau fix, token trải đều thật — verify Playwright screenshot từng giây.
+- ⚠️ **Blocker chức năng cốt lõi chưa xử lý**: KB pgvector rỗng — script ingest cũ target ChromaDB
+  (kiến trúc cũ), CHƯA có ingest cho schema `documents`/`kb_embeddings`. Mọi câu bài tập phải dựa
+  web fallback cho tới khi có ingest. Xem §3.
+
+### Facial animation avatar (Phase A-D) — `docs/worklogs/23-07-2026-avatar.md`
+- Module `ECA_UI/frontend/src/avatar/` (13 file), framework-agnostic TS classes. Plan:
+  `docs/plans/facial-animation-plan.md` (v1.2, K verify + sửa theo code thật).
+- **A** (core): channel-based expression mixer (thay priority), cross-fade delta-time, blink,
+  capability detection (degradation an toàn cho `bronya_long` 0-blendshape). **B**: idle wander
+  (emotion + gaze) + eye gaze theo mouse + engagement ENGAGED/IDLE. **C**: lip-sync amplitude
+  (Mode 1), synthetic-speech test. **D**: contract SSE `avatar.emotion` + giải quyết timing
+  `tts.audio` trong `api-contract.md`.
+- Verify live (Playwright, đọc weight thật): emotion render + cross-fade S-curve + interrupt
+  no-snap + gaze đúng góc + lip-sync mouth theo biên độ. tsc + build 0 lỗi.
+- Độc lập hoàn toàn với body motion → khi Kimodo cloud lên, mặt/mắt/miệng chạy y nguyên trên nền đó.
+- Default body animation TẮT (`isPlaying=false`, placeholder tạm chờ Kimodo); default model đổi
+  về seele (bronya_long render không rõ) → cũng fix luôn issue "cúi đầu lúc load".
+- Backend chưa emit `avatar.emotion` — cần Conversation node gán emotion (backend phase sau).
 
 ---
 
@@ -175,6 +205,7 @@ tham khảo CV/portfolio.
 ### 🔴 Chặn trước khi ra mạng thật
 | # | Task | Ghi chú |
 |---|---|---|
+| 0 | **Ingest KB vào pgvector** (`documents`/`kb_embeddings`) | RỖNG hiện tại → mọi câu bài tập refuse/phải dựa web. Script cũ target ChromaDB, cần script mới cho schema mới |
 | 1 | Bật auth thật: `REQUIRE_AUTH=true` + config Cognito thật + `VITE_AUTH_DISABLED=false` | cơ chế đã code xong, chỉ chưa bật |
 | 2 | Rate limiting cho `/chat` | chưa có gì chặn spam → cháy quota LLM |
 | 3 | Secret management (chuyển `.env` key sang secret manager) | trước khi deploy cloud |
@@ -186,13 +217,14 @@ tham khảo CV/portfolio.
   critical vs optional trước khi có LB/orchestrator thật.
 
 ### 🟡 Việc code cụ thể
-- **5 file phiên 22/07 chưa commit** (Gemini caching — `llm.py`, `planner.py`,
-  `test_fix_latency_1234.py`, 2 worklog mới) — xem §0. Batch 21 file phiên 21/07 đã commit.
-- **Bug thật chưa fix, đang chờ Owner chốt hướng**: grader-retry làm `ChatPanel.tsx` nối chữ 2
-  lần sinh của synthesizer liền nhau (không tách buffer). Owner đề xuất hướng triệt để hơn (bỏ
-  live-stream, chỉ gửi sau grader) thay vì vá buffer — xem §0, chưa code.
+- **Avatar Phase B/C/D + tắt animation chưa commit** (xem §0). Phase A + streaming fix đã commit
+  (`05687f5`).
+- **Bug chưa fix, chờ Owner chốt hướng**: grader-retry có thể làm `ChatPanel.tsx` nối chữ 2 lần
+  sinh của synthesizer (không tách buffer). Ít cấp bách hơn sau khi streaming fix — Owner đề xuất
+  "bỏ live-stream, chỉ gửi sau grader" thay vì vá buffer, chưa chốt.
+- **Backend chưa emit `avatar.emotion`**: hệ facial animation FE sẵn sàng nhưng backend Conversation
+  node chưa gán emotion metadata → avatar chỉ đổi biểu cảm khi có lệnh (backend phase sau).
 - Memory FE reset khi đóng sidebar (Owner đã chủ động bỏ persistence — biết và chấp nhận).
-- Animation nhân vật "cúi đầu" lúc load trang — Owner nói để sau khi logic xong.
 - Bundle FE nặng (JS ~1.9MB gzip 549KB + VRM asset 9-29MB bundle thẳng) — chưa lazy-load/CDN.
 
 ### 🟢 Tối ưu có dư địa, chưa làm
@@ -229,14 +261,15 @@ python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8000 --h
 cd ECA_UI/frontend && npm install && npm run dev
 
 # Tests
-python -m pytest tests/langgraph_agents/ -m unit -q   # 259 passed, không cần service sống
-python -m pytest tests/langgraph_agents/ -q            # 296 (cần Docker + DeepSeek key thật)
+python -m pytest tests/langgraph_agents/ -m unit -q   # 275 passed, không cần service sống
+python -m pytest tests/langgraph_agents/ -q            # 312 (cần Docker + DeepSeek key thật)
 ```
 
 ## 6. Key files (path MỚI sau reorg — đừng tìm ở root)
 | File | Nội dung |
 |---|---|
 | `docs/plans/reupdate-plan.md` | 33 decisions D1-D33 — nguồn chân lý kiến trúc |
+| `docs/plans/facial-animation-plan.md` | Avatar facial animation (Phase A-D, v1.2) — module design |
 | `docs/tracking/tech-debt.md` | Việc tồn (nhánh riêng khỏi status.md này) |
 | `docs/fixes/*.md` | Spec/handoff từng cụm fix (memory, auth, chatpanel, retrieval-perf, latency) |
 | `docs/ops/runbook.md`, `docs/ops/troubleshooting.md` | Chạy + debug chi tiết |
@@ -253,13 +286,18 @@ python -m pytest tests/langgraph_agents/ -q            # 296 (cần Docker + Dee
 - Code = English, docs = Việt + Anh. UI verify bằng skill `playwright-cli` (không npx). Backend
   port cố định **8000** (8080 = Spring của Owner, không đụng).
 
-## 8. Danh sách file chưa commit (git status lúc viết file này, 22/07)
+## 8. Danh sách file chưa commit (git status lúc viết file này, 24/07)
 ```
-M  agenticRAG/langgraph_agents/llm.py
-M  agenticRAG/langgraph_agents/nodes/planner.py
-M  tests/langgraph_agents/test_fix_latency_1234.py
-?? docs/worklogs/21-07-2026.md
-?? docs/worklogs/22-07-2026.md
+M  ECA_UI/frontend/src/avatar/AvatarController.ts        (engagement + eye/idle/lipsync wiring)
+M  ECA_UI/frontend/src/avatar/AvatarDevPanel.tsx         (speak test + mode display)
+M  ECA_UI/frontend/src/components/CharacterViewer.tsx    (tick wiring + mousemove gaze + anim off)
+M  ECA_UI/frontend/src/contexts/MotionContext.tsx        (avatarRef + default off + seele default)
+M  docs/architecture/api-contract.md                     (avatar SSE contract, Phase D)
+?? ECA_UI/frontend/src/avatar/EyeController.ts
+?? ECA_UI/frontend/src/avatar/IdleBehaviorController.ts
+?? ECA_UI/frontend/src/avatar/LipSyncController.ts
+?? ECA_UI/frontend/src/avatar/lipSyncAudio.ts
+   (+ docs: worklog 23-07-2026-avatar.md, status.md này)
 ```
-Batch 21 file phiên 21/07 (liệt kê ở bản trước của file này) **đã commit** —
-`621fcd5 local_version_finalize` + `878c6ed status_update`. Chưa commit đợt mới — chờ lệnh Owner.
+Đã commit trước đó: `05687f5 SSE fix and phase A animation`, `35985d5 fix bugs in UI streaming`.
+Đợt avatar Phase B/C/D + tắt animation **chưa commit** — chờ lệnh Owner.

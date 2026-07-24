@@ -109,10 +109,58 @@ The pipeline orchestrator was patched in D8c to accept both keys for backward co
 - `X-Request-ID`: Correlation ID echoed in responses (generated if not provided).
 - `AGENTIC_TRACE=1` (env): JSON responses include `agent_trace` field with per-stage timings.
 
+## Avatar Animation SSE Events (Phase D contract)
+
+> Source of truth for the facial-animation handoff — see [[facial-animation-plan]] §7, §9.
+> These events ride the **existing per-turn `/chat` SSE stream** (opens on POST, closes on
+> `done`). There is NO persistent connection; avatar events are interaction-scoped. Idle
+> behavior is client-autonomous and needs no backend traffic.
+
+Frontend consumes every event through `streamChat(options, onEvent)` — the same callback that
+already handles `stage` / `token` / `done`. Adding avatar handling is a callback branch, not new
+transport (the named-event parser already works).
+
+### `avatar.emotion` (backend → client)
+
+Emitted by the Conversation node when a response carries an emotional intent.
+
+```
+event: avatar.emotion
+data: {"emotion":"happy","intensity":0.8,"duration":1000}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `emotion` | enum | One of `neutral \| happy \| sad \| angry \| relaxed \| surprised` (canonical set). Any other value → client warns + drops. |
+| `intensity` | number | Clamped to `[0,1]` client-side. |
+| `duration` | number (ms) | How long to hold before the client auto-fades to neutral. A hint; the client owns easing. Also extends the ENGAGED window. |
+
+Client action: `avatarController.setEmotion(emotion, intensity, duration)`.
+
+### `tts.audio` — timing resolution (was open question)
+
+The plan's original `tts.audio {audioUrl}` assumed the URL is known during the turn. It is **not**:
+TTS runs as an async Celery task; the `/chat` stream emits `speech_pending` + a `speech_task_id`
+and the client polls for the result **after** the turn stream closes.
+
+**Resolved contract**: lip sync is driven by a separate ready signal, not an in-stream event.
+
+- During the turn: `speech_pending` / `speech_task_id` (unchanged, already emitted).
+- When the poll resolves the audio, the client fetches the clip and calls
+  `avatarController.startLipSync(analyser)` (analyser built from the `<audio>` element via
+  `analyserFromElement`). On `ended`, `avatarController.stopLipSync()`.
+- No new backend event is strictly required — the client's existing poll completion is the
+  trigger. If a push is preferred later, add `event: speech_ready {task_id, audioUrl}`; the
+  contract above stays identical on the client.
+
+Engagement: active lip sync holds the avatar ENGAGED; a `TTS_GRACE` (~1.5s) after audio ends
+before falling back to IDLE.
+
 ## Related Notes
 
 - [[system-overview]] — Architecture and service map
 - [[troubleshooting]] — Common API errors
+- [[facial-animation-plan]] — Avatar animation phases + module design
 
 ---
 

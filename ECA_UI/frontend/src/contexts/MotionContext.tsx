@@ -65,10 +65,20 @@ interface MotionContextType {
 const MotionContext = createContext<MotionContextType | null>(null)
 
 export function MotionProvider({ children }: { children: ReactNode }) {
-  const [isPlaying, setIsPlaying] = useState(true)
+  // Default body animation OFF: the BVH loads (so the avatar holds its natural
+  // first-frame pose, not the T-pose bind pose) but does not play. Press play in
+  // the UI to animate.
+  const [isPlaying, setIsPlaying] = useState(false)
   const [speed, setSpeed] = useState(1.0)
   const [clipInfo, setClipInfo] = useState<{ tracks: number; duration: number } | null>(null)
-  const [selectedVrmId, setSelectedVrmId] = useState(BUILTIN_VRM_OPTIONS[0]?.id ?? '')
+  // Default to Seele: it is the intended default (CharacterViewer already falls
+  // back to seeleUrl) and renders cleanly. Plain alphabetical [0] would pick
+  // bronya_long, which does not display well as the landing avatar.
+  const defaultVrmId =
+    BUILTIN_VRM_OPTIONS.find((o) => /seele/i.test(o.label))?.id ??
+    BUILTIN_VRM_OPTIONS[0]?.id ??
+    ''
+  const [selectedVrmId, setSelectedVrmId] = useState(defaultVrmId)
   const [selectedMotionId, setSelectedMotionId] = useState(BUILTIN_MOTION_OPTIONS[0]?.id ?? '')
   const [cameraMode, setCameraMode] = useState<CameraMode>('head')
 

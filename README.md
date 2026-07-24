@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/FastAPI-SSE_streaming-009688?style=flat-square">
   <img src="https://img.shields.io/badge/PostgreSQL-pgvector-4169E1?style=flat-square">
   <img src="https://img.shields.io/badge/React_19-Vite_·_TS-61DAFB?style=flat-square">
-  <img src="https://img.shields.io/badge/tests-256-success?style=flat-square">
+  <img src="https://img.shields.io/badge/tests-312-success?style=flat-square">
 </p>
 
 ---
@@ -23,7 +23,7 @@ A user asks *"Tôi bị đau lưng dưới khi ngồi lâu, có bài tập nào 
 2. **Retrieves** from an internal PT knowledge base (vector search) and, when the user opts in, the live web.
 3. **Synthesizes** a clinically-framed answer — exercises with sets/reps and **safety warnings** — styled in the chosen persona (warm / clinical / friendly).
 4. **Streams** the answer token-by-token to the browser over SSE.
-5. Optionally renders a **3D motion** demonstration (avatar) and **Vietnamese speech**.
+5. Optionally renders a **3D motion** demonstration and drives an expressive **VRM avatar** — facial expressions, blinking, eye gaze and amplitude lip-sync — plus **Vietnamese speech**.
 
 Every answer that carries a safety-relevant tag passes a **rule-based quality gate** before it reaches the user.
 
@@ -92,7 +92,7 @@ flowchart LR
 | **Memory** | Redis STM + Postgres/pgvector LTM, background summarizer, GDPR delete + re-summarize |
 | **API** | FastAPI, Server-Sent Events (token streaming), Pydantic schemas |
 | **Auth** | AWS Cognito ID-token verification (JWKS · RS256 · audience · issuer), env-gated |
-| **Frontend** | React 19, Vite, TypeScript, Tailwind/shadcn, three.js + `@pixiv/three-vrm` avatar, axios (REST) + fetch (SSE stream) |
+| **Frontend** | React 19, Vite, TypeScript, Tailwind/shadcn, three.js + `@pixiv/three-vrm` avatar with a channel-based **facial-animation** system (R3F-native), axios (REST) + fetch (SSE stream) |
 | **Infra** | Docker Compose (Postgres · Redis · SearXNG), Alembic migrations |
 
 ---
@@ -102,7 +102,7 @@ flowchart LR
 | | |
 |---|---|
 | **LangGraph nodes** | 8 (memory → planner → retriever⇄tools → kimodo → synthesizer → grader → error_handler) |
-| **Test cases** | 256 (unit + integration; circuit-breaker, routing, memory-regression, GDPR, auth) |
+| **Test cases** | 312 (275 unit + 37 integration; circuit-breaker, routing, memory-regression, GDPR, auth) |
 | **Backend** | ~7,800 LOC Python |
 | **Frontend** | ~4,200 LOC TypeScript/React |
 | **Data model** | 7 Postgres tables (`users`, `conversations`, `messages`, `summaries`, `user_memory`, `documents`, `kb_embeddings`) |
@@ -121,7 +121,9 @@ flowchart LR
 - **User-controlled web search (enforced at every layer)** — turning it off removes the tool from the model's bind list, omits it from the prompt, **and** blocks it at execution — mirroring how mature assistants gate "search off".
 - **Resilience** — per-role circuit breakers on DeepSeek + MCP, three-tier error severity (CRITICAL / RECOVERABLE / IGNORABLE), parallel dependency health checks, socket-timeout-bounded Redis ops.
 - **Offline, CPU-only embeddings** — the e5 model loads fully from local cache (zero HuggingFace-Hub calls at startup), freeing the GPU for 3D motion.
-- **Observability** — structured JSON logs correlated by `request_id`, SSE `stage` events for live pipeline tracing.
+- **Expressive avatar, framework-agnostic** — a channel-based facial-expression **mixer** (delta-time cross-fade, physiological blink, autonomous idle wander, mouse-tracked eye gaze, amplitude lip-sync) composed on one `useFrame` tick, with capability detection that degrades safely on models missing blendshapes — decoupled from body motion so it rides on top of whatever drives the body (Kimodo).
+- **True token streaming** — SSE tokens reach the browser progressively during generation; getting there meant fixing a LangGraph custom-stream drain-starvation on the server and a CRLF SSE-boundary bug on the client.
+- **Observability** — structured JSON logs correlated by `request_id`, SSE `stage` events for live pipeline tracing (a "🔍 searching…" indicator while tools run).
 
 ---
 
@@ -194,9 +196,10 @@ agenticRAG/langgraph_agents/
 ├── db/ · alembic/ # asyncpg client · session store · migrations (7 tables)
 ├── personas/      # eca_default / eca_friendly / eca_clinical (Markdown)
 ├── graph.py · routing.py · state.py · llm.py
-ECA_UI/frontend/   # React 19 + Vite + TS + Tailwind · VRM avatar · lib/api.ts (axios + SSE)
+ECA_UI/frontend/   # React 19 + Vite + TS + Tailwind · lib/api.ts (axios + SSE)
+├── src/avatar/    # facial-animation system: mixer · expression/blink/eye/idle/lipsync controllers · VRM adapter
 docs/              # architecture/ · ops/ · plans/ · phases/ · fixes/
-tests/langgraph_agents/   # 256 tests
+tests/langgraph_agents/   # 312 tests (275 unit + 37 integration)
 ```
 
 ---
@@ -208,6 +211,8 @@ tests/langgraph_agents/   # 256 tests
 | [docs/architecture/system-overview.md](docs/architecture/system-overview.md) | High-level architecture |
 | [docs/architecture/full-flow-predeploy.md](docs/architecture/full-flow-predeploy.md) | End-to-end request flow |
 | [docs/plans/reupdate-plan.md](docs/plans/reupdate-plan.md) | Design decisions D1–D33 (source of truth) |
+| [docs/plans/facial-animation-plan.md](docs/plans/facial-animation-plan.md) | Avatar facial-animation system (Phase A–D) |
+| [docs/architecture/api-contract.md](docs/architecture/api-contract.md) | API + SSE event contract (incl. avatar events) |
 | [docs/ops/runbook.md](docs/ops/runbook.md) · [docs/ops/troubleshooting.md](docs/ops/troubleshooting.md) | Run · debug · common errors |
 | [.claude/CLAUDE.md](.claude/CLAUDE.md) | Conventions & roles |
 
@@ -215,10 +220,13 @@ tests/langgraph_agents/   # 256 tests
 
 ## 🧭 Status & roadmap
 
-- ✅ Core pipeline (8-node graph), memory, RAG, personas, SSE streaming, session resume
+- ✅ Core pipeline (8-node graph), memory, RAG, personas, live SSE token streaming, session resume
 - ✅ Auth mechanism (Cognito JWT), GDPR memory ops, circuit breakers, health checks
 - ✅ Web-search user-toggle enforcement · offline embeddings · retriever loop cap
-- 🔜 **Pre-cloud hardening** — enable auth, rate limiting, secret management, LLM fallback (DeepSeek → Gemini)
-- 🔜 **Phase 7** — hybrid edge-cloud (cloud API + edge GPU worker for 3D motion)
+- ✅ Avatar facial-animation system (expressions · blink · gaze · lip-sync), decoupled from body motion
+- 🔜 **Knowledge-base ingest** into pgvector (populate `documents`/`kb_embeddings`)
+- 🔜 **Backend emotion events** to drive avatar expressions (Conversation node → `avatar.emotion` SSE)
+- 🔜 **Pre-cloud hardening** — enable auth, rate limiting, secret management
+- 🔜 **Phase 7** — hybrid edge-cloud (cloud API + edge GPU worker for 3D motion / Kimodo)
 
 <p align="center"><sub>LangGraph · FastAPI · DeepSeek · PostgreSQL/pgvector · Redis · MCP · React · three.js/VRM · SSE</sub></p>

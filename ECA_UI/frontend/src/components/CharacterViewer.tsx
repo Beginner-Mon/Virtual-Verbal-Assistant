@@ -88,9 +88,10 @@ function VRMCharacter({
     }
   }, [vrm, modelId, avatarRef])
 
-  // Load and apply BVH animation after VRM is ready
+  // Load and apply BVH animation after VRM is ready. Skip when no motion is
+  // selected (animationUrl === '') so the avatar rests in its natural pose.
   useEffect(() => {
-    if (!vrm) return
+    if (!vrm || !animationUrl) return
 
     let cancelled = false
 
@@ -420,9 +421,20 @@ export default function CharacterViewer() {
     }
   }, [vrmUrl, animationUrl])
 
+  // Feed normalized mouse position to the avatar's eye gaze (§4.2 / EyeController).
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const controller = avatarRef.current
+    if (!controller) return
+    const rect = e.currentTarget.getBoundingClientRect()
+    const nx = ((e.clientX - rect.left) / rect.width) * 2 - 1
+    const ny = -(((e.clientY - rect.top) / rect.height) * 2 - 1)
+    controller.setMouse(nx, ny)
+  }
+
   return (
     <div
       className="relative w-full h-full overflow-hidden"
+      onMouseMove={handleMouseMove}
       style={{
         background: theme === 'dark'
           ? 'radial-gradient(ellipse at center, #1a0533 0%, #0a0a12 70%)'
