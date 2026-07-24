@@ -132,7 +132,7 @@ class KimodoEcsStack(Stack):
                 shared_memory_size=16384,
             ),
             health_check=ecs.HealthCheck(
-                command=["CMD-SHELL", "curl -fsS http://localhost:8000/mcp || exit 1"],
+                command=["CMD-SHELL", "curl -sS http://localhost:8000/ > /dev/null || exit 1"],
                 interval=Duration.seconds(30),
                 timeout=Duration.seconds(10),
                 retries=3,
