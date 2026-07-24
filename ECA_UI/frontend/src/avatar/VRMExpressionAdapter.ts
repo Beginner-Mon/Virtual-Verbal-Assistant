@@ -1,4 +1,5 @@
-import type { VRM } from '@pixiv/three-vrm'
+import { VRMExpressionMorphTargetBind, type VRM } from '@pixiv/three-vrm'
+import type * as THREE from 'three'
 import type { AvatarProfile } from './AvatarProfile'
 
 /**
@@ -9,6 +10,12 @@ import type { AvatarProfile } from './AvatarProfile'
  * channels actually exist on this model (getExpression != null). Missing channels
  * become safe no-ops — this is what lets a stripped model like bronya_long.vrm
  * (0 blendshape groups) run without crashing.
+ *
+ * Bind repair: some VRM 0.x files (e.g. seele.vrm) declare expression groups
+ * with empty `binds` — the expression registers but drives nothing. The profile's
+ * `morphRepairMap` (channel -> morph target name) patches morph-target binds in
+ * at attach time BEFORE capability detection so repaired channels are treated as
+ * available.
  */
 export class VRMExpressionAdapter {
   private readonly vrm: VRM
@@ -18,6 +25,10 @@ export class VRMExpressionAdapter {
 
   constructor(vrm: VRM, profile: AvatarProfile) {
     this.vrm = vrm
+
+    // Repair pass: some expressions ship with empty binds — patch them by morph
+    // name BEFORE capability detection (bug: facial-animation-plan.md §6.1 note).
+    this.repairBindlessExpressions(profile)
 
     // Collect every channel the profile might drive: emotion recipes + blink + visemes.
     const wanted = new Set<string>()
@@ -45,6 +56,54 @@ export class VRMExpressionAdapter {
       console.warn(
         `[avatar] model "${profile.modelId}" missing ${missing.length} expression channel(s), will no-op: ${missing.join(', ')}`,
       )
+    }
+  }
+
+  /**
+   * For each channel in the profile's morphRepairMap, check whether its
+   * expression is registered but bindless (binds.length === 0). If so, look
+   * up the named morph target on every mesh in the VRM scene and add a
+   * VRMExpressionMorphTargetBind so the expression actually drives geometry.
+   */
+  private repairBindlessExpressions(profile: AvatarProfile): void {
+    const repairMap = profile.morphRepairMap
+    const manager = this.vrm.expressionManager
+    if (!repairMap || !manager) return
+
+    let meshes: THREE.Mesh[] | null = null
+
+    for (const [channel, morphName] of Object.entries(repairMap)) {
+      const expression = manager.getExpression(channel)
+      if (!expression || expression.binds.length > 0) continue
+
+      if (!meshes) {
+        const collected: THREE.Mesh[] = []
+        this.vrm.scene.traverse((object) => {
+          const mesh = object as THREE.Mesh
+          if (mesh.isMesh && mesh.morphTargetDictionary) collected.push(mesh)
+        })
+        meshes = collected
+      }
+
+      let bound = 0
+      for (const mesh of meshes) {
+        const index = mesh.morphTargetDictionary?.[morphName]
+        if (index === undefined) continue
+        expression.addBind(
+          new VRMExpressionMorphTargetBind({ primitives: [mesh], index, weight: 1 }),
+        )
+        bound++
+      }
+
+      if (bound > 0) {
+        console.info(
+          `[avatar] repaired bindless expression "${channel}" -> morph "${morphName}" (${bound} bind(s))`,
+        )
+      } else {
+        console.warn(
+          `[avatar] morphRepairMap: morph "${morphName}" for channel "${channel}" not found on any mesh`,
+        )
+      }
     }
   }
 

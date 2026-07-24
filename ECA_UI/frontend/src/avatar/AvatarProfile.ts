@@ -40,6 +40,21 @@ export interface AvatarProfile {
   visemes: Record<Viseme, string>
   /** Channel that carries the blink expression on this model. */
   blinkChannel: string
+  /**
+   * Optional repair map for VRM 0.x files that declare expression groups with
+   * EMPTY binds (e.g. seele.vrm — the groups exist but reference no morph
+   * targets, so the expressions register but drive nothing). Maps an expression
+   * channel (runtime preset name) to a morph target name on the model's meshes;
+   * VRMExpressionAdapter patches the missing binds in at attach time.
+   */
+  morphRepairMap?: Record<string, string>
+  /**
+   * Canonical emotions whose morph targets are purely on/off — they have no
+   * intensity gradation. The intensity slider is ignored and the expression
+   * always renders at weight 1 (fully visible) whenever triggered.
+   * (e.g. seele.vrm "なごみ" relaxed, bronya.vrm sorrow morphs.)
+   */
+  binaryEmotions?: CanonicalEmotion[]
 }
 
 export function isCanonicalEmotion(name: string): name is CanonicalEmotion {
@@ -50,10 +65,12 @@ export function isCanonicalEmotion(name: string): name is CanonicalEmotion {
 // whose migrated preset names match the standard set.
 import { defaultProfile } from './profiles/default'
 import { bronyaProfile } from './profiles/bronya'
+import { seeleProfile } from './profiles/seele'
 
 const PROFILE_REGISTRY: Record<string, AvatarProfile> = {
   default: defaultProfile,
   bronya: bronyaProfile,
+  seele: seeleProfile,
 }
 
 /**

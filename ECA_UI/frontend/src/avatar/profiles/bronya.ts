@@ -15,4 +15,5 @@ export const bronyaProfile: AvatarProfile = {
     ...defaultProfile.recipes,
     surprised: { Surprised: 1.0 },
   },
+  binaryEmotions: ['sad'],
 }

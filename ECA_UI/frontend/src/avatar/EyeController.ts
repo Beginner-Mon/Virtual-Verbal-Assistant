@@ -11,6 +11,11 @@ import type { VRM } from '@pixiv/three-vrm'
  * We set yaw/pitch (degrees) directly with autoUpdate off: the setters flag the
  * lookAt dirty and vrm.update() applies them through whichever applier the model
  * uses (bone- or expression-based), so this works on every VRM.
+ *
+ * three-vrm pitch convention (verified in three-vrm-core 3.5.3): NEGATIVE pitch
+ * looks UP, positive looks down — VRMLookAt.lookAt() computes
+ * `pitch = altitudeFrom - altitudeTo`, so a target above the head yields a
+ * negative pitch. Screen-space input is y-up, so every pitch below negates ny.
  */
 const YAW_MAX_DEG = 22
 const PITCH_MAX_DEG = 12
@@ -40,14 +45,14 @@ export class EyeController {
   /** Feed normalized mouse position in [-1..1] (x right+, y up+). */
   setMouse(nx: number, ny: number, now: number): void {
     this.mouseYaw = clampUnit(nx) * YAW_MAX_DEG
-    this.mousePitch = clampUnit(ny) * PITCH_MAX_DEG
+    this.mousePitch = -clampUnit(ny) * PITCH_MAX_DEG // negate: three-vrm pitch+ = down
     this.lastMouseAt = now
   }
 
   /** Idle gaze wander target in [-1..1] (set by IdleBehaviorController). */
   setWander(nx: number, ny: number): void {
     this.wanderYaw = clampUnit(nx) * YAW_MAX_DEG
-    this.wanderPitch = clampUnit(ny) * PITCH_MAX_DEG
+    this.wanderPitch = -clampUnit(ny) * PITCH_MAX_DEG // negate: three-vrm pitch+ = down
   }
 
   tick(delta: number, now: number): void {

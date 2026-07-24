@@ -30,6 +30,7 @@ function buildAssetOptions(modules: Record<string, string>): AssetOption[] {
       label: toLabel(assetPath),
       url,
     }))
+    .filter((o) => !/bronya_long/i.test(o.label)) // 0 blendshape groups — unusable
     .sort((left, right) => left.label.localeCompare(right.label))
 }
 

@@ -17,7 +17,6 @@ import { loadAndRetargetBVH } from '../lib/bvhToVrm'
 import { type CameraMode, useMotion } from '../contexts/MotionContext'
 import { AvatarController } from '../avatar/AvatarController'
 import { loadProfile } from '../avatar/AvatarProfile'
-import AvatarDevPanel from '../avatar/AvatarDevPanel'
 
 const CAMERA_MODES: Record<CameraMode, { boneName: VRMHumanBoneName; cameraOffset: THREE.Vector3 }> = {
   head: {
@@ -459,9 +458,6 @@ export default function CharacterViewer() {
 
       {/* Bottom gradient */}
       <div className="absolute bottom-0 left-0 right-0 h-24 pointer-events-none bg-gradient-to-t from-background/80 to-transparent" />
-
-      {/* Dev-only facial-animation test panel (§10 Phase A acceptance). */}
-      {import.meta.env.DEV && <AvatarDevPanel />}
     </div>
   )
 }

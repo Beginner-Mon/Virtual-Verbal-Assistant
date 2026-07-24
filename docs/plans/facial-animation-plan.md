@@ -1,6 +1,6 @@
 # Plan: Facial Animation System cho VRM Avatar (v1.2)
 
-> Architect: K | Developer: N | Owner approval: pending | Last update: 2026-07-23
+> Architect: K | Developer: N | Owner approval: pending | Last update: 2026-07-24
 > Status: **v1.2 — R3F-native, SSE transport (per-turn), channel-based mixer, client-side autonomous idle**
 > Base: Proposal gốc của Owner + review pass 1 + quyết định "idle thuộc frontend" của Owner
 > Scope: `ECA_UI/frontend` — KHÔNG đụng backend ở phase này
@@ -30,6 +30,7 @@
 | B | **Transport named-event ĐÃ hoạt động thật** (de-risk §7) | `_parseSSEBlocks` trong api.ts parse `event:`/`data:` đúng chuẩn; bug CRLF boundary vừa fix 23/07. `avatar.emotion`/`tts.audio` dùng đúng path `streamChat(onEvent)` — 0 dòng transport code mới |
 | C | **Chú thích lại timing `tts.audio`** | Backend fire TTS async qua Celery, trả `speech_pending` + `speech_task_id` rồi poll — audioUrl CHƯA sẵn lúc stream. Xem §9 note |
 | D | Verify toàn bộ VRM facts | seele 17 blendshape (khớp), bronya +custom "Surprised" (presetName `unknown`), bronya_long 0 blendshape (khớp). three-vrm preset: `joy→happy, sorrow→sad, fun→relaxed, a→aa, i→ih, u→ou, e→ee, o→oh` |
+| E | **Phát hiện + sửa bind rỗng trên model** (24/07) | seele.vrm: 17 group nhưng **tất cả binds rỗng** — expression đăng ký nhưng không điều khiển morph nào. Bronya: Joy/Angry/Sorrow/Fun/Surprised có binds thật, nhưng blink/visemes cũng rỗng. Xem §6.1 note + §6.3 bind repair |
 
 ---
 
@@ -182,15 +183,43 @@ LookAt check lúc `attach()`: đọc `vrm.lookAt.applier` type — nếu `VRMLoo
 
 ## 6. VRM Reality Check + Avatar Profile
 
-### 6.1 Models hiện có (đã inspect GLB JSON chunk thật — 23/07)
+### 6.1 Models hiện có (đã inspect GLB JSON chunk thật — 23/07, bổ sung 24/07)
 
-| Model | Spec | blendShapeGroups |
-|-------|------|-------------------|
-| `seele.vrm` | VRM 0.0 | 17: neutral, a, i, u, e, o, blink, joy, angry, sorrow, fun, lookup/down/left/right, blink_l/r |
-| `bronya.vrm` | VRM 0.0 | 18: như seele **+ custom "Surprised"** (presetName `unknown`, name `Surprised`, 4 binds) |
-| `bronya_long.vrm` | VRM 0.0 | **0 (rỗng)** — capability detection phải warn, mọi facial output no-op an toàn |
+| Model | Spec | blendShapeGroups | Binds thật |
+|-------|------|-------------------|------------|
+| `seele.vrm` | VRM 0.0 | 17: neutral, a, i, u, e, o, blink, joy, angry, sorrow, fun, lookup/down/left/right, blink_l/r | **0/17 có binds rỗng** — mọi expression register nhưng không điều khiển morph nào |
+| `bronya.vrm` | VRM 0.0 | 18: như seele **+ custom "Surprised"** (presetName `unknown`, name `Surprised`, 4 binds) | Joy(3), Angry(2), Sorrow(4), Fun(4), Surprised(4) — emotion hoạt động. Blink, visemes (A/E/I/O/U), Look*: 0 binds |
+| `bronya_long.vrm` | VRM 0.0 | **0 (rỗng)** — capability detection phải warn, mọi facial output no-op an toàn | 0 |
+
+> **Note (24/07 — K verify lại binds sau khi test thấy biểu cảm chết):**
+> Đợt verify 23/07 mới đếm số lượng groups (khớp) nhưng chưa kiểm tra `binds` bên trong.
+> seele.vrm là MMD→PMX→VRM conversion: mesh có 47 morph targets tên tiếng Nhật
+> (`"にこり"`, `"哀"`, `"怒り"`, `"まばたき"`, `"あ"...`) nhưng VRM extension không hề
+> reference tới morph targets qua `binds`. Biểu hiện: `capability detection` pass
+> (`getExpression('happy') != null`) → không warning → setValue/setEmotion chạy
+> nhưng `applyWeight()` loop qua 0 binds → mọi biểu cảm invisible.
+> **Fix**: profile `morphRepairMap` (§6.3) patch binds theo tên morph vào lúc attach.
 
 three-vrm v3 migrate 0.x → preset 1.0 lúc load: `joy→happy, sorrow→sad, angry→angry, fun→relaxed, a→aa, i→ih, u→ou, e→ee, o→oh, blink→blink`. **Profile dùng tên runtime (post-migration).**
+
+### 6.3 Bind repair (thêm 24/07)
+
+Khi VRM 0.x file có expression group với binds rỗng nhưng mesh có morph targets
+đặt tên, profile có thể khai báo `morphRepairMap`: map từ channel runtime name →
+tên morph target. `VRMExpressionAdapter.attach()` patch `VRMExpressionMorphTargetBind`
+trước capability detection, channel được sửa tính như available.
+
+seele profile (`profiles/seele.ts`):
+```ts
+morphRepairMap: {
+  happy: 'にこり', sad: '哀', angry: '怒り', relaxed: 'なごみ',
+  surprised: 'びっくり', blink: 'まばたき',
+  aa: 'あ', ih: 'い', ou: 'う', ee: 'え', oh: 'お',
+}
+```
+
+bronya KHÔNG dùng repair: mesh thiếu `extras.targetNames` → không map theo tên được.
+Bù lại emotion groups (Joy/Angry/...) có binds thật → biểu cảm chạy.
 
 ### 6.2 Profile format (version 1)
 ```ts

@@ -55,6 +55,10 @@ export class AvatarController {
     intensity = 1,
     durationMs = DEFAULT_EMOTION_DURATION_MS,
   ): void {
+    // Binary emotions (pure on/off morphs) ignore the slider — always full.
+    if (this.profile.binaryEmotions?.includes(emotion)) {
+      intensity = 1
+    }
     this.expression.setEmotion(emotion, intensity, durationMs)
     this.notifyEngaged(durationMs)
   }
