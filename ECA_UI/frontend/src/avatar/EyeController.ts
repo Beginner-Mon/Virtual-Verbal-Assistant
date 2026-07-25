@@ -72,6 +72,20 @@ export class EyeController {
     }
   }
 
+  /**
+   * Precise smoothed gaze angles (degrees), three-vrm convention (yaw+ = right,
+   * pitch- = up). HeadController reads these so the head follows the SAME
+   * direction as the eyes. Not rounded — unlike debugAngles() — so head
+   * smoothing keeps full precision.
+   */
+  get currentYaw(): number {
+    return this.curYaw
+  }
+
+  get currentPitch(): number {
+    return this.curPitch
+  }
+
   /** Debug read (verification only). */
   debugAngles(): { yaw: number; pitch: number } {
     return { yaw: Number(this.curYaw.toFixed(2)), pitch: Number(this.curPitch.toFixed(2)) }

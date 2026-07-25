@@ -6,6 +6,7 @@ import { ExpressionMixer, type ExpressionContributor } from './ExpressionMixer'
 import { ExpressionController } from './ExpressionController'
 import { BlinkController } from './BlinkController'
 import { EyeController } from './EyeController'
+import { HeadController } from './HeadController'
 import { IdleBehaviorController } from './IdleBehaviorController'
 import { LipSyncController } from './LipSyncController'
 
@@ -31,6 +32,7 @@ export class AvatarController {
   private readonly expression: ExpressionController
   private readonly blink: BlinkController
   private readonly eye: EyeController
+  private readonly head: HeadController
   private readonly idle: IdleBehaviorController
   private readonly lipSync: LipSyncController
   private readonly contributors: readonly ExpressionContributor[]
@@ -41,6 +43,7 @@ export class AvatarController {
     this.expression = new ExpressionController(profile)
     this.blink = new BlinkController(profile)
     this.eye = new EyeController(vrm)
+    this.head = new HeadController(vrm, this.eye)
     this.lipSync = new LipSyncController(profile)
     this.idle = new IdleBehaviorController(this.expression, this.eye)
     // Order = layering (§5). Emotion first; lip-sync overrides the mouth; blink last.
@@ -115,6 +118,9 @@ export class AvatarController {
     this.blink.tick(delta)
     this.lipSync.tick(delta)
     this.eye.tick(delta, t)
+    // Head follows the eye gaze — must run AFTER eye.tick so currentYaw/Pitch
+    // are fresh. Bones only; independent of the blendshape mixer below.
+    this.head.tick(delta)
 
     this.mixer.compose(this.state.frame, this.contributors)
     this.adapter.write(this.state.frame)
@@ -140,10 +146,16 @@ export class AvatarController {
     return this.eye.debugAngles()
   }
 
-  /** Release: zero every managed channel + restore gaze so nothing is left applied. */
+  /** Read smoothed head angles (debug/verification only). */
+  debugHead(): { yaw: number; pitch: number } {
+    return this.head.debugHead()
+  }
+
+  /** Release: zero every managed channel + restore gaze/head so nothing is left applied. */
   detach(): void {
     this.lipSync.detach()
     this.eye.detach()
+    this.head.detach()
     this.adapter.reset()
     this.state.frame.clear()
   }
