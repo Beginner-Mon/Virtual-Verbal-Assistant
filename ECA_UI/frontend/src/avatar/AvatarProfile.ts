@@ -44,10 +44,11 @@ export interface AvatarProfile {
    * Optional repair map for VRM 0.x files that declare expression groups with
    * EMPTY binds (e.g. seele.vrm — the groups exist but reference no morph
    * targets, so the expressions register but drive nothing). Maps an expression
-   * channel (runtime preset name) to a morph target name on the model's meshes;
-   * VRMExpressionAdapter patches the missing binds in at attach time.
+   * channel (runtime preset name) to one or MORE morph target names on the
+   * model's meshes; VRMExpressionAdapter patches the missing binds in at attach
+   * time. An array is used when one channel must drive several morphs together.
    */
-  morphRepairMap?: Record<string, string>
+  morphRepairMap?: Record<string, string | string[]>
   /**
    * Canonical emotions whose morph targets are purely on/off — they have no
    * intensity gradation. The intensity slider is ignored and the expression

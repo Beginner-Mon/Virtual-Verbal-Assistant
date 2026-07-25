@@ -62,8 +62,9 @@ export class VRMExpressionAdapter {
   /**
    * For each channel in the profile's morphRepairMap, check whether its
    * expression is registered but bindless (binds.length === 0). If so, look
-   * up the named morph target on every mesh in the VRM scene and add a
+   * up the named morph target(s) on every mesh in the VRM scene and add a
    * VRMExpressionMorphTargetBind so the expression actually drives geometry.
+   * A channel may map to several morph names (string[]) — all are bound.
    */
   private repairBindlessExpressions(profile: AvatarProfile): void {
     const repairMap = profile.morphRepairMap
@@ -72,7 +73,7 @@ export class VRMExpressionAdapter {
 
     let meshes: THREE.Mesh[] | null = null
 
-    for (const [channel, morphName] of Object.entries(repairMap)) {
+    for (const [channel, entry] of Object.entries(repairMap)) {
       const expression = manager.getExpression(channel)
       if (!expression || expression.binds.length > 0) continue
 
@@ -85,24 +86,26 @@ export class VRMExpressionAdapter {
         meshes = collected
       }
 
-      let bound = 0
-      for (const mesh of meshes) {
-        const index = mesh.morphTargetDictionary?.[morphName]
-        if (index === undefined) continue
-        expression.addBind(
-          new VRMExpressionMorphTargetBind({ primitives: [mesh], index, weight: 1 }),
-        )
-        bound++
-      }
+      for (const morphName of Array.isArray(entry) ? entry : [entry]) {
+        let bound = 0
+        for (const mesh of meshes) {
+          const index = mesh.morphTargetDictionary?.[morphName]
+          if (index === undefined) continue
+          expression.addBind(
+            new VRMExpressionMorphTargetBind({ primitives: [mesh], index, weight: 1 }),
+          )
+          bound++
+        }
 
-      if (bound > 0) {
-        console.info(
-          `[avatar] repaired bindless expression "${channel}" -> morph "${morphName}" (${bound} bind(s))`,
-        )
-      } else {
-        console.warn(
-          `[avatar] morphRepairMap: morph "${morphName}" for channel "${channel}" not found on any mesh`,
-        )
+        if (bound > 0) {
+          console.info(
+            `[avatar] repaired bindless expression "${channel}" -> morph "${morphName}" (${bound} bind(s))`,
+          )
+        } else {
+          console.warn(
+            `[avatar] morphRepairMap: morph "${morphName}" for channel "${channel}" not found on any mesh`,
+          )
+        }
       }
     }
   }

@@ -27,14 +27,20 @@ const MICRO_WEIGHTS: Array<{ emotion: CanonicalEmotion; weight: number }> = [
 export class IdleBehaviorController {
   private readonly expression: ExpressionController
   private readonly eye: EyeController
+  private readonly skipEmotions: Set<CanonicalEmotion>
 
   private emotionTimer = randomRange(EMOTION_INTERVAL_SEC)
   private gazeTimer = randomRange(GAZE_INTERVAL_SEC)
   private atRest = true
 
-  constructor(expression: ExpressionController, eye: EyeController) {
+  constructor(
+    expression: ExpressionController,
+    eye: EyeController,
+    binaryEmotions?: readonly CanonicalEmotion[],
+  ) {
     this.expression = expression
     this.eye = eye
+    this.skipEmotions = new Set(binaryEmotions ?? [])
   }
 
   /** Called when the avatar (re)enters IDLE — restart wander timers. */
@@ -49,7 +55,7 @@ export class IdleBehaviorController {
     this.emotionTimer -= delta
     if (this.emotionTimer <= 0) {
       if (this.atRest) {
-        const emotion = pickWeighted()
+        const emotion = this.pickWeighted()
         const intensity = randomRange(MICRO_INTENSITY)
         this.expression.setEmotion(emotion, intensity, EMOTION_TRANSITION_MS)
         this.atRest = false
@@ -71,16 +77,19 @@ export class IdleBehaviorController {
       this.gazeTimer = randomRange(GAZE_INTERVAL_SEC)
     }
   }
-}
 
-function pickWeighted(): CanonicalEmotion {
-  const total = MICRO_WEIGHTS.reduce((s, w) => s + w.weight, 0)
-  let r = Math.random() * total
-  for (const { emotion, weight } of MICRO_WEIGHTS) {
-    r -= weight
-    if (r <= 0) return emotion
+  /** Pick a micro-emotion, excluding binary (on/off) morphs that can't blend. */
+  private pickWeighted(): CanonicalEmotion {
+    const available = MICRO_WEIGHTS.filter((w) => !this.skipEmotions.has(w.emotion))
+    if (available.length === 0) return 'neutral'
+    const total = available.reduce((s, w) => s + w.weight, 0)
+    let r = Math.random() * total
+    for (const { emotion, weight } of available) {
+      r -= weight
+      if (r <= 0) return emotion
+    }
+    return 'neutral'
   }
-  return 'neutral'
 }
 
 function randomRange([min, max]: [number, number]): number {
