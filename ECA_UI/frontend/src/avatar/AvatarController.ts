@@ -45,7 +45,7 @@ export class AvatarController {
     this.eye = new EyeController(vrm)
     this.head = new HeadController(vrm, this.eye)
     this.lipSync = new LipSyncController(profile)
-    this.idle = new IdleBehaviorController(this.expression, this.eye)
+    this.idle = new IdleBehaviorController(this.expression, this.eye, this.profile.binaryEmotions)
     // Order = layering (§5). Emotion first; lip-sync overrides the mouth; blink last.
     this.contributors = [this.expression, this.lipSync, this.blink]
   }
