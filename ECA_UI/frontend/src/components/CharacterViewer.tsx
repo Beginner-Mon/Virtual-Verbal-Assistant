@@ -30,6 +30,28 @@ const CAMERA_MODES: Record<CameraMode, { boneName: VRMHumanBoneName; cameraOffse
   },
 }
 
+/**
+ * VRM bind poses are a T-pose (arms straight out). With no body animation
+ * selected by default, the avatar would render in that T-pose — which looks odd
+ * as a resting stance. Apply a static relaxed A-pose to the arm bones once at
+ * load so the avatar stands naturally. A played BVH / Kimodo clip overrides
+ * these bones while it runs; this only defines the at-rest pose.
+ */
+function applyRestPose(vrm: VRM) {
+  const humanoid = vrm.humanoid
+  if (!humanoid) return
+  const deg = THREE.MathUtils.degToRad
+  const rot = (name: VRMHumanBoneName, x: number, y: number, z: number) => {
+    const bone = humanoid.getNormalizedBoneNode(name)
+    if (bone) bone.rotation.set(deg(x), deg(y), deg(z))
+  }
+  // Swing the upper arms down toward the torso and add a slight elbow bend.
+  rot(VRMHumanBoneName.LeftUpperArm, 0, 0, 65)
+  rot(VRMHumanBoneName.RightUpperArm, 0, 0, -65)
+  rot(VRMHumanBoneName.LeftLowerArm, 0, 0, 12)
+  rot(VRMHumanBoneName.RightLowerArm, 0, 0, -12)
+}
+
 /* ───────────────────── VRM Character with BVH Animation ──────────── */
 
 interface VRMCharacterProps {
@@ -61,9 +83,11 @@ function VRMCharacter({
 
   const vrm: VRM = gltf.userData.vrm
 
-  // Expose the VRM instance so the parent can read bone positions
+  // Expose the VRM instance so the parent can read bone positions, and pose it
+  // into a natural A-pose (VRM bind pose is a T-pose).
   useEffect(() => {
     vrmRef.current = vrm
+    applyRestPose(vrm)
     return () => {
       vrmRef.current = null
     }
