@@ -13,7 +13,8 @@ import {
 } from '@react-three/drei'
 import { useRef, useEffect, useState, Suspense, useMemo } from 'react'
 import * as THREE from 'three'
-import { loadAndRetargetBVH } from '../lib/bvhToVrm'
+import { loadAndRetargetBVH, SMPLX_RETARGET_OPTIONS, STANDARD_RETARGET_OPTIONS } from '../lib/bvhToVrm'
+import { loadMixamoAnimation } from '../lib/loadMixamoAnimation'
 import { type CameraMode, useMotion } from '../contexts/MotionContext'
 import { AvatarController } from '../avatar/AvatarController'
 import { loadProfile } from '../avatar/AvatarProfile'
@@ -96,9 +97,18 @@ function VRMCharacter({
 
     let cancelled = false
 
-    async function applyBVH() {
+    async function applyAnimation() {
       try {
-        const clip = await loadAndRetargetBVH(animationUrl, vrm)
+        let clip: THREE.AnimationClip | null = null
+        const isFbx = animationUrl.includes('.fbx')
+
+        if (isFbx) {
+          clip = await loadMixamoAnimation(animationUrl, vrm)
+        } else {
+          const isSmplx = animationUrl.includes('motion_') || animationUrl.includes('smplx')
+          const options = isSmplx ? SMPLX_RETARGET_OPTIONS : STANDARD_RETARGET_OPTIONS
+          clip = await loadAndRetargetBVH(animationUrl, vrm, options)
+        }
 
         if (cancelled || !clip) return
 
@@ -116,14 +126,14 @@ function VRMCharacter({
         onLoaded({ tracks: clip.tracks.length, duration: clip.duration })
 
         console.log(
-          `[CharacterViewer] BVH animation loaded: ${clip.tracks.length} tracks, ${clip.duration.toFixed(2)}s`,
+          `[CharacterViewer] Animation loaded (${isFbx ? 'FBX' : 'BVH'}): ${clip.tracks.length} tracks, ${clip.duration.toFixed(2)}s`,
         )
       } catch (err) {
-        console.error('[CharacterViewer] Failed to load BVH animation:', err)
+        console.error('[CharacterViewer] Failed to load animation:', err)
       }
     }
 
-    applyBVH()
+    applyAnimation()
 
     return () => {
       cancelled = true
@@ -312,10 +322,12 @@ function Scene({
 
 return (
     <>
-      <ambientLight intensity={theme === 'dark' ? 0.15 : 0.6} />
-      <directionalLight position={[5, 5, 5]} intensity={0.5} castShadow color={theme === 'dark' ? "#e9d5ff" : "#ffffff"} />
-      <directionalLight position={[-5, 3, -5]} intensity={0.3} color="#7c3aed" />
-      <spotLight position={[0, 5, 0]} angle={0.4} penumbra={1} intensity={0.5} color="#a78bfa" />
+      <ambientLight intensity={theme === 'dark' ? 1.0 : 1.2} />
+      <hemisphereLight skyColor={theme === 'dark' ? "#ffffff" : "#ffffff"} groundColor={theme === 'dark' ? "#4c1d95" : "#a78bfa"} intensity={theme === 'dark' ? 0.6 : 0.6} />
+      <directionalLight position={[5, 5, 5]} intensity={theme === 'dark' ? 1.5 : 1.2} castShadow color={theme === 'dark' ? "#e9d5ff" : "#ffffff"} />
+      <directionalLight position={[-5, 3, -5]} intensity={theme === 'dark' ? 1.0 : 0.8} color="#7c3aed" />
+      <directionalLight position={[0, -3, 3]} intensity={theme === 'dark' ? 0.8 : 0.5} color="#ddd6fe" />
+      <spotLight position={[0, 5, 0]} angle={0.4} penumbra={1} intensity={theme === 'dark' ? 1.2 : 0.8} color="#a78bfa" />
 
       <VRMCharacter
         vrmRef={vrmRef}

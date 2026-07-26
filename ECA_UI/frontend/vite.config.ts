@@ -48,5 +48,5 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
-  assetsInclude: ['**/*.vrm', '**/*.bvh'],
+  assetsInclude: ['**/*.vrm', '**/*.bvh', '**/*.fbx'],
 })

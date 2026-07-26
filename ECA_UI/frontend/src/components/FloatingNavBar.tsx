@@ -22,6 +22,7 @@ import {
   UserRound,
   Settings2,
   GripVertical,
+  Music2,
 } from 'lucide-react'
 // @ts-expect-error - reserved for auth feature (commented out)
 import { LogOut } from 'lucide-react'
@@ -29,6 +30,7 @@ import { LogOut } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useMediaQuery } from '../lib/use-media-query'
 import { useAuth } from '../contexts/AuthContext'
+import { useMotion } from '../contexts/MotionContext'
 import { Avatar, AvatarImage, AvatarFallback } from './ui/avatar'
 
 import ChatPanel from './ChatPanel'
@@ -136,12 +138,16 @@ function DraggableBar({
   activePanel,
   onIconClick,
   isDragging,
+  isMusicPlaying,
+  toggleMusic,
 }: {
   dockedEdge: DockedEdge
   position: { x: number; y: number }
   activePanel: PanelId
   onIconClick: (id: PanelId) => void
   isDragging: boolean
+  isMusicPlaying: boolean
+  toggleMusic: () => void
 }) {
   const { userAttributes } = useAuth()
   const profilePicture = userAttributes?.picture
@@ -222,6 +228,18 @@ function DraggableBar({
         )
       })}
 
+      {/* Background Music Toggle */}
+      <button
+        onClick={toggleMusic}
+        title={isMusicPlaying ? 'Pause Music' : 'Play Music'}
+        className="relative w-10 h-10 flex items-center justify-center text-muted-foreground transition-all duration-200 shrink-0"
+      >
+        <Music2 className="w-[18px] h-[18px]" />
+        {!isMusicPlaying && (
+          <div className="absolute top-1/2 left-1/2 w-5 h-[1.5px] bg-muted-foreground -translate-x-1/2 -translate-y-1/2 -rotate-[45deg]" />
+        )}
+      </button>
+
       {/* Separator before avatar */}
       <div className={`${isHorizontal ? 'w-px h-6' : 'h-px w-6'} bg-border/40`} />
 
@@ -249,6 +267,7 @@ function DraggableBar({
 
 export default function FloatingNavBar() {
   const isMobile = useMediaQuery('(max-width: 767px)')
+  const { isMusicPlaying, toggleMusic } = useMotion()
 
   const [dockedEdge, setDockedEdge] = useState<DockedEdge>('left')
   const [activePanel, setActivePanel] = useState<PanelId>(null)
@@ -399,6 +418,8 @@ export default function FloatingNavBar() {
             setActivePanel(null)
           }}
           navItems={NAV_ITEMS}
+          isMusicPlaying={isMusicPlaying}
+          toggleMusic={toggleMusic}
           panelContent={
             activePanel && activePanel !== 'chat' ? (
               <PanelContent
@@ -441,6 +462,8 @@ export default function FloatingNavBar() {
           activePanel={activePanel}
           onIconClick={handleIconClick}
           isDragging={isDragging}
+          isMusicPlaying={isMusicPlaying}
+          toggleMusic={toggleMusic}
         />
       </DndContext>
 

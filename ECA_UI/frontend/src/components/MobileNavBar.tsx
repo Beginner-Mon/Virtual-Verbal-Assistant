@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { Menu, X } from 'lucide-react'
+import { Menu, X, Music2 } from 'lucide-react'
 import type { PanelId, NavItem } from './FloatingNavBar'
 import { useAuth } from '../contexts/AuthContext'
 import { Avatar, AvatarImage, AvatarFallback } from './ui/avatar'
@@ -10,6 +10,8 @@ interface MobileNavBarProps {
   onOpenModal: (type: 'profile' | 'settings') => void
   navItems: NavItem[]
   panelContent?: React.ReactNode
+  isMusicPlaying: boolean
+  toggleMusic: () => void
 }
 
 export default function MobileNavBar({
@@ -17,6 +19,8 @@ export default function MobileNavBar({
   onIconClick,
   navItems,
   panelContent,
+  isMusicPlaying,
+  toggleMusic,
 }: MobileNavBarProps) {
   const { userAttributes } = useAuth()
   const profilePicture = userAttributes?.picture
@@ -185,6 +189,19 @@ export default function MobileNavBar({
                 </button>
               )
             })}
+
+            {/* Background Music Toggle */}
+            <button
+              onClick={toggleMusic}
+              title={isMusicPlaying ? 'Pause Music' : 'Play Music'}
+              className="relative flex items-center justify-center text-muted-foreground transition-all duration-200"
+              style={{ width: btnSize - 4, height: btnSize - 4 }}
+            >
+              <Music2 className="w-4 h-4" />
+              {!isMusicPlaying && (
+                <div className="absolute top-1/2 left-1/2 w-4 h-[1.5px] bg-muted-foreground -translate-x-1/2 -translate-y-1/2 -rotate-[45deg]" />
+              )}
+            </button>
 
             <div className="h-px w-6 bg-border/40" />
             <button

@@ -1,5 +1,6 @@
-import { createContext, useContext, useRef, useState, type ReactNode } from 'react'
+import { createContext, useContext, useRef, useState, useCallback, type ReactNode } from 'react'
 import type { AvatarController } from '../avatar/AvatarController'
+import instrumentalUrl from '../asset/instrumental-ver.mp3'
 
 type AssetOption = {
   id: string
@@ -16,6 +17,13 @@ const VRM_ASSET_MODULES = import.meta.glob('../asset/**/*.vrm', {
 
 const BVH_ASSET_MODULES = import.meta.glob('../asset/**/*.bvh', {
   eager: true,
+  query: '?url',
+  import: 'default',
+}) as Record<string, string>
+
+const FBX_ASSET_MODULES = import.meta.glob('../asset/**/*.fbx', {
+  eager: true,
+  query: '?url',
   import: 'default',
 }) as Record<string, string>
 
@@ -35,7 +43,10 @@ function buildAssetOptions(modules: Record<string, string>): AssetOption[] {
 }
 
 const BUILTIN_VRM_OPTIONS = buildAssetOptions(VRM_ASSET_MODULES)
-const BUILTIN_MOTION_OPTIONS = buildAssetOptions(BVH_ASSET_MODULES)
+const BUILTIN_MOTION_OPTIONS = buildAssetOptions({
+  ...BVH_ASSET_MODULES,
+  ...FBX_ASSET_MODULES,
+})
 
 interface MotionContextType {
   selectedVrmId: string
@@ -61,26 +72,52 @@ interface MotionContextType {
    * state (facial-animation-plan.md §8 rule 3).
    */
   avatarRef: React.MutableRefObject<AvatarController | null>
+  isMusicPlaying: boolean
+  toggleMusic: () => void
 }
 
 const MotionContext = createContext<MotionContextType | null>(null)
 
 export function MotionProvider({ children }: { children: ReactNode }) {
-  // Default: no BVH motion — avatar renders in its rest pose. Motion is only
-  // applied when the user explicitly picks a motion source AND presses play.
-  const [isPlaying, setIsPlaying] = useState(false)
+  // Default: Standard Idle animation so the avatar shows a natural idle pose
+  // on load instead of the stiff T-pose.
   const [speed, setSpeed] = useState(1.0)
   const [clipInfo, setClipInfo] = useState<{ tracks: number; duration: number } | null>(null)
   const defaultVrmId =
     BUILTIN_VRM_OPTIONS.find((o) => /seele/i.test(o.label))?.id ??
     BUILTIN_VRM_OPTIONS[0]?.id ??
     ''
+  const defaultMotionId =
+    BUILTIN_MOTION_OPTIONS.find((o) => /standard idle/i.test(o.label))?.id ??
+    BUILTIN_MOTION_OPTIONS[0]?.id ??
+    ''
   const [selectedVrmId, setSelectedVrmId] = useState(defaultVrmId)
-  const [selectedMotionId, setSelectedMotionId] = useState('')
+  const [selectedMotionId, setSelectedMotionId] = useState(defaultMotionId)
+  const [isPlaying, setIsPlaying] = useState(true)
   const [cameraMode, setCameraMode] = useState<CameraMode>('head')
 
   const onResetRef = useRef<(() => void) | null>(null)
   const avatarRef = useRef<AvatarController | null>(null)
+
+  // Background music state
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const [isMusicPlaying, setIsMusicPlaying] = useState(false)
+
+  const toggleMusic = useCallback(() => {
+    if (!audioRef.current) {
+      const audio = new Audio(instrumentalUrl)
+      audio.loop = true
+      audio.volume = 0.35
+      audioRef.current = audio
+    }
+    const audio = audioRef.current
+    if (isMusicPlaying) {
+      audio.pause()
+      setIsMusicPlaying(false)
+    } else {
+      audio.play().then(() => setIsMusicPlaying(true)).catch(() => {})
+    }
+  }, [isMusicPlaying])
 
   const handleReset = () => {
     if (onResetRef.current) {
@@ -108,6 +145,8 @@ export function MotionProvider({ children }: { children: ReactNode }) {
         onResetRef,
         handleReset,
         avatarRef,
+        isMusicPlaying,
+        toggleMusic,
       }}
     >
       {children}

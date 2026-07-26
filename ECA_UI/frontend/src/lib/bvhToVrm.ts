@@ -11,21 +11,26 @@ import * as THREE from 'three'
 import { BVHLoader } from 'three/examples/jsm/loaders/BVHLoader.js'
 import type { VRM } from '@pixiv/three-vrm'
 
-const RETARGET_OPTIONS = {
-  // Enable when BVH and VRM use opposite forward/handedness conventions.
-  mirrorZ: true,
+export interface RetargetOptions {
+  mirrorZ: boolean
+  flip180Y: boolean
+  hipCompensation: THREE.Quaternion | null
+  swapYandZ: boolean
 }
 
-/**
- * Compensation quaternion applied to the hips (root) bone's retargeted rotation.
- *
- * The VRM renderer uses a group with rotation [π/2, 0, 0] (X+90°) so the rest
- * pose is natively Z-up and faces the camera. However, BVH files were authored
- * for a legacy group [0, π, 0]. This quaternion = X(-90°) * Y(180°) maps the
- * old group-space orientation to the new group-space so the final world pose is
- * identical regardless of which group rotation is in effect.
- */
-const HIPS_ORIENT_COMPENSATION = new THREE.Quaternion(0, Math.SQRT1_2, -Math.SQRT1_2, 0)
+export const SMPLX_RETARGET_OPTIONS: RetargetOptions = {
+  mirrorZ: true,
+  flip180Y: false,
+  hipCompensation: new THREE.Quaternion(0, Math.SQRT1_2, -Math.SQRT1_2, 0),
+  swapYandZ: true,
+}
+
+export const STANDARD_RETARGET_OPTIONS: RetargetOptions = {
+  mirrorZ: false,
+  flip180Y: true,
+  hipCompensation: null,
+  swapYandZ: false,
+}
 
 /* ────────────────────────── Bone Name Mapping ────────────────────── */
 
@@ -154,6 +159,7 @@ export async function loadBVH(url: string) {
 export function retargetBVHToVRM(
   bvhResult: { skeleton: THREE.Skeleton; clip: THREE.AnimationClip },
   vrm: VRM,
+  options: RetargetOptions = STANDARD_RETARGET_OPTIONS,
 ): THREE.AnimationClip | null {
   const tracks: THREE.KeyframeTrack[] = []
   const clip = bvhResult.clip
@@ -194,7 +200,10 @@ export function retargetBVHToVRM(
     if (property === 'quaternion') {
       const sourceBone = sourceBoneByName.get(bvhBoneName) ?? sourceBoneByName.get(bvhBoneName.toLowerCase())
       const sourceRest = sourceBone?.quaternion.clone() ?? new THREE.Quaternion()
-      const sourceRestConverted = RETARGET_OPTIONS.mirrorZ ? mirrorQuaternionZ(sourceRest) : sourceRest
+      const sourceRestConverted = sourceRest.clone()
+      if (options.mirrorZ) sourceRestConverted.copy(mirrorQuaternionZ(sourceRestConverted))
+      if (options.flip180Y) sourceRestConverted.set(-sourceRestConverted.x, sourceRestConverted.y, -sourceRestConverted.z, sourceRestConverted.w).normalize()
+      
       const sourceRestInv = sourceRestConverted.clone().invert()
       const targetRest = vrmBoneNode.quaternion.clone()
 
@@ -206,18 +215,21 @@ export function retargetBVHToVRM(
       for (let i = 0; i < track.values.length; i += 4) {
         sourceQuat.fromArray(track.values as ArrayLike<number>, i)
 
-        if (RETARGET_OPTIONS.mirrorZ) {
+        if (options.mirrorZ) {
           sourceQuat.copy(mirrorQuaternionZ(sourceQuat))
+        }
+        if (options.flip180Y) {
+          sourceQuat.set(-sourceQuat.x, sourceQuat.y, -sourceQuat.z, sourceQuat.w).normalize()
         }
 
         // Convert source local rotation to delta from source rest,
         // then re-apply on top of target rest orientation.
         deltaQuat.copy(sourceRestInv).multiply(sourceQuat)
         targetQuat.copy(targetRest).multiply(deltaQuat)
-        // Compensate for group-rotation change: the renderer switched from
-        // [0, π, 0] (legacy) to [π/2, 0, 0] (Z-up native rest pose).
-        if (vrmBoneName === 'hips') {
-          targetQuat.premultiply(HIPS_ORIENT_COMPENSATION)
+        
+        // Compensate for group-rotation change if applicable
+        if (vrmBoneName === 'hips' && options.hipCompensation) {
+          targetQuat.premultiply(options.hipCompensation)
         }
         targetQuat.normalize()
         targetQuat.toArray(retargetedValues, i)
@@ -234,19 +246,42 @@ export function retargetBVHToVRM(
     // For position tracks, only apply to hips (root motion)
     if (property === 'position' && vrmBoneName === 'hips') {
       // Scale BVH positions down (BVH uses cm, VRM uses meters).
-      // Under X+90° group: world = (trackX, -trackZ, trackY).
-      // These NPZ/BVH files use Z=vertical, Y=horizontal (non-standard).
-      // Swap Y↔Z so: BVH_Z→world Z (jump), BVH_Y→world Y (walk F/B).
       const scaledValues = new Float32Array(track.values.length)
       const scale = 0.01 // BVH centimeters → meters
+      
+      const targetRestPos = vrmBoneNode.position.clone()
+      const bvhStartX = track.values[0]
+      const bvhStartY = track.values[1]
+      const bvhStartZ = track.values[2]
 
       for (let i = 0; i < track.values.length; i += 3) {
-        const bx = track.values[i] * scale
-        const by = track.values[i + 1] * scale
-        const bz = track.values[i + 2] * scale
-        scaledValues[i] = bx        // X → world X (L/R)
-        scaledValues[i + 1] = bz   // Z → world Z (vertical, flipped)
-        scaledValues[i + 2] = -by   // Y → world Y (walk F/B, flipped)
+        // Calculate delta from first frame (in cm)
+        const dx = track.values[i] - bvhStartX
+        const dy = track.values[i + 1] - bvhStartY
+        const dz = track.values[i + 2] - bvhStartZ
+        
+        // Convert delta to meters
+        const deltaX = dx * scale
+        const deltaY = dy * scale
+        const deltaZ = dz * scale
+        
+        if (options.swapYandZ) {
+          // These NPZ/BVH files use Z=vertical, Y=horizontal (non-standard).
+          // Swap Y↔Z so: BVH_Z→world Z (jump), BVH_Y→world Y (walk F/B).
+          scaledValues[i] = targetRestPos.x + deltaX
+          scaledValues[i + 1] = targetRestPos.y + deltaZ
+          scaledValues[i + 2] = targetRestPos.z - deltaY
+        } else if (options.flip180Y) {
+          // Rotated 180 degrees around Y axis
+          scaledValues[i] = targetRestPos.x - deltaX
+          scaledValues[i + 1] = targetRestPos.y + deltaY
+          scaledValues[i + 2] = targetRestPos.z - deltaZ
+        } else {
+          // Standard Y-up convention
+          scaledValues[i] = targetRestPos.x + deltaX
+          scaledValues[i + 1] = targetRestPos.y + deltaY
+          scaledValues[i + 2] = targetRestPos.z + deltaZ
+        }
       }
 
       const newTrack = new THREE.VectorKeyframeTrack(
@@ -307,7 +342,8 @@ function getNodePath(root: THREE.Object3D, target: THREE.Object3D): string | nul
 export async function loadAndRetargetBVH(
   bvhUrl: string,
   vrm: VRM,
+  options: RetargetOptions = STANDARD_RETARGET_OPTIONS,
 ): Promise<THREE.AnimationClip | null> {
   const bvhResult = await loadBVH(bvhUrl)
-  return retargetBVHToVRM(bvhResult, vrm)
+  return retargetBVHToVRM(bvhResult, vrm, options)
 }
