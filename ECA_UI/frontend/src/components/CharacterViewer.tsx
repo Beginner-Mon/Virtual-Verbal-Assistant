@@ -15,6 +15,7 @@ import { useRef, useEffect, useState, Suspense, useMemo } from 'react'
 import * as THREE from 'three'
 import { loadAndRetargetBVH, SMPLX_RETARGET_OPTIONS, STANDARD_RETARGET_OPTIONS } from '../lib/bvhToVrm'
 import { loadMixamoAnimation } from '../lib/loadMixamoAnimation'
+import { getAnimationClip } from '../lib/animationCache'
 import { type CameraMode, useMotion } from '../contexts/MotionContext'
 import { AvatarController } from '../avatar/AvatarController'
 import { loadProfile } from '../avatar/AvatarProfile'
@@ -30,29 +31,12 @@ const CAMERA_MODES: Record<CameraMode, { boneName: VRMHumanBoneName; cameraOffse
   },
 }
 
-/**
- * VRM bind poses are a T-pose (arms straight out). With no body animation
- * selected by default, the avatar would render in that T-pose — which looks odd
- * as a resting stance. Apply a static relaxed A-pose to the arm bones once at
- * load so the avatar stands naturally. A played BVH / Kimodo clip overrides
- * these bones while it runs; this only defines the at-rest pose.
- */
-function applyRestPose(vrm: VRM) {
-  const humanoid = vrm.humanoid
-  if (!humanoid) return
-  const deg = THREE.MathUtils.degToRad
-  const rot = (name: VRMHumanBoneName, x: number, y: number, z: number) => {
-    const bone = humanoid.getNormalizedBoneNode(name)
-    if (bone) bone.rotation.set(deg(x), deg(y), deg(z))
-  }
-  // Swing the upper arms down toward the torso and add a slight elbow bend.
-  rot(VRMHumanBoneName.LeftUpperArm, 0, 0, 65)
-  rot(VRMHumanBoneName.RightUpperArm, 0, 0, -65)
-  rot(VRMHumanBoneName.LeftLowerArm, 0, 0, 12)
-  rot(VRMHumanBoneName.RightLowerArm, 0, 0, -12)
-}
+
 
 /* ───────────────────── VRM Character with BVH Animation ──────────── */
+
+/** Crossfade duration (s) when swapping motion clips. */
+const FADE_SEC = 0.3
 
 interface VRMCharacterProps {
   vrmUrl: string
@@ -62,6 +46,8 @@ interface VRMCharacterProps {
   speed: number
   onResetRef: React.MutableRefObject<(() => void) | null>
   onLoaded: (info: { tracks: number; duration: number }) => void
+  /** Readiness gate: false while the model has no pose yet (bind pose hidden). */
+  onReady: (ready: boolean) => void
   vrmRef: React.MutableRefObject<VRM | null>
   avatarRef: React.MutableRefObject<AvatarController | null>
 }
@@ -74,6 +60,7 @@ function VRMCharacter({
   speed,
   onResetRef,
   onLoaded,
+  onReady,
   vrmRef,
   avatarRef,
 }: VRMCharacterProps) {
@@ -83,11 +70,27 @@ function VRMCharacter({
 
   const vrm: VRM = gltf.userData.vrm
 
-  // Expose the VRM instance so the parent can read bone positions, and pose it
-  // into a natural A-pose (VRM bind pose is a T-pose).
+  // Cache rest poses immediately upon load, before any animations mutate the bones.
+  // The retargeter (BVH/Mixamo) needs these pure bind poses to calculate offsets.
+  if (!vrm.scene.userData.restPoses) {
+    const restPoses = new Map<string, { position: THREE.Vector3; quaternion: THREE.Quaternion }>()
+    if (vrm.humanoid) {
+      Object.values(VRMHumanBoneName).forEach((boneName) => {
+        const bone = vrm.humanoid?.getNormalizedBoneNode(boneName as VRMHumanBoneName)
+        if (bone) {
+          restPoses.set(boneName, {
+            position: bone.position.clone(),
+            quaternion: bone.quaternion.clone(),
+          })
+        }
+      })
+    }
+    vrm.scene.userData.restPoses = restPoses
+  }
+
+  // Expose the VRM instance so the parent can read bone positions.
   useEffect(() => {
     vrmRef.current = vrm
-    applyRestPose(vrm)
     return () => {
       vrmRef.current = null
     }
@@ -95,8 +98,19 @@ function VRMCharacter({
 
   const mixerRef = useRef<THREE.AnimationMixer | null>(null)
   const actionRef = useRef<THREE.AnimationAction | null>(null)
+  const fadingOutRef = useRef<THREE.AnimationAction[]>([])
+  const loadGenRef = useRef(0)
+  const isPlayingRef = useRef(isPlaying)
+  const revealedRef = useRef(false)
   const avatarControllerRef = useRef<AvatarController | null>(null)
   const [animLoaded, setAnimLoaded] = useState(false)
+  // Drives <primitive visible={...}>: false until the first pose is applied.
+  // Per-instance state — key={vrmUrl} remounts reset it on model switch.
+  const [revealed, setRevealed] = useState(false)
+
+  useEffect(() => {
+    isPlayingRef.current = isPlaying
+  }, [isPlaying])
 
   // Facial-animation controller lifecycle: attach on VRM load, detach on
   // model change / unmount. Kept out of React state — this ref IS the handle
@@ -113,44 +127,93 @@ function VRMCharacter({
     }
   }, [vrm, modelId, avatarRef])
 
-  // Load BVH clip when a motion source is selected. The clip is prepared
-  // (mixer + action) but NOT played — the avatar stays at rest pose until the
-  // user presses Play in Motion Controls.
+  // One AnimationMixer per VRM, living for the model's whole lifetime. Actions
+  // are added/retired on this mixer — stopAllAction() only happens here, on
+  // teardown. Invariant: from the moment the model is visible, at least one
+  // action drives the skeleton, so the bind pose (T-pose) is never rendered.
+  useEffect(() => {
+    if (!vrm) return
+    const mixer = new THREE.AnimationMixer(vrm.scene)
+    mixerRef.current = mixer
+    onReady(false)
+    return () => {
+      mixer.stopAllAction()
+      mixer.uncacheRoot(vrm.scene)
+      mixerRef.current = null
+      actionRef.current = null
+      fadingOutRef.current = []
+      onReady(false)
+    }
+  }, [vrm, onReady])
+
+  // Load (or reuse a cached) clip when a motion source is selected. The
+  // current action keeps driving the skeleton until its replacement is ready,
+  // then a crossfade swaps them — there is never a frame with zero active
+  // actions, so switching motions never flashes the bind pose.
   useEffect(() => {
     if (!vrm || !animationUrl) return
-
-    let cancelled = false
+    const gen = ++loadGenRef.current
 
     async function applyAnimation() {
       try {
-        let clip: THREE.AnimationClip | null = null
         const isFbx = animationUrl.includes('.fbx')
+        const clip = await getAnimationClip(`${vrmUrl}|${animationUrl}`, () =>
+          isFbx
+            ? loadMixamoAnimation(animationUrl, vrm)
+            : loadAndRetargetBVH(
+                animationUrl,
+                vrm,
+                animationUrl.includes('motion_') || animationUrl.includes('smplx')
+                  ? SMPLX_RETARGET_OPTIONS
+                  : STANDARD_RETARGET_OPTIONS,
+              ),
+        )
 
-        if (isFbx) {
-          clip = await loadMixamoAnimation(animationUrl, vrm)
-        } else {
-          const isSmplx = animationUrl.includes('motion_') || animationUrl.includes('smplx')
-          const options = isSmplx ? SMPLX_RETARGET_OPTIONS : STANDARD_RETARGET_OPTIONS
-          clip = await loadAndRetargetBVH(animationUrl, vrm, options)
-        }
+        // A newer request (or a teardown) superseded this one — the clip
+        // stays cached for future use, but we don't touch the active action.
+        if (gen !== loadGenRef.current || !clip) return
+        const mixer = mixerRef.current
+        if (!mixer) return
 
-        if (cancelled || !clip) return
-
-        // Create mixer on the VRM scene
-        const mixer = new THREE.AnimationMixer(vrm.scene)
         const action = mixer.clipAction(clip)
-
         action.setLoop(THREE.LoopRepeat, Infinity)
         action.clampWhenFinished = false
-        // Don't play yet — motion only starts when isPlaying flips to true.
 
-        mixerRef.current = mixer
+        const prev = actionRef.current
+        if (isPlayingRef.current) {
+          action.play()
+          if (prev && prev !== action && prev.isRunning()) {
+            // Crossfade: new clip fades in over the old one; the old action is
+            // retired in useFrame once its weight reaches zero.
+            prev.fadeOut(FADE_SEC)
+            action.fadeIn(FADE_SEC)
+            fadingOutRef.current = fadingOutRef.current.filter((a) => a !== action)
+            fadingOutRef.current.push(prev)
+          } else {
+            // First action on this model (or previous one was stopped): apply
+            // at full weight immediately — fading in from nothing would show
+            // the bind pose for the fade duration.
+            action.setEffectiveWeight(1)
+          }
+        } else if (prev && prev !== action) {
+          prev.stop()
+          mixer.uncacheAction(prev.getClip())
+        }
         actionRef.current = action
         setAnimLoaded(true)
         onLoaded({ tracks: clip.tracks.length, duration: clip.duration })
 
+        // Reveal only after a pose has actually been applied to the bones.
+        // This is an event-driven readiness gate, NOT a wait time.
+        if (!revealedRef.current) {
+          revealedRef.current = true
+          mixer.update(0)
+          setRevealed(true)
+          onReady(true)
+        }
+
         console.log(
-          `[CharacterViewer] Animation loaded (${isFbx ? 'FBX' : 'BVH'}): ${clip.tracks.length} tracks, ${clip.duration.toFixed(2)}s`,
+          `[CharacterViewer] Animation ready (${isFbx ? 'FBX' : 'BVH'}): ${clip.tracks.length} tracks, ${clip.duration.toFixed(2)}s`,
         )
       } catch (err) {
         console.error('[CharacterViewer] Failed to load animation:', err)
@@ -158,20 +221,11 @@ function VRMCharacter({
     }
 
     applyAnimation()
+  }, [vrm, vrmUrl, animationUrl, onLoaded, onReady])
 
-    return () => {
-      cancelled = true
-      if (mixerRef.current) {
-        mixerRef.current.stopAllAction()
-        mixerRef.current = null
-      }
-      actionRef.current = null
-      setAnimLoaded(false)
-    }
-  }, [vrm, animationUrl])
-
-  // Handle play/pause and speed changes. When paused, the action is fully
-  // stopped (not just timeScale=0) so the avatar returns to rest pose.
+  // Handle play/pause and speed changes. Pause is a debug-only control: the
+  // action is fully stopped (not just timeScale=0), which restores the bind
+  // pose — acceptable for debugging, not part of the production UX.
   useEffect(() => {
     const action = actionRef.current
     const mixer = mixerRef.current
@@ -207,8 +261,18 @@ function VRMCharacter({
   // vrm.update applies those weights via expressionManager.update() — so the
   // tick must land BETWEEN mixer.update and vrm.update.
   useFrame((_state, delta) => {
-    if (mixerRef.current) {
-      mixerRef.current.update(delta)
+    const mixer = mixerRef.current
+    if (mixer) {
+      mixer.update(delta)
+      // Retire actions whose crossfade-out has completed.
+      const fading = fadingOutRef.current
+      for (let i = fading.length - 1; i >= 0; i--) {
+        const a = fading[i]
+        if (a === actionRef.current || a.getEffectiveWeight() > 0.001) continue
+        a.stop()
+        mixer.uncacheAction(a.getClip())
+        fading.splice(i, 1)
+      }
     }
     if (avatarControllerRef.current) {
       avatarControllerRef.current.tick(delta)
@@ -220,7 +284,9 @@ function VRMCharacter({
 
   return (
     <group position={[0, -1.5, 0]} rotation={[Math.PI / 2, 0, 0]}>
-      <primitive object={vrm.scene} />
+      {/* visible=false until the first animation pose is applied — the model
+          never renders in bind pose (T-pose). */}
+      <primitive object={vrm.scene} visible={revealed} />
     </group>
   )
 }
@@ -277,6 +343,7 @@ interface SceneProps {
   speed: number
   onResetRef: React.MutableRefObject<(() => void) | null>
   onLoaded: (info: { tracks: number; duration: number }) => void
+  onReady: (ready: boolean) => void
   avatarRef: React.MutableRefObject<AvatarController | null>
 }
 
@@ -289,6 +356,7 @@ function Scene({
   speed,
   onResetRef,
   onLoaded,
+  onReady,
   avatarRef,
 }: SceneProps) {
   const controlsRef = useRef<any>(null)
@@ -347,13 +415,17 @@ function Scene({
 return (
     <>
       <ambientLight intensity={theme === 'dark' ? 1.0 : 1.2} />
-      <hemisphereLight skyColor={theme === 'dark' ? "#ffffff" : "#ffffff"} groundColor={theme === 'dark' ? "#4c1d95" : "#a78bfa"} intensity={theme === 'dark' ? 0.6 : 0.6} />
+      <hemisphereLight color={theme === 'dark' ? "#ffffff" : "#ffffff"} groundColor={theme === 'dark' ? "#4c1d95" : "#a78bfa"} intensity={theme === 'dark' ? 0.6 : 0.6} />
       <directionalLight position={[5, 5, 5]} intensity={theme === 'dark' ? 1.5 : 1.2} castShadow color={theme === 'dark' ? "#e9d5ff" : "#ffffff"} />
       <directionalLight position={[-5, 3, -5]} intensity={theme === 'dark' ? 1.0 : 0.8} color="#7c3aed" />
       <directionalLight position={[0, -3, 3]} intensity={theme === 'dark' ? 0.8 : 0.5} color="#ddd6fe" />
       <spotLight position={[0, 5, 0]} angle={0.4} penumbra={1} intensity={theme === 'dark' ? 1.2 : 0.8} color="#a78bfa" />
 
+      {/* key={vrmUrl}: a model switch is a clean remount — the old model is
+          dropped immediately and the new one stays hidden (plus a loading
+          overlay) until its first pose is applied. */}
       <VRMCharacter
+        key={vrmUrl}
         vrmRef={vrmRef}
         vrmUrl={vrmUrl}
         modelId={modelId}
@@ -362,6 +434,7 @@ return (
         speed={speed}
         onResetRef={onResetRef}
         onLoaded={onLoaded}
+        onReady={onReady}
         avatarRef={avatarRef}
       />
       <FloatingParticles />
@@ -436,6 +509,9 @@ export default function CharacterViewer() {
 
   const selectedVrm = vrmOptions.find((o) => o.id === selectedVrmId)
   const vrmUrl = selectedVrm?.url ?? seeleUrl
+  // Readiness gate driven by VRMCharacter: the model (and this overlay) swap
+  // only when the first pose is actually applied — never a timed wait.
+  const [viewerReady, setViewerReady] = useState(false)
   // Derive a stable model id ("seele", "bronya", "bronya_long") from the asset
   // label so loadProfile can pick a per-model override.
   const modelId = (selectedVrm?.label ?? 'seele.vrm')
@@ -480,10 +556,19 @@ export default function CharacterViewer() {
             speed={speed}
             onResetRef={onResetRef}
             onLoaded={setClipInfo}
+            onReady={setViewerReady}
             avatarRef={avatarRef}
           />
         </Suspense>
       </Canvas>
+
+      {/* Loading overlay: shown while the model has no pose yet (initial load
+          / model switch). Replaces the old T-pose flash with a spinner. */}
+      {!viewerReady && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <div className="h-10 w-10 animate-spin rounded-full border-2 border-violet-400/30 border-t-violet-400" />
+        </div>
+      )}
 
       {/* Bottom gradient */}
       <div className="absolute bottom-0 left-0 right-0 h-24 pointer-events-none bg-gradient-to-t from-background/80 to-transparent" />

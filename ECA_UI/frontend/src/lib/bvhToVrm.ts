@@ -205,7 +205,9 @@ export function retargetBVHToVRM(
       if (options.flip180Y) sourceRestConverted.set(-sourceRestConverted.x, sourceRestConverted.y, -sourceRestConverted.z, sourceRestConverted.w).normalize()
       
       const sourceRestInv = sourceRestConverted.clone().invert()
-      const targetRest = vrmBoneNode.quaternion.clone()
+      
+      const vrmRestPose = (vrm.scene.userData.restPoses as Map<string, any>)?.get(vrmBoneName)
+      const targetRest = vrmRestPose ? vrmRestPose.quaternion.clone() : vrmBoneNode.quaternion.clone()
 
       const retargetedValues = new Float32Array(track.values.length)
       const sourceQuat = new THREE.Quaternion()
@@ -249,7 +251,9 @@ export function retargetBVHToVRM(
       const scaledValues = new Float32Array(track.values.length)
       const scale = 0.01 // BVH centimeters → meters
       
-      const targetRestPos = vrmBoneNode.position.clone()
+      const vrmRestPose = (vrm.scene.userData.restPoses as Map<string, any>)?.get(vrmBoneName)
+      const targetRestPos = vrmRestPose ? vrmRestPose.position.clone() : vrmBoneNode.position.clone()
+      
       const bvhStartX = track.values[0]
       const bvhStartY = track.values[1]
       const bvhStartZ = track.values[2]

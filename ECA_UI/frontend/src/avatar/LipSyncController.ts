@@ -23,7 +23,7 @@ export class LipSyncController implements ExpressionContributor {
   private readonly ouChannel: string
 
   private analyser: AnalyserNode | null = null
-  private buffer: Uint8Array = new Uint8Array(0)
+  private buffer: Uint8Array<ArrayBuffer> = new Uint8Array(0)
   private active = false
   private weight = 0
 

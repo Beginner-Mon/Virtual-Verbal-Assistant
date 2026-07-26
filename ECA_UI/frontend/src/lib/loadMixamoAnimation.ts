@@ -172,7 +172,8 @@ export async function loadMixamoAnimation(
       if (!worldRestData) continue
       const { worldRest, worldRestInv } = worldRestData
 
-      const vrmRest = vrmBoneNode.quaternion.clone()
+      const vrmRestPose = (vrm.scene.userData.restPoses as Map<string, any>)?.get(vrmBoneName)
+      const vrmRest = vrmRestPose ? vrmRestPose.quaternion.clone() : vrmBoneNode.quaternion.clone()
 
       const retargetedValues = new Float32Array(track.values.length)
       const srcQuat = new THREE.Quaternion()
@@ -212,7 +213,9 @@ export async function loadMixamoAnimation(
     // ─── Position tracks (root motion — hips only) ───
     if (property === 'position' && vrmBoneName === 'hips') {
       const retargetedValues = new Float32Array(track.values.length)
-      const vrmRestPos = vrmBoneNode.position.clone()
+      
+      const vrmRestPose = (vrm.scene.userData.restPoses as Map<string, any>)?.get(vrmBoneName)
+      const vrmRestPos = vrmRestPose ? vrmRestPose.position.clone() : vrmBoneNode.position.clone()
 
       // Mixamo FBX positions are in centimeters
       const scale = 0.01
