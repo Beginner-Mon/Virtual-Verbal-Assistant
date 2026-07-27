@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 const scriptDir = dirname(fileURLToPath(import.meta.url))
 const frontendRoot = resolve(scriptDir, '..')
 const assetRoot = resolve(frontendRoot, 'src', 'asset')
-const generatedRoot = resolve(assetRoot, 'generated')
+const generatedRoot = resolve(assetRoot, 'motions', 'generated')
 const converterScript = resolve(frontendRoot, '..', '..', 'scripts', 'smplx_to_bvh.py')
 
 function walkNpzs(dir) {
@@ -16,7 +16,6 @@ function walkNpzs(dir) {
   for (const entry of entries) {
     const fullPath = resolve(dir, entry.name)
     if (entry.isDirectory()) {
-      if (fullPath === generatedRoot) continue
       files.push(...walkNpzs(fullPath))
       continue
     }

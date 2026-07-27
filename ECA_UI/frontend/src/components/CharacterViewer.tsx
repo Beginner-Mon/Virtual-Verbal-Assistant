@@ -2,7 +2,7 @@ import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMHumanBoneName } from '@pixiv/three-vrm'
 import type { VRM } from '@pixiv/three-vrm'
-import seeleUrl from '../asset/seele.vrm'
+import seeleUrl from '../asset/models/seele.vrm'
 import { Html } from '@react-three/drei'
 import { useTheme } from '../contexts/ThemeContext'
 import {

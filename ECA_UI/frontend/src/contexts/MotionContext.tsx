@@ -1,6 +1,6 @@
 import { createContext, useContext, useRef, useState, useCallback, type ReactNode } from 'react'
 import type { AvatarController } from '../avatar/AvatarController'
-import instrumentalUrl from '../asset/instrumental-ver.mp3'
+import instrumentalUrl from '../asset/audio/instrumental-ver.mp3'
 
 type AssetOption = {
   id: string
