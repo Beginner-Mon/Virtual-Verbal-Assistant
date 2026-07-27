@@ -30,7 +30,7 @@ from pathlib import Path
 
 import torch
 
-from fastapi.responses import Response
+from starlette.responses import Response
 from fastmcp import FastMCP
 
 # ---------------------------------------------------------------------------
