@@ -59,42 +59,34 @@ class VpcStack(Stack):
         #   - Generate IAM auth tokens via STS (used by boto3 RDS client)
         #   - Push execution logs to CloudWatch
 
-        self.sg_vpc_endpoints = ec2.SecurityGroup(
-            self, "SgVpcEndpoints",
-            vpc=self.vpc,
-            security_group_name="vva-sg-vpc-endpoints",
-            description="Allow HTTPS from within VPC to Interface Endpoints",
-            allow_all_outbound=False,
-        )
-        self.sg_vpc_endpoints.add_ingress_rule(
-            peer=ec2.Peer.ipv4(self.vpc.vpc_cidr_block),
-            connection=ec2.Port.tcp(443),
-            description="HTTPS from VPC CIDR",
-        )
+        # self.sg_vpc_endpoints = ec2.SecurityGroup(
+        #     self, "SgVpcEndpoints",
+        #     vpc=self.vpc,
+        #     security_group_name="vva-sg-vpc-endpoints",
+        #     description="Allow HTTPS from within VPC to Interface Endpoints",
+        #     allow_all_outbound=False,
+        # )
+        # self.sg_vpc_endpoints.add_ingress_rule(
+        #     peer=ec2.Peer.ipv4(self.vpc.vpc_cidr_block),
+        #     connection=ec2.Port.tcp(443),
+        #     description="HTTPS from VPC CIDR",
+        # )
 
         # SSM Parameter Store — Lambda reads DB connection params
-        self.vpc.add_interface_endpoint(
-            "SsmEndpoint",
-            service=ec2.InterfaceVpcEndpointAwsService.SSM,
-            subnets=ec2.SubnetSelection(subnet_group_name="Private"),
-            security_groups=[self.sg_vpc_endpoints],
-        )
+        # self.vpc.add_interface_endpoint(
+        #     "SsmEndpoint",
+        #     service=ec2.InterfaceVpcEndpointAwsService.SSM,
+        #     subnets=ec2.SubnetSelection(subnet_group_name="Private"),
+        #     security_groups=[self.sg_vpc_endpoints],
+        # )
 
         # STS — Lambda generates IAM auth token for RDS Proxy
-        self.vpc.add_interface_endpoint(
-            "StsEndpoint",
-            service=ec2.InterfaceVpcEndpointAwsService.STS,
-            subnets=ec2.SubnetSelection(subnet_group_name="Private"),
-            security_groups=[self.sg_vpc_endpoints],
-        )
-
-        # CloudWatch Logs — Lambda writes execution logs
-        self.vpc.add_interface_endpoint(
-            "CloudWatchLogsEndpoint",
-            service=ec2.InterfaceVpcEndpointAwsService.CLOUDWATCH_LOGS,
-            subnets=ec2.SubnetSelection(subnet_group_name="Private"),
-            security_groups=[self.sg_vpc_endpoints],
-        )
+        # self.vpc.add_interface_endpoint(
+        #     "StsEndpoint",
+        #     service=ec2.InterfaceVpcEndpointAwsService.STS,
+        #     subnets=ec2.SubnetSelection(subnet_group_name="Private"),
+        #     security_groups=[self.sg_vpc_endpoints],
+        # )
 
         # S3 Gateway Endpoint — free, route-table level. EC2 User Data uses
         # this to download SMPLX_NEUTRAL.npz without internet.
