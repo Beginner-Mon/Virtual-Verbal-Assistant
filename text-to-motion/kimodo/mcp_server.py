@@ -39,7 +39,7 @@ from fastmcp import FastMCP
 
 MCP_PORT = int(os.environ.get("MCP_PORT", "8000"))
 OUTPUT_DIR = os.environ.get("MCP_OUTPUT_DIR", "/workspace/outputs")
-TTL_SECONDS = int(os.environ.get("MCP_TTL_SECONDS", "60"))
+TTL_SECONDS = int(os.environ.get("MCP_TTL_SECONDS", "3600"))
 
 # Model to pre-load at startup
 DEFAULT_MODEL_NAME = "Kimodo-SMPLX-RP-v1"

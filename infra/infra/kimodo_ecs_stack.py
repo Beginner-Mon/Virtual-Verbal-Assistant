@@ -165,6 +165,7 @@ class KimodoEcsStack(Stack):
                 "TEXT_ENCODER_DEVICE": "cuda",
                 "HF_HOME": "/workspace/.cache/huggingface",
                 "MCP_PORT": "8000",
+                "MCP_TTL_SECONDS": "3600",
             },
             logging=ecs.LogDriver.aws_logs(
                 stream_prefix="mcp",
