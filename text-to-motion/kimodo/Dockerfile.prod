@@ -1,0 +1,15 @@
+ARG BASE_TAG=v1
+FROM 244203483654.dkr.ecr.us-east-1.amazonaws.com/kimodo-base:${BASE_TAG}
+
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /workspace
+
+COPY kimodo /workspace/kimodo
+COPY mcp_server.py /workspace/mcp_server.py
+
+RUN SKIP_MOTION_CORRECTION_IN_SETUP=1 pip install -e /workspace --no-deps
+
+EXPOSE 8000
+ENTRYPOINT ["inference-entrypoint"]
+CMD ["python", "mcp_server.py"]

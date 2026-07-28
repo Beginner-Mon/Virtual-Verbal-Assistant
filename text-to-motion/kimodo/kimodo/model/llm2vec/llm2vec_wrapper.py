@@ -30,21 +30,24 @@ class LLM2VecEncoder:
             base_model_name_or_path = os.path.join(os.environ["TEXT_ENCODERS_DIR"], base_model_name_or_path)
             peft_model_name_or_path = os.path.join(os.environ["TEXT_ENCODERS_DIR"], peft_model_name_or_path)
 
-        self.model = LLM2Vec.from_pretrained(
-            base_model_name_or_path=base_model_name_or_path,
-            peft_model_name_or_path=peft_model_name_or_path,
-            torch_dtype=torch_dtype,
-            cache_dir=cache_dir,
-        )
-
         env_device = os.environ.get("TEXT_ENCODER_DEVICE")
         if env_device:
             device = env_device
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self._device = device
-        if device is not None:
-            self.model = self.model.to(device)
+
+        self.model = LLM2Vec.from_pretrained(
+            base_model_name_or_path=base_model_name_or_path,
+            peft_model_name_or_path=peft_model_name_or_path,
+            torch_dtype=torch_dtype,
+            cache_dir=cache_dir,
+            low_cpu_mem_usage=True,
+            device_map=self._device if self._device != "cpu" else None,
+        )
+
+        if self._device == "cpu":
+            self.model = self.model.to(self._device)
 
         self.model.eval()
         for p in self.model.parameters():

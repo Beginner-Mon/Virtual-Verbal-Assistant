@@ -12,7 +12,7 @@ Usage:
 Environment Variables:
     MCP_PORT:               Port to serve on (default: 8000)
     MCP_OUTPUT_DIR:         Directory for generated files (default: /workspace/outputs)
-    MCP_TTL_SECONDS:        Time-to-live for generated files in seconds (default: 60)
+    MCP_TTL_SECONDS:        Time-to-live for generated files in seconds (default: 3600)
     TEXT_ENCODER_MODE:      Text encoder mode: local, api, auto (default: local)
     TEXT_ENCODER_DEVICE:    Device for text encoder: cuda, cpu (default: auto)
     CHECKPOINT_DIR:         Local checkpoint directory (optional)
@@ -26,9 +26,12 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 import torch
 
+from starlette.responses import Response
+from starlette.requests import Request
 from fastmcp import FastMCP
 
 # ---------------------------------------------------------------------------
@@ -37,7 +40,7 @@ from fastmcp import FastMCP
 
 MCP_PORT = int(os.environ.get("MCP_PORT", "8000"))
 OUTPUT_DIR = os.environ.get("MCP_OUTPUT_DIR", "/workspace/outputs")
-TTL_SECONDS = int(os.environ.get("MCP_TTL_SECONDS", "60"))
+TTL_SECONDS = int(os.environ.get("MCP_TTL_SECONDS", "3600"))
 
 # Model to pre-load at startup
 DEFAULT_MODEL_NAME = "Kimodo-SMPLX-RP-v1"
@@ -152,6 +155,25 @@ mcp = FastMCP(
         "The model generates SMPL-X compatible motion data in NPZ format."
     ),
 )
+
+
+# ── HTTP file download endpoint ──────────────────────────────────────
+@mcp.custom_route("/files/{filename:path}", methods=["GET"])
+async def download_file(request: Request) -> Response:
+    """Serve generated motion NPZ files via HTTP."""
+    filename = request.path_params["filename"]
+    filepath = Path(OUTPUT_DIR) / filename
+    if not filepath.resolve().is_relative_to(Path(OUTPUT_DIR).resolve()):
+        return Response(status_code=403)
+    if not filepath.exists():
+        return Response(status_code=404)
+    return Response(
+        content=filepath.read_bytes(),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filepath.name}"',
+        },
+    )
 
 
 @mcp.tool()

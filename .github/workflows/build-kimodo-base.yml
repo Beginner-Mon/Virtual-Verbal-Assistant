@@ -1,0 +1,74 @@
+name: Build Kimodo Base Image
+
+on:
+  push:
+    branches:
+      - kimodo-release
+    paths:
+      - 'text-to-motion/kimodo/docker_requirements_prod.in'
+      - 'text-to-motion/kimodo/setup.py'
+      - 'text-to-motion/kimodo/pyproject.toml'
+      - 'text-to-motion/kimodo/MotionCorrection/**'
+      - 'text-to-motion/kimodo/Dockerfile.base'
+  workflow_dispatch:
+    inputs:
+      base_tag:
+        description: 'Base image tag (e.g. v1, v2)'
+        required: false
+        default: 'v1'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: kimodo-base
+  AWS_ACCOUNT_ID: "244203483654"
+  BASE_TAG: ${{ github.event.inputs.base_tag || 'v1' }}
+
+jobs:
+  build-and-push:
+    name: Build and Push Base Image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          echo "Before cleanup:"
+          df -h /
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          docker system prune -af --volumes || true
+          echo "After cleanup:"
+          df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/GitHubActionsECRRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: text-to-motion/kimodo
+          file: text-to-motion/kimodo/Dockerfile.base
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.BASE_TAG }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.BASE_TAG }}-${{ github.sha }}
