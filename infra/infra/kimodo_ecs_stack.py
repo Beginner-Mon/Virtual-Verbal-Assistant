@@ -12,12 +12,9 @@ Creates:
     - When ENABLE_ALB=True:
         - ALB (internet-facing, :80, idle_timeout=300s for SSE)
         - Target Group (ip target, :8000, health check /mcp matcher 200-499)
-        - ECS Service (LaunchType=EC2 — dùng mọi instance đã register vào
-          cluster, không cần CDK sở hữu ASG/capacity provider)
+        - ECS Service (CP strategy kimodo-GPU)
 
-Toggle ENABLE_ALB=False + `cdk deploy` để teardown ALB/service mà giữ
-cluster/task-def/SG/log group. KHÔNG dùng `cdk destroy` (xóa cả stack).
-Plan: .claude/plans/kimodo-alb-endpoint.md
+Toggle ENABLE_ALB=False + `cdk deploy` để teardown ALB/service.
 """
 
 from aws_cdk import (
@@ -42,8 +39,6 @@ SECRET_ARN = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:ECA/kimodo-dtpy8
 EXEC_ROLE_ARN = f"arn:aws:iam::{ACCOUNT}:role/ecsTaskExecutionRoleKimodo"
 TASK_ROLE_ARN = f"arn:aws:iam::{ACCOUNT}:role/kimodo-task-role"
 
-# Toggle ALB + ECS Service. False + `cdk deploy` = teardown ALB/service,
-# giữ nguyên cluster/task-def/SG/log group (xem docstring đầu file).
 ENABLE_ALB = True
 # WARNING: MCP endpoint không có auth — đổi thành "<IP của bạn>/32" trước khi deploy.
 ALB_ALLOWED_CIDR = "0.0.0.0/0"
@@ -239,8 +234,6 @@ class KimodoEcsStack(Stack):
             )
             tg.set_attribute("deregistration_delay.timeout_seconds", "30")
 
-            # open=False: giữ nguyên SG ingress theo ALB_ALLOWED_CIDR,
-            # không để listener tự mở 0.0.0.0/0.
             listener = alb.add_listener(
                 "KimodoHttpListener",
                 port=80,
@@ -248,12 +241,7 @@ class KimodoEcsStack(Stack):
                 default_action=elbv2.ListenerAction.forward([tg]),
             )
 
-            # Dùng L1 CfnService (CloudFormation AWS::ECS::Service trực tiếp)
-            # thay vì L2 Ec2Service vì CDK synth-validation đòi:
-            #   "Cluster for this service needs Ec2 capacity.
-            #    Call addXxxCapacity() on the cluster."
-            # Không bypass được khi capacity (ASG/CP) nằm ngoài stack.
-            # L1 bỏ qua validation này.
+            # L1 CfnService — bypass synth-validation hasEc2Capacity
             ecs_subnets = vpc.select_subnets(
                 subnet_group_name="EcsPublic"
             )
@@ -263,11 +251,6 @@ class KimodoEcsStack(Stack):
                 task_definition=task_def.task_definition_arn,
                 service_name="kimodo-mcp-service",
                 desired_count=1,
-                # Config match service thủ công (describe-services 27/07):
-                # CP strategy kimodo-GPU, weight 1, base 0.
-                # Lưu ý: min=1 + max=200 → deploy sau này cần managed scaling
-                # launch instance thứ 2. Nếu ASG single-instance thì tạm hạ về
-                # min=0, max=100 cho deploy đó.
                 capacity_provider_strategy=[
                     ecs.CfnService.CapacityProviderStrategyItemProperty(
                         capacity_provider="kimodo-GPU",
@@ -297,12 +280,8 @@ class KimodoEcsStack(Stack):
                         rollback=True,
                     ),
                 ),
-                # Image nhiều GB + model load chậm — tránh boot loop.
-                # Manual service = 0, CDK nâng lên 600 cho an toàn.
                 health_check_grace_period_seconds=600,
             )
-            # Service phải đợi listener TG đã attach vào ALB xong, nếu không:
-            # "The target group ... does not have an associated load balancer."
             service.node.add_dependency(listener)
 
             CfnOutput(self, "ServiceName", value=service.service_name)

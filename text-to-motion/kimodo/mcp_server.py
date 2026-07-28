@@ -12,7 +12,7 @@ Usage:
 Environment Variables:
     MCP_PORT:               Port to serve on (default: 8000)
     MCP_OUTPUT_DIR:         Directory for generated files (default: /workspace/outputs)
-    MCP_TTL_SECONDS:        Time-to-live for generated files in seconds (default: 60)
+    MCP_TTL_SECONDS:        Time-to-live for generated files in seconds (default: 3600)
     TEXT_ENCODER_MODE:      Text encoder mode: local, api, auto (default: local)
     TEXT_ENCODER_DEVICE:    Device for text encoder: cuda, cpu (default: auto)
     CHECKPOINT_DIR:         Local checkpoint directory (optional)
@@ -31,6 +31,7 @@ from pathlib import Path
 import torch
 
 from starlette.responses import Response
+from starlette.requests import Request
 from fastmcp import FastMCP
 
 # ---------------------------------------------------------------------------
@@ -158,8 +159,9 @@ mcp = FastMCP(
 
 # ── HTTP file download endpoint ──────────────────────────────────────
 @mcp.custom_route("/files/{filename:path}", methods=["GET"])
-async def download_file(filename: str) -> Response:
+async def download_file(request: Request) -> Response:
     """Serve generated motion NPZ files via HTTP."""
+    filename = request.path_params["filename"]
     filepath = Path(OUTPUT_DIR) / filename
     if not filepath.resolve().is_relative_to(Path(OUTPUT_DIR).resolve()):
         return Response(status_code=403)
