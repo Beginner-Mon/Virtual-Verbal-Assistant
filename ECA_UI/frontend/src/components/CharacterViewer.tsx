@@ -3,14 +3,8 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMHumanBoneName } from '@pixiv/three-vrm'
 import type { VRM } from '@pixiv/three-vrm'
 import seeleUrl from '../asset/models/seele.vrm'
-import { Html } from '@react-three/drei'
 import { useTheme } from '../contexts/ThemeContext'
-import {
-  ContactShadows,
-  Environment,
-  Stars,
-  OrbitControls,
-} from '@react-three/drei'
+import { OrbitControls, Html } from '@react-three/drei'
 import { useRef, useEffect, useState, Suspense, useMemo } from 'react'
 import * as THREE from 'three'
 import { loadAndRetargetBVH, SMPLX_RETARGET_OPTIONS, STANDARD_RETARGET_OPTIONS } from '../lib/bvhToVrm'
@@ -20,6 +14,12 @@ import { type CameraMode, useMotion } from '../contexts/MotionContext'
 import { AvatarController } from '../avatar/AvatarController'
 import { loadProfile } from '../avatar/AvatarProfile'
 import LoadingOverlay from './ui/LoadingOverlay'
+import { disposeVRM } from '../lib/vrmDispose'
+import { ENV_CONFIG } from '../config/environmentConfig'
+import RendererSetup from './scene/RendererSetup'
+import SceneLighting from './scene/SceneLighting'
+import SceneEnvironment from './scene/SceneEnvironment'
+import ScenePostProcessing from './scene/ScenePostProcessing'
 
 const CAMERA_MODES: Record<CameraMode, { boneName: VRMHumanBoneName; cameraOffset: THREE.Vector3 }> = {
   head: {
@@ -28,7 +28,7 @@ const CAMERA_MODES: Record<CameraMode, { boneName: VRMHumanBoneName; cameraOffse
   },
   hips: {
     boneName: VRMHumanBoneName.Head,
-    cameraOffset: new THREE.Vector3(-0.5, 1.8, 1.0),
+    cameraOffset: new THREE.Vector3(0.5, 2.2, 1.0),
   },
 }
 
@@ -98,6 +98,27 @@ function VRMCharacter({
       vrmRef.current = null
     }
   }, [vrm, vrmRef])
+
+  // Dispose GPU resources (geometry/material/texture) when the VRM truly
+  // unmounts (model switch). React 19 StrictMode double-fires effects in dev
+  // (mount → cleanup → remount): a naive cleanup would destroy the
+  // useLoader-cached VRM on the first cycle, making the model invisible on
+  // remount. The `mountedRef` flag lets us distinguish: on cleanup we set it
+  // false, then on the synchronous remount we set it true again — the
+  // microtask only fires dispose if the ref is still false (real unmount).
+  const disposeGuardRef = useRef(true)
+  useEffect(() => {
+    disposeGuardRef.current = true
+    return () => {
+      disposeGuardRef.current = false
+      const vrmToDispose = vrm
+      queueMicrotask(() => {
+        if (!disposeGuardRef.current) {
+          disposeVRM(vrmToDispose)
+        }
+      })
+    }
+  }, [vrm])
 
   const mixerRef = useRef<THREE.AnimationMixer | null>(null)
   const actionRef = useRef<THREE.AnimationAction | null>(null)
@@ -312,7 +333,8 @@ function VRMCharacter({
 /* ───────────────────────── Floating Particles ────────────────────── */
 
 function FloatingParticles() {
-  const count = 200
+  const { particles } = ENV_CONFIG
+  const count = particles.count
   const pointsRef = useRef<THREE.Points>(null!)
 
   const positions = useMemo(() => {
@@ -323,13 +345,16 @@ function FloatingParticles() {
       arr[i * 3 + 2] = (Math.random() - 0.5) * 10
     }
     return arr
-  }, [])
+  }, [count])
 
   useFrame(({ clock }) => {
+    if (!particles.enabled || !pointsRef.current) return
     const t = clock.getElapsedTime()
     pointsRef.current.rotation.y = t * 0.02
     pointsRef.current.rotation.x = t * 0.01
   })
+
+  if (!particles.enabled) return null
 
   return (
     <points ref={pointsRef}>
@@ -340,10 +365,10 @@ function FloatingParticles() {
         />
       </bufferGeometry>
       <pointsMaterial
-        size={0.02}
-        color="#a78bfa"
+        size={particles.size}
+        color={particles.color}
         transparent
-        opacity={0.6}
+        opacity={particles.opacity}
         sizeAttenuation
       />
     </points>
@@ -379,7 +404,7 @@ function Scene({
   avatarRef,
   onAnimationFinished,
 }: SceneProps) {
-  const { cameraMode } = useMotion()
+  const { cameraMode, setCameraMode } = useMotion()
   const controlsRef = useRef<any>(null)
   const vrmRef = useRef<VRM | null>(null)
   const { camera } = useThree()
@@ -421,6 +446,14 @@ function Scene({
       elapsed: 0,
     }
   }, [cameraMode])
+
+  useEffect(() => {
+    if (animationUrl.includes('generated')) {
+      setCameraMode('hips')
+    } else if (animationUrl.includes('built-in')) {
+      setCameraMode('head')
+    }
+  }, [animationUrl])
 
   // Reusable vectors to avoid GC pressure
   const followPos = useMemo(() => new THREE.Vector3(), [])
@@ -482,12 +515,17 @@ function Scene({
 
 return (
     <>
-      <ambientLight intensity={theme === 'dark' ? 1.0 : 1.2} />
-      <hemisphereLight color={theme === 'dark' ? "#ffffff" : "#ffffff"} groundColor={theme === 'dark' ? "#4c1d95" : "#a78bfa"} intensity={theme === 'dark' ? 0.6 : 0.6} />
-      <directionalLight position={[5, 5, 5]} intensity={theme === 'dark' ? 1.5 : 1.2} castShadow color={theme === 'dark' ? "#e9d5ff" : "#ffffff"} />
-      <directionalLight position={[-5, 3, -5]} intensity={theme === 'dark' ? 1.0 : 0.8} color="#7c3aed" />
-      <directionalLight position={[0, -3, 3]} intensity={theme === 'dark' ? 0.8 : 0.5} color="#ddd6fe" />
-      <spotLight position={[0, 5, 0]} angle={0.4} penumbra={1} intensity={theme === 'dark' ? 1.2 : 0.8} color="#a78bfa" />
+      {/* ── Phase 1: Renderer color pipeline + material audit ────── */}
+      <RendererSetup vrm={vrmRef.current} />
+
+      {/* ── Phase 2+3+4: Lighting, shadows & ground ─────────────── */}
+      <SceneLighting vrm={vrmRef.current} />
+
+      {/* ── Phase 5: Background (gradient / HDRI + stars) ────────── */}
+      <SceneEnvironment theme={theme} />
+
+      {/* ── Phase 6: Post processing (Bloom / SSAO / Vignette) ──── */}
+      <ScenePostProcessing />
 
       {/* key={vrmUrl}: a model switch is a clean remount — the old model is
           dropped immediately and the new one stays hidden (plus a loading
@@ -508,44 +546,30 @@ return (
       />
       <FloatingParticles />
 
-      {/* Grid overlay */}
-      <group rotation={[Math.PI / 2, 0, 0]}>
-        <gridHelper
-          args={[8, 16, theme === 'dark' ? '#444466' : '#c0c0c0', theme === 'dark' ? '#1a1a2e' : '#e8e8e8']}
-          position={[0, 0, -1.5]}
-        />
-      </group>
-      <primitive object={new THREE.AxesHelper(3)} />
-
-      {/* Axis labels */}
-      <Html position={[3.2, 0, 0]}>
-        <span style={{ color: 'red', fontWeight: 'bold', fontSize: 14 }}>X</span>
-      </Html>
-      <Html position={[0, 3.2, 0]}>
-        <span style={{ color: 'green', fontWeight: 'bold', fontSize: 14 }}>Y</span>
-      </Html>
-      <Html position={[0, 0, 3.2]}>
-        <span style={{ color: 'blue', fontWeight: 'bold', fontSize: 14 }}>Z</span>
-      </Html>
-
-      <ContactShadows
-        position={[0, 0, -1.5]}
-        opacity={theme === 'dark' ? 0.4 : 0.15}
-        scale={8}
-        blur={2.5}
-        far={4}
-        color={theme === 'dark' ? "#4c1d95" : "#000000"}
-      />
-
-      {theme === 'dark' && <Stars radius={50} depth={50} count={1000} factor={2} saturation={0.5} fade speed={0.5} />}
-      {/*
-        resolution={64}: the default PMREM environment texture (256px cubemap) is large
-        enough that PMREM prefiltering (PMREMGGXConvolution) triggers a D3D11 device
-        removal (DXGI 0x887A0020) → WebGL context loss → blank canvas on GPUs with a
-        tight texture budget (repro'd via ANGLE/D3D11). A 64px IBL map keeps the
-        image-based lighting while staying well under the allocation limit.
-      */}
-      <Environment preset={theme === 'dark' ? 'night' : 'city'} resolution={64} />
+      {/* ── Debug Overlays ─────────────────────────────────────── */}
+      {ENV_CONFIG.debug.showGrid && (
+        <group rotation={[Math.PI / 2, 0, 0]}>
+          <gridHelper
+            args={[8, 16, theme === 'dark' ? '#444466' : '#c0c0c0', theme === 'dark' ? '#1a1a2e' : '#e8e8e8']}
+            position={[0, 0, -1.5]}
+          />
+        </group>
+      )}
+      
+      {ENV_CONFIG.debug.showAxes && (
+        <>
+          <primitive object={new THREE.AxesHelper(3)} />
+          <Html position={[3.2, 0, 0]}>
+            <span style={{ color: 'red', fontWeight: 'bold', fontSize: 14 }}>X</span>
+          </Html>
+          <Html position={[0, 3.2, 0]}>
+            <span style={{ color: 'green', fontWeight: 'bold', fontSize: 14 }}>Y</span>
+          </Html>
+          <Html position={[0, 0, 3.2]}>
+            <span style={{ color: 'blue', fontWeight: 'bold', fontSize: 14 }}>Z</span>
+          </Html>
+        </>
+      )}
 
       {/* Orbital camera: follows hips, enforces minimum distance (radius) */}
       <OrbitControls
@@ -615,7 +639,19 @@ export default function CharacterViewer() {
         background: 'transparent',
       }}
     >
-      <Canvas camera={{ position: [0, 2.05, 0], fov: 45 }} gl={{ antialias: true, alpha: true }}>
+      <Canvas
+        shadows={{ type: ENV_CONFIG.shadows.type }}
+        camera={{ position: [0, 2.05, 0], fov: 45 }}
+        gl={{
+          antialias: true,
+          alpha: true,
+          toneMapping: ENV_CONFIG.renderer.toneMapping,
+          toneMappingExposure: ENV_CONFIG.renderer.toneMappingExposure,
+        }}
+        onCreated={({ gl }) => {
+          gl.outputColorSpace = ENV_CONFIG.renderer.outputColorSpace
+        }}
+      >
         <Suspense fallback={null}>
           <Scene
             theme={theme}

@@ -143,8 +143,8 @@ export function MotionProvider({ children }: { children: ReactNode }) {
     const randomActions = BUILTIN_MOTION_OPTIONS.filter(o => /random_/i.test(o.label))
     if (randomActions.length === 0) return
 
-    // Random timeout between 10s and 30s
-    const timeoutSeconds = 10 + Math.random() * 20
+    // Random timeout between 1 to 2 minutes (60s to 120s)
+    const timeoutSeconds = 60 + Math.random() * 60
     const timerId = setTimeout(() => {
       const randomAction = randomActions[Math.floor(Math.random() * randomActions.length)]
       setSelectedMotionId(randomAction.id)
