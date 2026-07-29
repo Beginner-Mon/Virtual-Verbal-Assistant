@@ -5,7 +5,7 @@ import { useMotion } from '../../contexts/MotionContext'
 import { CANONICAL_EMOTIONS, type CanonicalEmotion } from '../../avatar/AvatarProfile'
 import { ensureAudioContext, playSyntheticSpeech, type SyntheticSpeech } from '../../avatar/lipSyncAudio'
 
-export default function MorePanel() {
+export default function MotionControlPanel() {
   const {
     cameraMode,
     setCameraMode,

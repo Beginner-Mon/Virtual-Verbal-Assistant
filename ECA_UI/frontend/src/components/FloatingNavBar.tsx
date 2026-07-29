@@ -37,13 +37,13 @@ import ChatPanel from './ChatPanel'
 import ChatSessionsPanel from './panels/ChatSessionsPanel'
 import AvatarsPanel from './panels/AvatarsPanel'
 import SettingsPanel from './panels/SettingsPanel'
-import MorePanel from './panels/MorePanel'
+import MotionControlPanel from './panels/MotionControlPanel'
 import ProfileSettingsModal from './ProfileSettingsModal'
 import MobileNavBar from './MobileNavBar'
 
 /* ─── Types ─── */
 type DockedEdge = 'left' | 'right' | 'top' | 'bottom'
-export type PanelId = 'chat' | 'sessions' | 'avatars' | 'more' | 'settings' | null
+export type PanelId = 'chat' | 'sessions' | 'avatars' | 'motion' | 'settings' | null
 
 export interface NavItem {
   id: PanelId
@@ -55,7 +55,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'chat', icon: SquarePen, label: 'Chat' },
   { id: 'sessions', icon: MessageSquare, label: 'Sessions' },
   { id: 'avatars', icon: UserRound, label: 'Avatars' },
-  { id: 'more', icon: Settings2, label: 'More' },
+  { id: 'motion', icon: Settings2, label: 'Motion' },
 ]
 
 /* ─── Panel content map ─── */
@@ -75,8 +75,8 @@ function PanelContent({
       return <AvatarsPanel />
     case 'settings':
       return <SettingsPanel onOpenModal={onOpenModal} />
-    case 'more':
-      return <MorePanel />
+    case 'motion':
+      return <MotionControlPanel />
     default:
       return null
   }
@@ -388,6 +388,9 @@ export default function FloatingNavBar() {
   let panelDimensionsClass = isHorizontal ? 'w-[360px] h-[480px]' : 'w-[360px] h-[520px]'
   if (activePanel === 'chat') {
     panelDimensionsClass = isMiddleThird ? 'w-[600px] h-[400px]' : 'w-[360px] h-[600px]'
+  }
+  if (activePanel === 'avatars') {
+    panelDimensionsClass = isHorizontal ? 'w-[400px] h-[540px]' : 'w-[400px] h-[580px]'
   }
 
   // Custom drag constraint

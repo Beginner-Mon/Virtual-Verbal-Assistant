@@ -1,4 +1,5 @@
-import { UserRound, Check } from 'lucide-react'
+import { useState } from 'react'
+import { UserRound } from 'lucide-react'
 import { ScrollArea } from '../ui/scroll-area'
 import { useMotion } from '../../contexts/MotionContext'
 
@@ -6,19 +7,69 @@ const AVATAR_COLORS = [
   'from-violet-500 to-purple-600',
   'from-cyan-500 to-blue-600',
   'from-rose-500 to-pink-600',
-  'from-amber-500 to-orange-600',
-  'from-emerald-500 to-teal-600',
-  'from-fuchsia-500 to-pink-600',
 ]
+
+const DISPLAY_NAMES: Record<string, string> = {
+  bronya: 'SilverWing',
+  seele: 'Seele Swimsuit',
+}
 
 function getAvatarMeta(label: string, index: number) {
   const name = label
     .replace(/\.vrm$/i, '')
     .replace(/[_/-]/g, ' ')
     .replace(/\b\w/g, (c) => c.toUpperCase())
+  const key = label.replace(/\.vrm$/i, '').split('/').pop()?.toLowerCase() ?? ''
+  const displayName = DISPLAY_NAMES[key] ?? name
   const initial = name[0]?.toUpperCase() ?? '?'
   const color = AVATAR_COLORS[index % AVATAR_COLORS.length]
-  return { name, initial, color }
+  return { name, initial, color, displayName }
+}
+
+function AvatarCard({
+  initial,
+  color,
+  displayName,
+  isSelected,
+  onClick,
+}: {
+  initial: string
+  color: string
+  displayName: string
+  isSelected: boolean
+  onClick: () => void
+}) {
+  const [hovered, setHovered] = useState(false)
+
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      className={`
+        group relative flex flex-col rounded-lg overflow-hidden
+        transition-all duration-200 w-[140px] shrink-0
+        ${isSelected
+          ? 'ring-2 ring-primary'
+          : 'hover:ring-1 hover:ring-border/60'
+        }
+      `}
+    >
+      <div className={`w-full h-[170px] bg-gradient-to-br ${color} flex items-center justify-center relative`}>
+        <span className="text-white text-6xl font-bold opacity-30 select-none">{initial}</span>
+
+        <div className={`
+          absolute inset-x-0 bottom-0 bg-black/60 backdrop-blur-sm py-2 px-2 text-center
+          transition-all duration-200 ease-out
+          ${hovered ? 'translate-y-0 opacity-100' : 'translate-y-full opacity-0'}
+        `}>
+          <span className="text-xs font-medium text-white truncate">
+            {displayName}
+          </span>
+        </div>
+      </div>
+    </button>
+  )
 }
 
 export default function AvatarsPanel() {
@@ -34,40 +85,22 @@ export default function AvatarsPanel() {
         <p className="text-[11px] text-muted-foreground mt-0.5">Choose a 3D avatar</p>
       </div>
 
-      <ScrollArea className="flex-1 min-h-0 p-3">
-        <div className="space-y-2">
-          {vrmOptions.length === 0 && (
-            <p className="text-xs text-muted-foreground text-center py-4">No VRM avatars found</p>
-          )}
+      <ScrollArea className="flex-1 min-h-0 p-4">
+        {vrmOptions.length === 0 && (
+          <p className="text-xs text-muted-foreground text-center py-4">No VRM avatars found</p>
+        )}
+        <div className="flex flex-wrap gap-5 justify-center pt-0.5">
           {vrmOptions.map((option, index) => {
-            const { name, initial, color } = getAvatarMeta(option.label, index)
+            const { initial, color, displayName } = getAvatarMeta(option.label, index)
             return (
-              <button
+              <AvatarCard
                 key={option.id}
+                initial={initial}
+                color={color}
+                displayName={displayName}
+                isSelected={selectedVrmId === option.id}
                 onClick={() => setSelectedVrmId(option.id)}
-                className={`
-                  w-full flex items-center gap-3 p-3 rounded-xl text-left transition-all duration-200
-                  ${selectedVrmId === option.id
-                    ? 'bg-primary/15 ring-1 ring-primary/40'
-                    : 'hover:bg-secondary/60'
-                  }
-                `}
-              >
-                <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${color} flex items-center justify-center shrink-0 shadow-lg`}>
-                  <span className="text-white text-sm font-bold">{initial}</span>
-                </div>
-
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-foreground truncate">{name}</p>
-                  <p className="text-[11px] text-muted-foreground">VRM avatar</p>
-                </div>
-
-                {selectedVrmId === option.id && (
-                  <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center shrink-0">
-                    <Check className="w-3 h-3 text-primary-foreground" />
-                  </div>
-                )}
-              </button>
+              />
             )
           })}
         </div>
