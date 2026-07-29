@@ -1,4 +1,4 @@
-import { createContext, useContext, useRef, useState, useCallback, type ReactNode } from 'react'
+import { createContext, useContext, useRef, useState, useCallback, useEffect, type ReactNode } from 'react'
 import type { AvatarController } from '../avatar/AvatarController'
 import instrumentalUrl from '../asset/audio/instrumental-ver.mp3'
 
@@ -74,6 +74,7 @@ interface MotionContextType {
   avatarRef: React.MutableRefObject<AvatarController | null>
   isMusicPlaying: boolean
   toggleMusic: () => void
+  handleAnimationFinished: () => void
 }
 
 const MotionContext = createContext<MotionContextType | null>(null)
@@ -88,6 +89,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
     BUILTIN_VRM_OPTIONS[0]?.id ??
     ''
   const defaultMotionId =
+    BUILTIN_MOTION_OPTIONS.find((o) => /action_greeting/i.test(o.label))?.id ??
     BUILTIN_MOTION_OPTIONS.find((o) => /standard idle/i.test(o.label))?.id ??
     BUILTIN_MOTION_OPTIONS[0]?.id ??
     ''
@@ -125,6 +127,32 @@ export function MotionProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  const handleAnimationFinished = useCallback(() => {
+    const idleId = BUILTIN_MOTION_OPTIONS.find((o) => /standard idle/i.test(o.label))?.id ?? BUILTIN_MOTION_OPTIONS[0]?.id ?? ''
+    setSelectedMotionId(idleId)
+  }, [])
+
+  // Random Idle Action Logic
+  useEffect(() => {
+    const currentOption = BUILTIN_MOTION_OPTIONS.find(o => o.id === selectedMotionId)
+    if (!isPlaying || !currentOption) return
+
+    // Only trigger random action if we are currently in an "idle" state
+    if (!/idle/i.test(currentOption.label)) return
+
+    const randomActions = BUILTIN_MOTION_OPTIONS.filter(o => /random_/i.test(o.label))
+    if (randomActions.length === 0) return
+
+    // Random timeout between 10s and 30s
+    const timeoutSeconds = 10 + Math.random() * 20
+    const timerId = setTimeout(() => {
+      const randomAction = randomActions[Math.floor(Math.random() * randomActions.length)]
+      setSelectedMotionId(randomAction.id)
+    }, timeoutSeconds * 1000)
+
+    return () => clearTimeout(timerId)
+  }, [selectedMotionId, isPlaying])
+
   return (
     <MotionContext.Provider
       value={{
@@ -147,6 +175,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
         avatarRef,
         isMusicPlaying,
         toggleMusic,
+        handleAnimationFinished,
       }}
     >
       {children}

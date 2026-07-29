@@ -19,6 +19,7 @@ import { getAnimationClip } from '../lib/animationCache'
 import { type CameraMode, useMotion } from '../contexts/MotionContext'
 import { AvatarController } from '../avatar/AvatarController'
 import { loadProfile } from '../avatar/AvatarProfile'
+import LoadingOverlay from './ui/LoadingOverlay'
 
 const CAMERA_MODES: Record<CameraMode, { boneName: VRMHumanBoneName; cameraOffset: THREE.Vector3 }> = {
   head: {
@@ -26,8 +27,8 @@ const CAMERA_MODES: Record<CameraMode, { boneName: VRMHumanBoneName; cameraOffse
     cameraOffset: new THREE.Vector3(0, 0.5, 0),
   },
   hips: {
-    boneName: VRMHumanBoneName.Hips,
-    cameraOffset: new THREE.Vector3(0, 2.1, 0),
+    boneName: VRMHumanBoneName.Head,
+    cameraOffset: new THREE.Vector3(-0.5, 1.8, 1.0),
   },
 }
 
@@ -50,6 +51,7 @@ interface VRMCharacterProps {
   onReady: (ready: boolean) => void
   vrmRef: React.MutableRefObject<VRM | null>
   avatarRef: React.MutableRefObject<AvatarController | null>
+  onAnimationFinished: () => void
 }
 
 function VRMCharacter({
@@ -63,6 +65,7 @@ function VRMCharacter({
   onReady,
   vrmRef,
   avatarRef,
+  onAnimationFinished,
 }: VRMCharacterProps) {
   const gltf = useLoader(GLTFLoader, vrmUrl, (loader) => {
     loader.register((parser) => new VRMLoaderPlugin(parser))
@@ -107,6 +110,11 @@ function VRMCharacter({
   // Drives <primitive visible={...}>: false until the first pose is applied.
   // Per-instance state — key={vrmUrl} remounts reset it on model switch.
   const [revealed, setRevealed] = useState(false)
+  const onAnimationFinishedRef = useRef(onAnimationFinished)
+
+  useEffect(() => {
+    onAnimationFinishedRef.current = onAnimationFinished
+  }, [onAnimationFinished])
 
   useEffect(() => {
     isPlayingRef.current = isPlaying
@@ -135,8 +143,17 @@ function VRMCharacter({
     if (!vrm) return
     const mixer = new THREE.AnimationMixer(vrm.scene)
     mixerRef.current = mixer
+    
+    const handleFinished = (e: any) => {
+      if (e.action === actionRef.current) {
+        onAnimationFinishedRef.current?.()
+      }
+    }
+    mixer.addEventListener('finished', handleFinished)
+
     onReady(false)
     return () => {
+      mixer.removeEventListener('finished', handleFinished)
       mixer.stopAllAction()
       mixer.uncacheRoot(vrm.scene)
       mixerRef.current = null
@@ -176,8 +193,9 @@ function VRMCharacter({
         if (!mixer) return
 
         const action = mixer.clipAction(clip)
-        action.setLoop(THREE.LoopRepeat, Infinity)
-        action.clampWhenFinished = false
+        const isAction = !animationUrl.toLowerCase().includes('idle_') && (animationUrl.toLowerCase().includes('action_') || animationUrl.toLowerCase().includes('random_'))
+        action.setLoop(isAction ? THREE.LoopOnce : THREE.LoopRepeat, isAction ? 1 : Infinity)
+        action.clampWhenFinished = isAction
 
         const prev = actionRef.current
         if (isPlayingRef.current) {
@@ -345,6 +363,7 @@ interface SceneProps {
   onLoaded: (info: { tracks: number; duration: number }) => void
   onReady: (ready: boolean) => void
   avatarRef: React.MutableRefObject<AvatarController | null>
+  onAnimationFinished: () => void
 }
 
 function Scene({
@@ -358,12 +377,21 @@ function Scene({
   onLoaded,
   onReady,
   avatarRef,
+  onAnimationFinished,
 }: SceneProps) {
+  const { cameraMode } = useMotion()
   const controlsRef = useRef<any>(null)
   const vrmRef = useRef<VRM | null>(null)
   const { camera } = useThree()
   const cameraInitializedRef = useRef(false)
-  const { cameraMode } = useMotion()
+  const cameraTransitionRef = useRef<{
+    startPos: THREE.Vector3
+    startTarget: THREE.Vector3
+    elapsed: number
+  } | null>(null)
+  const prevCameraModeRef = useRef(cameraMode)
+
+  const TRANSITION_DURATION = 0.6
 
   useEffect(() => {
     camera.up.set(0, 0, 1)
@@ -371,7 +399,28 @@ function Scene({
 
   useEffect(() => {
     cameraInitializedRef.current = false
-  }, [cameraMode, vrmUrl])
+  }, [vrmUrl])
+
+  useEffect(() => {
+    const prev = prevCameraModeRef.current
+    prevCameraModeRef.current = cameraMode
+
+    if (prev === cameraMode) return
+    if (!cameraInitializedRef.current || !controlsRef.current || !vrmRef.current) return
+
+    const mode = CAMERA_MODES[cameraMode]
+    const bone = vrmRef.current.humanoid.getNormalizedBoneNode(mode.boneName)
+    if (!bone) return
+
+    const tempVec = new THREE.Vector3()
+    bone.getWorldPosition(tempVec)
+
+    cameraTransitionRef.current = {
+      startPos: camera.position.clone(),
+      startTarget: controlsRef.current.target.clone(),
+      elapsed: 0,
+    }
+  }, [cameraMode])
 
   // Reusable vectors to avoid GC pressure
   const followPos = useMemo(() => new THREE.Vector3(), [])
@@ -380,7 +429,7 @@ function Scene({
   // Every frame: make the camera orbit target follow the selected bone.
   // We also shift the camera position by the same delta so the orbital
   // offset (angle + distance) is preserved while the rig moves.
-  useFrame(() => {
+  useFrame((_state, delta) => {
     if (!vrmRef.current || !controlsRef.current) return
 
     const mode = CAMERA_MODES[cameraMode]
@@ -390,6 +439,25 @@ function Scene({
     if (!bone) return
 
     bone.getWorldPosition(followPos)
+
+    if (cameraTransitionRef.current) {
+      const t = cameraTransitionRef.current
+      t.elapsed += delta
+      const progress = Math.min(t.elapsed / TRANSITION_DURATION, 1)
+      const eased = 1 - Math.pow(1 - progress, 3)
+
+      const endTarget = followPos.clone()
+      const endPos = followPos.clone().add(mode.cameraOffset)
+
+      camera.position.lerpVectors(t.startPos, endPos, eased)
+      controlsRef.current.target.lerpVectors(t.startTarget, endTarget, eased)
+      controlsRef.current.update()
+
+      if (progress >= 1) {
+        cameraTransitionRef.current = null
+      }
+      return
+    }
 
     if (!cameraInitializedRef.current) {
       controlsRef.current.target.copy(followPos)
@@ -436,6 +504,7 @@ return (
         onLoaded={onLoaded}
         onReady={onReady}
         avatarRef={avatarRef}
+        onAnimationFinished={onAnimationFinished}
       />
       <FloatingParticles />
 
@@ -505,6 +574,7 @@ export default function CharacterViewer() {
     vrmOptions,
     motionOptions,
     avatarRef,
+    handleAnimationFinished,
   } = useMotion()
 
   const selectedVrm = vrmOptions.find((o) => o.id === selectedVrmId)
@@ -558,17 +628,14 @@ export default function CharacterViewer() {
             onLoaded={setClipInfo}
             onReady={setViewerReady}
             avatarRef={avatarRef}
+            onAnimationFinished={handleAnimationFinished}
           />
         </Suspense>
       </Canvas>
 
       {/* Loading overlay: shown while the model has no pose yet (initial load
           / model switch). Replaces the old T-pose flash with a spinner. */}
-      {!viewerReady && (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          <div className="h-10 w-10 animate-spin rounded-full border-2 border-violet-400/30 border-t-violet-400" />
-        </div>
-      )}
+      {!viewerReady && <LoadingOverlay text="Loading 3D Avatar..." />}
 
       {/* Bottom gradient */}
       <div className="absolute bottom-0 left-0 right-0 h-24 pointer-events-none bg-gradient-to-t from-background/80 to-transparent" />

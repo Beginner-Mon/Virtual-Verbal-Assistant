@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -7,7 +7,37 @@ const scriptDir = dirname(fileURLToPath(import.meta.url))
 const frontendRoot = resolve(scriptDir, '..')
 const assetRoot = resolve(frontendRoot, 'src', 'asset')
 const generatedRoot = resolve(assetRoot, 'motions', 'generated')
-const converterScript = resolve(frontendRoot, '..', '..', 'scripts', 'smplx_to_bvh.py')
+const dartConverter = resolve(frontendRoot, '..', '..', 'scripts', 'smplx_to_bvh.py')
+const kimodoConverter = resolve(frontendRoot, '..', '..', 'scripts', 'kimodo_npz_to_bvh.py')
+
+// ── Detect Kimodo NPZ (has local_rot_mats.npy in ZIP) ─────────────
+
+function isKimodoNpz(filePath) {
+  try {
+    const buf = readFileSync(filePath)
+    if (buf[0] !== 0x50 || buf[1] !== 0x4b) return false
+    let off = buf.length - 22
+    while (off >= 0) {
+      if (buf.readUInt32LE(off) === 0x06054b50) {
+        const cdOff = buf.readUInt32LE(off + 16)
+        const cdEntries = buf.readUInt16LE(off + 8)
+        let c = cdOff
+        for (let i = 0; i < cdEntries; i++) {
+          const nameLen = buf.readUInt16LE(c + 28)
+          let name = ''
+          for (let j = 0; j < nameLen; j++) name += String.fromCharCode(buf[c + 46 + j])
+          if (name === 'local_rot_mats.npy') return true
+          const extraLen = buf.readUInt16LE(c + 30)
+          const commentLen = buf.readUInt16LE(c + 32)
+          c += 46 + nameLen + extraLen + commentLen
+        }
+        return false
+      }
+      off--
+    }
+    return false
+  } catch { return false }
+}
 
 function walkNpzs(dir) {
   const entries = readdirSync(dir, { withFileTypes: true })
@@ -28,10 +58,10 @@ function walkNpzs(dir) {
   return files
 }
 
-function ensurePythonConverter(npzPath, bvhPath) {
+function ensurePythonConverter(npzPath, bvhPath, converterScript) {
   const candidates = [
-    { command: 'python', args: [converterScript, npzPath, bvhPath] },
     { command: 'py', args: ['-3', converterScript, npzPath, bvhPath] },
+    { command: 'python', args: [converterScript, npzPath, bvhPath] },
   ]
 
   let lastError = null
@@ -72,8 +102,12 @@ for (const npzPath of npzFiles) {
 
   if (!shouldConvert) continue
 
-  console.log(`[sync-npz-to-bvh] Converting ${npzPath} -> ${bvhPath}`)
-  if (ensurePythonConverter(npzPath, bvhPath)) {
+  const isKimodo = isKimodoNpz(npzPath)
+  const converter = isKimodo ? kimodoConverter : dartConverter
+  const label = isKimodo ? 'kimodo' : 'smplx'
+
+  console.log(`[sync-npz-to-bvh] Converting [${label}] ${npzPath} -> ${bvhPath}`)
+  if (ensurePythonConverter(npzPath, bvhPath, converter)) {
     converted += 1
   }
 }

@@ -1,4 +1,4 @@
-import { Play, Pause, RotateCcw, Activity, Sliders, MoreHorizontal, Sparkles, Smile } from 'lucide-react'
+import { Play, Pause, RotateCcw, Activity, Sliders, Camera, Sparkles, Smile } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { ScrollArea } from '../ui/scroll-area'
 import { useMotion } from '../../contexts/MotionContext'
@@ -67,7 +67,7 @@ export default function MorePanel() {
     <div className="flex flex-col h-full">
       <div className="px-4 py-3 border-b border-border/40 shrink-0">
         <h2 className="text-sm font-semibold text-foreground tracking-tight flex items-center gap-2">
-          <MoreHorizontal className="w-4 h-4 text-primary" />
+          <Sliders className="w-4 h-4 text-primary" />
           Motion Controls
         </h2>
         <p className="text-[11px] text-muted-foreground mt-0.5">Animation source & playback</p>
@@ -77,7 +77,7 @@ export default function MorePanel() {
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-secondary/20 border border-border/10">
             <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-              <MoreHorizontal className="w-3 h-3" />
+              <Camera className="w-3 h-3" />
               Camera mode
             </span>
             <select

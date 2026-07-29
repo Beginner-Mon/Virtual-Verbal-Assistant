@@ -3,9 +3,10 @@ import { X, ChevronLeft } from 'lucide-react'
 
 const ProfileContent = lazy(() => import('./ProfileContent'))
 const SettingsContent = lazy(() => import('./SettingsContent'))
+const NotificationsContent = lazy(() => import('./NotificationsContent'))
 
 interface ProfileSettingsModalProps {
-  type: 'profile' | 'settings'
+  type: 'profile' | 'settings' | 'notifications'
   onClose: () => void
   onBack?: () => void
 }
@@ -54,9 +55,11 @@ export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileS
   const title =
     type === 'profile'
       ? 'User Profile'
-      : settingsView === 'provider-detail'
-        ? selectedProvider?.name ?? 'Settings'
-        : 'Settings'
+      : type === 'notifications'
+        ? 'Notifications'
+        : settingsView === 'provider-detail'
+          ? selectedProvider?.name ?? 'Settings'
+          : 'Settings'
 
   return (
     <div className="fixed inset-0 z-[10000] flex items-end md:items-center justify-center">
@@ -87,6 +90,8 @@ export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileS
         <Suspense fallback={<div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">Loading...</div>}>
           {type === 'profile' ? (
             <ProfileContent onClose={onClose} />
+          ) : type === 'notifications' ? (
+            <NotificationsContent onClose={onClose} />
           ) : settingsView === 'providers' ? (
             <SettingsContent
               view="providers"

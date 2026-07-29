@@ -41,40 +41,7 @@
   animation: glow-pulse 2s ease-in-out infinite;
 }
 
-/* ─── Auth Loading Screen ─── */
-.auth-loading-screen {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100vh;
-  width: 100vw;
-  background: var(--background);
-}
 
-.auth-loading-inner {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.auth-spinner {
-  width: 2rem;
-  height: 2rem;
-  border-radius: 50%;
-  border: 2px solid var(--primary);
-  border-top-color: transparent;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-.auth-loading-text {
-  font-size: 0.875rem;
-  color: var(--muted-foreground);
-}
 
 /* ═══════════════════════════════════════════════════════════════════
    Auth Center Container — full-viewport centering

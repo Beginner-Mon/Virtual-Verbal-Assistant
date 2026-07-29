@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Outlet, Navigate } from 'react-router-dom'
 import { fetchAuthSession, fetchUserAttributes } from 'aws-amplify/auth'
 import { AuthContext, type FetchUserAttributesOutput } from '../contexts/AuthContext'
+import LoadingOverlay from './ui/LoadingOverlay'
 
 function clearLocalAuthStorage() {
   const purge = (storage: Storage) => {
@@ -96,14 +97,7 @@ export default function AuthGuard() {
   }, [])
 
   if (!ready) {
-    return (
-      <div className="auth-loading-screen">
-        <div className="auth-loading-inner">
-          <div className="auth-spinner" />
-          <span className="auth-loading-text">Loading...</span>
-        </div>
-      </div>
-    )
+    return <LoadingOverlay text="Initializing Workspace..." fullScreen={true} />
   }
 
   // Auth gate. Bypassed in demo mode via VITE_AUTH_DISABLED=true (set in .env.local) so

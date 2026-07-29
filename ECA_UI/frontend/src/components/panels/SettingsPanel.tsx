@@ -1,8 +1,8 @@
-import { Settings, IdCard, Ellipsis, CreditCard, LogOut } from 'lucide-react'
+import { Settings, IdCard, Bell, Ellipsis, CreditCard, LogOut } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 
 interface SettingsPanelProps {
-  onOpenModal?: (type: 'profile' | 'settings') => void
+  onOpenModal?: (type: 'profile' | 'settings' | 'notifications') => void
 }
 
 export default function SettingsPanel({ onOpenModal }: SettingsPanelProps) {
@@ -28,6 +28,14 @@ export default function SettingsPanel({ onOpenModal }: SettingsPanelProps) {
           </button>
         )
       })}
+
+      <button
+        onClick={() => onOpenModal?.('notifications')}
+        className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm text-foreground hover:bg-secondary/60 transition-colors"
+      >
+        <Bell className="w-4 h-4 shrink-0 text-muted-foreground" />
+        <span>Notifications</span>
+      </button>
 
       <div className="h-px bg-border/40 my-1" />
 
