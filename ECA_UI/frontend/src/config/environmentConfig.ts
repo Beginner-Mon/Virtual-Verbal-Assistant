@@ -17,8 +17,8 @@ export const ENV_CONFIG = {
 
   // ── Renderer & Color Pipeline ─────────────────────────────────────────
   renderer: {
-    toneMapping: THREE.ACESFilmicToneMapping,
-    toneMappingExposure: 1.35, // Tăng nhẹ exposure tổng thể
+    toneMapping: THREE.NoToneMapping, // Chuẩn cho MToon Anime, bảo toàn màu gốc
+    toneMappingExposure: 1.0,         // Trả về mặc định
     outputColorSpace: THREE.SRGBColorSpace,
   },
 
@@ -28,14 +28,14 @@ export const ENV_CONFIG = {
   lighting: {
     main: {
       color: '#fffaf0',                       // warm white — avoids blue cast on skin
-      intensity: 1.15,                        // Tăng độ sáng đèn chính
-      position: [0, 2, 4] as [number, number, number], // front, slightly above — flattering for anime faces
+      intensity: 2.0,                         // Đèn chính chuẩn
+      position: [0, 5, 4] as [number, number, number], // front, slightly above — flattering for anime faces
       castShadow: true,
     },
     ambient: {
       skyColor: '#b4c7e0',                    // cool sky fill
       groundColor: '#4a3728',                 // warm ground bounce
-      intensity: 0.65,                        // Tăng độ sáng môi trường để xóa vùng tối quá gắt
+      intensity: 0.6,                         // Không làm phai mất bóng mờ
     },
   },
 
@@ -59,7 +59,7 @@ export const ENV_CONFIG = {
     shadowMaterialOpacity: 0.35,
     // drei ContactShadows (screen-space, for extra softness at feet)
     contactShadow: {
-      opacity: 0.3,
+      opacity: 0.8, // Soft puddle under feet
       blur: 2.0,
       scale: 5,
       far: 3,
@@ -72,8 +72,8 @@ export const ENV_CONFIG = {
     useGradient: true,                        // true = shader gradient; false = HDRI
     gradient: {
       // Unified colors — same lighting for both themes; only bg changes.
-      dark:  { top: '#0d0d1a', bottom: '#1a1030' },
-      light: { top: '#e0e4ec', bottom: '#c8cad8' },
+      dark:  { top: '#1a1a2e', bottom: '#2a2040' },
+      light: { top: '#f0f2f8', bottom: '#e0e2ec' },
     },
     hdri: {
       preset: 'studio' as const,
@@ -89,14 +89,14 @@ export const ENV_CONFIG = {
   // ── Post Processing ───────────────────────────────────────────────────
   // Subtle enhancements only — no cinematic look. Goal: depth, not drama.
   postProcessing: {
-    enabled: false,
+    enabled: true,
     bloom: {
       intensity: 0.15,
       luminanceThreshold: 0.85,
       luminanceSmoothing: 0.4,
     },
     ssao: {
-      enabled: true,                          // disable if MToon outlines cause artifacts
+      enabled: true, // Bình thường là true
       intensity: 0.5,
       radius: 0.05,
       samples: 16,
@@ -109,7 +109,7 @@ export const ENV_CONFIG = {
 
   // ── Floating Particles ────────────────────────────────────────────────
   particles: {
-    enabled: false,                           // default OFF for production studio look
+    enabled: true,                            // default ON
     count: 150,
     size: 0.02,
     color: '#a78bfa',

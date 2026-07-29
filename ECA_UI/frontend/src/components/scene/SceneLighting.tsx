@@ -54,17 +54,27 @@ export default function SceneLighting({ vrm }: SceneLightingProps) {
   useEffect(() => {
     if (!vrm?.scene) return
 
-    vrm.scene.traverse((object) => {
-      if (object instanceof THREE.Mesh || object instanceof THREE.SkinnedMesh) {
-        const mat = object.material as THREE.Material
-        const isOutline =
-          mat.side === THREE.BackSide ||
-          (mat.name && mat.name.toLowerCase().includes('outline'))
+      vrm.scene.traverse((object) => {
+        if (object instanceof THREE.Mesh || object instanceof THREE.SkinnedMesh) {
+          const mat = object.material as THREE.Material
+          const isOutline =
+            mat.side === THREE.BackSide ||
+            (mat.name && mat.name.toLowerCase().includes('outline'))
 
-        object.castShadow = !isOutline
-        object.receiveShadow = true
-      }
-    })
+            // Xóa outline pass
+          if (isOutline) {
+            object.visible = false
+          } else {
+            // TODO: Tạm tắt ghi đè material — giữ nguyên MToon để giữ màu gốc
+            // object.material = new THREE.MeshStandardMaterial({
+            //   color: 0xdddddd,
+            //   roughness: 0.8,
+            // })
+            object.castShadow = true
+            object.receiveShadow = true
+          }
+        }
+      })
   }, [vrm])
 
   return (
@@ -85,10 +95,9 @@ export default function SceneLighting({ vrm }: SceneLightingProps) {
         intensity={ambient.intensity}
       />
 
-      {/* ── Ground plane: catches real directional shadow ────────────── */}
+      {/* ── Ground plane: catches real directional shadow (XY plane) ─── */}
       <mesh
-        rotation={[-Math.PI / 2, 0, 0]}
-        position={[0, ground.y, 0]}
+        position={[0, 0, 0]}
         receiveShadow
       >
         <planeGeometry args={[ground.planeSize, ground.planeSize]} />
@@ -98,15 +107,17 @@ export default function SceneLighting({ vrm }: SceneLightingProps) {
         />
       </mesh>
 
-      {/* ── Contact Shadow: soft puddle under feet ──────────────────── */}
-      <ContactShadows
-        position={[0, ground.y + 0.001, 0]}
-        opacity={ground.contactShadow.opacity}
-        scale={ground.contactShadow.scale}
-        blur={ground.contactShadow.blur}
-        far={ground.contactShadow.far}
-        color={ground.contactShadow.color}
-      />
+      {/* ── Contact Shadow: soft puddle under feet (XY plane) ──────── */}
+      <group rotation={[-Math.PI / 2, 0, 0]}>
+        <ContactShadows
+          position={[0, 0, 0]}
+          opacity={ground.contactShadow.opacity}
+          scale={ground.contactShadow.scale}
+          blur={ground.contactShadow.blur}
+          far={ground.contactShadow.far}
+          color={ground.contactShadow.color}
+        />
+      </group>
     </>
   )
 }
