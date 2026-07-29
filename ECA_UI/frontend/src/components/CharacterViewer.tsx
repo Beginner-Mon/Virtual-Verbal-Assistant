@@ -194,14 +194,17 @@ function VRMCharacter({
 
     async function applyAnimation() {
       try {
-        const isFbx = animationUrl.includes('.fbx')
-        const clip = await getAnimationClip(`${vrmUrl}|${animationUrl}`, () =>
+        const isSubclip = animationUrl.includes('#')
+        const [baseAnimUrl, subclipName] = animationUrl.split('#')
+        const isFbx = baseAnimUrl.includes('.fbx')
+        
+        const clip = await getAnimationClip(`${vrmUrl}|${baseAnimUrl}`, () =>
           isFbx
-            ? loadMixamoAnimation(animationUrl, vrm)
+            ? loadMixamoAnimation(baseAnimUrl, vrm)
             : loadAndRetargetBVH(
-                animationUrl,
+                baseAnimUrl,
                 vrm,
-                animationUrl.includes('motion_') || animationUrl.includes('smplx')
+                baseAnimUrl.includes('motion_') || baseAnimUrl.includes('smplx')
                   ? SMPLX_RETARGET_OPTIONS
                   : STANDARD_RETARGET_OPTIONS,
               ),
@@ -213,10 +216,26 @@ function VRMCharacter({
         const mixer = mixerRef.current
         if (!mixer) return
 
-        const action = mixer.clipAction(clip)
-        const isAction = !animationUrl.toLowerCase().includes('idle_') && (animationUrl.toLowerCase().includes('action_') || animationUrl.toLowerCase().includes('random_'))
+        let finalClip = clip
+        if (isSubclip) {
+          if (subclipName === 'intro') {
+            finalClip = THREE.AnimationUtils.subclip(clip, 'intro', 0, 38, 30)
+          } else if (subclipName === 'loop') {
+            finalClip = THREE.AnimationUtils.subclip(clip, 'loop', 38, 75, 30)
+          } else if (subclipName === 'outro') {
+            finalClip = THREE.AnimationUtils.subclip(clip, 'outro', 75, 127, 30)
+          }
+        }
+
+        const action = mixer.clipAction(finalClip)
+        const isAction = 
+          subclipName === 'intro' || 
+          subclipName === 'outro' || 
+          (!baseAnimUrl.toLowerCase().includes('idle_') && (baseAnimUrl.toLowerCase().includes('action_') || baseAnimUrl.toLowerCase().includes('random_')))
+        
         action.setLoop(isAction ? THREE.LoopOnce : THREE.LoopRepeat, isAction ? 1 : Infinity)
         action.clampWhenFinished = isAction
+
 
         const prev = actionRef.current
         if (isPlayingRef.current) {

@@ -5,6 +5,7 @@ import { ScrollArea } from './ui/scroll-area'
 import ChatMessage from './ChatMessage'
 import type { Message } from './ChatMessage'
 import { streamChat } from '../lib/api'
+import { useMotion } from '../contexts/MotionContext'
 
 /* ─── Demo data ─── */
 const INITIAL_MESSAGES: Message[] = [
@@ -18,6 +19,7 @@ const INITIAL_MESSAGES: Message[] = [
 
 /* ─── ChatPanel ─── */
 export default function ChatPanel() {
+  const { setIsThinking } = useMotion()
   const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES)
   const [input, setInput] = useState('')
   const [isTyping, setIsTyping] = useState(false)
@@ -64,6 +66,7 @@ export default function ChatPanel() {
     setInput('')
     setIsTyping(true)
     setIsGenerating(true)
+    setIsThinking(true)
 
     // Prepare an empty assistant message to stream into
     const assistantMsgId = crypto.randomUUID()
@@ -99,6 +102,7 @@ export default function ChatPanel() {
           } else if (type === 'token') {
             setIsTyping(false)
             setStageLabel(null)
+            setIsThinking(false)
             const content = (data as { content: string }).content
             setMessages((prev) =>
               prev.map((msg) =>
@@ -126,6 +130,7 @@ export default function ChatPanel() {
       setIsTyping(false)
       setStageLabel(null)
       setIsGenerating(false)
+      setIsThinking(false)
     }
   }
 
@@ -134,6 +139,7 @@ export default function ChatPanel() {
     setIsTyping(false)
     setStageLabel(null)
     setIsGenerating(false)
+    setIsThinking(false)
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {

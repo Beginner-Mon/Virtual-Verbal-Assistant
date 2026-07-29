@@ -75,6 +75,8 @@ interface MotionContextType {
   isMusicPlaying: boolean
   toggleMusic: () => void
   handleAnimationFinished: () => void
+  isThinking: boolean
+  setIsThinking: (thinking: boolean) => void
 }
 
 const MotionContext = createContext<MotionContextType | null>(null)
@@ -97,6 +99,12 @@ export function MotionProvider({ children }: { children: ReactNode }) {
   const [selectedMotionId, setSelectedMotionId] = useState(defaultMotionId)
   const [isPlaying, setIsPlaying] = useState(true)
   const [cameraMode, setCameraMode] = useState<CameraMode>('head')
+  const [isThinking, setIsThinking] = useState(false)
+
+  const selectedMotionIdRef = useRef(selectedMotionId)
+  useEffect(() => {
+    selectedMotionIdRef.current = selectedMotionId
+  }, [selectedMotionId])
 
   const onResetRef = useRef<(() => void) | null>(null)
   const avatarRef = useRef<AvatarController | null>(null)
@@ -128,17 +136,43 @@ export function MotionProvider({ children }: { children: ReactNode }) {
   }
 
   const handleAnimationFinished = useCallback(() => {
+    const currentId = selectedMotionIdRef.current
+    if (currentId.includes('#intro')) {
+       setSelectedMotionId(currentId.replace('#intro', '#loop'))
+       return
+    }
+    if (currentId.includes('#outro')) {
+       const idleId = BUILTIN_MOTION_OPTIONS.find((o) => /standard idle/i.test(o.label))?.id ?? BUILTIN_MOTION_OPTIONS[0]?.id ?? ''
+       setSelectedMotionId(idleId)
+       return
+    }
     const idleId = BUILTIN_MOTION_OPTIONS.find((o) => /standard idle/i.test(o.label))?.id ?? BUILTIN_MOTION_OPTIONS[0]?.id ?? ''
     setSelectedMotionId(idleId)
   }, [])
 
+  // Thinking State Sequence Logic
+  useEffect(() => {
+    const thinkingOpt = BUILTIN_MOTION_OPTIONS.find(o => /thinking/i.test(o.label))
+    if (!thinkingOpt) return
+
+    if (isThinking) {
+      setSelectedMotionId(`${thinkingOpt.id}#intro`)
+    } else {
+      if (selectedMotionIdRef.current.includes(`${thinkingOpt.id}#intro`) || 
+          selectedMotionIdRef.current.includes(`${thinkingOpt.id}#loop`)) {
+        setSelectedMotionId(`${thinkingOpt.id}#outro`)
+      }
+    }
+  }, [isThinking])
+
   // Random Idle Action Logic
   useEffect(() => {
-    const currentOption = BUILTIN_MOTION_OPTIONS.find(o => o.id === selectedMotionId)
-    if (!isPlaying || !currentOption) return
+    const baseId = selectedMotionId.split('#')[0]
+    const currentOption = BUILTIN_MOTION_OPTIONS.find(o => o.id === baseId)
+    if (!isPlaying || !currentOption || isThinking) return
 
     // Only trigger random action if we are currently in an "idle" state
-    if (!/idle/i.test(currentOption.label)) return
+    if (!/idle/i.test(currentOption.label) || selectedMotionId.includes('#')) return
 
     const randomActions = BUILTIN_MOTION_OPTIONS.filter(o => /random_/i.test(o.label))
     if (randomActions.length === 0) return
@@ -176,6 +210,8 @@ export function MotionProvider({ children }: { children: ReactNode }) {
         isMusicPlaying,
         toggleMusic,
         handleAnimationFinished,
+        isThinking,
+        setIsThinking,
       }}
     >
       {children}

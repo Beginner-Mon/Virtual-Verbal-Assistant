@@ -18,7 +18,7 @@ export const ENV_CONFIG = {
   // ── Renderer & Color Pipeline ─────────────────────────────────────────
   renderer: {
     toneMapping: THREE.ACESFilmicToneMapping,
-    toneMappingExposure: 1.15, // Tăng nhẹ exposure tổng thể
+    toneMappingExposure: 1.35, // Tăng nhẹ exposure tổng thể
     outputColorSpace: THREE.SRGBColorSpace,
   },
 
@@ -28,7 +28,7 @@ export const ENV_CONFIG = {
   lighting: {
     main: {
       color: '#fffaf0',                       // warm white — avoids blue cast on skin
-      intensity: 1.25,                        // Tăng độ sáng đèn chính
+      intensity: 1.15,                        // Tăng độ sáng đèn chính
       position: [0, 2, 4] as [number, number, number], // front, slightly above — flattering for anime faces
       castShadow: true,
     },
