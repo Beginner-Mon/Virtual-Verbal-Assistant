@@ -15,7 +15,7 @@ import { loadAndRetargetBVH, SMPLX_RETARGET_OPTIONS, STANDARD_RETARGET_OPTIONS }
 import { loadMixamoAnimation } from './loadMixamoAnimation'
 import { getAnimationClip } from './animationCache'
 import { resolveMotionUrl } from './motionAssets'
-import { staticSourceOf, type CharState, type StaticSource, type SubclipRange } from './AnimationStates'
+import { CHAR_STATES, staticSourceOf, type CharState, type StaticSource, type SubclipRange } from './AnimationStates'
 
 export class AnimationRegistry {
   /**
@@ -66,6 +66,34 @@ export class AnimationRegistry {
   /** Drop every cached clip. Required when the VRM changes in place. */
   invalidate(): void {
     this.clips.clear()
+  }
+
+  /**
+   * Warm every static clip during idle time.
+   *
+   * Retargeting is synchronous CPU work on the main thread: loading a clip for
+   * the first time blocks the render loop long enough to be seen as a freeze /
+   * flash (measured 111ms for Thinking.fbx, 214ms for random_Bored.fbx). Doing
+   * it lazily meant that cost landed on the user's FIRST question, and again on
+   * the first idle filler — i.e. exactly mid-interaction.
+   *
+   * One clip per idle callback, so the warm-up never blocks a frame itself.
+   * `get()` is cached and dedupes, so a real transition arriving mid-prefetch
+   * simply awaits the same promise instead of loading twice.
+   */
+  prefetchStatic(): void {
+    const pending = CHAR_STATES.filter((state) => staticSourceOf(state) && !this.clips.has(state))
+
+    const step = () => {
+      const next = pending.shift()
+      if (next === undefined) return
+      void this.get(next).finally(() => schedule())
+    }
+    const schedule = () => {
+      if (typeof requestIdleCallback === 'function') requestIdleCallback(step, { timeout: 2000 })
+      else setTimeout(step, 200)
+    }
+    schedule()
   }
 
   private async build(state: CharState): Promise<THREE.AnimationClip | null> {

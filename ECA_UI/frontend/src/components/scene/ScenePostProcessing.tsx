@@ -16,7 +16,7 @@ import {
   SSAO,
 } from '@react-three/postprocessing'
 import { BlendFunction } from 'postprocessing'
-import { memo } from 'react'
+import { memo, type ReactElement } from 'react'
 import { ENV_CONFIG } from '../../config/environmentConfig'
 
 function ScenePostProcessing() {
@@ -24,31 +24,46 @@ function ScenePostProcessing() {
 
   if (!pp.enabled) return null
 
-  return (
-    <EffectComposer>
+  // Built as an array rather than with inline `&&`: EffectComposer types its
+  // children as elements, so a disabled effect must be absent, not `false`.
+  const effects: ReactElement[] = []
+
+  // OFF by default: Bloom intermittently emits an all-black frame.
+  // Measurements + reasoning in ENV_CONFIG.postProcessing.bloom.enabled.
+  if (pp.bloom.enabled) {
+    effects.push(
       <Bloom
+        key="bloom"
         intensity={pp.bloom.intensity}
         luminanceThreshold={pp.bloom.luminanceThreshold}
         luminanceSmoothing={pp.bloom.luminanceSmoothing}
         blendFunction={BlendFunction.ADD}
-      />
+      />,
+    )
+  }
 
-      {pp.ssao.enabled && (
-        <SSAO
-          intensity={pp.ssao.intensity}
-          radius={pp.ssao.radius}
-          samples={pp.ssao.samples}
-          blendFunction={BlendFunction.MULTIPLY}
-        />
-      )}
+  if (pp.ssao.enabled) {
+    effects.push(
+      <SSAO
+        key="ssao"
+        intensity={pp.ssao.intensity}
+        radius={pp.ssao.radius}
+        samples={pp.ssao.samples}
+        blendFunction={BlendFunction.MULTIPLY}
+      />,
+    )
+  }
 
-      <Vignette
-        offset={pp.vignette.offset}
-        darkness={pp.vignette.darkness}
-        blendFunction={BlendFunction.NORMAL}
-      />
-    </EffectComposer>
+  effects.push(
+    <Vignette
+      key="vignette"
+      offset={pp.vignette.offset}
+      darkness={pp.vignette.darkness}
+      blendFunction={BlendFunction.NORMAL}
+    />,
   )
+
+  return <EffectComposer>{effects}</EffectComposer>
 }
 
 /**

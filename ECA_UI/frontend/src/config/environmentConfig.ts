@@ -98,6 +98,24 @@ export const ENV_CONFIG = {
   postProcessing: {
     enabled: true,
     bloom: {
+      // OFF — Bloom is what caused the "màn hình chớp đen" report. Measured
+      // with a CDP screencast at ~59fps over 19.5s, counting frames whose mean
+      // luma fell below 75% of the median (a real black frame reads 17.8 vs a
+      // normal 220):
+      //
+      //   everything on ................ 4 black frames
+      //   SSAO off ..................... 3   (not SSAO)
+      //   ContactShadows off ........... 5   (not ContactShadows)
+      //   whole EffectComposer off ..... 0
+      //   Bloom off, rest on ........... 0   ← isolated
+      //   Bloom on with mipmapBlur ..... 6   (alternate blur path doesn't help)
+      //
+      // One isolated frame goes fully black roughly every 3-5s, unrelated to
+      // any app event. At intensity 0.15 / threshold 0.85 the effect was barely
+      // perceptible, so the trade is not close. Flip back to true only if the
+      // underlying @react-three/postprocessing issue is fixed — and re-run the
+      // screencast check before trusting it.
+      enabled: false,
       intensity: 0.15,
       luminanceThreshold: 0.85,
       luminanceSmoothing: 0.4,

@@ -120,7 +120,13 @@
     động **không cần mở panel** — khác `window.__avatar` (chỉ có khi MotionControlPanel mở).
   - **Chưa làm (đúng scope)**: §9 facial↔body sync. Chỗ cắm đã sẵn — `facialOf(state)` trong
     `AnimationStates.ts`, `stateChanged` emitter, thứ tự `useFrame` body → facial → `vrm.update`.
-- **Bug "UI chớp đen" — ĐÃ FIX 30/07** (Owner báo sau khi merge FSM). Root cause **có trước refactor**,
+- **Bug "UI chớp đen" — ĐÃ FIX 30/07, thủ phạm là BLOOM** (chi tiết + bảng bisect ở worklog §4).
+  Nguyên nhân thật: `EffectComposer` → `<Bloom>` intermittently xuất **1 frame đen đơn lẻ** (~3-5s/lần,
+  luma 17.8 giữa các frame ~220), không liên quan sự kiện app. → `bloom.enabled = false`.
+  Verify: **0 frame đen / 1148 frame** (headed CDP screencast ~59fps). ⚠️ Đo bằng headless là VÔ NGHĨA
+  (không có compositor thật → readback rỗng, screencast 39 frame/20s).
+  Ngoài ra `prefetchStatic()` xoá stall load clip lần đầu (111-214ms → 35ms).
+- **Fix shadow ping-pong (cũng 30/07) — thật nhưng KHÔNG phải nguyên nhân chớp đen** (Owner báo sau khi merge FSM). Root cause **có trước refactor**,
   refactor chỉ làm lộ ra nhiều hơn: `ENV_CONFIG.shadows.type = THREE.PCFSoftShadowMap` là hằng
   **deprecated** → `WebGLShadowMap.render()` của three.js warn rồi **tự ghi lại** `this.type =
   PCFShadowMap`; R3F `configure()` (chạy **mỗi lần `<Canvas>` render**) ghi giá trị cũ trở lại, thấy

@@ -18,6 +18,7 @@
 
 import { useEffect, useRef } from 'react'
 import type { AnimationController } from '../lib/AnimationController'
+import type { AnimationRegistry } from '../lib/AnimationRegistry'
 import { STATES, type CharState } from '../lib/AnimationStates'
 
 /**
@@ -35,7 +36,10 @@ import { STATES, type CharState } from '../lib/AnimationStates'
  */
 let hasGreeted = false
 
-export function useFsmBoot(controller: AnimationController | null): void {
+export function useFsmBoot(
+  controller: AnimationController | null,
+  registry: AnimationRegistry | null,
+): void {
   useEffect(() => {
     if (!controller) return
     let cancelled = false
@@ -44,16 +48,20 @@ export function useFsmBoot(controller: AnimationController | null): void {
       const first: CharState = hasGreeted ? 'idle' : 'greeting'
       hasGreeted = true
       const ok = await controller.transitionTo(first)
-      if (cancelled || ok || first === 'idle') return
+      if (cancelled) return
       // Greeting unavailable — must still end up posed.
-      await controller.transitionTo('idle')
+      if (!ok && first !== 'idle') await controller.transitionTo('idle')
+      if (cancelled) return
+      // Only once the character is on screen: warm the remaining clips during
+      // idle time so the first chat doesn't pay a ~200ms retarget stall.
+      registry?.prefetchStatic()
     }
 
     void boot()
     return () => {
       cancelled = true
     }
-  }, [controller])
+  }, [controller, registry])
 }
 
 /**

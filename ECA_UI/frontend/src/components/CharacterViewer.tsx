@@ -126,6 +126,7 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
   const [revealed, setRevealed] = useState(false)
   // Also kept in state so the boot effect re-runs when the controller is swapped.
   const [animController, setAnimController] = useState<AnimationController | null>(null)
+  const [registry, setRegistry] = useState<AnimationRegistry | null>(null)
 
   // Latest-value refs: the animation controller lives outside React, so its
   // callbacks must not capture a stale render's props.
@@ -173,6 +174,7 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
 
     animControllerRef.current = controller
     setAnimController(controller)
+    setRegistry(registry)
     const detach = attachControllers(controller, registry)
     onReadyRef.current(false)
 
@@ -181,6 +183,7 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
       controller.dispose()
       animControllerRef.current = null
       setAnimController(null)
+      setRegistry(null)
       revealedRef.current = false
       setRevealed(false)
       onReadyRef.current(false)
@@ -188,7 +191,7 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
   }, [vrm, vrmUrl, attachControllers])
 
   // Boot: greet once, then idle (plan §2.5).
-  useFsmBoot(animController)
+  useFsmBoot(animController, registry)
 
   // Update body animation, then facial expressions, then the VRM itself.
   // Order is mandatory (§8 rule 1): the avatar controller calls setValue, and
