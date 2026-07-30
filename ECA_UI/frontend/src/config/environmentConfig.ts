@@ -29,7 +29,7 @@ export const ENV_CONFIG = {
     main: {
       color: '#fffaf0',                       // warm white — avoids blue cast on skin
       intensity: 2.0,                         // Đèn chính chuẩn
-      position: [0, 5, 4] as [number, number, number], // front, slightly above — flattering for anime faces
+      position: [0, 3, 8] as [number, number, number], // front, slightly above — flattering for anime faces
       castShadow: true,
     },
     ambient: {

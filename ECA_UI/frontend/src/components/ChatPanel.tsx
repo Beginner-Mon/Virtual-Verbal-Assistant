@@ -7,15 +7,20 @@ import type { Message } from './ChatMessage'
 import { streamChat } from '../lib/api'
 import { useMotion } from '../contexts/MotionContext'
 
-/* ─── Demo data ─── */
-const INITIAL_MESSAGES: Message[] = [
-  {
-    id: '1',
-    role: 'assistant',
-    content: "Hello! I'm your Virtual Verbal Assistant. How can I help you today? 🎙️\n\nI can format text like **bold**, *italics*, and lists once we integrate a Markdown parser. For now, I'm just displaying raw text with nice typography spacing.",
-    timestamp: new Date(),
-  },
-]
+function buildInitialMessages(): Message[] {
+  const hour = new Date().getHours()
+  const greeting = hour < 12 ? 'Good morning' : 'Good afternoon'
+  return [
+    {
+      id: '1',
+      role: 'assistant',
+      content: `${greeting}! My name is ECA, your Virtual Verbal Assistant. How can I help you today? 🎙️`,
+      timestamp: new Date(),
+    },
+  ]
+}
+
+const INITIAL_MESSAGES = buildInitialMessages()
 
 /* ─── ChatPanel ─── */
 export default function ChatPanel() {

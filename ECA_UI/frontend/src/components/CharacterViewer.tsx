@@ -204,7 +204,7 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
   })
 
   return (
-    <group position={[0, -1.5, 0]} rotation={[Math.PI / 2, 0, 0]}>
+    <group position={[0, 1.5, 0]} rotation={[Math.PI / 2, 0, 0]}>
       {/* visible=false until the first animation pose is applied — the model
           never renders in bind pose (T-pose). */}
       <primitive object={vrm.scene} visible={revealed} />
@@ -405,7 +405,7 @@ return (
       {ENV_CONFIG.debug.showGrid && (
         <group rotation={[Math.PI / 2, 0, 0]}>
           <gridHelper
-            args={[8, 16, theme === 'dark' ? '#444466' : '#c0c0c0', theme === 'dark' ? '#1a1a2e' : '#e8e8e8']}
+            args={[8, 16, theme === 'dark' ? '#666688' : '#808080', theme === 'dark' ? '#2a2a3e' : '#c0c0c0']}
             position={[0, 0, -1.5]}
           />
         </group>
