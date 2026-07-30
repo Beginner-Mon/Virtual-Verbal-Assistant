@@ -126,6 +126,14 @@
   Verify: **0 frame đen / 1148 frame** (headed CDP screencast ~59fps). ⚠️ Đo bằng headless là VÔ NGHĨA
   (không có compositor thật → readback rỗng, screencast 39 frame/20s).
   Ngoài ra `prefetchStatic()` xoá stall load clip lần đầu (111-214ms → 35ms).
+- **Shadow frustum auto-fit — 30/07** (`ECA_UI/frontend/src/lib/shadowFit.ts`, worklog §5): frustum
+  cũ cố định 5×5 **ở gốc toạ độ** → nhân vật chỉ chiếm 7-8%, lề chỉ 0.43 trong khi subject dịch
+  >1.2/clip. Giờ fit theo **skeleton ∪ bóng chiếu xuống sàn** mỗi frame, hình cầu (bất biến khi xoay)
+  + snap texel + **giữ nguyên hướng đèn**. Kết quả: texel 0.488 → **0.245-0.359 cm** (sắc hơn
+  1.4-2.0×) với `mapSize` **không đổi**. Config cũ `cameraSize/cameraNear/cameraFar` đã bỏ, thay bằng
+  `fitPadding` + `fitGroundZ`. ⚠️ Không tái hiện được clipping trên asset hiện có — nghi phạm đúng
+  triệu chứng "chém thẳng" là **`<ContactShadows>`** (ô vuông cứng `scale:5`, `far:3`, KHÔNG đi theo
+  nhân vật), chưa đụng, chờ Owner xác nhận.
 - **Fix shadow ping-pong (cũng 30/07) — thật nhưng KHÔNG phải nguyên nhân chớp đen** (Owner báo sau khi merge FSM). Root cause **có trước refactor**,
   refactor chỉ làm lộ ra nhiều hơn: `ENV_CONFIG.shadows.type = THREE.PCFSoftShadowMap` là hằng
   **deprecated** → `WebGLShadowMap.render()` của three.js warn rồi **tự ghi lại** `this.type =

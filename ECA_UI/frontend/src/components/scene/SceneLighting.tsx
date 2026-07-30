@@ -12,9 +12,11 @@
 
 import { useRef, useEffect } from 'react'
 import * as THREE from 'three'
+import { useFrame } from '@react-three/fiber'
 import { ContactShadows } from '@react-three/drei'
 import type { VRM } from '@pixiv/three-vrm'
 import { ENV_CONFIG } from '../../config/environmentConfig'
+import { DEFAULT_SHADOW_FIT, ShadowCameraFitter } from '../../lib/shadowFit'
 
 interface SceneLightingProps {
   vrm: VRM | null
@@ -22,6 +24,7 @@ interface SceneLightingProps {
 
 export default function SceneLighting({ vrm }: SceneLightingProps) {
   const lightRef = useRef<THREE.DirectionalLight>(null!)
+  const fitterRef = useRef<ShadowCameraFitter | null>(null)
 
   const {
     lighting: { main, ambient },
@@ -29,7 +32,11 @@ export default function SceneLighting({ vrm }: SceneLightingProps) {
     ground,
   } = ENV_CONFIG
 
-  // ── Configure shadow camera on the main directional light ─────────────
+  // ── Configure shadow map + build the auto-fitter ──────────────────────
+  // The frustum extents are NOT set here any more: they are derived from the
+  // subject every frame (see lib/shadowFit.ts). A fixed frustum centred on the
+  // world origin is what made shadows clip in a straight line while wasting
+  // ~92% of the shadow map.
   useEffect(() => {
     const light = lightRef.current
     if (!light) return
@@ -38,15 +45,31 @@ export default function SceneLighting({ vrm }: SceneLightingProps) {
     light.shadow.bias = shadows.bias
     light.shadow.normalBias = shadows.normalBias
 
-    const cam = light.shadow.camera as THREE.OrthographicCamera
-    cam.left = -shadows.cameraSize
-    cam.right = shadows.cameraSize
-    cam.top = shadows.cameraSize
-    cam.bottom = -shadows.cameraSize
-    cam.near = shadows.cameraNear
-    cam.far = shadows.cameraFar
-    cam.updateProjectionMatrix()
+    fitterRef.current = new ShadowCameraFitter(light, {
+      ...DEFAULT_SHADOW_FIT,
+      padding: shadows.fitPadding,
+      groundZ: shadows.fitGroundZ,
+    })
+    return () => {
+      fitterRef.current = null
+    }
   }, [shadows])
+
+  // Track the subject. Throttled internally — this is not per-frame work.
+  useFrame((_state, delta) => {
+    fitterRef.current?.update(vrm, delta * 1000)
+  })
+
+  // DEV handle for the shadow-frustum probe: compare the fitted frustum against
+  // the skeleton AND its floor projection. Cheaper than guessing why a shadow
+  // looks cut off.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return
+    ;(window as unknown as { __shadow?: unknown }).__shadow = () => ({
+      light: lightRef.current,
+      vrm,
+    })
+  }, [vrm])
 
   // ── Configure VRM meshes: castShadow / receiveShadow ──────────────────
   // Outline meshes (BackSide) must NOT cast shadows — they create doubled

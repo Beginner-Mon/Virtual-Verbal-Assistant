@@ -52,10 +52,15 @@ export const ENV_CONFIG = {
     mapSize: 1024,
     bias: -0.001, // increased negative bias to prevent shadow acne on neck/hair
     normalBias: 0.02,
-    // Shadow camera frustum — tight around a standing humanoid
-    cameraSize: 2.5,
-    cameraNear: 0.1,
-    cameraFar: 10,
+    // Frustum extents are AUTO-FITTED to the character every frame — see
+    // lib/shadowFit.ts. The old fixed box (cameraSize 2.5 centred on the world
+    // origin) left the subject 0.43 units from the edge while wasting ~92% of
+    // the shadow map, which is how shadows got sliced off in a straight line.
+    // Enlarging the box would only waste more map and blur the result.
+    /** Metres of slack around the skeleton, for hair / skirt / fingertips. */
+    fitPadding: 0.18,
+    /** World height of the shadow-receiving floor (ground plane sits at z=0). */
+    fitGroundZ: 0,
   },
 
   // ── Ground & Contact Shadow ───────────────────────────────────────────
