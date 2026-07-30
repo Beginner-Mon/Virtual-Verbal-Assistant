@@ -19,7 +19,9 @@ const INITIAL_MESSAGES: Message[] = [
 
 /* ─── ChatPanel ─── */
 export default function ChatPanel() {
-  const { setIsThinking } = useMotion()
+  // Body animation is driven through the FSM. `playMotionFile` is the hook for
+  // generated motion once the backend streams a URL (plan §5 / P2).
+  const { transitionTo } = useMotion()
   const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES)
   const [input, setInput] = useState('')
   const [isTyping, setIsTyping] = useState(false)
@@ -29,6 +31,9 @@ export default function ChatPanel() {
   const [webSearch, setWebSearch] = useState(false)
   
   const bottomRef = useRef<HTMLDivElement>(null)
+  // Guards the thinking→outro hop: the token handler runs per token, and
+  // `thinking_outro` must be requested exactly once per turn.
+  const thinkingRef = useRef(false)
   const abortControllerRef = useRef<AbortController | null>(null)
   const sessionIdRef = useRef<string>(crypto.randomUUID())
   const addMenuRef = useRef<HTMLDivElement>(null)
@@ -50,6 +55,14 @@ export default function ChatPanel() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isTyping, stageLabel])
 
+  /* Leave the thinking sequence. Idempotent: extra calls are no-ops, and the
+     FSM itself rejects `thinking_outro` from unrelated states. */
+  const endThinking = () => {
+    if (!thinkingRef.current) return
+    thinkingRef.current = false
+    void transitionTo('thinking_outro')
+  }
+
   /* send handler */
   const handleSend = async () => {
     const text = input.trim()
@@ -66,7 +79,8 @@ export default function ChatPanel() {
     setInput('')
     setIsTyping(true)
     setIsGenerating(true)
-    setIsThinking(true)
+    thinkingRef.current = true
+    void transitionTo('thinking_intro')
 
     // Prepare an empty assistant message to stream into
     const assistantMsgId = crypto.randomUUID()
@@ -102,7 +116,7 @@ export default function ChatPanel() {
           } else if (type === 'token') {
             setIsTyping(false)
             setStageLabel(null)
-            setIsThinking(false)
+            endThinking()
             const content = (data as { content: string }).content
             setMessages((prev) =>
               prev.map((msg) =>
@@ -130,7 +144,7 @@ export default function ChatPanel() {
       setIsTyping(false)
       setStageLabel(null)
       setIsGenerating(false)
-      setIsThinking(false)
+      endThinking()
     }
   }
 
@@ -139,7 +153,7 @@ export default function ChatPanel() {
     setIsTyping(false)
     setStageLabel(null)
     setIsGenerating(false)
-    setIsThinking(false)
+    endThinking()
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {

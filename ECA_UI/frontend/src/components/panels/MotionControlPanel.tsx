@@ -2,6 +2,7 @@ import { Play, Pause, RotateCcw, Activity, Sliders, Camera, Sparkles, Smile } fr
 import { useEffect, useRef, useState } from 'react'
 import { ScrollArea } from '../ui/scroll-area'
 import { useMotion } from '../../contexts/MotionContext'
+import type { CharState } from '../../lib/AnimationStates'
 import { CANONICAL_EMOTIONS, type CanonicalEmotion } from '../../avatar/AvatarProfile'
 import { ensureAudioContext, playSyntheticSpeech, type SyntheticSpeech } from '../../avatar/lipSyncAudio'
 
@@ -9,15 +10,17 @@ export default function MotionControlPanel() {
   const {
     cameraMode,
     setCameraMode,
-    selectedMotionId,
-    setSelectedMotionId,
+    currentState,
+    transitionTo,
+    stateOptions,
+    playMotionFile,
+    motionFileOptions,
     isPlaying,
     setIsPlaying,
     speed,
     setSpeed,
     clipInfo,
     handleReset,
-    motionOptions,
     avatarRef,
   } = useMotion()
 
@@ -90,19 +93,52 @@ export default function MotionControlPanel() {
             </select>
           </div>
 
+          {/* (1) FSM state selector — the primary control. Contents are derived
+              from STATES, so a new animation with a `debugLabel` shows up here
+              with no edit to this file (plan §3.0 / §11). */}
           <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-secondary/20 border border-border/10">
             <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
               <Activity className="w-3 h-3" />
-              Motion source
+              Character state
             </span>
             <select
-              value={selectedMotionId}
-              onChange={(e) => setSelectedMotionId(e.target.value)}
+              value={stateOptions.some((o) => o.id === currentState) ? currentState : ''}
+              onChange={(e) => void transitionTo(e.target.value as CharState)}
               className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-0.5"
             >
-              <option value="" className="bg-card text-muted-foreground">None (default pose)</option>
-              {motionOptions.map((option) => (
+              {/* Sequence/dynamic states (thinking_loop, exercise…) are not
+                  manually selectable, so show the live state as a read-only row. */}
+              {!stateOptions.some((o) => o.id === currentState) && (
+                <option value="" className="bg-card text-muted-foreground">
+                  {currentState} (auto)
+                </option>
+              )}
+              {stateOptions.map((option) => (
                 <option key={option.id} value={option.id} className="bg-card text-foreground">
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* (2) Motion FILE selector — DEBUG. Plays any BVH/FBX through the
+              `exercise` state. This is the only way to verify the Kimodo
+              NPZ→BVH retarget without a backend or GPU (plan §4.3, test #4). */}
+          <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-secondary/20 border border-border/10">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+              <Activity className="w-3 h-3" />
+              Motion file (debug)
+            </span>
+            <select
+              defaultValue=""
+              onChange={(e) => {
+                if (e.target.value) void playMotionFile(e.target.value)
+              }}
+              className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-0.5"
+            >
+              <option value="" className="bg-card text-muted-foreground">Pick a file to play…</option>
+              {motionFileOptions.map((option) => (
+                <option key={option.label} value={option.url} className="bg-card text-foreground">
                   {option.label}
                 </option>
               ))}

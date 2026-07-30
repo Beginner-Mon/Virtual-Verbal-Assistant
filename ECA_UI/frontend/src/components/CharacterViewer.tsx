@@ -7,10 +7,11 @@ import { useTheme } from '../contexts/ThemeContext'
 import { OrbitControls, Html } from '@react-three/drei'
 import { useRef, useEffect, useState, Suspense, useMemo } from 'react'
 import * as THREE from 'three'
-import { loadAndRetargetBVH, SMPLX_RETARGET_OPTIONS, STANDARD_RETARGET_OPTIONS } from '../lib/bvhToVrm'
-import { loadMixamoAnimation } from '../lib/loadMixamoAnimation'
-import { getAnimationClip } from '../lib/animationCache'
-import { type CameraMode, useMotion } from '../contexts/MotionContext'
+import { AnimationController } from '../lib/AnimationController'
+import { AnimationRegistry } from '../lib/AnimationRegistry'
+import type { CameraMode } from '../lib/AnimationStates'
+import { useFsmBoot } from '../hooks/useFsmTriggers'
+import { useMotion } from '../contexts/MotionContext'
 import { AvatarController } from '../avatar/AvatarController'
 import { loadProfile } from '../avatar/AvatarProfile'
 import LoadingOverlay from './ui/LoadingOverlay'
@@ -32,41 +33,38 @@ const CAMERA_MODES: Record<CameraMode, { boneName: VRMHumanBoneName; cameraOffse
   },
 }
 
+/**
+ * Static <Canvas> configuration, hoisted OUT of the render.
+ *
+ * R3F calls `root.configure(props)` on every render of <Canvas> and writes
+ * these onto the live renderer. Passing fresh object literals meant that work
+ * repeated on every React re-render — and re-renders got more frequent once FSM
+ * state started flowing through context. Module constants make the config what
+ * it actually is: fixed for the lifetime of the app.
+ */
+const CANVAS_SHADOWS = { type: ENV_CONFIG.shadows.type }
+const CANVAS_CAMERA = { position: [0, 2.05, 0] as [number, number, number], fov: 45 }
+const CANVAS_GL = {
+  antialias: true,
+  alpha: true,
+  toneMapping: ENV_CONFIG.renderer.toneMapping,
+  toneMappingExposure: ENV_CONFIG.renderer.toneMappingExposure,
+}
 
-
-/* ───────────────────── VRM Character with BVH Animation ──────────── */
-
-/** Crossfade duration (s) when swapping motion clips. */
-const FADE_SEC = 0.3
+/* ───────────────────── VRM Character with FSM-driven animation ──────────── */
 
 interface VRMCharacterProps {
   vrmUrl: string
   modelId: string
-  animationUrl: string
-  isPlaying: boolean
-  speed: number
-  onResetRef: React.MutableRefObject<(() => void) | null>
-  onLoaded: (info: { tracks: number; duration: number }) => void
   /** Readiness gate: false while the model has no pose yet (bind pose hidden). */
   onReady: (ready: boolean) => void
   vrmRef: React.MutableRefObject<VRM | null>
   avatarRef: React.MutableRefObject<AvatarController | null>
-  onAnimationFinished: () => void
 }
 
-function VRMCharacter({
-  vrmUrl,
-  modelId,
-  animationUrl,
-  isPlaying,
-  speed,
-  onResetRef,
-  onLoaded,
-  onReady,
-  vrmRef,
-  avatarRef,
-  onAnimationFinished,
-}: VRMCharacterProps) {
+function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharacterProps) {
+  const { attachControllers, setClipInfo } = useMotion()
+
   const gltf = useLoader(GLTFLoader, vrmUrl, (loader) => {
     loader.register((parser) => new VRMLoaderPlugin(parser))
   })
@@ -120,26 +118,23 @@ function VRMCharacter({
     }
   }, [vrm])
 
-  const mixerRef = useRef<THREE.AnimationMixer | null>(null)
-  const actionRef = useRef<THREE.AnimationAction | null>(null)
-  const fadingOutRef = useRef<THREE.AnimationAction[]>([])
-  const loadGenRef = useRef(0)
-  const isPlayingRef = useRef(isPlaying)
-  const revealedRef = useRef(false)
   const avatarControllerRef = useRef<AvatarController | null>(null)
-  const [animLoaded, setAnimLoaded] = useState(false)
+  const animControllerRef = useRef<AnimationController | null>(null)
+  const revealedRef = useRef(false)
   // Drives <primitive visible={...}>: false until the first pose is applied.
   // Per-instance state — key={vrmUrl} remounts reset it on model switch.
   const [revealed, setRevealed] = useState(false)
-  const onAnimationFinishedRef = useRef(onAnimationFinished)
+  // Also kept in state so the boot effect re-runs when the controller is swapped.
+  const [animController, setAnimController] = useState<AnimationController | null>(null)
 
+  // Latest-value refs: the animation controller lives outside React, so its
+  // callbacks must not capture a stale render's props.
+  const onReadyRef = useRef(onReady)
+  const setClipInfoRef = useRef(setClipInfo)
   useEffect(() => {
-    onAnimationFinishedRef.current = onAnimationFinished
-  }, [onAnimationFinished])
-
-  useEffect(() => {
-    isPlayingRef.current = isPlaying
-  }, [isPlaying])
+    onReadyRef.current = onReady
+    setClipInfoRef.current = setClipInfo
+  }, [onReady, setClipInfo])
 
   // Facial-animation controller lifecycle: attach on VRM load, detach on
   // model change / unmount. Kept out of React state — this ref IS the handle
@@ -156,188 +151,53 @@ function VRMCharacter({
     }
   }, [vrm, modelId, avatarRef])
 
-  // One AnimationMixer per VRM, living for the model's whole lifetime. Actions
-  // are added/retired on this mixer — stopAllAction() only happens here, on
-  // teardown. Invariant: from the moment the model is visible, at least one
-  // action drives the skeleton, so the bind pose (T-pose) is never rendered.
+  // Animation FSM lifecycle. The registry is per-VRM because clips are
+  // retargeted against a specific skeleton (plan lỗi #6); a new instance per
+  // model IS the invalidation.
   useEffect(() => {
     if (!vrm) return
-    const mixer = new THREE.AnimationMixer(vrm.scene)
-    mixerRef.current = mixer
-    
-    const handleFinished = (e: any) => {
-      if (e.action === actionRef.current) {
-        onAnimationFinishedRef.current?.()
-      }
-    }
-    mixer.addEventListener('finished', handleFinished)
 
-    onReady(false)
-    return () => {
-      mixer.removeEventListener('finished', handleFinished)
-      mixer.stopAllAction()
-      mixer.uncacheRoot(vrm.scene)
-      mixerRef.current = null
-      actionRef.current = null
-      fadingOutRef.current = []
-      onReady(false)
-    }
-  }, [vrm, onReady])
-
-  // Load (or reuse a cached) clip when a motion source is selected. The
-  // current action keeps driving the skeleton until its replacement is ready,
-  // then a crossfade swaps them — there is never a frame with zero active
-  // actions, so switching motions never flashes the bind pose.
-  useEffect(() => {
-    if (!vrm || !animationUrl) return
-    const gen = ++loadGenRef.current
-
-    async function applyAnimation() {
-      try {
-        const isSubclip = animationUrl.includes('#')
-        const [baseAnimUrl, subclipName] = animationUrl.split('#')
-        const isFbx = baseAnimUrl.includes('.fbx')
-        
-        const clip = await getAnimationClip(`${vrmUrl}|${baseAnimUrl}`, () =>
-          isFbx
-            ? loadMixamoAnimation(baseAnimUrl, vrm)
-            : loadAndRetargetBVH(
-                baseAnimUrl,
-                vrm,
-                baseAnimUrl.includes('motion_') || baseAnimUrl.includes('smplx')
-                  ? SMPLX_RETARGET_OPTIONS
-                  : STANDARD_RETARGET_OPTIONS,
-              ),
-        )
-
-        // A newer request (or a teardown) superseded this one — the clip
-        // stays cached for future use, but we don't touch the active action.
-        if (gen !== loadGenRef.current || !clip) return
-        const mixer = mixerRef.current
-        if (!mixer) return
-
-        let finalClip = clip
-        if (isSubclip) {
-          if (subclipName === 'intro') {
-            finalClip = THREE.AnimationUtils.subclip(clip, 'intro', 0, 38, 30)
-          } else if (subclipName === 'loop') {
-            finalClip = THREE.AnimationUtils.subclip(clip, 'loop', 38, 75, 30)
-          } else if (subclipName === 'outro') {
-            finalClip = THREE.AnimationUtils.subclip(clip, 'outro', 75, 127, 30)
-          }
-        }
-
-        const action = mixer.clipAction(finalClip)
-        const isAction = 
-          subclipName === 'intro' || 
-          subclipName === 'outro' || 
-          (!baseAnimUrl.toLowerCase().includes('idle_') && (baseAnimUrl.toLowerCase().includes('action_') || baseAnimUrl.toLowerCase().includes('random_')))
-        
-        action.setLoop(isAction ? THREE.LoopOnce : THREE.LoopRepeat, isAction ? 1 : Infinity)
-        action.clampWhenFinished = isAction
-
-
-        const prev = actionRef.current
-        if (isPlayingRef.current) {
-          action.play()
-          if (prev && prev !== action && prev.isRunning()) {
-            // Crossfade: new clip fades in over the old one; the old action is
-            // retired in useFrame once its weight reaches zero.
-            prev.fadeOut(FADE_SEC)
-            action.fadeIn(FADE_SEC)
-            fadingOutRef.current = fadingOutRef.current.filter((a) => a !== action)
-            fadingOutRef.current.push(prev)
-          } else {
-            // First action on this model (or previous one was stopped): apply
-            // at full weight immediately — fading in from nothing would show
-            // the bind pose for the fade duration.
-            action.setEffectiveWeight(1)
-          }
-        } else if (prev && prev !== action) {
-          prev.stop()
-          mixer.uncacheAction(prev.getClip())
-        }
-        actionRef.current = action
-        setAnimLoaded(true)
-        onLoaded({ tracks: clip.tracks.length, duration: clip.duration })
-
-        // Reveal only after a pose has actually been applied to the bones.
-        // This is an event-driven readiness gate, NOT a wait time.
+    const registry = new AnimationRegistry(vrm, vrmUrl)
+    const controller = new AnimationController(vrm, registry, {
+      onClipApplied: (info) => {
+        setClipInfoRef.current({ tracks: info.tracks, duration: info.duration })
+        // Reveal only once an actual pose has reached the bones. Event-driven
+        // readiness — never a timed wait.
         if (!revealedRef.current) {
           revealedRef.current = true
-          mixer.update(0)
           setRevealed(true)
-          onReady(true)
+          onReadyRef.current(true)
         }
+      },
+    })
 
-        console.log(
-          `[CharacterViewer] Animation ready (${isFbx ? 'FBX' : 'BVH'}): ${clip.tracks.length} tracks, ${clip.duration.toFixed(2)}s`,
-        )
-      } catch (err) {
-        console.error('[CharacterViewer] Failed to load animation:', err)
-      }
-    }
+    animControllerRef.current = controller
+    setAnimController(controller)
+    const detach = attachControllers(controller, registry)
+    onReadyRef.current(false)
 
-    applyAnimation()
-  }, [vrm, vrmUrl, animationUrl, onLoaded, onReady])
-
-  // Handle play/pause and speed changes. Pause is a debug-only control: the
-  // action is fully stopped (not just timeScale=0), which restores the bind
-  // pose — acceptable for debugging, not part of the production UX.
-  useEffect(() => {
-    const action = actionRef.current
-    const mixer = mixerRef.current
-    if (!action || !mixer || !animLoaded) return
-    if (isPlaying) {
-      if (!action.isRunning()) {
-        action.reset()
-        action.play()
-      } else {
-        action.paused = false
-      }
-      mixer.timeScale = speed
-    } else {
-      action.stop()
-    }
-  }, [isPlaying, speed, animLoaded])
-
-  // Expose reset action — restarts if currently playing, no-op otherwise.
-  useEffect(() => {
-    onResetRef.current = () => {
-      const action = actionRef.current
-      if (!action) return
-      action.reset()
-      if (isPlaying) action.play()
-    }
     return () => {
-      onResetRef.current = null
+      detach()
+      controller.dispose()
+      animControllerRef.current = null
+      setAnimController(null)
+      revealedRef.current = false
+      setRevealed(false)
+      onReadyRef.current(false)
     }
-  }, [animLoaded, isPlaying])
+  }, [vrm, vrmUrl, attachControllers])
+
+  // Boot: greet once, then idle (plan §2.5).
+  useFsmBoot(animController)
 
   // Update body animation, then facial expressions, then the VRM itself.
   // Order is mandatory (§8 rule 1): the avatar controller calls setValue, and
   // vrm.update applies those weights via expressionManager.update() — so the
-  // tick must land BETWEEN mixer.update and vrm.update.
+  // tick must land BETWEEN the mixer update and vrm.update.
   useFrame((_state, delta) => {
-    const mixer = mixerRef.current
-    if (mixer) {
-      mixer.update(delta)
-      // Retire actions whose crossfade-out has completed.
-      const fading = fadingOutRef.current
-      for (let i = fading.length - 1; i >= 0; i--) {
-        const a = fading[i]
-        if (a === actionRef.current || a.getEffectiveWeight() > 0.001) continue
-        a.stop()
-        mixer.uncacheAction(a.getClip())
-        fading.splice(i, 1)
-      }
-    }
-    if (avatarControllerRef.current) {
-      avatarControllerRef.current.tick(delta)
-    }
-    if (vrm) {
-      vrm.update(delta)
-    }
+    animControllerRef.current?.update(delta)
+    avatarControllerRef.current?.tick(delta)
+    vrm?.update(delta)
   })
 
   return (
@@ -400,30 +260,14 @@ interface SceneProps {
   theme: 'light' | 'dark'
   vrmUrl: string
   modelId: string
-  animationUrl: string
-  isPlaying: boolean
-  speed: number
-  onResetRef: React.MutableRefObject<(() => void) | null>
-  onLoaded: (info: { tracks: number; duration: number }) => void
   onReady: (ready: boolean) => void
   avatarRef: React.MutableRefObject<AvatarController | null>
-  onAnimationFinished: () => void
 }
 
-function Scene({
-  theme,
-  vrmUrl,
-  modelId,
-  animationUrl,
-  isPlaying,
-  speed,
-  onResetRef,
-  onLoaded,
-  onReady,
-  avatarRef,
-  onAnimationFinished,
-}: SceneProps) {
-  const { cameraMode, setCameraMode } = useMotion()
+function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
+  // Camera mode is owned by CameraController and driven by FSM state
+  // (exercise → wide + 3s cooldown). The old URL-substring heuristic is gone.
+  const { cameraMode } = useMotion()
   const controlsRef = useRef<any>(null)
   const vrmRef = useRef<VRM | null>(null)
   const { camera } = useThree()
@@ -466,17 +310,12 @@ function Scene({
     }
   }, [cameraMode])
 
-  useEffect(() => {
-    if (animationUrl.includes('generated')) {
-      setCameraMode('hips')
-    } else if (animationUrl.includes('built-in')) {
-      setCameraMode('head')
-    }
-  }, [animationUrl])
-
   // Reusable vectors to avoid GC pressure
   const followPos = useMemo(() => new THREE.Vector3(), [])
   const deltaVec = useMemo(() => new THREE.Vector3(), [])
+  // Built once: a fresh helper per render would make R3F detach/dispose and
+  // re-attach the object on every state change.
+  const axesHelper = useMemo(() => new THREE.AxesHelper(3), [])
 
   // Every frame: make the camera orbit target follow the selected bone.
   // We also shift the camera position by the same delta so the orbital
@@ -554,14 +393,8 @@ return (
         vrmRef={vrmRef}
         vrmUrl={vrmUrl}
         modelId={modelId}
-        animationUrl={animationUrl}
-        isPlaying={isPlaying}
-        speed={speed}
-        onResetRef={onResetRef}
-        onLoaded={onLoaded}
         onReady={onReady}
         avatarRef={avatarRef}
-        onAnimationFinished={onAnimationFinished}
       />
       <FloatingParticles />
 
@@ -574,10 +407,10 @@ return (
           />
         </group>
       )}
-      
+
       {ENV_CONFIG.debug.showAxes && (
         <>
-          <primitive object={new THREE.AxesHelper(3)} />
+          <primitive object={axesHelper} />
           <Html position={[3.2, 0, 0]}>
             <span style={{ color: 'red', fontWeight: 'bold', fontSize: 14 }}>X</span>
           </Html>
@@ -607,18 +440,7 @@ return (
 
 export default function CharacterViewer() {
   const { theme } = useTheme()
-  const {
-    selectedVrmId,
-    selectedMotionId,
-    isPlaying,
-    speed,
-    onResetRef,
-    setClipInfo,
-    vrmOptions,
-    motionOptions,
-    avatarRef,
-    handleAnimationFinished,
-  } = useMotion()
+  const { selectedVrmId, vrmOptions, avatarRef, setClipInfo } = useMotion()
 
   const selectedVrm = vrmOptions.find((o) => o.id === selectedVrmId)
   const vrmUrl = selectedVrm?.url ?? seeleUrl
@@ -631,14 +453,10 @@ export default function CharacterViewer() {
     .replace(/\.vrm$/i, '')
     .replace(/^.*\//, '')
     .toLowerCase()
-  const animationUrl = motionOptions.find((o) => o.id === selectedMotionId)?.url ?? ''
 
   useEffect(() => {
     setClipInfo(null)
-    if (onResetRef.current) {
-      onResetRef.current()
-    }
-  }, [vrmUrl, animationUrl])
+  }, [vrmUrl, setClipInfo])
 
   // Feed normalized mouse position to the avatar's eye gaze (§4.2 / EyeController).
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -659,14 +477,9 @@ export default function CharacterViewer() {
       }}
     >
       <Canvas
-        shadows={{ type: ENV_CONFIG.shadows.type }}
-        camera={{ position: [0, 2.05, 0], fov: 45 }}
-        gl={{
-          antialias: true,
-          alpha: true,
-          toneMapping: ENV_CONFIG.renderer.toneMapping,
-          toneMappingExposure: ENV_CONFIG.renderer.toneMappingExposure,
-        }}
+        shadows={CANVAS_SHADOWS}
+        camera={CANVAS_CAMERA}
+        gl={CANVAS_GL}
         onCreated={({ gl }) => {
           gl.outputColorSpace = ENV_CONFIG.renderer.outputColorSpace
         }}
@@ -676,14 +489,8 @@ export default function CharacterViewer() {
             theme={theme}
             vrmUrl={vrmUrl}
             modelId={modelId}
-            animationUrl={animationUrl}
-            isPlaying={isPlaying}
-            speed={speed}
-            onResetRef={onResetRef}
-            onLoaded={setClipInfo}
             onReady={setViewerReady}
             avatarRef={avatarRef}
-            onAnimationFinished={handleAnimationFinished}
           />
         </Suspense>
       </Canvas>

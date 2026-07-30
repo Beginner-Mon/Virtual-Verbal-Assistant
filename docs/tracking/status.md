@@ -1,22 +1,140 @@
 # VVA — Status & Roadmap
 
-> Last update: 2026-07-24 (K) | Branch: `feature/langgraph-rewrite`
+> Last update: 2026-07-30 (K) | Branch: `feature/langgraph-rewrite`
 > Audience: K/N/Owner takeover after context compaction — đọc mục 0 trước tiên.
 
 ---
 
 ## 0. TRẠNG THÁI ĐANG TREO (đọc trước — dễ mất khi compact)
 
-- **Backend + Docker hiện ĐANG CHẠY** (verify lúc viết file này: `curl :8000/health` →
-  `{"status":"ok"}`, `docker ps` → postgres/redis/searxng healthy, up 31h). Không cần khởi động
-  lại — nếu tắt, lệnh chạy vẫn ở §5.
-- **Git**: các batch trước đã commit — `35985d5 fix bugs in UI streaming` (Gemini caching +
-  D34 web fallback + stage indicator) và `05687f5 SSE fix and phase A animation` (2 fix streaming
-  + facial animation Phase A). Working tree hiện còn **avatar Phase B/C/D + tắt default animation**
-  **CHƯA commit**: `M avatar/AvatarController.ts, AvatarDevPanel.tsx`, `M CharacterViewer.tsx`,
-  `M contexts/MotionContext.tsx`, `M docs/architecture/api-contract.md`, `?? avatar/EyeController.ts,
-  IdleBehaviorController.ts, LipSyncController.ts, lipSyncAudio.ts`. Không tự commit/push khi chưa
-  được lệnh.
+- **Backend + Docker + Frontend hiện ĐANG CHẠY** (verify lúc viết file này: `:8000/health` →
+  `{"status":"ok"}`, `:5173` → 200, `docker ps` → postgres/redis/searxng healthy). Nếu tắt, lệnh
+  chạy ở §5. Docker Desktop có thể chưa bật — nếu `docker compose` báo lỗi pipe thì mở
+  `Docker Desktop.exe` rồi chờ ~5-30s.
+- **Git**: HEAD = `14f7b7d`. Toàn bộ avatar Phase A-D + head-follow + SSE fix + KB blocker cũ **đã
+  được N/Tri commit** (gồm merge `kimodo-release`). Working tree có **17 file CHƯA commit** (KB ingest + FSM refactor):
+  ```
+  ?? .claude/plans/animation-fsm-refactor.md      (plan v1.2 — 9 lỗi + §12 implementation report)
+  ?? docs/worklogs/30-07-2026.md                  (worklog phiên này)
+  ?? scripts/ingest_kb_pgvector.py                (KB ingest, P0 — đã chạy)
+  ?? agenticRAG/langgraph_agents/alembic/versions/003_kb_embeddings_hnsw.py   (đã apply)
+  ?? ECA_UI/frontend/src/lib/AnimationStates.ts       (FSM: bảng STATES)
+  ?? ECA_UI/frontend/src/lib/AnimationRegistry.ts     (FSM: asset layer)
+  ?? ECA_UI/frontend/src/lib/AnimationController.ts   (FSM: runtime)
+  ?? ECA_UI/frontend/src/lib/CameraController.ts      (FSM: camera + cooldown)
+  ?? ECA_UI/frontend/src/lib/motionAssets.ts          (FSM: glob asset)
+  ?? ECA_UI/frontend/src/hooks/useFsmTriggers.ts      (FSM: boot + timer trigger)
+   M ECA_UI/frontend/src/contexts/MotionContext.tsx
+   M ECA_UI/frontend/src/components/CharacterViewer.tsx
+   M ECA_UI/frontend/src/components/panels/MotionControlPanel.tsx
+   M ECA_UI/frontend/src/components/ChatPanel.tsx
+  ```
+  Không tự commit/push khi chưa được lệnh.
+
+### ⭐ Việc đang làm — thứ tự ưu tiên đã Owner chốt (30/07)
+
+| # | Việc | Trạng thái |
+|---|---|---|
+| **P0** | **KB ingest vào pgvector** | ✅ **XONG** — xem mục dưới |
+| **P0** | **Deploy + verify ALB Kimodo** | ⏸ **Chờ N/Owner** — K KHÔNG tự làm (cần AWS creds + tốn ~$24/ngày g5.xlarge + $0.75/ngày ALB). Plan `.claude/plans/kimodo-alb-endpoint.md` đã implemented, chỉ cần chạy checklist §5 (**nhớ đổi `ALB_ALLOWED_CIDR` → IP/32 trước deploy**) |
+| **P1** | **FSM refactor animation** | ✅ **XONG 30/07** — K implement, **17/17 test xanh**. Xem mục dưới + plan §12 |
+| **P2** | Kimodo runtime delivery (generate→convert→serve→SSE→play) | Chờ P0-ALB + P1. Frontend hiện **0 dòng** consume motion từ SSE |
+| **P3** | Backend emit `avatar.emotion` | Facial FE sẵn sàng, backend chưa emit |
+| **P4** | Head-follow Phase 2 (additive blend), pre-cloud hardening | P2 xong mới biết có cần |
+
+- **P0 KB ingest — ĐÃ XONG, verify end-to-end** (30/07): `kb_embeddings` từ **0 → 2918 rows**.
+  Script mới `scripts/ingest_kb_pgvector.py` (thay 2 script legacy target ChromaDB), parse
+  `agenticRAG/agentic_rag_gemini/data/knowledge_base/documents.txt` (2918 bài tập, phân cách `---`).
+  Chạy lại: `python scripts/ingest_kb_pgvector.py --reset` (idempotent theo `source_type`).
+  - **Bug tìm được + fix**: migration 002 tạo HNSW cho `summaries` nhưng **bỏ sót** `kb_embeddings`
+    → `kb_search` seq scan. Thêm migration `003_kb_hnsw`, đã `alembic upgrade head`, verify planner
+    dùng thật (`Index Scan using idx_kb_emb_embedding`).
+  - Verify: `kb_search` trả 5 results (trước 0), sim 0.92 EN / 0.82 VI; pipeline thật →
+    `mode: synthesize` (**không còn refuse**), câu trả lời nêu đúng tên bài tập trong DB.
+  - ⚠️ **Câu hỏi CHƯA quyết cho Owner**: corpus này là **gym/fitness** (Abdominals, Quadriceps,
+    "EZ-Bar Skullcrusher", 17 nhóm cơ), **không phải corpus PT lâm sàng**. Fix xong lỗi "KB rỗng →
+    refuse" nhưng chưa làm nó thành KB lâm sàng. 53% record (1550/2918) có `Description: nan`
+    (pandas NaN lọt export) → chỉ index được structured fields. Owner đã nói "gác lại, ưu tiên sửa
+    plan trước".
+- **Kimodo (merge 29-30/07 của Tri)**: đã verify **offline end-to-end PASS**. Pipeline
+  `NPZ → scripts/kimodo_npz_to_bvh.py → BVH → frontend SMPLX retarget → play` chạy đúng: demo NPZ
+  → 90 frame → 22 tracks/2.97s, avatar múa tự nhiên, **không double-mirror** (converter có mirror+
+  `_swap_lr` + orientation correction, frontend có `mirrorZ`+`swapYandZ`+`hipCompensation` — hai lớp
+  compose đúng). Cách verify lại: mở `:5173` → nav **Motion** → dropdown Motion Source → chọn
+  `motions/generated/motion_*.bvh`.
+  - **Gap còn lại**: converter là **CLI thủ công**, chưa ai gọi từ backend; `kimodo_node` trả
+    `str(result)` chưa rõ format; frontend chỉ chơi asset bundle sẵn (build-time), chưa fetch runtime.
+    Đó là P2.
+- **Plan FSM refactor (`.claude/plans/animation-fsm-refactor.md` v1.2)**: K đã sửa **9 lỗi** của
+  v1.0, trong đó **2 lỗi 🔴 sẽ gây bug thật** nếu implement nguyên bản:
+  1. 🔴 Deadlock: `exercise_cooldown` kẹt vĩnh viễn → chat sau đó không chạy thinking → **bỏ hẳn
+     state đó** (8→7), camera cooldown thành timer trong CameraController.
+  2. 🔴 Thiếu `thinking_loop → exercise` → motion về lúc đang thinking bị drop → thay allow-list
+     bằng **nguyên tắc**: state do user/backend lái (`thinking_intro`, `exercise`) reachable từ MỌI state.
+  3. ⚠️ Giữ **debug file selector** (v1.0 xoá) — đó là đường verify Kimodo offline duy nhất.
+  4. ⚠️ Bỏ "T-pose bug" khỏi động lực: code **đã** play-before-fade + readiness gate → là invariant
+     phải BẢO TOÀN, thành test gate #1.
+  5. ⚠️ Thiếu `newAction.reset()` → `exercise` lần 2 đứng ở frame cuối.
+  6. ⚠️ `registry.invalidate()` phải gọi khi đổi VRM model (clip đã retarget bám skeleton).
+  7. 📝 Thêm **§9**: Facial/Emotion controller **chưa đồng bộ** với CharState (2 state machine độc
+     lập) → thân "suy nghĩ" mà mặt tự cười, cười lúc demo bài tập, head-follow đè chuyển động đầu
+     của clip. Follow-up, ngoài scope PR. **Giải pháp phải là DATA không phải API** (emotion vốn
+     declarative trong `profiles/*.ts`): policy nằm ở trường `facial` trong bảng `STATES` (§3.0)
+     + sửa 1 điều kiện ở `AvatarController.ts:115`. Không thêm public method nào.
+  8. 🔴 **Boot sequence sai**: plan ghi `Khởi tạo → transitionTo('idle')`, nhưng code hiện tại boot
+     vào **`action_greeting` rồi mới về idle** (`MotionContext.tsx:93-97` + `isAction` do URL chứa
+     `action_` → LoopOnce → `finished` → idle). Implement nguyên bản = **lặng lẽ xoá lời chào**.
+     → thêm **§2.5**: boot = `transitionTo('greeting')`, bắt buộc fallback `'idle'` nếu clip fail
+     (không fallback → `currentAction=null` → **T-pose**), + `hasGreetedRef` để không chào lại khi
+     đổi VRM model / StrictMode double-mount.
+  9. ⚠️ **Chi phí bảo trì khi thêm animation** (Owner hỏi trực tiếp): plan có **6 map song song** cùng
+     khoá `CharState` → thêm 1 animation phải sửa **4-7 nơi**, 3 nơi **không có compile check** →
+     đúng error class đã sinh ra 2 lỗi 🔴. → thêm **§3.0 `lib/AnimationStates.ts`**: một bảng
+     `STATES: Record<CharState, StateDef>` (exhaustive, discriminated union `loop:'once' ⇒ onFinished`),
+     reachability thành **hàm** `canTransition()` đọc `STATES[to].reach` (khai trên state ĐÍCH → thêm
+     state không phá được state khác), mọi map khác thành derived getter. `TransitionConfig.ts` bị bỏ.
+     → thêm **§11 cookbook**: thêm animation = **1 entry + 1 dòng trigger**, 0 chỗ mất compile check;
+     controller/context/panel/ChatPanel **không phải sửa**. Giới hạn ghi rõ: bảng này không giải quyết
+     blend nhiều clip cùng lúc (đó là additive blending, phải mở `AnimationController`).
+  Plan có **§7 test checklist 10 mục** (v1.0 không có), mỗi lỗi trên có 1 test tương ứng.
+- **P1 FSM refactor — ĐÃ IMPLEMENT XONG 30/07** (K), worklog `docs/worklogs/30-07-2026.md`, báo cáo
+  chi tiết ở plan **§12**. 6 file mới + 4 file sửa:
+  - 🆕 `lib/AnimationStates.ts` (bảng `STATES` + `canTransition` + derived getters),
+    `lib/motionAssets.ts` (nơi duy nhất glob asset — **ngoài plan**), `lib/AnimationRegistry.ts`,
+    `lib/AnimationController.ts`, `lib/CameraController.ts`, `hooks/useFsmTriggers.ts`.
+  - ♻️ `MotionContext.tsx` (bỏ `selectedMotionId`/`isThinking`/3 effect string-match),
+    `CharacterViewer.tsx` (bỏ ~95 dòng clip-loading/fade/subclip/`isAction`),
+    `MotionControlPanel.tsx` (2 dropdown: state derived + file debug), `ChatPanel.tsx`
+    (`setIsThinking` → `transitionTo` + guard `thinkingRef`).
+  - ❌ `lib/TransitionConfig.ts` **không tạo** — gộp vào `crossfadeFor()`.
+  - **Cả 7 chỗ string-match ở §0 plan đã biến mất** — không còn nơi nào quyết định hành vi animation
+    dựa trên tên file.
+  - **Test 17/17 xanh** (Playwright, `:5173` + backend `:8000`): deadlock regression `true`;
+    motion-trong-thinking OK; T-pose invariant **0 frame mất pose** qua 10 transition/1s;
+    Kimodo BVH OK; `reset()` fix (cùng clip 2 lần: 5483/**5213**ms); camera cooldown
+    head→hips→(+0.9s) hips→(+3.5s) head; đổi model không méo; chat sequence
+    `["thinking_intro","thinking_loop","thinking_outro"]`→idle; **boot = `greeting` đúng 1 lần**
+    (StrictMode không chào 2 lần); đổi model **không** chào lại. `tsc --noEmit` + `npm run build` xanh.
+  - 🔧 Thêm `window.__fsm` (**chỉ DEV**, ở `MotionProvider` nên luôn mount): `.state`, `.hasPose`,
+    `.cameraMode`, `.history`, `.transitionTo()`, `.playMotionFile()`, `.setVrm()`. Dùng để test tự
+    động **không cần mở panel** — khác `window.__avatar` (chỉ có khi MotionControlPanel mở).
+  - **Chưa làm (đúng scope)**: §9 facial↔body sync. Chỗ cắm đã sẵn — `facialOf(state)` trong
+    `AnimationStates.ts`, `stateChanged` emitter, thứ tự `useFrame` body → facial → `vrm.update`.
+- **Bug "UI chớp đen" — ĐÃ FIX 30/07** (Owner báo sau khi merge FSM). Root cause **có trước refactor**,
+  refactor chỉ làm lộ ra nhiều hơn: `ENV_CONFIG.shadows.type = THREE.PCFSoftShadowMap` là hằng
+  **deprecated** → `WebGLShadowMap.render()` của three.js warn rồi **tự ghi lại** `this.type =
+  PCFShadowMap`; R3F `configure()` (chạy **mỗi lần `<Canvas>` render**) ghi giá trị cũ trở lại, thấy
+  `oldType !== newType` → `shadowMap.needsUpdate = true` → **rebuild toàn bộ shadow map** → frame tối.
+  - Fix chính: `PCFSoftShadowMap` → **`PCFShadowMap`** (chính là giá trị three.js vẫn dùng → **hình
+    ảnh không đổi**). Kèm 4 fix hygiene: hoist `gl`/`camera`/`shadows` của `<Canvas>` ra module const,
+    `useMemo` cho `AxesHelper`, `memo()` cho `ScenePostProcessing`, `useMemo` cho context value.
+  - Đo được (đếm warning phát ra **từ trong** `WebGLShadowMap.render()` = đúng event rebuild):
+    boot **4 → 0**, 4 FSM transition **+4 → +0**, 1 exercise **+2 → +0**. Test lại 11/11 + chat xanh.
+  - ⚠️ **Đừng đặt lại `PCFSoftShadowMap`** — bất kỳ ai "sửa cho mượt hơn" sẽ dựng lại bug này.
+- 🔎 **Chưa sửa, chờ Owner (đổi hình ảnh)**: SSAO trong `ScenePostProcessing` **không hoạt động** —
+  console báo 6x `"Please enable the NormalPass in the EffectComposer in order to use SSAO."`. Đang
+  trả giá config mà không nhận occlusion. Hai hướng: bật `enableNormalPass` (thêm 1 pass, có thể xung
+  đột outline MToon) hoặc tắt `ssao.enabled`.
 - **Docs đã reorg** (đã ổn định từ phiên trước): root `FIX-*.md` cũ giờ ở
   `docs/{architecture,ops,plans,fixes,tracking,archive}/`. File này ở **`docs/tracking/status.md`**.
 - **Auth demo bypass**: env-gate `VITE_AUTH_DISABLED=true` trong `ECA_UI/frontend/.env.local` →
@@ -35,8 +153,13 @@
 - **Facial animation avatar** (phiên 23/07, `docs/worklogs/23-07-2026-avatar.md`): Phase A-D xong,
   verify live. Module `ECA_UI/frontend/src/avatar/` (13 file): channel-based expression mixer,
   cross-fade, blink, idle wander, eye gaze, lip-sync amplitude. Độc lập với body motion (Kimodo).
-  Default body animation đã TẮT (placeholder tạm, chờ Kimodo cloud); default model = seele. Backend
-  chưa emit `avatar.emotion` — contract ở `api-contract.md`.
+  Default model = seele (`bronya_long` bị filter — 0 blendshape group). Backend chưa emit
+  `avatar.emotion` — contract ở `api-contract.md`.
+  - ⚠️ **Cập nhật 30/07**: "default body animation đã TẮT" (ghi ở phiên 23/07) **giờ KHÔNG còn đúng**
+    — merge của N/Tri đã bật lại: boot = `action_greeting` (LoopOnce) → `finished` → `Standard Idle`
+    (LoopRepeat), tức **avatar chào trước rồi mới idle**. Verify: `MotionContext.tsx:93-97`,
+    `CharacterViewer.tsx:231-237`. Hành vi này là **cố ý** (thay T-pose) → FSM refactor phải bảo toàn,
+    xem plan §2.5.
 - **Design treo (không còn cấp bách sau khi streaming fix)**: "bỏ live-stream, chỉ gửi sau grader"
   — Owner chưa chốt. Giờ streaming sống chạy thật nên trade-off K phân tích trước áp dụng đúng
   nguyên văn; bug nối-chữ-khi-grader-retry vẫn có thể xảy ra nếu retry (chưa fix riêng, chờ quyết).
@@ -200,12 +323,56 @@ tham khảo CV/portfolio.
 
 ---
 
+### Head-follow + A-pose (25/07) — `docs/worklogs/25-07-2026.md`
+- `HeadController.ts`: đầu (Neck+Head bone) xoay theo cùng hướng mắt — đọc góc đã smoothed từ
+  `EyeController` (× gain 0.6, smoothing 8/s chậm hơn mắt 10/s → mắt dẫn đầu theo), chia Neck 40% /
+  Head 60%, apply trên **normalized humanoid bone** (Euler `YXZ`, compose `rest * offset` → không
+  drift). Chỉ đụng bone → độc lập blendshape.
+- Verify live: yaw eye 20.9 → head 12.54; pitch -11.4 → -6.84; screenshot 4 hướng đúng (phát hiện +
+  lật `PITCH_SIGN` vì ban đầu mouse-lên làm đầu cúi xuống).
+- A-pose: `applyRestPose()` hạ arm bone 65° lúc load (VRM bind pose là T-pose). Sau đó N refactor
+  BVH → dùng idle clip mặc định, nên A-pose chỉ còn là fallback.
+
+### KB ingest vào pgvector (30/07) — P0
+- `scripts/ingest_kb_pgvector.py`: 2918 bài tập từ `documents.txt` → `documents` + `kb_embeddings`
+  (384-dim, `embed_passages` batch 64, prefix `passage:` khớp `query:` của `kb_search`).
+  `--reset` idempotent theo `source_type='exercise_db'`. **Không** thêm UNIQUE(source_type,
+  external_id) vì source có 9 tên trùng.
+- Migration `003_kb_hnsw`: bổ sung HNSW index cho `kb_embeddings.embedding` mà migration 002 bỏ sót.
+- Verify: `kb_search` 0 → 5 results, `mode: refuse` → `synthesize`. Chi tiết + caveat corpus ở §0.
+
+### Kimodo merge (Tri, 29-30/07) + verify offline (K, 30/07)
+- Merge `kimodo-release`: model repo, MCP server, ECS stack, `scripts/kimodo_npz_to_bvh.py`
+  (SMPL-X 22-joint, mirror fix + spine damping), animation infra mới (FBX/Mixamo, crossfade,
+  motion state machine string-match), scene modules (lighting/env/postprocessing), LoadingOverlay.
+- K verify offline PASS: pipeline NPZ→BVH→frontend retarget đúng, không double-mirror. Chi tiết §0.
+
+---
+
+### Animation FSM refactor (30/07 — K)
+Thay toàn bộ animation string-match bằng state machine data-driven. Plan
+`.claude/plans/animation-fsm-refactor.md` v1.2 (§12 = implementation report).
+- **Xoá cả 7 chỗ quyết định hành vi bằng tên file** (`action_`/`random_`/`idle_`/`#intro`/`generated`
+  /`motion_`/`thinking`) rải trong `CharacterViewer.tsx` + `MotionContext.tsx`.
+- 6 file mới: `AnimationStates.ts` (bảng `STATES` — nguồn chân lý), `AnimationRegistry.ts`,
+  `AnimationController.ts`, `CameraController.ts`, `motionAssets.ts`, `useFsmTriggers.ts`.
+  `TransitionConfig.ts` trong plan bị bỏ (gộp thành `crossfadeFor()`).
+- Xoá ~95 dòng clip-loading/fade/subclip khỏi `CharacterViewer.tsx`; bỏ `selectedMotionId`,
+  `isThinking`, `handleAnimationFinished` và 3 effect string-match khỏi `MotionContext.tsx`.
+- **Thêm animation mới giờ = 1 entry trong `STATES`** (+1 dòng trigger nếu cần), 0 chỗ mất
+  compile check — trước đó là 7 chỗ, không chỗ nào có compile check. Cookbook: plan §11.
+- Test **17/17 xanh** (Playwright live): deadlock regression, motion-trong-thinking, T-pose invariant
+  (0 frame mất pose qua 10 transition/1s), Kimodo BVH, `reset()` replay (5483/5213ms), camera cooldown
+  3s, đổi model không méo, chat `intro→loop→outro→idle`, **boot = greeting đúng 1 lần**, đổi model
+  không chào lại, 5 test reachability/UI. `tsc --noEmit` + `npm run build` xanh.
+- Handle test: `window.__fsm` (chỉ DEV) — xem §9.
+
 ## 3. Còn thiếu / pending (theo mức ưu tiên)
 
 ### 🔴 Chặn trước khi ra mạng thật
 | # | Task | Ghi chú |
 |---|---|---|
-| 0 | **Ingest KB vào pgvector** (`documents`/`kb_embeddings`) | RỖNG hiện tại → mọi câu bài tập refuse/phải dựa web. Script cũ target ChromaDB, cần script mới cho schema mới |
+| ~~0~~ | ~~Ingest KB vào pgvector~~ | ✅ **XONG 30/07** — 2918 rows, `scripts/ingest_kb_pgvector.py`. Còn treo: chất lượng corpus (gym/fitness, không phải PT lâm sàng) — xem §0 |
 | 1 | Bật auth thật: `REQUIRE_AUTH=true` + config Cognito thật + `VITE_AUTH_DISABLED=false` | cơ chế đã code xong, chỉ chưa bật |
 | 2 | Rate limiting cho `/chat` | chưa có gì chặn spam → cháy quota LLM |
 | 3 | Secret management (chuyển `.env` key sang secret manager) | trước khi deploy cloud |
@@ -217,13 +384,22 @@ tham khảo CV/portfolio.
   critical vs optional trước khi có LB/orchestrator thật.
 
 ### 🟡 Việc code cụ thể
-- **Avatar Phase B/C/D + tắt animation chưa commit** (xem §0). Phase A + streaming fix đã commit
-  (`05687f5`).
+- **17 file chưa commit** (xem §0 và §8): KB ingest (2 file) + FSM refactor (6 file mới, 4 file sửa)
+  + plan + worklog. Avatar Phase A-D + head-follow đã được N commit.
+- ~~FSM refactor chưa implement~~ — ✅ **XONG 30/07**, 17/17 test xanh (§0 + plan §12).
+- **Facial ↔ body state chưa đồng bộ** (§9 của plan FSM) — **việc code tiếp theo rõ ràng nhất**:
+  thân "suy nghĩ" mà mặt tự cười; cười lúc demo bài tập; head-follow đè chuyển động đầu của clip
+  Kimodo. Sau refactor thì **chỗ cắm đã sẵn**: gọi `facialOf(state)` (đã có trong
+  `lib/AnimationStates.ts`, mỗi state đã khai `facial: { wander, hold? }`) từ điều kiện
+  `AvatarController.ts:115` `if (!engaged) this.idle.tick(delta)`, + truyền attenuation cho
+  `HeadController` (state `exercise` → gain 0). **KHÔNG thêm public method** — đây là data policy.
 - **Bug chưa fix, chờ Owner chốt hướng**: grader-retry có thể làm `ChatPanel.tsx` nối chữ 2 lần
   sinh của synthesizer (không tách buffer). Ít cấp bách hơn sau khi streaming fix — Owner đề xuất
   "bỏ live-stream, chỉ gửi sau grader" thay vì vá buffer, chưa chốt.
 - **Backend chưa emit `avatar.emotion`**: hệ facial animation FE sẵn sàng nhưng backend Conversation
   node chưa gán emotion metadata → avatar chỉ đổi biểu cảm khi có lệnh (backend phase sau).
+- **`get mode(): string`** trong `AvatarController` nên siết thành union `'engaged' | 'idle'` —
+  1 dòng, chưa sửa vì nằm trong file N vừa commit.
 - Memory FE reset khi đóng sidebar (Owner đã chủ động bỏ persistence — biết và chấp nhận).
 - Bundle FE nặng (JS ~1.9MB gzip 549KB + VRM asset 9-29MB bundle thẳng) — chưa lazy-load/CDN.
 
@@ -270,6 +446,13 @@ python -m pytest tests/langgraph_agents/ -q            # 312 (cần Docker + Dee
 |---|---|
 | `docs/plans/reupdate-plan.md` | 33 decisions D1-D33 — nguồn chân lý kiến trúc |
 | `docs/plans/facial-animation-plan.md` | Avatar facial animation (Phase A-D, v1.2) — module design |
+| `.claude/plans/animation-fsm-refactor.md` | **FSM refactor body animation (v1.2)** — ✅ đã implement, §12 = implementation report, §9 = facial↔body sync (chưa làm), §11 = cookbook thêm animation |
+| `ECA_UI/frontend/src/lib/AnimationStates.ts` | **Bảng `STATES` — nguồn chân lý DUY NHẤT của animation FSM.** Thêm animation mới = thêm 1 entry ở đây (xem plan §11) |
+| `ECA_UI/frontend/src/lib/AnimationController.ts` | FSM runtime — invariant "không bao giờ T-pose" nằm ở đây (play trước, fade sau) |
+| `ECA_UI/frontend/src/lib/{AnimationRegistry,CameraController,motionAssets}.ts` | Asset layer · camera+cooldown · glob file animation |
+| `ECA_UI/frontend/src/hooks/useFsmTriggers.ts` | Boot (greeting→idle) + timer trigger, kèm bảng liệt kê MỌI nguồn đổi state |
+| `.claude/plans/kimodo-alb-endpoint.md` | ALB endpoint cho Kimodo MCP — implemented, chờ N deploy |
+| `scripts/ingest_kb_pgvector.py` · `scripts/kimodo_npz_to_bvh.py` | KB ingest · Kimodo NPZ→BVH converter |
 | `docs/tracking/tech-debt.md` | Việc tồn (nhánh riêng khỏi status.md này) |
 | `docs/fixes/*.md` | Spec/handoff từng cụm fix (memory, auth, chatpanel, retrieval-perf, latency) |
 | `docs/ops/runbook.md`, `docs/ops/troubleshooting.md` | Chạy + debug chi tiết |
@@ -286,18 +469,52 @@ python -m pytest tests/langgraph_agents/ -q            # 312 (cần Docker + Dee
 - Code = English, docs = Việt + Anh. UI verify bằng skill `playwright-cli` (không npx). Backend
   port cố định **8000** (8080 = Spring của Owner, không đụng).
 
-## 8. Danh sách file chưa commit (git status lúc viết file này, 24/07)
+## 8. Danh sách file chưa commit (git status lúc viết file này, 30/07 — HEAD `14f7b7d`)
 ```
-M  ECA_UI/frontend/src/avatar/AvatarController.ts        (engagement + eye/idle/lipsync wiring)
-M  ECA_UI/frontend/src/avatar/AvatarDevPanel.tsx         (speak test + mode display)
-M  ECA_UI/frontend/src/components/CharacterViewer.tsx    (tick wiring + mousemove gaze + anim off)
-M  ECA_UI/frontend/src/contexts/MotionContext.tsx        (avatarRef + default off + seele default)
-M  docs/architecture/api-contract.md                     (avatar SSE contract, Phase D)
-?? ECA_UI/frontend/src/avatar/EyeController.ts
-?? ECA_UI/frontend/src/avatar/IdleBehaviorController.ts
-?? ECA_UI/frontend/src/avatar/LipSyncController.ts
-?? ECA_UI/frontend/src/avatar/lipSyncAudio.ts
-   (+ docs: worklog 23-07-2026-avatar.md, status.md này)
+?? .claude/plans/animation-fsm-refactor.md      (plan v1.2 — 9 lỗi + §12 implementation report)
+?? docs/worklogs/30-07-2026.md                  (worklog phiên 30/07)
+?? scripts/ingest_kb_pgvector.py                (P0 KB ingest — đã chạy)
+?? agenticRAG/langgraph_agents/alembic/versions/003_kb_embeddings_hnsw.py   (đã alembic upgrade head)
+?? ECA_UI/frontend/src/lib/AnimationStates.ts       ?? ECA_UI/frontend/src/lib/AnimationRegistry.ts
+?? ECA_UI/frontend/src/lib/AnimationController.ts   ?? ECA_UI/frontend/src/lib/CameraController.ts
+?? ECA_UI/frontend/src/lib/motionAssets.ts          ?? ECA_UI/frontend/src/hooks/useFsmTriggers.ts
+ M ECA_UI/frontend/src/contexts/MotionContext.tsx
+ M ECA_UI/frontend/src/components/CharacterViewer.tsx
+ M ECA_UI/frontend/src/components/panels/MotionControlPanel.tsx
+ M ECA_UI/frontend/src/components/ChatPanel.tsx
+ M ECA_UI/frontend/src/components/scene/ScenePostProcessing.tsx   (fix chớp đen: memo)
+ M ECA_UI/frontend/src/config/environmentConfig.ts                (fix chớp đen: shadow type)
+ M docs/tracking/status.md
 ```
-Đã commit trước đó: `05687f5 SSE fix and phase A animation`, `35985d5 fix bugs in UI streaming`.
-Đợt avatar Phase B/C/D + tắt animation **chưa commit** — chờ lệnh Owner.
+Mọi thứ khác **đã commit**: avatar Phase A-D, head-follow (`HeadController.ts`), A-pose, SSE fix,
+merge `kimodo-release` + `kimodo_npz_to_bvh.py`, scene modules.
+17 file trên chưa commit — chờ lệnh Owner. Lưu ý: FSM refactor **thay thế** animation string-match cũ,
+nên 4 file `M` không thể commit rời khỏi 6 file mới.
+
+## 9. Cách verify nhanh (cho phiên sau)
+
+```bash
+# 1. KB ingest còn nguyên?
+docker exec vva-postgres psql -U vva -d vva -c "SELECT COUNT(*) FROM kb_embeddings;"   # kỳ vọng 2918
+# → nếu 0: python scripts/ingest_kb_pgvector.py --reset
+
+# 2. KB thật sự được dùng (không refuse)?
+printf '%s' '{"query":"bài tập cho cơ bụng và lưng dưới","session_id":"77777777-7777-7777-7777-777777777777","user_id":"77777777-7777-7777-7777-777777777778","web_search":false}' > /tmp/kb.json
+curl -s -m 90 -X POST http://localhost:8000/chat -H "Content-Type: application/json" --data-binary @/tmp/kb.json > /tmp/r.txt
+grep -aoE '"mode": "[a-z]+"' agenticRAG/vva_run.log | tail -1     # kỳ vọng "synthesize", KHÔNG "refuse"
+```
+
+Verify Kimodo retarget (offline, không cần GPU): `:5173` → nav **Motion** → **Motion file (debug)** →
+chọn `motions/generated/motion_*.bvh` → avatar phải múa tự nhiên, camera tự nới sang `hips`.
+
+**Verify animation FSM** — mở `:5173`, DevTools console (chỉ hoạt động ở dev):
+```js
+__fsm.state            // 'idle' sau khi chào xong
+__fsm.history          // ["idle","idle","greeting","idle"] — greeting phải xuất hiện ĐÚNG 1 lần
+__fsm.hasPose          // true; false = đang T-pose → bug invariant
+await __fsm.transitionTo('thinking_intro')   // true; tự chạy intro→loop
+await __fsm.transitionTo('thinking_loop')    // false từ idle (reachability guard)
+__fsm.cameraMode       // 'hips' khi đang exercise, giữ thêm 3s sau khi về idle
+```
+Chạy lại full checklist: script Playwright ở scratchpad phiên 30/07 (`fsm-test.mjs`,
+`fsm-ui-test.mjs`, `fsm-chat-test.mjs`) — 17 assertion, xem plan §12.3 để biết kỳ vọng.

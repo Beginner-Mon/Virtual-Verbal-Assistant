@@ -16,9 +16,10 @@ import {
   SSAO,
 } from '@react-three/postprocessing'
 import { BlendFunction } from 'postprocessing'
+import { memo } from 'react'
 import { ENV_CONFIG } from '../../config/environmentConfig'
 
-export default function ScenePostProcessing() {
+function ScenePostProcessing() {
   const { postProcessing: pp } = ENV_CONFIG
 
   if (!pp.enabled) return null
@@ -49,3 +50,10 @@ export default function ScenePostProcessing() {
     </EffectComposer>
   )
 }
+
+/**
+ * Takes no props and reads only static config, so it never needs to re-render.
+ * Without this, every FSM state change re-rendered the whole scene subtree and
+ * re-created the effect elements inside EffectComposer.
+ */
+export default memo(ScenePostProcessing)

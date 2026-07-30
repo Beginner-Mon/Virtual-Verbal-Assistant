@@ -41,7 +41,14 @@ export const ENV_CONFIG = {
 
   // ── Shadows ───────────────────────────────────────────────────────────
   shadows: {
-    type: THREE.PCFSoftShadowMap as THREE.ShadowMapType,
+    // MUST NOT be PCFSoftShadowMap — that constant is deprecated and three.js
+    // silently rewrites it: `WebGLShadowMap.render()` warns and does
+    // `this.type = PCFShadowMap`. R3F then re-applies our value on every render
+    // of <Canvas> and flags `shadowMap.needsUpdate = true` because the type
+    // "changed" — so each React re-render forced a FULL shadow-map rebuild,
+    // which is the black flash. Naming the value three.js actually uses breaks
+    // that ping-pong; the rendered result is identical.
+    type: THREE.PCFShadowMap as THREE.ShadowMapType,
     mapSize: 1024,
     bias: -0.001, // increased negative bias to prevent shadow acne on neck/hair
     normalBias: 0.02,
