@@ -21,7 +21,7 @@ export interface RetargetOptions {
 export const SMPLX_RETARGET_OPTIONS: RetargetOptions = {
   mirrorZ: true,
   flip180Y: false,
-  hipCompensation: new THREE.Quaternion(0, Math.SQRT1_2, -Math.SQRT1_2, 0),
+  hipCompensation: null,
   swapYandZ: true,
 }
 
@@ -31,6 +31,9 @@ export const STANDARD_RETARGET_OPTIONS: RetargetOptions = {
   hipCompensation: null,
   swapYandZ: false,
 }
+
+/** Tilt skeleton from Y-up to Z-up: +90° rotation around X axis. */
+const Q_YUP_TO_ZUP = new THREE.Quaternion(Math.SQRT1_2, 0, 0, Math.SQRT1_2)
 
 /* ────────────────────────── Bone Name Mapping ────────────────────── */
 
@@ -233,6 +236,8 @@ export function retargetBVHToVRM(
         if (vrmBoneName === 'hips' && options.hipCompensation) {
           targetQuat.premultiply(options.hipCompensation)
         }
+        // NOTE: Y-up→Z-up tilt is handled by the parent <group rotation={[π/2,0,0]}>
+        // in CharacterViewer. Do NOT apply Q_YUP_TO_ZUP here — it would double-rotate.
         targetQuat.normalize()
         targetQuat.toArray(retargetedValues, i)
       }
@@ -270,11 +275,12 @@ export function retargetBVHToVRM(
         const deltaZ = dz * scale
         
         if (options.swapYandZ) {
-          // These NPZ/BVH files use Z=vertical, Y=horizontal (non-standard).
-          // Swap Y↔Z so: BVH_Z→world Z (jump), BVH_Y→world Y (walk F/B).
+          // The parent <group rotation={[π/2,0,0]}> handles Y-up→Z-up visually.
+          // Position is in the group's LOCAL space (still Y-up).
+          // Negate deltaZ: SMPL forward is +Z, but VRM faces -Z.
           scaledValues[i] = targetRestPos.x + deltaX
-          scaledValues[i + 1] = targetRestPos.y + deltaZ
-          scaledValues[i + 2] = targetRestPos.z - deltaY
+          scaledValues[i + 1] = targetRestPos.y + deltaY  // Y = vertical (up)
+          scaledValues[i + 2] = targetRestPos.z - deltaZ  // -Z = VRM forward direction
         } else if (options.flip180Y) {
           // Rotated 180 degrees around Y axis
           scaledValues[i] = targetRestPos.x - deltaX

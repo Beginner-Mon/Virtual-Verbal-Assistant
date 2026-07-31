@@ -3,44 +3,26 @@ import { ArrowUp, Mic, Sparkles, Square, Plus, Globe, Paperclip } from 'lucide-r
 import TextareaAutosize from 'react-textarea-autosize'
 import { ScrollArea } from './ui/scroll-area'
 import ChatMessage from './ChatMessage'
-import type { Message } from './ChatMessage'
-import { streamChat } from '../lib/api'
-import { useMotion } from '../contexts/MotionContext'
-
-function buildInitialMessages(): Message[] {
-  const hour = new Date().getHours()
-  const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
-  return [
-    {
-      id: '1',
-      role: 'assistant',
-      content: `${greeting}! My name is ECA, your Virtual Verbal Assistant. How can I help you today? 🎙️`,
-      timestamp: new Date(),
-    },
-  ]
-}
-
-const INITIAL_MESSAGES = buildInitialMessages()
+import { useChat } from '../contexts/ChatContext'
 
 /* ─── ChatPanel ─── */
 export default function ChatPanel() {
-  // Body animation is driven through the FSM. `playMotionFile` is the hook for
-  // generated motion once the backend streams a URL (plan §5 / P2).
-  const { transitionTo } = useMotion()
-  const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES)
-  const [input, setInput] = useState('')
-  const [isTyping, setIsTyping] = useState(false)
-  const [stageLabel, setStageLabel] = useState<string | null>(null)
-  const [isGenerating, setIsGenerating] = useState(false)
+  const {
+    messages,
+    input,
+    setInput,
+    isTyping,
+    isGenerating,
+    stageLabel,
+    webSearch,
+    setWebSearch,
+    handleSend,
+    handleStop,
+  } = useChat()
+
   const [showAddMenu, setShowAddMenu] = useState(false)
-  const [webSearch, setWebSearch] = useState(false)
-  
+
   const bottomRef = useRef<HTMLDivElement>(null)
-  // Guards the thinking→outro hop: the token handler runs per token, and
-  // `thinking_outro` must be requested exactly once per turn.
-  const thinkingRef = useRef(false)
-  const abortControllerRef = useRef<AbortController | null>(null)
-  const sessionIdRef = useRef<string>(crypto.randomUUID())
   const addMenuRef = useRef<HTMLDivElement>(null)
 
   /* close add menu on outside click */
@@ -59,107 +41,6 @@ export default function ChatPanel() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isTyping, stageLabel])
-
-  /* Leave the thinking sequence. Idempotent: extra calls are no-ops, and the
-     FSM itself rejects `thinking_outro` from unrelated states. */
-  const endThinking = () => {
-    if (!thinkingRef.current) return
-    thinkingRef.current = false
-    void transitionTo('thinking_outro')
-  }
-
-  /* send handler */
-  const handleSend = async () => {
-    const text = input.trim()
-    if (!text || isGenerating) return
-
-    const userMsg: Message = {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content: text,
-      timestamp: new Date(),
-    }
-
-    setMessages((prev) => [...prev, userMsg])
-    setInput('')
-    setIsTyping(true)
-    setIsGenerating(true)
-    thinkingRef.current = true
-    void transitionTo('thinking_intro')
-
-    // Prepare an empty assistant message to stream into
-    const assistantMsgId = crypto.randomUUID()
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: assistantMsgId,
-        role: 'assistant',
-        content: '',
-        timestamp: new Date(),
-      },
-    ])
-    // isTyping stays true (bouncing dots) until a stage/token signal arrives —
-    // otherwise the assistant bubble sits blank with zero feedback during
-    // memory→planner→retriever, which can take several seconds.
-
-    abortControllerRef.current = new AbortController()
-
-    try {
-      await streamChat(
-        { query: text, sessionId: sessionIdRef.current, webSearch },
-        (type, data) => {
-          if (type === 'stage') {
-            const { node, status } = data as { node: string; status: string }
-            if (node === 'planner' && status === 'complete') {
-              setIsTyping(false)
-              setStageLabel('🔍 Đang tìm kiếm thông tin...')
-            } else if (node === 'retriever_agent' && status === 'complete') {
-              setStageLabel('✍️ Đang soạn câu trả lời...')
-            } else if (node === 'synthesizer' && status === 'started') {
-              setStageLabel(null)
-            }
-          } else if (type === 'token') {
-            setIsTyping(false)
-            setStageLabel(null)
-            endThinking()
-            const content = (data as { content: string }).content
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.id === assistantMsgId ? { ...msg, content: msg.content + content } : msg
-              )
-            )
-          } else if (type === 'done') {
-            setStageLabel(null)
-            setIsGenerating(false)
-          }
-        },
-        abortControllerRef.current.signal,
-      )
-    } catch (e) {
-      if ((e as Error).name !== 'AbortError') {
-        setMessages((prev) =>
-          prev.map((msg) =>
-            msg.id === assistantMsgId
-              ? { ...msg, content: 'Sorry, something went wrong. Please try again.' }
-              : msg
-          )
-        )
-      }
-    } finally {
-      setIsTyping(false)
-      setStageLabel(null)
-      setIsGenerating(false)
-      endThinking()
-    }
-  }
-
-  const handleStop = () => {
-    abortControllerRef.current?.abort()
-    setIsTyping(false)
-    setStageLabel(null)
-    setIsGenerating(false)
-    endThinking()
-  }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -245,7 +126,7 @@ export default function ChatPanel() {
               {showAddMenu && (
                 <div className="absolute bottom-full left-0 mb-2 w-48 bg-card border border-border/50 rounded-xl shadow-xl overflow-hidden z-50 animate-panel-in">
                   <button
-                    onClick={() => { setWebSearch((v) => !v); setShowAddMenu(false) }}
+                    onClick={() => { setWebSearch(!webSearch); setShowAddMenu(false) }}
                     className="w-full flex items-center gap-3 px-4 py-3 text-sm text-foreground hover:bg-secondary/60 transition-colors"
                   >
                     <Globe className="w-4 h-4 text-muted-foreground" />

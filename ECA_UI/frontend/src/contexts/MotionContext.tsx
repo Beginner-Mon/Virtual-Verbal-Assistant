@@ -100,7 +100,7 @@ const MotionContext = createContext<MotionContextType | null>(null)
 
 export function MotionProvider({ children }: { children: ReactNode }) {
   const defaultVrmId =
-    BUILTIN_VRM_OPTIONS.find((o) => /bronya/i.test(o.label))?.id ?? BUILTIN_VRM_OPTIONS[0]?.id ?? ''
+    BUILTIN_VRM_OPTIONS.find((o) => /con-gai-khang/i.test(o.label))?.id ?? BUILTIN_VRM_OPTIONS[0]?.id ?? ''
 
   const [selectedVrmId, setSelectedVrmId] = useState(defaultVrmId)
   const [isPlaying, setIsPlaying] = useState(true)

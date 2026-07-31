@@ -2,11 +2,13 @@ import { Link, Outlet } from 'react-router-dom'
 import FloatingNavBar from '../components/FloatingNavBar'
 import ChatPanel from '../components/ChatPanel'
 import { MotionProvider } from '../contexts/MotionContext'
+import { ChatProvider } from '../contexts/ChatContext'
 
 export default function MainLayout() {
   return (
     <MotionProvider>
-      <main className="relative h-screen w-screen overflow-hidden bg-background">
+      <ChatProvider>
+        <main className="relative h-screen w-screen overflow-hidden bg-background">
         <Link
           to="/"
           aria-label="Go to home"
@@ -28,6 +30,7 @@ export default function MainLayout() {
         {/* Floating navigation overlay */}
         <FloatingNavBar />
       </main>
+      </ChatProvider>
     </MotionProvider>
   )
 }

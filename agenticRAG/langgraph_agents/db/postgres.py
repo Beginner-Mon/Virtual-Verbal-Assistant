@@ -11,6 +11,19 @@ from pathlib import Path
 from typing import Optional
 
 
+def _load_dotenv_once() -> None:
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    env_path = Path(__file__).resolve().parents[1] / ".env"
+    if env_path.exists():
+        load_dotenv(env_path, override=False)
+
+
+_load_dotenv_once()
+
+
 def _load_pg_config() -> dict:
     import yaml  # lazy — may not be available in test envs
     config_path = Path(__file__).resolve().parents[3] / "config" / "langgraph.yaml"

@@ -247,6 +247,11 @@ def get_chat_model(role: str, *, temperature: float | None = None):
         "timeout": timeout, "max_retries": _MAX_RETRIES, "max_tokens": max_tokens,
     })
     api_key = _resolve_api_key()
+    if not api_key:
+        logger.warning("deepseek_key_missing", extra={
+            "role": role, "action": "using_gemini_fallback",
+        })
+        return get_fallback_chat_model(role)
     base_url = os.getenv("DEEPSEEK_BASE_URL", _DEFAULT_BASE_URL)
     model = ChatOpenAI(
         model=model_name,

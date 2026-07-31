@@ -14,8 +14,14 @@ import { fetchAuthSession } from 'aws-amplify/auth'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const API_BASE: string =
-  (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? 'http://localhost:8000'
+const _raw = import.meta.env.VITE_API_BASE_URL as string | undefined
+if (!_raw) {
+  throw new Error(
+    'VITE_API_BASE_URL is not set. Create a .env.local file with:\n' +
+    '  VITE_API_BASE_URL=http://localhost:8080'
+  )
+}
+const API_BASE: string = _raw
 
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 
