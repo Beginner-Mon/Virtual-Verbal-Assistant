@@ -57,12 +57,6 @@ NUM_JOINTS = len(SMPL_JOINTS)
 # Mirror matrix: flip X axis (SMPL-X: left=+X → BVH: right=+X)
 MIRROR_MAT = np.diag([-1.0, 1.0, 1.0])
 
-# Coordinate system conversion: Y-up → Z-up for Three.js
-# (x, y, z)_Yup → (x, -z, y)_Zup   (preserves right-handedness)
-COORD_SWAP = np.array([[1, 0, 0],
-                        [0, 0, -1],
-                        [0, 1, 0]], dtype=float)
-
 # Spine joints that form the chain: Spine(3) → Spine1(6) → Spine2(9)
 # VRM models typically only use 2 spine bones, so we redistribute
 # the total rotation evenly across the 3 SMPL spine joints.
@@ -81,11 +75,9 @@ def mirror_rotmat(mat):
 
 
 def rotmat_to_euler_ZXY(mat):
-    """Convert rotation matrix to ZXY Euler angles (degrees), with mirror + Z-up fix."""
+    """Convert rotation matrix to ZXY Euler angles (degrees), with mirror fix."""
     mirrored = mirror_rotmat(mat)
-    # Convert rotation from Y-up to Z-up coordinate system
-    swapped = COORD_SWAP @ mirrored @ COORD_SWAP.T
-    return R.from_matrix(swapped).as_euler('ZXY', degrees=True)
+    return R.from_matrix(mirrored).as_euler('ZXY', degrees=True)
 
 
 def damp_rotation(mat, factor):
@@ -210,9 +202,6 @@ def build_hierarchy_text(offsets_cm):
         # Mirror the X offset for BVH convention
         ox = -ox
         
-        # Convert Y-up → Z-up: (x, y, z) → (x, -z, y)
-        ox, oy, oz = ox, -oz, oy
-        
         if indent == 0:
             lines.append(f"ROOT {name}")
         else:
@@ -228,10 +217,10 @@ def build_hierarchy_text(offsets_cm):
             for child in kids:
                 write_joint(child, indent + 1)
         else:
-            # End site: small offset along the bone direction (Z-up)
+            # End site: small offset along the bone direction
             lines.append(f"{pad}\tEnd Site")
             lines.append(f"{pad}\t{{")
-            lines.append(f"{pad}\t\tOFFSET 0.0000 0.0000 5.0000")
+            lines.append(f"{pad}\t\tOFFSET 0.0000 5.0000 0.0000")
             lines.append(f"{pad}\t}}")
         lines.append(f"{pad}}}")
 
@@ -271,7 +260,7 @@ def convert_npz_to_bvh(npz_path, bvh_path, framerate=30, spine_damping=SPINE_DAM
             print(f"  Spine damp:  OFF (VRM has all 3 spine bones)")
     else:
         print(f"  VRM model:   not specified (no damping applied)")
-    
+
     # Extract actual bone offsets from the skeleton data
     offsets_m = extract_bone_offsets(posed_joints, global_rot_mats)
     offsets_cm = offsets_m * 100.0
@@ -296,10 +285,9 @@ def convert_npz_to_bvh(npz_path, bvh_path, framerate=30, spine_damping=SPINE_DAM
     for f in range(num_frames):
         frame_values = []
 
-        # Root translation: meters → cm, mirror X, then Y-up → Z-up
-        # Y-up: (-tx, ty, tz) → Z-up: (-tx, -tz, ty)
+        # Root translation: meters → cm, X negated for mirror fix
         tx, ty, tz = root_positions[f] * 100.0
-        frame_values.extend([-tx, -tz, ty])
+        frame_values.extend([-tx, ty, tz])
 
         frame_rots = local_rot_mats[f].copy()  # (22, 3, 3)
 
@@ -373,3 +361,5 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
