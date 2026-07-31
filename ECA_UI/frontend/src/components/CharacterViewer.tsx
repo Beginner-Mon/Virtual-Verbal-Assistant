@@ -9,6 +9,7 @@ import { useRef, useEffect, useState, Suspense, useMemo } from 'react'
 import * as THREE from 'three'
 import { AnimationController } from '../lib/AnimationController'
 import { AnimationRegistry } from '../lib/AnimationRegistry'
+import { DEFAULT_GROUND_CLAMP, GroundClamp } from '../lib/groundClamp'
 import type { CameraMode } from '../lib/AnimationStates'
 import { useFsmBoot } from '../hooks/useFsmTriggers'
 import { useMotion } from '../contexts/MotionContext'
@@ -120,6 +121,8 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
 
   const avatarControllerRef = useRef<AvatarController | null>(null)
   const animControllerRef = useRef<AnimationController | null>(null)
+  const modelGroupRef = useRef<THREE.Group>(null)
+  const groundClampRef = useRef<GroundClamp | null>(null)
   const revealedRef = useRef(false)
   // Drives <primitive visible={...}>: false until the first pose is applied.
   // Per-instance state — key={vrmUrl} remounts reset it on model switch.
@@ -127,6 +130,8 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
   // Also kept in state so the boot effect re-runs when the controller is swapped.
   const [animController, setAnimController] = useState<AnimationController | null>(null)
   const [registry, setRegistry] = useState<AnimationRegistry | null>(null)
+  // Reused by the ground clamp so it allocates nothing per frame.
+  const groundScratch = useMemo(() => new THREE.Vector3(), [])
 
   // Latest-value refs: the animation controller lives outside React, so its
   // callbacks must not capture a stale render's props.
@@ -201,10 +206,23 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
     animControllerRef.current?.update(delta)
     avatarControllerRef.current?.tick(delta)
     vrm?.update(delta)
+    // Last: the clamp reads the pose this frame actually produced. A generated
+    // clip can descend further than the character is tall (measured: 1.21 m on
+    // motion_b28e8284), which would otherwise sink it through the floor and
+    // kill its shadow — see lib/groundClamp.ts.
+    if (modelGroupRef.current) {
+      if (!groundClampRef.current) {
+        groundClampRef.current = new GroundClamp(modelGroupRef.current, groundScratch, {
+          ...DEFAULT_GROUND_CLAMP,
+          groundZ: ENV_CONFIG.shadows.fitGroundZ,
+        })
+      }
+      groundClampRef.current.update(vrm)
+    }
   })
 
   return (
-    <group position={[0, 1.5, 0]} rotation={[Math.PI / 2, 0, 0]}>
+    <group ref={modelGroupRef} position={[0, 1.5, 0]} rotation={[Math.PI / 2, 0, 0]}>
       {/* visible=false until the first animation pose is applied — the model
           never renders in bind pose (T-pose). */}
       <primitive object={vrm.scene} visible={revealed} />

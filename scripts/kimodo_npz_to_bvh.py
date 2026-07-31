@@ -230,6 +230,57 @@ def build_hierarchy_text(offsets_cm):
     return "\n".join(lines)
 
 
+# ── Input formats ────────────────────────────────────────────────────
+
+def load_motion(npz_path):
+    """Normalise the NPZ layouts we actually get into (rot_mats, root_pos, fps).
+
+    Two shapes are in circulation and they are NOT interchangeable:
+
+      Kimodo native   local_rot_mats (N,22,3,3) + root_positions (N,3)
+      AMASS / SMPL-X  poses (N,165) axis-angle + trans (N,3)
+
+    The AMASS layout is what the DART-era exports use, and two of the clips
+    shipped in the frontend are still in it — they were converted by a different
+    tool, which is why they never went through this script's fixes.
+    `poses[:, :66]` is root orientation followed by the 21 body joints, i.e.
+    exactly the 22 joints this skeleton uses; the remaining columns are hands
+    and face, which have no BVH counterpart here.
+    """
+    data = np.load(npz_path, allow_pickle=True)
+    fps = int(data['mocap_framerate']) if 'mocap_framerate' in data.files else None
+
+    if 'local_rot_mats' in data.files:
+        return data['local_rot_mats'], data['root_positions'], fps, 'kimodo'
+
+    if 'poses' in data.files and 'trans' in data.files:
+        poses = np.asarray(data['poses'], dtype=float)
+        rotvecs = poses[:, : NUM_JOINTS * 3].reshape(-1, 3)
+        mats = R.from_rotvec(rotvecs).as_matrix().reshape(len(poses), NUM_JOINTS, 3, 3)
+        return mats, np.asarray(data['trans'], dtype=float), fps, 'amass'
+
+    raise KeyError(
+        f"{npz_path}: expected either 'local_rot_mats'+'root_positions' (Kimodo) "
+        f"or 'poses'+'trans' (AMASS/SMPL-X); found {sorted(data.files)}"
+    )
+
+
+# ── Grounding ────────────────────────────────────────────────────────
+
+def joint_rotations(local_rot_mats, f, smplx_idx):
+    """The rotation actually written to BVH for this joint on this frame.
+
+    Must stay in lockstep with the writer below: spine damping first, then the
+    mirror fix. FK done on anything else would ground the wrong skeleton.
+    """
+    mat = local_rot_mats[f, smplx_idx]
+    factor = _SPINE_DAMPING.get(smplx_idx, 1.0)
+    if factor < 1.0:
+        rotvec = R.from_matrix(mat).as_rotvec()
+        mat = R.from_rotvec(rotvec * factor).as_matrix()
+    return mirror_rotmat(mat)
+
+
 # ── Converter ────────────────────────────────────────────────────────
 
 def convert_npz_to_bvh(npz_path, bvh_path, framerate=30, spine_damping=SPINE_DAMPING, vrm_path=None):
@@ -243,6 +294,9 @@ def convert_npz_to_bvh(npz_path, bvh_path, framerate=30, spine_damping=SPINE_DAM
     
     if 'mocap_framerate' in data:
         framerate = int(data['mocap_framerate'])
+    local_rot_mats, root_positions, file_fps, layout = load_motion(npz_path)
+    if file_fps:
+        framerate = file_fps
 
     num_frames = local_rot_mats.shape[0]
     frame_time = 1.0 / framerate
@@ -265,6 +319,7 @@ def convert_npz_to_bvh(npz_path, bvh_path, framerate=30, spine_damping=SPINE_DAM
     offsets_m = extract_bone_offsets(posed_joints, global_rot_mats)
     offsets_cm = offsets_m * 100.0
     
+    print(f"  Format:      {layout} -> 22-joint")
     print(f"  Frames:      {num_frames}")
     print(f"  Framerate:   {framerate} FPS")
     print(f"  Duration:    {num_frames / framerate:.2f}s")
@@ -316,9 +371,28 @@ def convert_npz_to_bvh(npz_path, bvh_path, framerate=30, spine_damping=SPINE_DAM
 
         # All joints in BVH depth-first traversal order
         for bvh_pos in range(NUM_JOINTS):
+        # Root translation: correction + meters->cm + mirror.
+        # NOTE: height lives in the Z channel here, not Y — the frontend reads
+        # these files with `swapYandZ`. Do NOT "ground" this file: the retarget
+        # anchors frame 0 to the VRM's rest hip height and applies deltas, so
+        # absolute height in the BVH is discarded. Grounding belongs at the
+        # consumer (see ECA_UI/frontend/src/lib/groundClamp.ts).
+        corr = _ROT_CORR @ root_positions[f] * 100.0
+        frame_values.extend([-corr[0], corr[1], corr[2]])
+
+        # Root rotation: correction + mirror
+        root_rot = _ROT_CORR @ local_rot_mats[f, 0]
+        rz, rx, ry = rotmat_to_euler_ZXY(root_rot)
+        frame_values.extend([rz, rx, ry])
+
+        # Child joints: mirror fix + optional spine damping
+        for bvh_pos in range(1, NUM_JOINTS):
             smplx_idx = traversal_order[bvh_pos]
             mat = frame_rots[smplx_idx]
             rz, rx, ry = rotmat_to_euler_ZXY(mat)
+            rz, rx, ry = R.from_matrix(
+                joint_rotations(local_rot_mats, f, smplx_idx)
+            ).as_euler('ZXY', degrees=True)
             frame_values.extend([rz, rx, ry])
 
         motion_lines.append(" ".join(f"{v:.6f}" for v in frame_values))

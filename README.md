@@ -138,10 +138,15 @@ docker compose -f docker-compose.langgraph.yml up -d      # Postgres :5433 · Re
 # 2. Backend (Python) — conda env, port 8000
 conda activate firstconda
 pip install -r requirements-langgraph.txt                 # first time
-cd agenticRAG && alembic -c langgraph_agents/alembic.ini upgrade head
+cd agenticRAG/langgraph_agents && alembic upgrade head    # must run FROM this dir
+cd ..
 python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8000 --host 0.0.0.0
 
-# 3. Frontend (React) — port 5173
+# 3. Knowledge base — REQUIRED on a fresh install, else every clinical
+#    question is refused because kb_embeddings is empty
+python scripts/ingest_kb_pgvector.py --reset              # ~2918 exercises
+
+# 4. Frontend (React) — port 5173
 cd ECA_UI/frontend && npm install && npm run dev
 ```
 
@@ -152,6 +157,7 @@ Open **http://localhost:5173** (demo mode: no login required). Backend URL is re
 ```bash
 curl http://localhost:8000/health            # {"status":"ok"}
 curl http://localhost:8000/health/detailed   # parallel PG/Redis/MCP/LLM/SearXNG checks
+                                             # "degraded" with speechllm down is expected — TTS is optional
 python -m pytest tests/langgraph_agents/ -m unit -q   # unit suite (no live services)
 ```
 
@@ -213,6 +219,7 @@ tests/langgraph_agents/   # 312 tests (275 unit + 37 integration)
 | [docs/plans/reupdate-plan.md](docs/plans/reupdate-plan.md) | Design decisions D1–D33 (source of truth) |
 | [docs/plans/facial-animation-plan.md](docs/plans/facial-animation-plan.md) | Avatar facial-animation system (Phase A–D) |
 | [docs/architecture/api-contract.md](docs/architecture/api-contract.md) | API + SSE event contract (incl. avatar events) |
+| [scripts/QUICKSTART.md](scripts/QUICKSTART.md) | Local run: ports, env vars, common errors |
 | [docs/ops/runbook.md](docs/ops/runbook.md) · [docs/ops/troubleshooting.md](docs/ops/troubleshooting.md) | Run · debug · common errors |
 | [.claude/CLAUDE.md](.claude/CLAUDE.md) | Conventions & roles |
 
