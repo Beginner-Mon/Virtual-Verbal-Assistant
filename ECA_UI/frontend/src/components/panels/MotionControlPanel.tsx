@@ -40,7 +40,7 @@ export default function MotionControlPanel() {
   // Derive modelId exactly the same way CharacterViewer does.
   const modelId = useMemo(() => {
     const selected = vrmOptions.find((o) => o.id === selectedVrmId)
-    return (selected?.label ?? 'seele.vrm')
+    return (selected?.label ?? 'bronya.vrm')
       .replace(/\.vrm$/i, '')
       .replace(/^.*\//, '')
       .toLowerCase()

@@ -6,6 +6,7 @@ Uses asyncpg connection pool. All queries go through this module.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -20,7 +21,10 @@ def _load_pg_config() -> dict:
 
 
 _PG_CFG = _load_pg_config()
-_DEFAULT_DSN = _PG_CFG.get("dsn", "postgresql://vva:vva_dev@localhost:5433/vva")
+_DEFAULT_DSN = os.environ.get(
+    "POSTGRES_DSN",
+    _PG_CFG.get("dsn", "postgresql://vva:vva_dev@localhost:5433/vva"),
+)
 _DEFAULT_POOL_MIN = _PG_CFG.get("pool_min", 2)
 _DEFAULT_POOL_MAX = _PG_CFG.get("pool_max", 10)
 

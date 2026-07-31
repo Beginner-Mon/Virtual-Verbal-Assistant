@@ -31,6 +31,11 @@ function toEmitName(presetName, fallback) {
   return fallback.toLowerCase().replace(/[^a-z0-9_]/gi, '_')
 }
 
+/** Sanitize a filename stem into a valid JS identifier. */
+function toVarName(modelId) {
+  return modelId.replace(/[^a-zA-Z0-9_$]/g, '_').replace(/^(\d)/, '_$1')
+}
+
 // ── GLB parser ──────────────────────────────────────────────────────────
 
 function parseVRMBlendShapes(filePath) {
@@ -119,19 +124,21 @@ const lines = [
   '',
 ]
 for (const [modelId, data] of Object.entries(manifest)) {
-  lines.push(`export const ${modelId} = ${JSON.stringify(data)} as const`)
+  const varName = toVarName(modelId)
+  lines.push(`export const ${varName} = ${JSON.stringify(data)} as const`)
   lines.push('')
 }
-// Re-export all under a single namespace
 const allIds = Object.keys(manifest)
 lines.push(`export const allModelIds = ${JSON.stringify(allIds)} as const`)
 lines.push('')
-lines.push('export type VrmManifestEntry = typeof ' + (allIds[0] || '{}'))
+const firstVar = toVarName(allIds[0] || 'bronya')
+lines.push(`export type VrmManifestEntry = typeof ${firstVar}`)
 lines.push('')
 lines.push('export function getManifest(modelId: string): VrmManifestEntry | null {')
 lines.push('  const key = modelId.toLowerCase()')
 for (const id of allIds) {
-  lines.push(`  if (key === '${id}') return ${id}`)
+  const varName = toVarName(id)
+  lines.push(`  if (key === '${id}') return ${varName}`)
 }
 lines.push('  return null')
 lines.push('}')

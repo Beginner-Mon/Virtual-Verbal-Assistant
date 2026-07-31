@@ -18,7 +18,7 @@ export default function AvatarDevPanel() {
 
   const modelId = useMemo(() => {
     const selected = vrmOptions.find((o) => o.id === selectedVrmId)
-    return (selected?.label ?? 'seele.vrm')
+    return (selected?.label ?? 'bronya.vrm')
       .replace(/\.vrm$/i, '')
       .replace(/^.*\//, '')
       .toLowerCase()
