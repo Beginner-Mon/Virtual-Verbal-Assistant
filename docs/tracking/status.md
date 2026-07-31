@@ -130,10 +130,28 @@
   cũ cố định 5×5 **ở gốc toạ độ** → nhân vật chỉ chiếm 7-8%, lề chỉ 0.43 trong khi subject dịch
   >1.2/clip. Giờ fit theo **skeleton ∪ bóng chiếu xuống sàn** mỗi frame, hình cầu (bất biến khi xoay)
   + snap texel + **giữ nguyên hướng đèn**. Kết quả: texel 0.488 → **0.245-0.359 cm** (sắc hơn
-  1.4-2.0×) với `mapSize` **không đổi**. Config cũ `cameraSize/cameraNear/cameraFar` đã bỏ, thay bằng
-  `fitPadding` + `fitGroundZ`. ⚠️ Không tái hiện được clipping trên asset hiện có — nghi phạm đúng
-  triệu chứng "chém thẳng" là **`<ContactShadows>`** (ô vuông cứng `scale:5`, `far:3`, KHÔNG đi theo
-  nhân vật), chưa đụng, chờ Owner xác nhận.
+  ~1.8×) với `mapSize` **không đổi**. Config cũ `cameraSize/cameraNear/cameraFar` đã bỏ, thay bằng
+  `fitPadding` + `fitGroundZ`. **Đã tái hiện + xác nhận bằng ảnh A/B** (`floor-HEAD.png` bóng bị chém
+  thẳng đứng, `floor-FIT.png` bóng nguyên vẹn).
+  - ⚠️ **Bài học**: kiểm containment bằng **xương là SAI** — thứ đổ bóng là **mesh** (váy/tóc/ruy-băng
+    vươn xa hơn xương), nên box cũ *qua* được test xương trong khi trên màn hình vẫn bị chém. Vì vậy
+    `fitPadding` (0.35) là **bù xương→mesh**, không phải trang trí.
+  - ✅ **Nguyên nhân THỨ HAI — ĐÃ SỬA 31/07 bằng `lib/groundClamp.ts`** (worklog §5): `motion_b28e8284`
+    tụt **−120.7 cm** so với frame 0; `retargetBVHToVRM` neo frame 0 vào chiều cao hông lúc nghỉ rồi
+    cộng delta nên **bỏ qua chiều cao tuyệt đối trong BVH** ⇒ ground ở converter **vô dụng**, phải
+    clamp ở frontend. Mỗi frame lấy xương thấp nhất, nếu dưới sàn thì nâng group model đúng phần
+    thiếu (chỉ nâng, không đẩy xuống → nhảy vẫn rời đất). Kết quả: **289/340 → 0/334** frame dưới sàn.
+    Cũng bảo vệ luôn clip stream runtime (P2) mà không cần convert lại.
+    `scripts/kimodo_npz_to_bvh.py` giờ đọc thêm định dạng **AMASS/SMPL-X** (2 trong 3 clip đang dùng
+    là format này, không phải Kimodo) — output cho file Kimodo bit-identical.
+  - ~~🔴 Nguyên nhân THỨ HAI, CHƯA sửa — lỗi dữ liệu motion~~: `motion_b28e8284-328.bvh` cho nhân vật
+    **chìm xuyên sàn tới 1.04 m suốt 85% clip** (2 clip còn lại: 0 frame). Sàn z=0 là vật nhận bóng
+    nên phần dưới sàn không hắt bóng lên được → bóng bị xén theo giao tuyến thẳng, và **mất hẳn** ở
+    cuối clip. Đo được: shadow camera **vẫn bám** nhân vật (lệch ≤0.5, 0 frame bị cắt/3 clip) → không
+    phải lỗi hệ bóng. Cần chốt sửa ở `scripts/kimodo_npz_to_bvh.py` (gốc) hay tầng retarget frontend
+    (cứu asset đã bundle). Ảnh: `scratchpad/sunk.png`.
+  - Nghi phạm phụ chưa đụng: **`<ContactShadows>`** (ô vuông cứng `scale:5`, `far:3`, KHÔNG đi theo
+    nhân vật) — cũng cho cạnh thẳng nếu nhân vật ra khỏi ô.
 - **Fix shadow ping-pong (cũng 30/07) — thật nhưng KHÔNG phải nguyên nhân chớp đen** (Owner báo sau khi merge FSM). Root cause **có trước refactor**,
   refactor chỉ làm lộ ra nhiều hơn: `ENV_CONFIG.shadows.type = THREE.PCFSoftShadowMap` là hằng
   **deprecated** → `WebGLShadowMap.render()` của three.js warn rồi **tự ghi lại** `this.type =

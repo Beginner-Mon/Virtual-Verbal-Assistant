@@ -57,8 +57,13 @@ export const ENV_CONFIG = {
     // origin) left the subject 0.43 units from the edge while wasting ~92% of
     // the shadow map, which is how shadows got sliced off in a straight line.
     // Enlarging the box would only waste more map and blur the result.
-    /** Metres of slack around the skeleton, for hair / skirt / fingertips. */
-    fitPadding: 0.18,
+    /** Metres of slack around the skeleton.
+     *  NOT cosmetic: the fit is computed from ~50 JOINTS, but what casts the
+     *  shadow is the MESH — skirt, hair, ribbons, wings reach well past any
+     *  bone. A joint-only fit reports "nothing outside the frustum" while the
+     *  silhouette is visibly sliced (that is exactly how the fixed-box version
+     *  passed a bone-based check yet clipped on screen). */
+    fitPadding: 0.35,
     /** World height of the shadow-receiving floor (ground plane sits at z=0). */
     fitGroundZ: 0,
   },
