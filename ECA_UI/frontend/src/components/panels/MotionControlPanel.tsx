@@ -1,10 +1,21 @@
 import { Play, Pause, RotateCcw, Activity, Sliders, Camera, Sparkles, Smile } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useMemo } from 'react'
 import { ScrollArea } from '../ui/scroll-area'
 import { useMotion } from '../../contexts/MotionContext'
 import type { CharState } from '../../lib/AnimationStates'
 import { CANONICAL_EMOTIONS, type CanonicalEmotion } from '../../avatar/AvatarProfile'
-import { ensureAudioContext, playSyntheticSpeech, type SyntheticSpeech } from '../../avatar/lipSyncAudio'
+import { getManifest } from '../../avatar/vrmManifest'
+import { ensureAudioContext, playSyntheticSpeech, playWavSpeech, type SyntheticSpeech } from '../../avatar/lipSyncAudio'
+import testWavUrl from '../../asset/audio/test.wav'
+
+const PRESET_TO_CANONICAL: Record<string, CanonicalEmotion> = {
+  neutral: 'neutral',
+  joy: 'happy',
+  angry: 'angry',
+  sorrow: 'sad',
+  fun: 'relaxed',
+  surprised: 'surprised',
+}
 
 export default function MotionControlPanel() {
   const {
@@ -22,13 +33,39 @@ export default function MotionControlPanel() {
     clipInfo,
     handleReset,
     avatarRef,
+    selectedVrmId,
+    vrmOptions,
   } = useMotion()
+
+  // Derive modelId exactly the same way CharacterViewer does.
+  const modelId = useMemo(() => {
+    const selected = vrmOptions.find((o) => o.id === selectedVrmId)
+    return (selected?.label ?? 'seele.vrm')
+      .replace(/\.vrm$/i, '')
+      .replace(/^.*\//, '')
+      .toLowerCase()
+  }, [selectedVrmId, vrmOptions])
+
+  const manifest = useMemo(() => getManifest(modelId), [modelId])
+
+  // Merge emotions + emotion-like customs (e.g. bronya's "Surprised").
+  const emotionButtons = useMemo(() => {
+    const all = [...(manifest?.emotions ?? []), ...(manifest?.customs ?? [])]
+    if (all.length === 0) {
+      return CANONICAL_EMOTIONS.map((e) => ({ label: e, emotion: e }))
+    }
+    return all.map((e) => ({
+      label: e.name,
+      emotion: PRESET_TO_CANONICAL[e.presetName] ?? PRESET_TO_CANONICAL[e.emit] ?? 'neutral',
+    }))
+  }, [manifest])
 
   const [emotionIntensity, setEmotionIntensity] = useState(0.8)
   const [emotionDurationMs, setEmotionDurationMs] = useState(500)
   const [lastEmotion, setLastEmotion] = useState<string>('—')
   const [avatarMode, setAvatarMode] = useState<string>('—')
   const [speaking, setSpeaking] = useState(false)
+  const [speakingWav, setSpeakingWav] = useState(false)
   const speechRef = useRef<SyntheticSpeech | null>(null)
 
   useEffect(() => {
@@ -64,6 +101,25 @@ export default function MotionControlPanel() {
       speechRef.current = null
       setSpeaking(false)
     }, 3000)
+  }
+
+  const speakWav = () => {
+    const controller = avatarRef.current
+    if (!controller || speakingWav) return
+    ensureAudioContext()
+    setSpeakingWav(true)
+    playWavSpeech(testWavUrl)
+      .then((synth) => {
+        controller.startLipSync(synth.analyser)
+        window.setTimeout(() => {
+          controller.stopLipSync()
+          synth.stop()
+          setSpeakingWav(false)
+        }, synth.durationMs + 500)
+      })
+      .catch(() => {
+        setSpeakingWav(false)
+      })
   }
 
   return (
@@ -202,13 +258,13 @@ export default function MotionControlPanel() {
               </span>
 
               <div className="flex flex-wrap gap-1">
-                {CANONICAL_EMOTIONS.map((emotion) => (
+                {emotionButtons.map(({ label, emotion }) => (
                   <button
-                    key={emotion}
+                    key={label}
                     onClick={() => triggerEmotion(emotion)}
                     className="px-2 py-0.5 text-[11px] rounded-md border border-primary/30 bg-primary/10 text-foreground hover:bg-primary/20 transition-colors cursor-pointer"
                   >
-                    {emotion}
+                    {label}
                   </button>
                 ))}
               </div>
@@ -251,6 +307,18 @@ export default function MotionControlPanel() {
                 }`}
               >
                 {speaking ? 'speaking…' : 'Speak (test lip-sync)'}
+              </button>
+
+              <button
+                onClick={speakWav}
+                disabled={speakingWav}
+                className={`px-2 py-1 text-[11px] rounded-md border transition-colors cursor-pointer ${
+                  speakingWav
+                    ? 'border-cyan-500/30 bg-cyan-500/10 text-cyan-400 cursor-default'
+                    : 'border-cyan-500/40 bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25'
+                }`}
+              >
+                {speakingWav ? 'playing test.wav…' : 'Test WAV lip-sync'}
               </button>
 
               <div className="flex justify-between text-[10px] text-muted-foreground/60">

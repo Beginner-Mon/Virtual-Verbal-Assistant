@@ -16,12 +16,12 @@ export const bronyaProfile: AvatarProfile = {
     surprised: { Surprised: 1.0 },
   },
   morphRepairMap: {
-    blink: ['45.ウィンク', '46.ウィンク右'],
-    aa: '30.あ',
-    ih: '31.い',
-    ou: '33.う',
-    ee: '34.え',
-    oh: '35.お',
+    blink: ['43', '44'],
+    aa: '30',
+    ih: '31',
+    ou: '32',
+    ee: '34',
+    oh: '35',
   },
   binaryEmotions: ['sad'],
 }

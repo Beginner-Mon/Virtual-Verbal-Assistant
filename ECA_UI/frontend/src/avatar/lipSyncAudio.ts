@@ -1,9 +1,11 @@
 /**
  * Web Audio glue for lip sync. Builds the AnalyserNode that LipSyncController
- * reads. Two sources:
+ * reads. Three sources:
  *   - analyserFromElement: the real path for a `tts.audio` clip (Phase D).
  *   - playSyntheticSpeech: a syllable-like tone for DevPanel testing without a
  *     wav asset (Phase C acceptance).
+ *   - playWavSpeech: play a .wav file via AudioBuffer, returning its analyser
+ *     and duration for proper auto-stop timing.
  *
  * AudioContext must be resumed after a user gesture (autoplay policy, §9); the
  * DevPanel button click / send action satisfies that.
@@ -38,6 +40,11 @@ export function analyserFromElement(el: HTMLAudioElement): AnalyserNode {
 export interface SyntheticSpeech {
   analyser: AnalyserNode
   stop: () => void
+}
+
+export interface WavSpeech extends SyntheticSpeech {
+  /** Duration of the loaded audio in milliseconds. */
+  durationMs: number
 }
 
 /**
@@ -88,4 +95,55 @@ export function playSyntheticSpeech(durationMs = 3000): SyntheticSpeech {
   }
 
   return { analyser, stop }
+}
+
+let wavBuffer: AudioBuffer | null = null
+let wavLoading: Promise<void> | null = null
+
+/**
+ * Play a .wav file through an analyser for lip sync testing.
+ * Loads and caches the AudioBuffer on first call.
+ * Returns durationMs so callers can time stopLipSync correctly.
+ */
+export async function playWavSpeech(wavUrl: string): Promise<WavSpeech> {
+  const ctx = ensureAudioContext()
+
+  if (!wavBuffer) {
+    if (!wavLoading) {
+      wavLoading = (async () => {
+        const resp = await fetch(wavUrl)
+        const arrayBuf = await resp.arrayBuffer()
+        wavBuffer = await ctx.decodeAudioData(arrayBuf)
+        wavLoading = null
+      })()
+    }
+    await wavLoading
+  }
+
+  const source = ctx.createBufferSource()
+  source.buffer = wavBuffer!
+
+  const analyser = ctx.createAnalyser()
+  analyser.fftSize = FFT_SIZE
+
+  source.connect(analyser)
+  analyser.connect(ctx.destination)
+
+  source.start(0)
+
+  let ended = false
+  source.onended = () => {
+    ended = true
+  }
+
+  const stop = () => {
+    if (ended) return
+    try { source.stop() } catch { /* already stopped */ }
+  }
+
+  return {
+    analyser,
+    stop,
+    durationMs: (wavBuffer?.duration ?? 0) * 1000,
+  }
 }

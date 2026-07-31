@@ -1,15 +1,41 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useMemo } from 'react'
 import { useMotion } from '../contexts/MotionContext'
 import { CANONICAL_EMOTIONS, type CanonicalEmotion } from './AvatarProfile'
+import { getManifest } from './vrmManifest'
 import { ensureAudioContext, playSyntheticSpeech, type SyntheticSpeech } from './lipSyncAudio'
 
-/**
- * Dev-only facial-animation test panel (facial-animation-plan.md §10 Phase A).
- * Drives the active AvatarController imperatively via the MotionContext ref —
- * no backend needed. Mounted only under import.meta.env.DEV by CharacterViewer.
- */
+const PRESET_TO_CANONICAL: Record<string, CanonicalEmotion> = {
+  neutral: 'neutral',
+  joy: 'happy',
+  angry: 'angry',
+  sorrow: 'sad',
+  fun: 'relaxed',
+  surprised: 'surprised',
+}
+
 export default function AvatarDevPanel() {
-  const { avatarRef } = useMotion()
+  const { avatarRef, selectedVrmId, vrmOptions } = useMotion()
+
+  const modelId = useMemo(() => {
+    const selected = vrmOptions.find((o) => o.id === selectedVrmId)
+    return (selected?.label ?? 'seele.vrm')
+      .replace(/\.vrm$/i, '')
+      .replace(/^.*\//, '')
+      .toLowerCase()
+  }, [selectedVrmId, vrmOptions])
+
+  const manifest = useMemo(() => getManifest(modelId), [modelId])
+
+  const emotionButtons = useMemo(() => {
+    const all = [...(manifest?.emotions ?? []), ...(manifest?.customs ?? [])]
+    if (all.length === 0) {
+      return CANONICAL_EMOTIONS.map((e) => ({ label: e, emotion: e }))
+    }
+    return all.map((e) => ({
+      label: e.name,
+      emotion: PRESET_TO_CANONICAL[e.presetName] ?? PRESET_TO_CANONICAL[e.emit] ?? 'neutral',
+    }))
+  }, [manifest])
   const [intensity, setIntensity] = useState(0.8)
   const [durationMs, setDurationMs] = useState(500)
   const [last, setLast] = useState<string>('—')
@@ -80,9 +106,9 @@ export default function AvatarDevPanel() {
       <strong style={{ fontSize: 11, letterSpacing: 0.4 }}>AVATAR DEV — emotions</strong>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-        {CANONICAL_EMOTIONS.map((emotion) => (
+        {emotionButtons.map(({ label, emotion }) => (
           <button
-            key={emotion}
+            key={label}
             onClick={() => trigger(emotion)}
             style={{
               cursor: 'pointer',
@@ -94,7 +120,7 @@ export default function AvatarDevPanel() {
               font: 'inherit',
             }}
           >
-            {emotion}
+            {label}
           </button>
         ))}
       </div>

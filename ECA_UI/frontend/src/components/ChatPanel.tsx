@@ -9,7 +9,7 @@ import { useMotion } from '../contexts/MotionContext'
 
 function buildInitialMessages(): Message[] {
   const hour = new Date().getHours()
-  const greeting = hour < 12 ? 'Good morning' : 'Good afternoon'
+  const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
   return [
     {
       id: '1',
