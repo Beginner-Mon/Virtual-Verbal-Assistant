@@ -371,28 +371,9 @@ def convert_npz_to_bvh(npz_path, bvh_path, framerate=30, spine_damping=SPINE_DAM
 
         # All joints in BVH depth-first traversal order
         for bvh_pos in range(NUM_JOINTS):
-        # Root translation: correction + meters->cm + mirror.
-        # NOTE: height lives in the Z channel here, not Y — the frontend reads
-        # these files with `swapYandZ`. Do NOT "ground" this file: the retarget
-        # anchors frame 0 to the VRM's rest hip height and applies deltas, so
-        # absolute height in the BVH is discarded. Grounding belongs at the
-        # consumer (see ECA_UI/frontend/src/lib/groundClamp.ts).
-        corr = _ROT_CORR @ root_positions[f] * 100.0
-        frame_values.extend([-corr[0], corr[1], corr[2]])
-
-        # Root rotation: correction + mirror
-        root_rot = _ROT_CORR @ local_rot_mats[f, 0]
-        rz, rx, ry = rotmat_to_euler_ZXY(root_rot)
-        frame_values.extend([rz, rx, ry])
-
-        # Child joints: mirror fix + optional spine damping
-        for bvh_pos in range(1, NUM_JOINTS):
             smplx_idx = traversal_order[bvh_pos]
             mat = frame_rots[smplx_idx]
             rz, rx, ry = rotmat_to_euler_ZXY(mat)
-            rz, rx, ry = R.from_matrix(
-                joint_rotations(local_rot_mats, f, smplx_idx)
-            ).as_euler('ZXY', degrees=True)
             frame_values.extend([rz, rx, ry])
 
         motion_lines.append(" ".join(f"{v:.6f}" for v in frame_values))
