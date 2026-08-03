@@ -7,6 +7,7 @@ import { CANONICAL_EMOTIONS, type CanonicalEmotion } from '../../avatar/AvatarPr
 import { getManifest } from '../../avatar/vrmManifest'
 import { ensureAudioContext, playSyntheticSpeech, playWavSpeech, type SyntheticSpeech } from '../../avatar/lipSyncAudio'
 import testWavUrl from '../../asset/audio/test.wav'
+import { DEFAULT_CAMERA_CONFIG } from '../../lib/CameraConfig'
 
 const PRESET_TO_CANONICAL: Record<string, CanonicalEmotion> = {
   neutral: 'neutral',
@@ -35,6 +36,8 @@ export default function MotionControlPanel() {
     avatarRef,
     selectedVrmId,
     vrmOptions,
+    cameraConfig,
+    setCameraConfig,
   } = useMotion()
 
   // Derive modelId exactly the same way CharacterViewer does.
@@ -135,17 +138,92 @@ export default function MotionControlPanel() {
       <ScrollArea className="flex-1 min-h-0 p-4">
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-secondary/20 border border-border/10">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-              <Camera className="w-3 h-3" />
-              Camera mode
-            </span>
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                <Camera className="w-3 h-3" />
+                Camera config
+              </span>
+              <button
+                onClick={() => setCameraConfig(DEFAULT_CAMERA_CONFIG)}
+                className="text-[9px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+              >
+                Reset
+              </button>
+            </div>
+            
+            <label className="flex items-center justify-between text-[11px] text-foreground mt-1 cursor-pointer">
+              <span>Follow Target (lookAt)</span>
+              <input
+                type="checkbox"
+                checked={cameraConfig.followTarget}
+                onChange={(e) => setCameraConfig({ ...cameraConfig, followTarget: e.target.checked })}
+                className="accent-primary"
+              />
+            </label>
+            
+            <label className="flex items-center justify-between text-[11px] text-foreground cursor-pointer">
+              <span>Enable Pan</span>
+              <input
+                type="checkbox"
+                checked={cameraConfig.enablePan}
+                onChange={(e) => setCameraConfig({ ...cameraConfig, enablePan: e.target.checked })}
+                className="accent-primary"
+              />
+            </label>
+
+            <div className="flex flex-col gap-1 mt-1">
+              <span className="text-[10px] text-muted-foreground">Camera Offset</span>
+              
+              <label className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                <span className="w-3 text-red-400 font-bold text-center">X</span>
+                <input
+                  type="range"
+                  min={-2}
+                  max={2}
+                  step={0.05}
+                  value={cameraConfig.offsetX}
+                  onChange={(e) => setCameraConfig({ ...cameraConfig, offsetX: Number(e.target.value) })}
+                  className="flex-1 h-1 accent-red-400"
+                />
+                <span className="w-8 text-right tabular-nums">{cameraConfig.offsetX.toFixed(2)}</span>
+              </label>
+
+              <label className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                <span className="w-3 text-green-400 font-bold text-center">Y</span>
+                <input
+                  type="range"
+                  min={-2}
+                  max={2}
+                  step={0.05}
+                  value={cameraConfig.offsetY}
+                  onChange={(e) => setCameraConfig({ ...cameraConfig, offsetY: Number(e.target.value) })}
+                  className="flex-1 h-1 accent-green-400"
+                />
+                <span className="w-8 text-right tabular-nums">{cameraConfig.offsetY.toFixed(2)}</span>
+              </label>
+
+              <label className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                <span className="w-3 text-blue-400 font-bold text-center">Z</span>
+                <input
+                  type="range"
+                  min={-5}
+                  max={5}
+                  step={0.1}
+                  value={cameraConfig.offsetZ}
+                  onChange={(e) => setCameraConfig({ ...cameraConfig, offsetZ: Number(e.target.value) })}
+                  className="flex-1 h-1 accent-blue-400"
+                />
+                <span className="w-8 text-right tabular-nums">{cameraConfig.offsetZ.toFixed(2)}</span>
+              </label>
+            </div>
+
             <select
               value={cameraMode}
               onChange={(e) => setCameraMode(e.target.value as 'head' | 'hips')}
-              className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-0.5"
+              className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-1.5 pt-1.5 border-t border-border/10"
             >
-              <option value="head" className="bg-card text-foreground">Head - close face view</option>
-              <option value="hips" className="bg-card text-foreground">Hips - wider body view</option>
+              <option value="head" className="bg-card text-foreground">Target: Head</option>
+              <option value="hips" className="bg-card text-foreground">Target: Hips</option>
             </select>
           </div>
 

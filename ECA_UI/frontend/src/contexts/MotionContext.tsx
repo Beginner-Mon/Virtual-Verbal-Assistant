@@ -16,6 +16,7 @@ import { STATE_OPTIONS, type CameraMode, type CharState } from '../lib/Animation
 import { MOTION_FILES, type MotionFile } from '../lib/motionAssets'
 import { useAutoAfterTrigger } from '../hooks/useFsmTriggers'
 import instrumentalUrl from '../asset/audio/instrumental-ver.mp3'
+import { DEFAULT_CAMERA_CONFIG, type CameraConfig } from '../lib/CameraConfig'
 
 export type { CameraMode }
 
@@ -70,6 +71,8 @@ interface MotionContextType {
   /** Camera framing. FSM-driven; the setter is a manual debug override. */
   cameraMode: CameraMode
   setCameraMode: (mode: CameraMode) => void
+  cameraConfig: CameraConfig
+  setCameraConfig: (config: CameraConfig) => void
 
   /**
    * Wiring hook for the component that owns the VRM: it creates the controller
@@ -107,6 +110,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
   const [speed, setSpeed] = useState(1.0)
   const [clipInfo, setClipInfo] = useState<{ tracks: number; duration: number } | null>(null)
   const [cameraMode, setCameraModeState] = useState<CameraMode>('head')
+  const [cameraConfig, setCameraConfig] = useState<CameraConfig>(DEFAULT_CAMERA_CONFIG)
 
   // Held as state, not a ref: the play/pause effect and the auto-after timer
   // must re-run when the controller is swapped (model change / StrictMode).
@@ -243,6 +247,8 @@ export function MotionProvider({ children }: { children: ReactNode }) {
       motionFileOptions: MOTION_FILES,
       cameraMode,
       setCameraMode,
+      cameraConfig,
+      setCameraConfig,
       attachControllers,
       isPlaying,
       setIsPlaying,
@@ -262,6 +268,8 @@ export function MotionProvider({ children }: { children: ReactNode }) {
       playMotionFile,
       cameraMode,
       setCameraMode,
+      cameraConfig,
+      setCameraConfig,
       attachControllers,
       isPlaying,
       speed,

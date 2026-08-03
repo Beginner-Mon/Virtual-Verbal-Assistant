@@ -301,7 +301,7 @@ interface SceneProps {
 function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
   // Camera mode is owned by CameraController and driven by FSM state
   // (exercise → wide + 3s cooldown). The old URL-substring heuristic is gone.
-  const { cameraMode } = useMotion()
+  const { cameraMode, cameraConfig } = useMotion()
   const { settings: gfx } = useGraphics()
   const controlsRef = useRef<any>(null)
   const vrmRef = useRef<VRM | null>(null)
@@ -372,8 +372,9 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
       const progress = Math.min(t.elapsed / TRANSITION_DURATION, 1)
       const eased = 1 - Math.pow(1 - progress, 3)
 
-      const endTarget = followPos.clone()
-      const endPos = followPos.clone().add(mode.cameraOffset)
+      const currentCustomOffset = new THREE.Vector3(cameraConfig.offsetX, cameraConfig.offsetY, cameraConfig.offsetZ)
+      const endTarget = followPos.clone().add(currentCustomOffset)
+      const endPos = followPos.clone().add(mode.cameraOffset).add(currentCustomOffset)
 
       camera.position.lerpVectors(t.startPos, endPos, eased)
       controlsRef.current.target.lerpVectors(t.startTarget, endTarget, eased)
@@ -385,24 +386,29 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
       return
     }
 
+    const currentCustomOffset = new THREE.Vector3(cameraConfig.offsetX, cameraConfig.offsetY, cameraConfig.offsetZ)
+    const targetPos = followPos.clone().add(currentCustomOffset)
+
     if (!cameraInitializedRef.current) {
-      controlsRef.current.target.copy(followPos)
-      camera.position.copy(followPos).add(mode.cameraOffset)
-      camera.lookAt(followPos)
+      controlsRef.current.target.copy(targetPos)
+      camera.position.copy(followPos).add(mode.cameraOffset).add(currentCustomOffset)
+      camera.lookAt(targetPos)
       controlsRef.current.update()
       cameraInitializedRef.current = true
       return
     }
 
+    if (!cameraConfig.followTarget) return
+
     // How far did the follow point move since the last frame?
-    deltaVec.subVectors(followPos, controlsRef.current.target)
+    deltaVec.subVectors(targetPos, controlsRef.current.target)
 
     // Move the camera by the same 3D delta so the distance to the model
     // stays identical even if the model shifts on any axis.
     camera.position.add(deltaVec)
 
     // Update the controls target to the new follow point
-    controlsRef.current.target.copy(followPos)
+    controlsRef.current.target.copy(targetPos)
     controlsRef.current.update()
   })
 
@@ -461,10 +467,10 @@ return (
       {/* Orbital camera: follows hips, enforces minimum distance (radius) */}
       <OrbitControls
         ref={controlsRef}
-        enablePan={false}
-        enableZoom={true}
-        minDistance={1}
-        maxDistance={20}
+        enablePan={cameraConfig.enablePan}
+        enableZoom={cameraConfig.enableZoom}
+        minDistance={cameraConfig.minDistance}
+        maxDistance={cameraConfig.maxDistance}
         target={[0, 0, 0]}
       />
     </>
