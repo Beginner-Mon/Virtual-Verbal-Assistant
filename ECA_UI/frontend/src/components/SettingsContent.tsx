@@ -5,11 +5,12 @@ interface SettingsContentProps {
   view?: 'main' | 'providers' | 'provider-detail'
   onNavigateToProviders?: () => void
   onNavigateToGraphics?: () => void
+  onNavigateToAbout?: () => void
   onSelectProvider?: (provider: { id: string; name: string }) => void
   selectedProvider?: { id: string; name: string }
 }
 
-export default function SettingsContent({ view = 'main', onNavigateToProviders, onNavigateToGraphics, onSelectProvider, selectedProvider }: SettingsContentProps) {
+export default function SettingsContent({ view = 'main', onNavigateToProviders, onNavigateToGraphics, onNavigateToAbout, onSelectProvider, selectedProvider }: SettingsContentProps) {
   if (view === 'provider-detail') {
     return <ProviderDetailView provider={selectedProvider} />
   }
@@ -62,7 +63,7 @@ export default function SettingsContent({ view = 'main', onNavigateToProviders, 
   const items = [
     { id: 'providers', icon: KeyRound, label: 'Select Providers', description: 'Configure your LLM API providers and keys', onClick: onNavigateToProviders },
     { id: 'graphics', icon: MonitorCog, label: 'Graphic Settings', description: 'Adjust visual quality and performance options', onClick: onNavigateToGraphics },
-    { id: 'about', icon: Info, label: 'About Us', description: 'Learn more about our team and mission' },
+    { id: 'about', icon: Info, label: 'About Us', description: 'Learn more about our team and mission', onClick: onNavigateToAbout },
     { id: 'terms', icon: ScrollText, label: 'Terms of Service', description: 'Read our terms and conditions' },
   ]
 
