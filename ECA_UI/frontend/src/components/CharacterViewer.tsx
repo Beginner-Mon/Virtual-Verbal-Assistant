@@ -124,6 +124,7 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
   const modelGroupRef = useRef<THREE.Group>(null)
   const groundClampRef = useRef<GroundClamp | null>(null)
   const revealedRef = useRef(false)
+  const emotionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Drives <primitive visible={...}>: false until the first pose is applied.
   // Per-instance state — key={vrmUrl} remounts reset it on model switch.
   const [revealed, setRevealed] = useState(false)
@@ -174,6 +175,15 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
           setRevealed(true)
           onReadyRef.current(true)
         }
+        // Schedule emotion at midpoint of greeting clip (plan greeting-midpoint-emotion).
+        if (info.state === 'greeting') {
+          if (emotionTimerRef.current) clearTimeout(emotionTimerRef.current)
+          const delayMs = info.duration * 0.25 * 1000
+          emotionTimerRef.current = setTimeout(() => {
+            const emotion = avatarControllerRef.current?.profile.greetingEmotion ?? 'happy'
+            avatarControllerRef.current?.setEmotion(emotion, 1, 600)
+          }, delayMs)
+        }
       },
     })
 
@@ -184,6 +194,7 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
     onReadyRef.current(false)
 
     return () => {
+      if (emotionTimerRef.current) clearTimeout(emotionTimerRef.current)
       detach()
       controller.dispose()
       animControllerRef.current = null
