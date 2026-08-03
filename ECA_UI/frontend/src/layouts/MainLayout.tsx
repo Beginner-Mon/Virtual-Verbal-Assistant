@@ -3,11 +3,13 @@ import FloatingNavBar from '../components/FloatingNavBar'
 import ChatPanel from '../components/ChatPanel'
 import { MotionProvider } from '../contexts/MotionContext'
 import { ChatProvider } from '../contexts/ChatContext'
+import { GraphicsProvider } from '../contexts/GraphicsContext'
 
 export default function MainLayout() {
   return (
     <MotionProvider>
       <ChatProvider>
+        <GraphicsProvider>
         <main className="relative h-screen w-screen overflow-hidden bg-background">
         <Link
           to="/"
@@ -30,6 +32,7 @@ export default function MainLayout() {
         {/* Floating navigation overlay */}
         <FloatingNavBar />
       </main>
+        </GraphicsProvider>
       </ChatProvider>
     </MotionProvider>
   )

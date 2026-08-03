@@ -18,8 +18,10 @@ import {
 import { BlendFunction } from 'postprocessing'
 import { memo, type ReactElement } from 'react'
 import { ENV_CONFIG } from '../../config/environmentConfig'
+import { useGraphics } from '../../contexts/GraphicsContext'
 
 function ScenePostProcessing() {
+  const { settings: gfx } = useGraphics()
   const { postProcessing: pp } = ENV_CONFIG
 
   if (!pp.enabled) return null
@@ -42,7 +44,7 @@ function ScenePostProcessing() {
     )
   }
 
-  if (pp.ssao.enabled) {
+  if (gfx.ssao) {
     effects.push(
       <SSAO
         key="ssao"
@@ -54,14 +56,16 @@ function ScenePostProcessing() {
     )
   }
 
-  effects.push(
-    <Vignette
-      key="vignette"
-      offset={pp.vignette.offset}
-      darkness={pp.vignette.darkness}
-      blendFunction={BlendFunction.NORMAL}
-    />,
-  )
+  if (gfx.vignette) {
+    effects.push(
+      <Vignette
+        key="vignette"
+        offset={pp.vignette.offset}
+        darkness={pp.vignette.darkness}
+        blendFunction={BlendFunction.NORMAL}
+      />,
+    )
+  }
 
   return <EffectComposer>{effects}</EffectComposer>
 }

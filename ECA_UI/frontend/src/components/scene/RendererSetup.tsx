@@ -12,6 +12,7 @@ import { useEffect } from 'react'
 import * as THREE from 'three'
 import type { VRM, MToonMaterial } from '@pixiv/three-vrm'
 import { ENV_CONFIG } from '../../config/environmentConfig'
+import { useGraphics } from '../../contexts/GraphicsContext'
 
 /** Texture property names that should be in linear space (non-color data). */
 const LINEAR_TEXTURE_PROPS = new Set([
@@ -41,6 +42,7 @@ interface RendererSetupProps {
 
 export default function RendererSetup({ vrm }: RendererSetupProps) {
   const { gl } = useThree()
+  const { settings: gfx } = useGraphics()
 
   // ── Renderer config (once) ────────────────────────────────────────────
   useEffect(() => {
@@ -65,8 +67,8 @@ export default function RendererSetup({ vrm }: RendererSetupProps) {
       for (const mat of materials) {
         if (!mat) continue
 
-        // MToon shade override (driven by ENV_CONFIG.mtoon)
-        if (ENV_CONFIG.mtoon.enabled && (mat as MToonMaterial).isMToonMaterial) {
+        // MToon shade override (driven by Graphics Settings toggle)
+        if (gfx.mtoon && (mat as MToonMaterial).isMToonMaterial) {
           const mtoon = mat as MToonMaterial
           mtoon.shadingShiftFactor = ENV_CONFIG.mtoon.shadingShiftFactor
           mtoon.shadeColorFactor = new THREE.Color(ENV_CONFIG.mtoon.shadeColorHex)

@@ -4,15 +4,16 @@ import { X, ChevronLeft } from 'lucide-react'
 const ProfileContent = lazy(() => import('./ProfileContent'))
 const SettingsContent = lazy(() => import('./SettingsContent'))
 const NotificationsContent = lazy(() => import('./NotificationsContent'))
+const GraphicSettingsContent = lazy(() => import('./GraphicSettingsContent'))
 
 interface ProfileSettingsModalProps {
-  type: 'profile' | 'settings' | 'notifications'
+  type: 'profile' | 'settings' | 'notifications' | 'graphics'
   onClose: () => void
   onBack?: () => void
 }
 
 export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileSettingsModalProps) {
-  const [settingsView, setSettingsView] = useState<'main' | 'providers' | 'provider-detail'>('main')
+  const [settingsView, setSettingsView] = useState<'main' | 'providers' | 'provider-detail' | 'graphics'>('main')
   const [selectedProvider, setSelectedProvider] = useState<{ id: string; name: string } | undefined>()
 
   useEffect(() => {
@@ -42,6 +43,8 @@ export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileS
       setSelectedProvider(undefined)
     } else if (type === 'settings' && settingsView === 'providers') {
       setSettingsView('main')
+    } else if (settingsView === 'graphics') {
+      setSettingsView('main')
     } else {
       onBack ?? onClose()
     }
@@ -57,9 +60,11 @@ export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileS
       ? 'User Profile'
       : type === 'notifications'
         ? 'Notifications'
-        : settingsView === 'provider-detail'
-          ? selectedProvider?.name ?? 'Settings'
-          : 'Settings'
+        : settingsView === 'graphics'
+          ? 'Graphic Settings'
+          : settingsView === 'provider-detail'
+            ? selectedProvider?.name ?? 'Settings'
+            : 'Settings'
 
   return (
     <div className="fixed inset-0 z-[10000] flex items-end md:items-center justify-center">
@@ -92,6 +97,10 @@ export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileS
             <ProfileContent onClose={onClose} />
           ) : type === 'notifications' ? (
             <NotificationsContent onClose={onClose} />
+          ) : type === 'graphics' ? (
+            <GraphicSettingsContent />
+          ) : settingsView === 'graphics' ? (
+            <GraphicSettingsContent />
           ) : settingsView === 'providers' ? (
             <SettingsContent
               view="providers"
@@ -103,7 +112,10 @@ export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileS
               selectedProvider={selectedProvider}
             />
           ) : (
-            <SettingsContent onNavigateToProviders={() => setSettingsView('providers')} />
+            <SettingsContent
+              onNavigateToProviders={() => setSettingsView('providers')}
+              onNavigateToGraphics={() => setSettingsView('graphics')}
+            />
           )}
         </Suspense>
       </div>

@@ -22,6 +22,7 @@ import RendererSetup from './scene/RendererSetup'
 import SceneLighting from './scene/SceneLighting'
 import SceneEnvironment from './scene/SceneEnvironment'
 import ScenePostProcessing from './scene/ScenePostProcessing'
+import { GraphicsProvider, useGraphics } from '../contexts/GraphicsContext'
 
 const CAMERA_MODES: Record<CameraMode, { boneName: VRMHumanBoneName; cameraOffset: THREE.Vector3 }> = {
   head: {
@@ -247,6 +248,7 @@ function FloatingParticles() {
   const { particles } = ENV_CONFIG
   const count = particles.count
   const pointsRef = useRef<THREE.Points>(null!)
+  const { settings } = useGraphics()
 
   const positions = useMemo(() => {
     const arr = new Float32Array(count * 3)
@@ -259,13 +261,13 @@ function FloatingParticles() {
   }, [count])
 
   useFrame(({ clock }) => {
-    if (!particles.enabled || !pointsRef.current) return
+    if (!settings.particles || !pointsRef.current) return
     const t = clock.getElapsedTime()
     pointsRef.current.rotation.y = t * 0.02
     pointsRef.current.rotation.x = t * 0.01
   })
 
-  if (!particles.enabled) return null
+  if (!settings.particles) return null
 
   return (
     <points ref={pointsRef}>
@@ -300,6 +302,7 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
   // Camera mode is owned by CameraController and driven by FSM state
   // (exercise → wide + 3s cooldown). The old URL-substring heuristic is gone.
   const { cameraMode } = useMotion()
+  const { settings: gfx } = useGraphics()
   const controlsRef = useRef<any>(null)
   const vrmRef = useRef<VRM | null>(null)
   const { camera } = useThree()
@@ -431,7 +434,7 @@ return (
       <FloatingParticles />
 
       {/* ── Debug Overlays ─────────────────────────────────────── */}
-      {ENV_CONFIG.debug.showGrid && (
+      {gfx.showGrid && (
         <group rotation={[Math.PI / 2, 0, 0]}>
           <gridHelper
             args={[8, 16, theme === 'dark' ? '#666688' : '#808080', theme === 'dark' ? '#2a2a3e' : '#c0c0c0']}
@@ -440,7 +443,7 @@ return (
         </group>
       )}
 
-      {ENV_CONFIG.debug.showAxes && (
+      {gfx.showAxes && (
         <>
           <primitive object={axesHelper} />
           <Html position={[3.2, 0, 0]}>
@@ -517,6 +520,7 @@ export default function CharacterViewer() {
         }}
       >
         <Suspense fallback={null}>
+          <GraphicsProvider>
           <Scene
             theme={theme}
             vrmUrl={vrmUrl}
@@ -524,6 +528,7 @@ export default function CharacterViewer() {
             onReady={setViewerReady}
             avatarRef={avatarRef}
           />
+          </GraphicsProvider>
         </Suspense>
       </Canvas>
 
