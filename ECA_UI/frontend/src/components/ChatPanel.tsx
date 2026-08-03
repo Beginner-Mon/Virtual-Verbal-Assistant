@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type KeyboardEvent } from 'react'
-import { ArrowUp, Mic, Sparkles, Square, Plus, Globe, Paperclip } from 'lucide-react'
+import { ArrowUp, Mic, Sparkles, Square, Plus, Globe, Image, X } from 'lucide-react'
 import TextareaAutosize from 'react-textarea-autosize'
 import { ScrollArea } from './ui/scroll-area'
 import ChatMessage from './ChatMessage'
@@ -18,12 +18,16 @@ export default function ChatPanel() {
     setWebSearch,
     handleSend,
     handleStop,
+    imageUrls,
+    addImage,
+    removeImage,
   } = useChat()
 
   const [showAddMenu, setShowAddMenu] = useState(false)
 
   const bottomRef = useRef<HTMLDivElement>(null)
   const addMenuRef = useRef<HTMLDivElement>(null)
+  const imageInputRef = useRef<HTMLInputElement>(null)
 
   /* close add menu on outside click */
   useEffect(() => {
@@ -91,7 +95,26 @@ export default function ChatPanel() {
 
       {/* ── Input ── */}
       <div className="p-2 md:p-4 bg-transparent md:bg-card/80 md:backdrop-blur-sm shrink-0">
-        <div className="flex flex-col bg-card border border-border/40 rounded-2xl p-1.5 md:p-2 focus-within:ring-1 focus-within:ring-primary/50 focus-within:border-primary/50 transition-all relative">
+        <div className="flex flex-col gap-3 bg-card border border-border/40 rounded-2xl p-1.5 md:p-2 focus-within:ring-1 focus-within:ring-primary/50 focus-within:border-primary/50 transition-all relative">
+          {imageUrls.length > 0 && (
+            <div className="flex gap-1.5 overflow-x-auto mx-1 p-2">
+              {imageUrls.map((url, i) => (
+                <div key={url} className="relative group shrink-0">
+                  <img
+                    src={url}
+                    alt="Preview"
+                    className="w-20 h-20 rounded-lg object-cover"
+                  />
+                  <button
+                    onClick={() => removeImage(i)}
+                    className="absolute -top-1.5 -left-1.5 w-5 h-5 rounded-full bg-black/70 hover:bg-black flex items-center justify-center transition-colors opacity-0 group-hover:opacity-100 cursor-pointer"
+                  >
+                    <X className="w-3 h-3 text-white" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <TextareaAutosize
             minRows={1}
             maxRows={6}
@@ -103,17 +126,7 @@ export default function ChatPanel() {
             className="w-full bg-transparent px-3 py-2 text-xs md:text-sm text-foreground placeholder:text-muted-foreground/70 resize-none focus:outline-none disabled:opacity-50"
           />
           
-          <div className="flex items-center justify-between gap-1 shrink-0 pt-2 px-1 pb-1">
-            {webSearch && (
-              <button
-                onClick={() => setWebSearch(false)}
-                title="Web search on — click to turn off"
-                className="flex items-center gap-1 bg-secondary rounded-lg px-2 py-1 text-xs text-muted-foreground"
-              >
-                <Globe className="w-3 h-3" />
-                Web
-              </button>
-            )}
+          <div className="flex items-center gap-1 shrink-0 pt-2 px-1 pb-1">
             <div className="relative" ref={addMenuRef}>
               <button
                 onClick={() => setShowAddMenu((prev) => !prev)}
@@ -135,15 +148,39 @@ export default function ChatPanel() {
                   </button>
                   <div className="h-px bg-border/40 mx-3" />
                   <button
+                    onClick={() => { imageInputRef.current?.click(); setShowAddMenu(false) }}
+                    disabled={imageUrls.length >= 10}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-sm text-foreground hover:bg-secondary/60 transition-colors disabled:opacity-50"
+                  >
+                    <Image className="w-4 h-4 text-muted-foreground" />
+                    Media
+                  </button>
+                  {/* <div className="h-px bg-border/40 mx-3" />
+                  <button
                     onClick={() => { setShowAddMenu(false) }}
                     className="w-full flex items-center gap-3 px-4 py-3 text-sm text-foreground hover:bg-secondary/60 transition-colors"
                   >
                     <Paperclip className="w-4 h-4 text-muted-foreground" />
                     Files
-                  </button>
+                  </button> */}
                 </div>
               )}
             </div>
+
+            {webSearch && (
+              <div className="flex items-center gap-1 bg-secondary rounded-lg px-2 py-1 text-xs text-muted-foreground">
+                <Globe className="w-3 h-3" />
+                Web
+                <button
+                  onClick={() => setWebSearch(false)}
+                  className="hover:text-foreground transition-colors cursor-pointer"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            )}
+
+            <div className="flex-1" />
 
             <div className="flex items-center gap-1">
               <button
@@ -172,6 +209,23 @@ export default function ChatPanel() {
             </div>
           </div>
         </div>
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            const files = e.target.files
+            if (files) {
+              const remaining = 10 - imageUrls.length
+              for (let i = 0; i < Math.min(files.length, remaining); i++) {
+                addImage(files[i])
+              }
+            }
+            e.target.value = ''
+          }}
+        />
         <p className="hidden md:block text-[10px] text-muted-foreground/50 mt-2 text-center select-none">
           Press Enter to send · Shift+Enter for new line
         </p>

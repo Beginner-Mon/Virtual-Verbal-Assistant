@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   useCallback,
+  useEffect,
   useMemo,
   type ReactNode,
 } from 'react'
@@ -36,6 +37,9 @@ export interface ChatContextType {
   setWebSearch: (value: boolean) => void
   handleSend: () => Promise<void>
   handleStop: () => void
+  imageUrls: string[]
+  addImage: (file: File) => void
+  removeImage: (index: number) => void
 }
 
 const ChatContext = createContext<ChatContextType | null>(null)
@@ -49,6 +53,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [isGenerating, setIsGenerating] = useState(false)
   const [stageLabel, setStageLabel] = useState<string | null>(null)
   const [webSearch, setWebSearch] = useState(false)
+  const [imageUrls, setImageUrls] = useState<string[]>([])
+  const imageUrlsRef = useRef<string[]>([])
 
   const inputRef = useRef(input)
   inputRef.current = input
@@ -58,6 +64,21 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const sessionIdRef = useRef<string>(crypto.randomUUID())
   const abortControllerRef = useRef<AbortController | null>(null)
   const thinkingRef = useRef(false)
+
+  const addImage = useCallback((file: File) => {
+    const url = URL.createObjectURL(file)
+    imageUrlsRef.current = [...imageUrlsRef.current, url]
+    setImageUrls((prev) => [...prev, url])
+  }, [])
+
+  const removeImage = useCallback((index: number) => {
+    const urls = imageUrlsRef.current
+    URL.revokeObjectURL(urls[index])
+    const next = [...urls]
+    next.splice(index, 1)
+    imageUrlsRef.current = next
+    setImageUrls(next)
+  }, [])
 
   const endThinking = useCallback(() => {
     if (!thinkingRef.current) return
@@ -151,6 +172,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, [webSearch, transitionTo, endThinking])
 
+  useEffect(() => {
+    return () => {
+      imageUrlsRef.current.forEach((url) => URL.revokeObjectURL(url))
+      imageUrlsRef.current = []
+    }
+  }, [])
+
   const value = useMemo<ChatContextType>(
     () => ({
       messages,
@@ -164,8 +192,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setWebSearch,
       handleSend,
       handleStop,
+      imageUrls,
+      addImage,
+      removeImage,
     }),
-    [messages, input, isTyping, isGenerating, stageLabel, webSearch, handleSend, handleStop],
+    [messages, input, isTyping, isGenerating, stageLabel, webSearch, handleSend, handleStop, imageUrls, addImage, removeImage],
   )
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>
