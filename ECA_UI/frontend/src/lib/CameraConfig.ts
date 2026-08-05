@@ -31,6 +31,9 @@ export const DEFAULT_CAMERA_CONFIG: CameraConfig = {
 export interface CameraResponsivePreset {
   wideFraming: [number, number, number]
   narrowFraming: [number, number, number]
+  /** Target Z shift on mobile (negative = target lower = model appears higher in frame).
+   *  Lerped from 0 at desktop to this value at mobile. */
+  narrowTargetZ: number
 }
 
 /** Aspect ratio thresholds for responsive camera offset interpolation.

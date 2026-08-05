@@ -10,7 +10,7 @@ import * as THREE from 'three'
 import { AnimationController } from '../lib/AnimationController'
 import { AnimationRegistry } from '../lib/AnimationRegistry'
 import { DEFAULT_GROUND_CLAMP, GroundClamp } from '../lib/groundClamp'
-import { ASPECT_RANGE, type CameraResponsivePreset } from '../lib/CameraConfig'
+import { type CameraResponsivePreset } from '../lib/CameraConfig'
 import type { CameraMode } from '../lib/AnimationStates'
 import { useFsmBoot } from '../hooks/useFsmTriggers'
 import { useMotion } from '../contexts/MotionContext'
@@ -31,15 +31,19 @@ const CAMERA_MODES: Record<CameraMode, { boneName: VRMHumanBoneName }> = {
 }
 
 /** Responsive presets per camera mode. wideFraming = current desktop-tuned offsets;
- *  narrowFraming = mobile-portrait offsets (tune by eye: lower Y, push Z further). */
+ *  narrowFraming = mobile-portrait offsets (increase Y to push back, Z stays at eye level).
+ *  narrowTargetZ shifts the look-at target DOWN so the model appears higher, compensating
+ *  for the chat panel that occupies the bottom ~40% on mobile. */
 const CAMERA_RESPONSIVE_PRESETS: Record<CameraMode, CameraResponsivePreset> = {
   head: {
     wideFraming: [0, 0.5, 0],
-    narrowFraming: [0, -0.3, 2.0],
+    narrowFraming: [0, 2.0, 0],
+    narrowTargetZ: -0.6,
   },
   hips: {
     wideFraming: [0.5, 2.2, 1.0],
-    narrowFraming: [0.5, 0.5, 4.0],
+    narrowFraming: [0.5, 3.0, 1.0],
+    narrowTargetZ: -0.4,
   },
 }
 
@@ -359,6 +363,9 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
   // Reusable vectors to avoid GC pressure
   const followPos = useMemo(() => new THREE.Vector3(), [])
   const deltaVec = useMemo(() => new THREE.Vector3(), [])
+  const offsetDeltaVec = useMemo(() => new THREE.Vector3(), [])
+  const lastAppliedOffsetRef = useRef(new THREE.Vector3(0, 0.5, 0))
+  const targetZRef = useRef(0)
   // Built once: a fresh helper per render would make R3F detach/dispose and
   // re-attach the object on every state change.
   const axesHelper = useMemo(() => new THREE.AxesHelper(3), [])
@@ -369,10 +376,11 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
   useFrame((_state, delta) => {
     if (!vrmRef.current || !controlsRef.current) return
 
-    // Compute target responsive offset from canvas aspect ratio
-    const aspect = size.width / size.height
+    // Compute t from canvas width: desktop (>768px) → t=0 (wideFraming only),
+    // mobile (<360px) → t=1 (full narrowFraming + targetZ shift for chat panel).
+    // Matches Tailwind md breakpoint where MobileNavBar/ChatPanel activate.
     const tClamped = Math.max(0, Math.min(1,
-      (ASPECT_RANGE.wide - aspect) / (ASPECT_RANGE.wide - ASPECT_RANGE.narrow)
+      (768 - size.width) / (768 - 360)
     ))
     const preset = CAMERA_RESPONSIVE_PRESETS[cameraMode]
     responsiveTargetRef.current.set(
@@ -381,11 +389,15 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
       THREE.MathUtils.lerp(preset.wideFraming[2], preset.narrowFraming[2], tClamped),
     )
 
+    const targetZTarget = THREE.MathUtils.lerp(0, preset.narrowTargetZ, tClamped)
+
     // Smooth towards target on resize; snap during camera-mode transition
     if (cameraTransitionRef.current) {
       responsiveDisplayRef.current.copy(responsiveTargetRef.current)
+      targetZRef.current = targetZTarget
     } else {
       responsiveDisplayRef.current.lerp(responsiveTargetRef.current, 0.2)
+      targetZRef.current = THREE.MathUtils.lerp(targetZRef.current, targetZTarget, 0.2)
     }
 
     const mode = CAMERA_MODES[cameraMode]
@@ -404,6 +416,7 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
 
       const currentCustomOffset = new THREE.Vector3(cameraConfig.offsetX, cameraConfig.offsetY, cameraConfig.offsetZ)
       const endTarget = followPos.clone().add(currentCustomOffset)
+      endTarget.z += targetZRef.current
       const endPos = followPos.clone().add(responsiveDisplayRef.current).add(currentCustomOffset)
 
       camera.position.lerpVectors(t.startPos, endPos, eased)
@@ -412,16 +425,19 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
 
       if (progress >= 1) {
         cameraTransitionRef.current = null
+        lastAppliedOffsetRef.current.copy(responsiveDisplayRef.current)
       }
       return
     }
 
     const currentCustomOffset = new THREE.Vector3(cameraConfig.offsetX, cameraConfig.offsetY, cameraConfig.offsetZ)
     const targetPos = followPos.clone().add(currentCustomOffset)
+    targetPos.z += targetZRef.current
 
     if (!cameraInitializedRef.current) {
       controlsRef.current.target.copy(targetPos)
       camera.position.copy(followPos).add(responsiveDisplayRef.current).add(currentCustomOffset)
+      lastAppliedOffsetRef.current.copy(responsiveDisplayRef.current)
       camera.lookAt(targetPos)
       controlsRef.current.update()
       cameraInitializedRef.current = true
@@ -433,9 +449,13 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
     // How far did the follow point move since the last frame?
     deltaVec.subVectors(targetPos, controlsRef.current.target)
 
-    // Move the camera by the same 3D delta so the distance to the model
-    // stays identical even if the model shifts on any axis.
-    camera.position.add(deltaVec)
+    // How much did the responsive offset change since last frame?
+    offsetDeltaVec.subVectors(responsiveDisplayRef.current, lastAppliedOffsetRef.current)
+
+    // Move the camera by both the bone delta and the offset delta
+    camera.position.add(deltaVec).add(offsetDeltaVec)
+
+    lastAppliedOffsetRef.current.copy(responsiveDisplayRef.current)
 
     // Update the controls target to the new follow point
     controlsRef.current.target.copy(targetPos)

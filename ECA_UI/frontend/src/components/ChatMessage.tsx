@@ -39,7 +39,7 @@ export default function ChatMessage({ message }: ChatMessageProps) {
         <div className="prose dark:prose-invert prose-p:leading-relaxed prose-strong:text-foreground prose-headings:text-foreground prose-pre:bg-secondary/50 prose-pre:border prose-pre:border-border/40 max-w-none text-[clamp(0.75rem,0.68rem+0.3vw,0.875rem)] text-foreground/90">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{cleaned}</ReactMarkdown>
         </div>
-        <AssistantActions content={message.content} audioUrl={message.audioUrl} />
+        {message.content && <AssistantActions content={message.content} audioUrl={message.audioUrl} />}
       </div>
     )
   }
