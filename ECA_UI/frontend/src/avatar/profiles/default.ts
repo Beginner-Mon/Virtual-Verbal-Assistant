@@ -23,4 +23,5 @@ export const defaultProfile: AvatarProfile = {
   },
   visemes: { A: 'aa', I: 'ih', U: 'ou', E: 'ee', O: 'oh' },
   blinkChannel: 'blink',
+  greetingEmotion: 'happy',
 }

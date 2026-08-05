@@ -22,7 +22,6 @@ import {
   UserRound,
   Settings2,
   GripVertical,
-  Music2,
 } from 'lucide-react'
 // @ts-expect-error - reserved for auth feature (commented out)
 import { LogOut } from 'lucide-react'
@@ -227,18 +226,6 @@ function DraggableBar({
           </button>
         )
       })}
-
-      {/* Background Music Toggle */}
-      <button
-        onClick={toggleMusic}
-        title={isMusicPlaying ? 'Pause Music' : 'Play Music'}
-        className="relative w-10 h-10 flex items-center justify-center text-muted-foreground transition-all duration-200 shrink-0"
-      >
-        <Music2 className="w-[18px] h-[18px]" />
-        {!isMusicPlaying && (
-          <div className="absolute top-1/2 left-1/2 w-5 h-[1.5px] bg-muted-foreground -translate-x-1/2 -translate-y-1/2 -rotate-[45deg]" />
-        )}
-      </button>
 
       {/* Separator before avatar */}
       <div className={`${isHorizontal ? 'w-px h-6' : 'h-px w-6'} bg-border/40`} />

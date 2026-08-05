@@ -10,8 +10,9 @@
 import { useThree } from '@react-three/fiber'
 import { useEffect } from 'react'
 import * as THREE from 'three'
-import type { VRM } from '@pixiv/three-vrm'
+import type { VRM, MToonMaterial } from '@pixiv/three-vrm'
 import { ENV_CONFIG } from '../../config/environmentConfig'
+import { useGraphics } from '../../contexts/GraphicsContext'
 
 /** Texture property names that should be in linear space (non-color data). */
 const LINEAR_TEXTURE_PROPS = new Set([
@@ -41,6 +42,7 @@ interface RendererSetupProps {
 
 export default function RendererSetup({ vrm }: RendererSetupProps) {
   const { gl } = useThree()
+  const { settings: gfx } = useGraphics()
 
   // ── Renderer config (once) ────────────────────────────────────────────
   useEffect(() => {
@@ -65,6 +67,14 @@ export default function RendererSetup({ vrm }: RendererSetupProps) {
       for (const mat of materials) {
         if (!mat) continue
 
+        // MToon shade override (driven by Graphics Settings toggle)
+        if (gfx.mtoon && (mat as MToonMaterial).isMToonMaterial) {
+          const mtoon = mat as MToonMaterial
+          mtoon.shadingShiftFactor = ENV_CONFIG.mtoon.shadingShiftFactor
+          mtoon.shadeColorFactor = new THREE.Color(ENV_CONFIG.mtoon.shadeColorHex)
+          corrections++
+        }
+
         // Check each texture property for correct color space
         for (const [key, value] of Object.entries(mat)) {
           if (!(value instanceof THREE.Texture)) continue
@@ -87,7 +97,7 @@ export default function RendererSetup({ vrm }: RendererSetupProps) {
     })
 
     if (corrections > 0) {
-      console.log(`[RendererSetup] Corrected ${corrections} texture color space(s)`)
+      console.log(`[RendererSetup] Corrected ${corrections} material setting(s)`)
     }
   }, [vrm])
 

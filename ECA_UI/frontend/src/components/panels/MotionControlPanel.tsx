@@ -1,10 +1,22 @@
 import { Play, Pause, RotateCcw, Activity, Sliders, Camera, Sparkles, Smile } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useMemo } from 'react'
 import { ScrollArea } from '../ui/scroll-area'
 import { useMotion } from '../../contexts/MotionContext'
 import type { CharState } from '../../lib/AnimationStates'
 import { CANONICAL_EMOTIONS, type CanonicalEmotion } from '../../avatar/AvatarProfile'
-import { ensureAudioContext, playSyntheticSpeech, type SyntheticSpeech } from '../../avatar/lipSyncAudio'
+import { getManifest } from '../../avatar/vrmManifest'
+import { ensureAudioContext, playSyntheticSpeech, playWavSpeech, type SyntheticSpeech } from '../../avatar/lipSyncAudio'
+import testWavUrl from '../../asset/audio/test.wav'
+import { DEFAULT_CAMERA_CONFIG } from '../../lib/CameraConfig'
+
+const PRESET_TO_CANONICAL: Record<string, CanonicalEmotion> = {
+  neutral: 'neutral',
+  joy: 'happy',
+  angry: 'angry',
+  sorrow: 'sad',
+  fun: 'relaxed',
+  surprised: 'surprised',
+}
 
 export default function MotionControlPanel() {
   const {
@@ -22,13 +34,41 @@ export default function MotionControlPanel() {
     clipInfo,
     handleReset,
     avatarRef,
+    selectedVrmId,
+    vrmOptions,
+    cameraConfig,
+    setCameraConfig,
   } = useMotion()
+
+  // Derive modelId exactly the same way CharacterViewer does.
+  const modelId = useMemo(() => {
+    const selected = vrmOptions.find((o) => o.id === selectedVrmId)
+    return (selected?.label ?? 'bronya.vrm')
+      .replace(/\.vrm$/i, '')
+      .replace(/^.*\//, '')
+      .toLowerCase()
+  }, [selectedVrmId, vrmOptions])
+
+  const manifest = useMemo(() => getManifest(modelId), [modelId])
+
+  // Merge emotions + emotion-like customs (e.g. bronya's "Surprised").
+  const emotionButtons = useMemo(() => {
+    const all = [...(manifest?.emotions ?? []), ...(manifest?.customs ?? [])]
+    if (all.length === 0) {
+      return CANONICAL_EMOTIONS.map((e) => ({ label: e, emotion: e }))
+    }
+    return all.map((e) => ({
+      label: e.name,
+      emotion: PRESET_TO_CANONICAL[e.presetName] ?? PRESET_TO_CANONICAL[e.emit] ?? 'neutral',
+    }))
+  }, [manifest])
 
   const [emotionIntensity, setEmotionIntensity] = useState(0.8)
   const [emotionDurationMs, setEmotionDurationMs] = useState(500)
   const [lastEmotion, setLastEmotion] = useState<string>('—')
   const [avatarMode, setAvatarMode] = useState<string>('—')
   const [speaking, setSpeaking] = useState(false)
+  const [speakingWav, setSpeakingWav] = useState(false)
   const speechRef = useRef<SyntheticSpeech | null>(null)
 
   useEffect(() => {
@@ -66,6 +106,25 @@ export default function MotionControlPanel() {
     }, 3000)
   }
 
+  const speakWav = () => {
+    const controller = avatarRef.current
+    if (!controller || speakingWav) return
+    ensureAudioContext()
+    setSpeakingWav(true)
+    playWavSpeech(testWavUrl)
+      .then((synth) => {
+        controller.startLipSync(synth.analyser)
+        window.setTimeout(() => {
+          controller.stopLipSync()
+          synth.stop()
+          setSpeakingWav(false)
+        }, synth.durationMs + 500)
+      })
+      .catch(() => {
+        setSpeakingWav(false)
+      })
+  }
+
   return (
     <div className="flex flex-col h-full">
       <div className="px-4 py-3 border-b border-border/40 shrink-0">
@@ -79,17 +138,92 @@ export default function MotionControlPanel() {
       <ScrollArea className="flex-1 min-h-0 p-4">
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-secondary/20 border border-border/10">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-              <Camera className="w-3 h-3" />
-              Camera mode
-            </span>
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                <Camera className="w-3 h-3" />
+                Camera config
+              </span>
+              <button
+                onClick={() => setCameraConfig(DEFAULT_CAMERA_CONFIG)}
+                className="text-[9px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+              >
+                Reset
+              </button>
+            </div>
+            
+            <label className="flex items-center justify-between text-[11px] text-foreground mt-1 cursor-pointer">
+              <span>Follow Target (lookAt)</span>
+              <input
+                type="checkbox"
+                checked={cameraConfig.followTarget}
+                onChange={(e) => setCameraConfig({ ...cameraConfig, followTarget: e.target.checked })}
+                className="accent-primary"
+              />
+            </label>
+            
+            <label className="flex items-center justify-between text-[11px] text-foreground cursor-pointer">
+              <span>Enable Pan</span>
+              <input
+                type="checkbox"
+                checked={cameraConfig.enablePan}
+                onChange={(e) => setCameraConfig({ ...cameraConfig, enablePan: e.target.checked })}
+                className="accent-primary"
+              />
+            </label>
+
+            <div className="flex flex-col gap-1 mt-1">
+              <span className="text-[10px] text-muted-foreground">Camera Offset</span>
+              
+              <label className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                <span className="w-3 text-red-400 font-bold text-center">X</span>
+                <input
+                  type="range"
+                  min={-2}
+                  max={2}
+                  step={0.05}
+                  value={cameraConfig.offsetX}
+                  onChange={(e) => setCameraConfig({ ...cameraConfig, offsetX: Number(e.target.value) })}
+                  className="flex-1 h-1 accent-red-400"
+                />
+                <span className="w-8 text-right tabular-nums">{cameraConfig.offsetX.toFixed(2)}</span>
+              </label>
+
+              <label className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                <span className="w-3 text-green-400 font-bold text-center">Y</span>
+                <input
+                  type="range"
+                  min={-2}
+                  max={2}
+                  step={0.05}
+                  value={cameraConfig.offsetY}
+                  onChange={(e) => setCameraConfig({ ...cameraConfig, offsetY: Number(e.target.value) })}
+                  className="flex-1 h-1 accent-green-400"
+                />
+                <span className="w-8 text-right tabular-nums">{cameraConfig.offsetY.toFixed(2)}</span>
+              </label>
+
+              <label className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                <span className="w-3 text-blue-400 font-bold text-center">Z</span>
+                <input
+                  type="range"
+                  min={-5}
+                  max={5}
+                  step={0.1}
+                  value={cameraConfig.offsetZ}
+                  onChange={(e) => setCameraConfig({ ...cameraConfig, offsetZ: Number(e.target.value) })}
+                  className="flex-1 h-1 accent-blue-400"
+                />
+                <span className="w-8 text-right tabular-nums">{cameraConfig.offsetZ.toFixed(2)}</span>
+              </label>
+            </div>
+
             <select
               value={cameraMode}
               onChange={(e) => setCameraMode(e.target.value as 'head' | 'hips')}
-              className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-0.5"
+              className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-1.5 pt-1.5 border-t border-border/10"
             >
-              <option value="head" className="bg-card text-foreground">Head - close face view</option>
-              <option value="hips" className="bg-card text-foreground">Hips - wider body view</option>
+              <option value="head" className="bg-card text-foreground">Target: Head</option>
+              <option value="hips" className="bg-card text-foreground">Target: Hips</option>
             </select>
           </div>
 
@@ -202,13 +336,13 @@ export default function MotionControlPanel() {
               </span>
 
               <div className="flex flex-wrap gap-1">
-                {CANONICAL_EMOTIONS.map((emotion) => (
+                {emotionButtons.map(({ label, emotion }) => (
                   <button
-                    key={emotion}
+                    key={label}
                     onClick={() => triggerEmotion(emotion)}
                     className="px-2 py-0.5 text-[11px] rounded-md border border-primary/30 bg-primary/10 text-foreground hover:bg-primary/20 transition-colors cursor-pointer"
                   >
-                    {emotion}
+                    {label}
                   </button>
                 ))}
               </div>
@@ -251,6 +385,18 @@ export default function MotionControlPanel() {
                 }`}
               >
                 {speaking ? 'speaking…' : 'Speak (test lip-sync)'}
+              </button>
+
+              <button
+                onClick={speakWav}
+                disabled={speakingWav}
+                className={`px-2 py-1 text-[11px] rounded-md border transition-colors cursor-pointer ${
+                  speakingWav
+                    ? 'border-cyan-500/30 bg-cyan-500/10 text-cyan-400 cursor-default'
+                    : 'border-cyan-500/40 bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25'
+                }`}
+              >
+                {speakingWav ? 'playing test.wav…' : 'Test WAV lip-sync'}
               </button>
 
               <div className="flex justify-between text-[10px] text-muted-foreground/60">

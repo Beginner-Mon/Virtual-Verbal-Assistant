@@ -11,7 +11,8 @@ const AVATAR_COLORS = [
 
 const DISPLAY_NAMES: Record<string, string> = {
   bronya: 'SilverWing',
-  seele: 'Seele Swimsuit',
+  'hatsune-miku': 'Hatsune Miku',
+  miki: 'Miki',
 }
 
 function getAvatarMeta(label: string, index: number) {
@@ -89,7 +90,7 @@ export default function AvatarsPanel() {
         {vrmOptions.length === 0 && (
           <p className="text-xs text-muted-foreground text-center py-4">No VRM avatars found</p>
         )}
-        <div className="flex flex-wrap gap-5 justify-center pt-0.5">
+        <div className="grid grid-cols-2 gap-4 pt-0.5 justify-items-center">
           {vrmOptions.map((option, index) => {
             const { initial, color, displayName } = getAvatarMeta(option.label, index)
             return (

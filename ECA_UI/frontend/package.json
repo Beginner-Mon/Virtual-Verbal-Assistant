@@ -4,9 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "predev": "node ./scripts/sync-npz-to-bvh.mjs",
+    "predev": "node ./scripts/sync-npz-to-bvh.mjs && node ./scripts/extract-vrm-meta.mjs",
     "dev": "vite",
-    "prebuild": "node ./scripts/sync-npz-to-bvh.mjs",
+    "prebuild": "node ./scripts/sync-npz-to-bvh.mjs && node ./scripts/extract-vrm-meta.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"

@@ -30,12 +30,12 @@ export const ENV_CONFIG = {
       color: '#fffaf0',                       // warm white — avoids blue cast on skin
       intensity: 2.0,                         // Đèn chính chuẩn
       position: [0, 3, 8] as [number, number, number], // front, slightly above — flattering for anime faces
-      castShadow: true,
+      castShadow: true, // true = harsh shadows on face; false = soft fill from ambient
     },
     ambient: {
       skyColor: '#b4c7e0',                    // cool sky fill
       groundColor: '#4a3728',                 // warm ground bounce
-      intensity: 0.6,                         // Không làm phai mất bóng mờ
+      intensity: 1,                         // Không làm phai mất bóng mờ
     },
   },
 
@@ -132,14 +132,23 @@ export const ENV_CONFIG = {
     },
     ssao: {
       enabled: true, // Bình thường là true
-      intensity: 0.5,
+      intensity: 0.3,
       radius: 0.05,
       samples: 16,
     },
     vignette: {
       offset: 0.35,
-      darkness: 0.45,
+      darkness: 0.1,
     },
+  },
+
+  // ── MToon Material Overrides ──────────────────────────────────────────
+  // Only applies if `enabled: true`. Tweak shading at the material level
+  // BEFORE the shader runs — cleaner than post-processing.
+  mtoon: {
+    enabled: false,
+    shadingShiftFactor:0.85,    // 0-1: higher = less dark shadow on face
+    shadeColorHex: '#1a1020',    // color of shaded area (hex, usually dark)
   },
 
   // ── Floating Particles ────────────────────────────────────────────────

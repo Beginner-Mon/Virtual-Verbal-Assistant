@@ -14,6 +14,32 @@ from typing import Optional
 _LOCAL_DSN = "postgresql://vva:vva_dev@localhost:5433/vva"
 
 
+def _load_dotenv_once() -> None:
+    """Load the first .env found, in the same order llm.py uses.
+
+    Searching only one directory is a trap: whichever module is imported first
+    decides whether `VVA_PG_DSN` exists, so the app can silently fall back to
+    the local container depending on import order alone.
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    here = Path(__file__).resolve()
+    for candidate in (
+        here.parents[1] / ".env",                        # langgraph_agents/.env
+        here.parents[2] / ".env",                        # agenticRAG/.env
+        here.parents[2] / "agentic_rag_gemini" / ".env",  # legacy, holds the live config
+        here.parents[3] / ".env",                        # repo root
+    ):
+        if candidate.exists():
+            load_dotenv(candidate, override=False)
+            return
+
+
+_load_dotenv_once()
+
+
 def _load_pg_config() -> dict:
     import yaml  # lazy — may not be available in test envs
     config_path = Path(__file__).resolve().parents[3] / "config" / "langgraph.yaml"
@@ -21,6 +47,13 @@ def _load_pg_config() -> dict:
         with open(config_path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f).get("langgraph", {}).get("postgres", {})
     return {}
+
+
+# `VVA_PG_DSN` first because `alembic/env.py` reads that name: if the two
+# disagree, migrations land on one database while the app talks to another —
+# silently, with no error anywhere. `POSTGRES_DSN` arrived from the other branch
+# solving the same problem; it stays as an alias so existing shells keep working.
+_DSN_ENV_VARS = ("VVA_PG_DSN", "POSTGRES_DSN")
 
 
 def _resolve_dsn(cfg: dict) -> str:
@@ -35,7 +68,11 @@ def _resolve_dsn(cfg: dict) -> str:
     It is also the only place a managed DSN can live safely: `langgraph.yaml`
     is committed, and a hosted connection string carries its password.
     """
-    return os.environ.get("VVA_PG_DSN") or cfg.get("dsn", _LOCAL_DSN)
+    for name in _DSN_ENV_VARS:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return cfg.get("dsn", _LOCAL_DSN)
 
 
 _PG_CFG = _load_pg_config()

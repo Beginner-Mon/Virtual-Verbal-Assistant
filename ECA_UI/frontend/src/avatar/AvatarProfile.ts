@@ -56,6 +56,8 @@ export interface AvatarProfile {
    * (e.g. seele.vrm "なごみ" relaxed, bronya.vrm sorrow morphs.)
    */
   binaryEmotions?: CanonicalEmotion[]
+  /** Which emotion to trigger at the midpoint of the greeting animation. Defaults to 'happy'. */
+  greetingEmotion?: CanonicalEmotion
 }
 
 export function isCanonicalEmotion(name: string): name is CanonicalEmotion {

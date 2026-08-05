@@ -2,7 +2,7 @@ import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMHumanBoneName } from '@pixiv/three-vrm'
 import type { VRM } from '@pixiv/three-vrm'
-import seeleUrl from '../asset/models/seele.vrm'
+import cgkUrl from '../asset/models/Con-Gai-Khang.vrm'
 import { useTheme } from '../contexts/ThemeContext'
 import { OrbitControls, Html } from '@react-three/drei'
 import { useRef, useEffect, useState, Suspense, useMemo } from 'react'
@@ -22,6 +22,7 @@ import RendererSetup from './scene/RendererSetup'
 import SceneLighting from './scene/SceneLighting'
 import SceneEnvironment from './scene/SceneEnvironment'
 import ScenePostProcessing from './scene/ScenePostProcessing'
+import { GraphicsProvider, useGraphics } from '../contexts/GraphicsContext'
 
 const CAMERA_MODES: Record<CameraMode, { boneName: VRMHumanBoneName; cameraOffset: THREE.Vector3 }> = {
   head: {
@@ -124,6 +125,7 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
   const modelGroupRef = useRef<THREE.Group>(null)
   const groundClampRef = useRef<GroundClamp | null>(null)
   const revealedRef = useRef(false)
+  const emotionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Drives <primitive visible={...}>: false until the first pose is applied.
   // Per-instance state — key={vrmUrl} remounts reset it on model switch.
   const [revealed, setRevealed] = useState(false)
@@ -174,6 +176,15 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
           setRevealed(true)
           onReadyRef.current(true)
         }
+        // Schedule emotion at midpoint of greeting clip (plan greeting-midpoint-emotion).
+        if (info.state === 'greeting') {
+          if (emotionTimerRef.current) clearTimeout(emotionTimerRef.current)
+          const delayMs = info.duration * 0.25 * 1000
+          emotionTimerRef.current = setTimeout(() => {
+            const emotion = avatarControllerRef.current?.profile.greetingEmotion ?? 'happy'
+            avatarControllerRef.current?.setEmotion(emotion, 1, 600)
+          }, delayMs)
+        }
       },
     })
 
@@ -184,6 +195,7 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
     onReadyRef.current(false)
 
     return () => {
+      if (emotionTimerRef.current) clearTimeout(emotionTimerRef.current)
       detach()
       controller.dispose()
       animControllerRef.current = null
@@ -236,6 +248,7 @@ function FloatingParticles() {
   const { particles } = ENV_CONFIG
   const count = particles.count
   const pointsRef = useRef<THREE.Points>(null!)
+  const { settings } = useGraphics()
 
   const positions = useMemo(() => {
     const arr = new Float32Array(count * 3)
@@ -248,13 +261,13 @@ function FloatingParticles() {
   }, [count])
 
   useFrame(({ clock }) => {
-    if (!particles.enabled || !pointsRef.current) return
+    if (!settings.particles || !pointsRef.current) return
     const t = clock.getElapsedTime()
     pointsRef.current.rotation.y = t * 0.02
     pointsRef.current.rotation.x = t * 0.01
   })
 
-  if (!particles.enabled) return null
+  if (!settings.particles) return null
 
   return (
     <points ref={pointsRef}>
@@ -288,7 +301,8 @@ interface SceneProps {
 function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
   // Camera mode is owned by CameraController and driven by FSM state
   // (exercise → wide + 3s cooldown). The old URL-substring heuristic is gone.
-  const { cameraMode } = useMotion()
+  const { cameraMode, cameraConfig } = useMotion()
+  const { settings: gfx } = useGraphics()
   const controlsRef = useRef<any>(null)
   const vrmRef = useRef<VRM | null>(null)
   const { camera } = useThree()
@@ -358,8 +372,9 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
       const progress = Math.min(t.elapsed / TRANSITION_DURATION, 1)
       const eased = 1 - Math.pow(1 - progress, 3)
 
-      const endTarget = followPos.clone()
-      const endPos = followPos.clone().add(mode.cameraOffset)
+      const currentCustomOffset = new THREE.Vector3(cameraConfig.offsetX, cameraConfig.offsetY, cameraConfig.offsetZ)
+      const endTarget = followPos.clone().add(currentCustomOffset)
+      const endPos = followPos.clone().add(mode.cameraOffset).add(currentCustomOffset)
 
       camera.position.lerpVectors(t.startPos, endPos, eased)
       controlsRef.current.target.lerpVectors(t.startTarget, endTarget, eased)
@@ -371,24 +386,29 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
       return
     }
 
+    const currentCustomOffset = new THREE.Vector3(cameraConfig.offsetX, cameraConfig.offsetY, cameraConfig.offsetZ)
+    const targetPos = followPos.clone().add(currentCustomOffset)
+
     if (!cameraInitializedRef.current) {
-      controlsRef.current.target.copy(followPos)
-      camera.position.copy(followPos).add(mode.cameraOffset)
-      camera.lookAt(followPos)
+      controlsRef.current.target.copy(targetPos)
+      camera.position.copy(followPos).add(mode.cameraOffset).add(currentCustomOffset)
+      camera.lookAt(targetPos)
       controlsRef.current.update()
       cameraInitializedRef.current = true
       return
     }
 
+    if (!cameraConfig.followTarget) return
+
     // How far did the follow point move since the last frame?
-    deltaVec.subVectors(followPos, controlsRef.current.target)
+    deltaVec.subVectors(targetPos, controlsRef.current.target)
 
     // Move the camera by the same 3D delta so the distance to the model
     // stays identical even if the model shifts on any axis.
     camera.position.add(deltaVec)
 
     // Update the controls target to the new follow point
-    controlsRef.current.target.copy(followPos)
+    controlsRef.current.target.copy(targetPos)
     controlsRef.current.update()
   })
 
@@ -420,7 +440,7 @@ return (
       <FloatingParticles />
 
       {/* ── Debug Overlays ─────────────────────────────────────── */}
-      {ENV_CONFIG.debug.showGrid && (
+      {gfx.showGrid && (
         <group rotation={[Math.PI / 2, 0, 0]}>
           <gridHelper
             args={[8, 16, theme === 'dark' ? '#666688' : '#808080', theme === 'dark' ? '#2a2a3e' : '#c0c0c0']}
@@ -429,7 +449,7 @@ return (
         </group>
       )}
 
-      {ENV_CONFIG.debug.showAxes && (
+      {gfx.showAxes && (
         <>
           <primitive object={axesHelper} />
           <Html position={[3.2, 0, 0]}>
@@ -447,10 +467,10 @@ return (
       {/* Orbital camera: follows hips, enforces minimum distance (radius) */}
       <OrbitControls
         ref={controlsRef}
-        enablePan={false}
-        enableZoom={true}
-        minDistance={1}
-        maxDistance={20}
+        enablePan={cameraConfig.enablePan}
+        enableZoom={cameraConfig.enableZoom}
+        minDistance={cameraConfig.minDistance}
+        maxDistance={cameraConfig.maxDistance}
         target={[0, 0, 0]}
       />
     </>
@@ -464,13 +484,13 @@ export default function CharacterViewer() {
   const { selectedVrmId, vrmOptions, avatarRef, setClipInfo } = useMotion()
 
   const selectedVrm = vrmOptions.find((o) => o.id === selectedVrmId)
-  const vrmUrl = selectedVrm?.url ?? seeleUrl
+  const vrmUrl = selectedVrm?.url ?? cgkUrl
   // Readiness gate driven by VRMCharacter: the model (and this overlay) swap
   // only when the first pose is actually applied — never a timed wait.
   const [viewerReady, setViewerReady] = useState(false)
   // Derive a stable model id ("seele", "bronya", "bronya_long") from the asset
   // label so loadProfile can pick a per-model override.
-  const modelId = (selectedVrm?.label ?? 'seele.vrm')
+  const modelId = (selectedVrm?.label ?? 'Con-Gai-Khang.vrm')
     .replace(/\.vrm$/i, '')
     .replace(/^.*\//, '')
     .toLowerCase()
@@ -506,6 +526,7 @@ export default function CharacterViewer() {
         }}
       >
         <Suspense fallback={null}>
+          <GraphicsProvider>
           <Scene
             theme={theme}
             vrmUrl={vrmUrl}
@@ -513,6 +534,7 @@ export default function CharacterViewer() {
             onReady={setViewerReady}
             avatarRef={avatarRef}
           />
+          </GraphicsProvider>
         </Suspense>
       </Canvas>
 

@@ -1,14 +1,16 @@
-import { KeyRound, Bot, Sparkles, Brain, Cpu, Zap, Wind, Server } from 'lucide-react'
+import { KeyRound, Bot, Sparkles, Brain, Cpu, Zap, Wind, Server, MonitorCog, Info, ScrollText } from 'lucide-react'
 import ProviderDetailView from './ProviderDetailView'
 
 interface SettingsContentProps {
   view?: 'main' | 'providers' | 'provider-detail'
   onNavigateToProviders?: () => void
+  onNavigateToGraphics?: () => void
+  onNavigateToAbout?: () => void
   onSelectProvider?: (provider: { id: string; name: string }) => void
   selectedProvider?: { id: string; name: string }
 }
 
-export default function SettingsContent({ view = 'main', onNavigateToProviders, onSelectProvider, selectedProvider }: SettingsContentProps) {
+export default function SettingsContent({ view = 'main', onNavigateToProviders, onNavigateToGraphics, onNavigateToAbout, onSelectProvider, selectedProvider }: SettingsContentProps) {
   if (view === 'provider-detail') {
     return <ProviderDetailView provider={selectedProvider} />
   }
@@ -59,7 +61,10 @@ export default function SettingsContent({ view = 'main', onNavigateToProviders, 
   }
 
   const items = [
-    { id: 'providers', icon: KeyRound, label: 'Select Providers', description: 'Configure your LLM API providers and keys' },
+    { id: 'providers', icon: KeyRound, label: 'Select Providers', description: 'Configure your LLM API providers and keys', onClick: onNavigateToProviders },
+    { id: 'graphics', icon: MonitorCog, label: 'Graphic Settings', description: 'Adjust visual quality and performance options', onClick: onNavigateToGraphics },
+    { id: 'about', icon: Info, label: 'About Us', description: 'Learn more about our team and mission', onClick: onNavigateToAbout },
+    { id: 'terms', icon: ScrollText, label: 'Terms of Service', description: 'Read our terms and conditions' },
   ]
 
   return (
@@ -70,7 +75,7 @@ export default function SettingsContent({ view = 'main', onNavigateToProviders, 
           return (
             <button
               key={item.id}
-              onClick={onNavigateToProviders}
+              onClick={item.onClick}
               className="flex justify-between items-stretch w-full rounded-xl border border-border/40 bg-card hover:border-foreground transition-colors text-left group overflow-hidden"
             >
               <div className="flex flex-col justify-center py-5 px-6">
