@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { signInWithRedirect } from 'aws-amplify/auth'
+import { startGoogleSignIn } from '../lib/googleSignIn'
 import { customOutputs } from '../config/amplify'
 import { useRedirectIfAuthenticated } from '../hooks/useRedirectIfAuthenticated'
 import { Loader2 } from 'lucide-react'
@@ -50,8 +50,11 @@ export default function LoginPage() {
     }
   }
 
+  /** After the lookup we know exactly whose account this is, so hint it and
+   *  hold the app to it. Before the lookup we know nothing — any Google account
+   *  is a valid answer, so no hint and no expectation. */
   const handleGoogleSignIn = () => {
-    signInWithRedirect({ provider: 'Google', options: { prompt: 'SELECT_ACCOUNT' } })
+    startGoogleSignIn(result ? email.trim() : undefined)
   }
 
   const showGoogleOnly = result && !result.hasEmail && result.hasGoogle

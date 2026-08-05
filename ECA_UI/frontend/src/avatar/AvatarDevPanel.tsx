@@ -33,7 +33,8 @@ export default function AvatarDevPanel() {
     }
     return all.map((e) => ({
       label: e.name,
-      emotion: PRESET_TO_CANONICAL[e.presetName] ?? PRESET_TO_CANONICAL[e.emit] ?? 'neutral',
+      // `presetName` is null for custom blendShapes — fall through to `emit`.
+      emotion: PRESET_TO_CANONICAL[e.presetName ?? ''] ?? PRESET_TO_CANONICAL[e.emit] ?? 'neutral',
     }))
   }, [manifest])
   const [intensity, setIntensity] = useState(0.8)

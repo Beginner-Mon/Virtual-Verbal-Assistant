@@ -103,7 +103,7 @@ export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileS
           {type === 'profile' ? (
             <ProfileContent onClose={onClose} />
           ) : type === 'notifications' ? (
-            <NotificationsContent onClose={onClose} />
+            <NotificationsContent />
           ) : type === 'graphics' ? (
             <GraphicSettingsContent />
           ) : type === 'about' ? (

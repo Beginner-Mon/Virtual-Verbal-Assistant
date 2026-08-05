@@ -1,7 +1,10 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Copy, ThumbsUp, ThumbsDown, Volume2, Check, Pause } from 'lucide-react'
+import { Copy, ThumbsUp, ThumbsDown, Volume2, Check, Pause, Square, Loader2 } from 'lucide-react'
+import { speakText } from '../lib/api'
+import { createSpeechAudio, startSpeaking, stopSpeaking } from '../lib/speechLipSync'
+import { useMotion } from '../contexts/MotionContext'
 
 export interface Message {
   id: string
@@ -9,6 +12,14 @@ export interface Message {
   content: string
   timestamp: Date
   audioUrl?: string
+  /** Voice mode: audio for this reply is being synthesised right now. Drives the
+   *  spinner, which is the only thing that tells the user the toggle did
+   *  anything during the 30-45s wait. */
+  speechPending?: boolean
+  /** Voice mode: speak as soon as the audio lands, without waiting for a click.
+   *  "Trả lời bằng giọng nói" promises exactly this — attaching a silent audio
+   *  file looks identical to the toggle being off. */
+  autoplay?: boolean
 }
 
 interface ChatMessageProps {
@@ -39,7 +50,12 @@ export default function ChatMessage({ message }: ChatMessageProps) {
         <div className="prose dark:prose-invert prose-p:leading-relaxed prose-strong:text-foreground prose-headings:text-foreground prose-pre:bg-secondary/50 prose-pre:border prose-pre:border-border/40 max-w-none text-[clamp(0.75rem,0.68rem+0.3vw,0.875rem)] text-foreground/90">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{cleaned}</ReactMarkdown>
         </div>
-        <AssistantActions content={message.content} audioUrl={message.audioUrl} />
+        <AssistantActions
+          content={message.content}
+          audioUrl={message.audioUrl}
+          speechPending={message.speechPending}
+          autoplay={message.autoplay}
+        />
       </div>
     )
   }
@@ -56,7 +72,17 @@ export default function ChatMessage({ message }: ChatMessageProps) {
   )
 }
 
-function AssistantActions({ content, audioUrl }: { content: string; audioUrl?: string }) {
+function AssistantActions({
+  content,
+  audioUrl,
+  speechPending,
+  autoplay,
+}: {
+  content: string
+  audioUrl?: string
+  speechPending?: boolean
+  autoplay?: boolean
+}) {
   const { copied, handleCopy } = useCopy(content)
   const [liked, setLiked] = useState(false)
   const [disliked, setDisliked] = useState(false)
@@ -87,18 +113,69 @@ function AssistantActions({ content, audioUrl }: { content: string; audioUrl?: s
       <button className={btnClass} onClick={handleDislike} title="Không thích">
         <ThumbsDown className={`${iconSize} ${disliked ? 'text-blue-500' : ''}`} />
       </button>
-      {audioUrl && <AudioButton audioUrl={audioUrl} btnClass={btnClass} iconSize={iconSize} />}
+      <AudioButton
+        audioUrl={audioUrl}
+        text={content}
+        speechPending={speechPending}
+        autoplay={autoplay}
+        btnClass={btnClass}
+        iconSize={iconSize}
+      />
     </div>
   )
 }
 
-function AudioButton({ audioUrl, btnClass, iconSize }: { audioUrl: string; btnClass: string; iconSize: string }) {
+/**
+ * Speaker control for one assistant message.
+ *
+ * `audioUrl` is present only when the reply was voiced automatically (the
+ * "Trả lời bằng giọng nói" toggle). Otherwise the first click synthesises on
+ * demand — which is also the only way a restored conversation can be heard,
+ * since the WAV files are not persisted with the transcript.
+ */
+function AudioButton({
+  audioUrl,
+  text,
+  speechPending,
+  autoplay,
+  btnClass,
+  iconSize,
+}: {
+  audioUrl?: string
+  text: string
+  speechPending?: boolean
+  autoplay?: boolean
+  btnClass: string
+  iconSize: string
+}) {
+  const { avatarRef } = useMotion()
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const barRef = useRef<HTMLDivElement | null>(null)
   const rafRef = useRef<number>(0)
+  const abortRef = useRef<AbortController | null>(null)
+  const autoplayedRef = useRef(false)
+  /** Non-zero while this clip owns the avatar's mouth. */
+  const speakerRef = useRef(0)
   const [playing, setPlaying] = useState(false)
   const [paused, setPaused] = useState(false)
   const [progress, setProgress] = useState(0)
+  const [url, setUrl] = useState<string | undefined>(audioUrl)
+  const [synthesizing, setSynthesizing] = useState(false)
+  const [failed, setFailed] = useState(false)
+
+  /* An automatically-voiced reply arrives *after* the message is first rendered
+   * (speech_ready lands seconds later), so the prop has to be adopted when it
+   * changes — and the old <audio> discarded, or the element keeps the stale
+   * source and plays the previous answer. */
+  useEffect(() => {
+    if (!audioUrl || audioUrl === url) return
+    audioRef.current?.pause()
+    audioRef.current = null
+    setUrl(audioUrl)
+    setPlaying(false)
+    setPaused(false)
+    setProgress(0)
+  }, [audioUrl, url])
 
   const tick = useCallback(() => {
     const a = audioRef.current
@@ -107,7 +184,24 @@ function AudioButton({ audioUrl, btnClass, iconSize }: { audioUrl: string; btnCl
     rafRef.current = requestAnimationFrame(tick)
   }, [])
 
-  const reset = useCallback(() => {
+  /** Release the avatar's mouth. Safe to call when it was never taken. */
+  const releaseMouth = useCallback(() => {
+    stopSpeaking(speakerRef.current, avatarRef.current)
+    speakerRef.current = 0
+  }, [avatarRef])
+
+  const handleEnded = useCallback(() => {
+    setPlaying(false)
+    setPaused(false)
+    setProgress(0)
+    cancelAnimationFrame(rafRef.current)
+    releaseMouth()
+    if (audioRef.current) audioRef.current.currentTime = 0
+  }, [releaseMouth])
+
+  /** Stop for good: unlike the play/pause toggle this also rewinds, so the next
+   *  click on the speaker starts from the beginning instead of resuming. */
+  const handleStop = useCallback(() => {
     const a = audioRef.current
     if (!a) return
     a.pause()
@@ -116,39 +210,98 @@ function AudioButton({ audioUrl, btnClass, iconSize }: { audioUrl: string; btnCl
     setPaused(false)
     setProgress(0)
     cancelAnimationFrame(rafRef.current)
-  }, [])
-
-  const handleEnded = useCallback(() => {
-    setPlaying(false)
-    setPaused(false)
-    setProgress(0)
-    cancelAnimationFrame(rafRef.current)
-    if (audioRef.current) audioRef.current.currentTime = 0
-  }, [])
+    releaseMouth()
+  }, [releaseMouth])
 
   useEffect(() => {
     return () => {
       cancelAnimationFrame(rafRef.current)
       audioRef.current?.pause()
+      abortRef.current?.abort()
+      releaseMouth()
     }
-  }, [])
+  }, [releaseMouth])
 
-  const handleToggle = () => {
-    if (!audioRef.current) {
-      audioRef.current = new Audio(audioUrl)
-      audioRef.current.addEventListener('ended', handleEnded)
-    }
-    const a = audioRef.current
+  const play = useCallback(
+    async (src: string) => {
+      if (!audioRef.current) {
+        // createSpeechAudio, not `new Audio(src)`: the element has to be
+        // CORS-clean *before* it loads or the lip-sync analyser reads silence.
+        audioRef.current = createSpeechAudio(src)
+        audioRef.current.addEventListener('ended', handleEnded)
+      }
+      const el = audioRef.current
+
+      // Tap the element BEFORE playing. Once it is routed through Web Audio its
+      // sound leaves via the graph, so doing this mid-playback would drop the
+      // first moments of speech.
+      speakerRef.current = await startSpeaking(el, avatarRef.current)
+
+      el.play().then(
+        () => {
+          setPlaying(true)
+          setPaused(false)
+          rafRef.current = requestAnimationFrame(tick)
+        },
+        () => {
+          // Browsers refuse to start audio without a recent user gesture. Voice
+          // mode can land 40s after the click that sent the message, so this is
+          // a normal outcome, not a failure: leave the speaker idle and the user
+          // can press it. Never surface it as an error.
+          setPlaying(false)
+          releaseMouth()
+        },
+      )
+    },
+    [handleEnded, tick, avatarRef, releaseMouth],
+  )
+
+  /* Voice mode: speak the moment the audio lands. Guarded by a ref so a later
+   * re-render (a sibling message updating, say) cannot replay the same clip. */
+  useEffect(() => {
+    if (!autoplay || !url || autoplayedRef.current) return
+    autoplayedRef.current = true
+    play(url)
+  }, [autoplay, url, play])
+
+  const handleToggle = async () => {
     if (playing) {
-      a.pause()
+      audioRef.current?.pause()
       setPlaying(false)
       setPaused(true)
       cancelAnimationFrame(rafRef.current)
-    } else {
-      a.play().catch(() => {})
-      setPlaying(true)
-      setPaused(false)
-      rafRef.current = requestAnimationFrame(tick)
+      // The mouth must stop with the sound, not keep moving over a paused clip.
+      releaseMouth()
+      return
+    }
+
+    if (url) {
+      play(url)
+      return
+    }
+
+    // Voice mode already has a job running for this message — clicking must not
+    // queue a second synthesis of the same text.
+    if (speechPending) return
+
+    // Nothing to play yet — ask the server to read this message aloud.
+    if (synthesizing) return
+    setSynthesizing(true)
+    setFailed(false)
+    const controller = new AbortController()
+    abortRef.current = controller
+    try {
+      const fresh = await speakText(text, { signal: controller.signal })
+      if (controller.signal.aborted) return
+      setUrl(fresh)
+      play(fresh)
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') {
+        console.warn('[TTS] on-demand synthesis failed:', e)
+        setFailed(true)
+      }
+    } finally {
+      if (!controller.signal.aborted) setSynthesizing(false)
     }
   }
 
@@ -162,17 +315,39 @@ function AudioButton({ audioUrl, btnClass, iconSize }: { audioUrl: string; btnCl
     setProgress(pct)
   }
 
+  // `speechPending` is voice mode synthesising in the background; `synthesizing`
+  // is this button's own on-demand request. Both mean "wait, audio is coming".
+  const busy = synthesizing || !!speechPending
   const isActive = playing || paused
 
   return (
     <div className="group flex items-center gap-1">
       <button
-        className={`${btnClass} ${isActive ? 'text-foreground' : ''}`}
+        className={`${btnClass} ${isActive ? 'text-foreground' : ''} ${failed ? 'text-destructive' : ''}`}
         onClick={handleToggle}
-        title={playing ? 'Dừng' : paused ? 'Tiếp tục' : 'Nghe'}
+        disabled={busy}
+        title={
+          busy
+            ? 'Đang tạo giọng đọc... (CPU, có thể mất 30-45s)'
+            : failed
+              ? 'Không tạo được giọng đọc — bấm để thử lại'
+              : playing
+                ? 'Tạm dừng'
+                : paused
+                  ? 'Tiếp tục'
+                  : url
+                    ? 'Nghe'
+                    : 'Đọc tin nhắn này'
+        }
         onDoubleClick={(e) => e.preventDefault()}
       >
-        {playing ? <Pause className={iconSize} /> : <Volume2 className={iconSize} />}
+        {busy ? (
+          <Loader2 className={`${iconSize} animate-spin`} />
+        ) : playing ? (
+          <Pause className={iconSize} />
+        ) : (
+          <Volume2 className={iconSize} />
+        )}
       </button>
       <div
         ref={barRef}
@@ -184,6 +359,19 @@ function AudioButton({ audioUrl, btnClass, iconSize }: { audioUrl: string; btnCl
           style={{ width: `${progress}%` }}
         />
       </div>
+      {/* Kept mounted and collapsed rather than unmounted, so appearing does not
+          shove the progress bar sideways — same trick the bar itself uses. */}
+      <button
+        className={`${btnClass} overflow-hidden transition-all duration-300 ease-out ${
+          isActive ? 'opacity-100' : 'w-0 p-0 opacity-0 pointer-events-none'
+        }`}
+        onClick={handleStop}
+        title="Dừng hẳn"
+        tabIndex={isActive ? 0 : -1}
+        aria-hidden={!isActive}
+      >
+        <Square className={iconSize} />
+      </button>
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type KeyboardEvent } from 'react'
-import { ArrowUp, Mic, Sparkles, Square, Plus, Globe, Image, X } from 'lucide-react'
+import { ArrowUp, Mic, Sparkles, Square, Plus, Globe, Image, X, Volume2, SquarePen } from 'lucide-react'
 import TextareaAutosize from 'react-textarea-autosize'
 import { ScrollArea } from './ui/scroll-area'
 import ChatMessage from './ChatMessage'
@@ -16,6 +16,10 @@ export default function ChatPanel() {
     stageLabel,
     webSearch,
     setWebSearch,
+    voiceReply,
+    setVoiceReply,
+    isRestoring,
+    startNewSession,
     handleSend,
     handleStop,
     imageUrls,
@@ -63,9 +67,18 @@ export default function ChatPanel() {
           </h1>
           <p className="text-xs text-muted-foreground flex items-center gap-1">
             <Sparkles className="w-3 h-3" />
-            Online · Ready to chat
+            {isRestoring ? 'Đang tải hội thoại trước...' : 'Online · Ready to chat'}
           </p>
         </div>
+        {/* Without this the conversation restored on load is the only one the
+            user can ever be in — there is no other way out of it yet. */}
+        <button
+          onClick={startNewSession}
+          title="Cuộc trò chuyện mới"
+          className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors shrink-0"
+        >
+          <SquarePen className="w-4 h-4" />
+        </button>
       </header>
 
       {/* ── Messages ── */}
@@ -148,6 +161,15 @@ export default function ChatPanel() {
                   </button>
                   <div className="h-px bg-border/40 mx-3" />
                   <button
+                    onClick={() => { setVoiceReply(!voiceReply); setShowAddMenu(false) }}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-sm text-foreground hover:bg-secondary/60 transition-colors"
+                  >
+                    <Volume2 className="w-4 h-4 text-muted-foreground" />
+                    Trả lời bằng giọng nói
+                    {voiceReply && <span className="ml-auto text-xs text-primary">On</span>}
+                  </button>
+                  <div className="h-px bg-border/40 mx-3" />
+                  <button
                     onClick={() => { imageInputRef.current?.click(); setShowAddMenu(false) }}
                     disabled={imageUrls.length >= 10}
                     className="w-full flex items-center gap-3 px-4 py-3 text-sm text-foreground hover:bg-secondary/60 transition-colors disabled:opacity-50"
@@ -173,6 +195,19 @@ export default function ChatPanel() {
                 Web
                 <button
                   onClick={() => setWebSearch(false)}
+                  className="hover:text-foreground transition-colors cursor-pointer"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            )}
+
+            {voiceReply && (
+              <div className="flex items-center gap-1 bg-secondary rounded-lg px-2 py-1 text-xs text-muted-foreground">
+                <Volume2 className="w-3 h-3" />
+                Giọng nói
+                <button
+                  onClick={() => setVoiceReply(false)}
                   className="hover:text-foreground transition-colors cursor-pointer"
                 >
                   <X className="w-3 h-3" />

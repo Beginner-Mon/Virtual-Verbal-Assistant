@@ -32,9 +32,6 @@ export const STANDARD_RETARGET_OPTIONS: RetargetOptions = {
   swapYandZ: false,
 }
 
-/** Tilt skeleton from Y-up to Z-up: +90° rotation around X axis. */
-const Q_YUP_TO_ZUP = new THREE.Quaternion(Math.SQRT1_2, 0, 0, Math.SQRT1_2)
-
 /* ────────────────────────── Bone Name Mapping ────────────────────── */
 
 /**
@@ -236,8 +233,8 @@ export function retargetBVHToVRM(
         if (vrmBoneName === 'hips' && options.hipCompensation) {
           targetQuat.premultiply(options.hipCompensation)
         }
-        // NOTE: Y-up→Z-up tilt is handled by the parent <group rotation={[π/2,0,0]}>
-        // in CharacterViewer. Do NOT apply Q_YUP_TO_ZUP here — it would double-rotate.
+        // NOTE: the Y-up→Z-up tilt is handled by the parent <group rotation={[π/2,0,0]}>
+        // in CharacterViewer. Do NOT tilt the bones here too — it would double-rotate.
         targetQuat.normalize()
         targetQuat.toArray(retargetedValues, i)
       }

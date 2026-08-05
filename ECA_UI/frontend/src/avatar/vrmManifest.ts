@@ -11,12 +11,34 @@ export const miki = {"groups":15,"emotions":[{"name":"Neutral","emit":"neutral",
 
 export const allModelIds = ["bronya","Con-Gai-Khang","hatsune-miku","miki"] as const
 
-export type VrmManifestEntry = typeof bronya
+/** One VRM blendShape group, flattened. */
+export type VrmBlendShape = {
+  readonly name: string
+  readonly emit: string
+  readonly presetName: string | null
+  readonly category: 'emotion' | 'viseme' | 'blink' | 'lookAt' | 'custom'
+  readonly bindCount: number
+  readonly isBinary: boolean
+}
+
+/**
+ * Structural on purpose. This used to be `typeof <first model>`, which baked
+ * that one model's blendShape counts into the type as literals — every other
+ * model then failed to be a `VrmManifestEntry` (14 is not assignable to 18).
+ */
+export type VrmManifestEntry = {
+  readonly groups: number
+  readonly emotions: readonly VrmBlendShape[]
+  readonly visemes: readonly VrmBlendShape[]
+  readonly blinks: readonly VrmBlendShape[]
+  readonly lookAts: readonly VrmBlendShape[]
+  readonly customs: readonly VrmBlendShape[]
+}
 
 export function getManifest(modelId: string): VrmManifestEntry | null {
   const key = modelId.toLowerCase()
   if (key === 'bronya') return bronya
-  if (key === 'Con-Gai-Khang') return Con_Gai_Khang
+  if (key === 'con-gai-khang') return Con_Gai_Khang
   if (key === 'hatsune-miku') return hatsune_miku
   if (key === 'miki') return miki
   return null

@@ -1,47 +1,70 @@
 # VVA — Status & Roadmap
 
-> Last update: 2026-07-30 (K) | Branch: `feature/langgraph-rewrite`
+> Last update: 2026-08-05 (K) | Branch: `feature/langgraph-rewrite`
 > Audience: K/N/Owner takeover after context compaction — đọc mục 0 trước tiên.
 
 ---
 
 ## 0. TRẠNG THÁI ĐANG TREO (đọc trước — dễ mất khi compact)
 
-- **Backend + Docker + Frontend hiện ĐANG CHẠY** (verify lúc viết file này: `:8000/health` →
-  `{"status":"ok"}`, `:5173` → 200, `docker ps` → postgres/redis/searxng healthy). Nếu tắt, lệnh
-  chạy ở §5. Docker Desktop có thể chưa bật — nếu `docker compose` báo lỗi pipe thì mở
-  `Docker Desktop.exe` rồi chờ ~5-30s.
-- **Git**: HEAD = `14f7b7d`. Toàn bộ avatar Phase A-D + head-follow + SSE fix + KB blocker cũ **đã
-  được N/Tri commit** (gồm merge `kimodo-release`). Working tree có **17 file CHƯA commit** (KB ingest + FSM refactor):
-  ```
-  ?? .claude/plans/animation-fsm-refactor.md      (plan v1.2 — 9 lỗi + §12 implementation report)
-  ?? docs/worklogs/30-07-2026.md                  (worklog phiên này)
-  ?? scripts/ingest_kb_pgvector.py                (KB ingest, P0 — đã chạy)
-  ?? agenticRAG/langgraph_agents/alembic/versions/003_kb_embeddings_hnsw.py   (đã apply)
-  ?? ECA_UI/frontend/src/lib/AnimationStates.ts       (FSM: bảng STATES)
-  ?? ECA_UI/frontend/src/lib/AnimationRegistry.ts     (FSM: asset layer)
-  ?? ECA_UI/frontend/src/lib/AnimationController.ts   (FSM: runtime)
-  ?? ECA_UI/frontend/src/lib/CameraController.ts      (FSM: camera + cooldown)
-  ?? ECA_UI/frontend/src/lib/motionAssets.ts          (FSM: glob asset)
-  ?? ECA_UI/frontend/src/hooks/useFsmTriggers.ts      (FSM: boot + timer trigger)
-   M ECA_UI/frontend/src/contexts/MotionContext.tsx
-   M ECA_UI/frontend/src/components/CharacterViewer.tsx
-   M ECA_UI/frontend/src/components/panels/MotionControlPanel.tsx
-   M ECA_UI/frontend/src/components/ChatPanel.tsx
-  ```
-  Không tự commit/push khi chưa được lệnh.
+- **Trạng thái service lúc viết file này (05/08)**: backend `:8000` → `{"status":"ok"}` ✅ ·
+  docker `vva-postgres`/`vva-redis`/`vva-searxng` đang chạy ✅ · **frontend `:5173` ĐANG TẮT** ❌
+  (chạy `cd ECA_UI/frontend && npm run dev`). Lệnh đầy đủ ở §5. Docker Desktop có thể chưa bật —
+  nếu `docker compose` báo lỗi pipe thì mở `Docker Desktop.exe` rồi chờ ~5-30s.
+  > Lưu ý: `vva-postgres` local giờ **không còn là DB đang dùng** — chỉ giữ làm đường lùi.
+- 🆕 **PostgreSQL ĐÃ LÊN NEON (05/08)** — backend `:8000` đọc/ghi trên Neon `ap-southeast-1`.
+  DSN nằm ở `agenticRAG/agentic_rag_gemini/.env` (**gitignored**). Dùng **direct endpoint**
+  (KHÔNG phải `-pooler`). Postgres local **vẫn giữ nguyên** làm đường lùi — chưa `down -v`.
+  - **Rollback**: xoá dòng `VVA_PG_DSN` trong file `.env` đó → restart backend → về local.
+  - Chi tiết + số đo: `.claude/plans/neon-migration.md` (v4.0) và `docs/worklogs/05-08-2026.md`.
+  - ⚠️ **Redis và file motion/audio VẪN Ở LOCAL.** Mới chuyển 1 trong 3 kho dữ liệu.
+- **Git**: HEAD = `f418768` (merge nhánh FE của bạn Owner + fix Neon).
+  Merge conflict đã xử lý: chỉ 1 file (`db/postgres.py`) — hai bên dùng tên biến env khác nhau,
+  đã nhận **cả hai** (`VVA_PG_DSN` ưu tiên, `POSTGRES_DSN` alias).
+  ⚠️ **Working tree đang có thay đổi CHƯA COMMIT** (docs + 8 file FE ở mục dưới) — K không tự commit.
+- ✅ **7 lỗi TS ở FE đã sửa (05/08)** — `npm run build` xanh trở lại. Nhân tiện lộ ra **1 bug thật
+  tsc không bắt được**: `getManifest()` so `key` (đã lowercase) với `'Con-Gai-Khang'` ⇒ nhánh chết,
+  model đó không bao giờ lấy được blendShape manifest. Sửa ở **generator**
+  (`frontend/scripts/extract-vrm-meta.mjs`) vì `vrmManifest.ts` là file sinh tự động. Worklog 05/08 §3.
+  - ⚠️ `npm run lint` **vẫn đỏ** (11 error) — trạng thái có sẵn, không nằm trong `build`, chờ Owner.
+  - ⚠️ FE **không có test runner** — không có hồi quy nào ngoài `tsc -b`.
+- 🆕 **TTS VieNeu ĐÃ CHẠY THẬT (05/08)** — chat có tiếng, verify E2E `speech_ready` + WAV 5,1 MB.
+  Bật bằng toggle **"Trả lời bằng giọng nói"** trong menu `+` của khung chat, **mặc định TẮT**
+  (lượt có giọng 76,7 s vs ~33 s chỉ chữ).
+  - **Cần chạy thêm service :5000**: `cd SpeechLLm && C:\Users\Nguyen\miniconda3\envs\tts\python.exe
+    api_server.py`. Lưu ý env là **`tts`**, KHÔNG phải `firstconda` — `firstconda` không có `vieneu`.
+  - 🔴 Đã sửa bug chặn: `config/langgraph.yaml` để `timeout: 15` trong khi TTS chạy **18 ms/ký tự**
+    ⇒ mọi câu trả lời thật đều `speech_failed`. Nay 120 s, poll ở `main.py` 60 → 130 s.
+  - ⚠️ **Chưa xem tận mắt trên trình duyệt** — máy cạn commit limit lúc bật cả 2 service. Đã verify
+    tới lớp SSE + tải file; phần `<audio>` phát là code sẵn của bạn Owner.
+  - ⚠️ Backend `:8000` **đã được K restart** lúc 05/08 để nạp config mới.
 
 ### ⭐ Việc đang làm — thứ tự ưu tiên đã Owner chốt (30/07)
 
 | # | Việc | Trạng thái |
 |---|---|---|
-| **P0** | **KB ingest vào pgvector** | ✅ **XONG** — xem mục dưới |
+| **P0** | **PostgreSQL → Neon** | ✅ **XONG 05/08** — cutover rồi, chat chạy trên Neon |
+| **P0** | **7 lỗi TS ở FE** | ✅ **XONG 05/08** — `npm run build` xanh lại. Kèm 1 bug thật `getManifest` không bao giờ khớp `Con-Gai-Khang`. Xem worklog 05/08 §3 |
+| **P0** | **KB ingest vào pgvector** | ✅ **XONG** — 2918 rows, giờ nằm trên Neon |
 | **P0** | **Deploy + verify ALB Kimodo** | ⏸ **Chờ N/Owner** — K KHÔNG tự làm (cần AWS creds + tốn ~$24/ngày g5.xlarge + $0.75/ngày ALB). Plan `.claude/plans/kimodo-alb-endpoint.md` đã implemented, chỉ cần chạy checklist §5 (**nhớ đổi `ALB_ALLOWED_CIDR` → IP/32 trước deploy**) |
 | **P1** | **FSM refactor animation** | ✅ **XONG 30/07** — K implement, **17/17 test xanh**. Xem mục dưới + plan §12 |
 | **P2** | Kimodo runtime delivery (generate→convert→serve→SSE→play) | Chờ P0-ALB + P1. Frontend hiện **0 dòng** consume motion từ SSE |
 | **P3** | Backend emit `avatar.emotion` | Facial FE sẵn sàng, backend chưa emit |
 | **P4** | Head-follow Phase 2 (additive blend), pre-cloud hardening | P2 xong mới biết có cần |
 
+- **Neon migration — XONG 05/08.** Verify thật: 8 bảng · 17 index (đủ 2 HNSW) · KB **2918** ·
+  chat `mode: synthesize` 703 token · unit tests **275 passed** · dữ liệu ghi vào Neon (đối chứng
+  local không có).
+  - **Chi phí DB thật**: **12 query / 1,41 s / lượt = 4,8%** (pool ấm). Đo bằng counter trong
+    `PostgresClient` + `/debug/pgstats` (bật bằng `VVA_PG_STATS=1`), **không phải ước lượng** —
+    K đã đoán sai 2 lần trước khi đo (chi tiết ở worklog).
+  - Lượt ấm **29,3 s ≈ local 28,4 s** → Neon **không** làm chậm đáng kể. Việc đáng làm nhất là
+    **giữ pool ấm** (pool nguội 3,29 s vs ấm 1,41 s).
+  - 🔴 **BẪY: không được chạy `scripts/ingest_kb_pgvector.py` khi backend đang chạy** → segfault
+    exit 139, **log rỗng không traceback**, mà `--reset` đã xoá bảng trước đó ⇒ KB rỗng, mọi câu hỏi
+    bị từ chối. Nguyên nhân: tranh chấp native runtime của torch giữa 2 tiến trình. Quy trình đúng
+    ghi ở `scripts/QUICKSTART.md` §3. K đã dính lỗi này 05/08.
+  - 🔑 **Đổi mật khẩu Neon** trước khi có dữ liệu người dùng thật (DSN đã đi qua kênh chat).
 - **P0 KB ingest — ĐÃ XONG, verify end-to-end** (30/07): `kb_embeddings` từ **0 → 2918 rows**.
   Script mới `scripts/ingest_kb_pgvector.py` (thay 2 script legacy target ChromaDB), parse
   `agenticRAG/agentic_rag_gemini/data/knowledge_base/documents.txt` (2918 bài tập, phân cách `---`).
@@ -458,8 +481,10 @@ Thay toàn bộ animation string-match bằng state machine data-driven. Plan
 ## 5. Cách chạy (local demo)
 
 ```bash
-# 1. Docker
+# 1. Docker (postgres local chỉ còn là đường lùi — DB thật đang ở Neon)
 docker compose -f docker-compose.langgraph.yml up -d postgres redis searxng
+#    DSN Neon nằm ở agenticRAG/agentic_rag_gemini/.env (VVA_PG_DSN, gitignored).
+#    Xoá dòng đó = quay về Postgres local.
 
 # 2. Migration (nếu schema đổi)
 cd agenticRAG/langgraph_agents && alembic upgrade head
@@ -470,6 +495,10 @@ python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8000 --h
 
 # 4. Frontend React (:5173) — demo mode, VITE_AUTH_DISABLED=true trong .env.local
 cd ECA_UI/frontend && npm install && npm run dev
+
+# ⛔ Nạp KB: PHẢI TẮT BACKEND TRƯỚC, nếu không sẽ segfault (exit 139, log rỗng)
+#    và `--reset` đã xoá bảng ⇒ KB rỗng, mọi câu hỏi bị từ chối. Xem QUICKSTART §3.
+#    python scripts/ingest_kb_pgvector.py --reset
 
 # Tests
 python -m pytest tests/langgraph_agents/ -m unit -q   # 275 passed, không cần service sống

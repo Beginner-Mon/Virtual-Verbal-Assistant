@@ -137,16 +137,12 @@ function DraggableBar({
   activePanel,
   onIconClick,
   isDragging,
-  isMusicPlaying,
-  toggleMusic,
 }: {
   dockedEdge: DockedEdge
   position: { x: number; y: number }
   activePanel: PanelId
   onIconClick: (id: PanelId) => void
   isDragging: boolean
-  isMusicPlaying: boolean
-  toggleMusic: () => void
 }) {
   const { userAttributes } = useAuth()
   const profilePicture = userAttributes?.picture
@@ -452,8 +448,6 @@ export default function FloatingNavBar() {
           activePanel={activePanel}
           onIconClick={handleIconClick}
           isDragging={isDragging}
-          isMusicPlaying={isMusicPlaying}
-          toggleMusic={toggleMusic}
         />
       </DndContext>
 

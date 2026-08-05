@@ -25,6 +25,21 @@ class ChatResponse(BaseModel):
     errors: list[dict] = Field(default_factory=list)
 
 
+class TTSRequest(BaseModel):
+    """Synthesize arbitrary text on demand — the per-message speaker button.
+
+    Separate from `output_mode` on /chat, which decides whether a reply is voiced
+    automatically as it is produced. This one voices text the user has already
+    read and chose to hear, so it must never be implicit.
+    """
+    text: str = Field(min_length=1, max_length=5000)
+    persona_id: str = Field(default="eca_default", pattern=r"^[A-Za-z0-9_-]{1,64}$")
+
+
+class TTSTaskResponse(BaseModel):
+    task_id: str
+
+
 class SessionListItem(BaseModel):
     session_id: str
     created_at: str

@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { IdCard, User, KeyRound, Link2, LogOut } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
-import { fetchAuthSession, signInWithRedirect } from 'aws-amplify/auth'
+import { fetchAuthSession } from 'aws-amplify/auth'
+import { startGoogleSignIn } from '../lib/googleSignIn'
 import { Avatar, AvatarImage, AvatarFallback } from './ui/avatar'
 
 interface Props {
@@ -35,10 +36,10 @@ export default function ProfileContent({ onClose }: Props) {
     navigate('/set-password')
   }
 
+  // Linking is the strictest case: the account is already decided, so any other
+  // Google account is unambiguously wrong.
   const handleLinkGoogle = () => {
-    sessionStorage.setItem('linkingEmail', email)
-    localStorage.setItem('linkingEmail', email)
-    signInWithRedirect({ provider: 'Google', options: { prompt: 'SELECT_ACCOUNT' } })
+    startGoogleSignIn(email)
   }
 
   const scrollTo = (id: string) => {

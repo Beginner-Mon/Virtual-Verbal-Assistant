@@ -225,6 +225,51 @@ export async function deleteSession(sessionId: string) {
   return data
 }
 
+// ── On-demand TTS ──────────────────────────────────────────────────────────────
+
+export interface SessionMessage {
+  role: 'user' | 'assistant'
+  content: string
+  timestamp: string
+  tokens?: number
+}
+
+/**
+ * Speak a message the user asked to hear. Resolves with a playable audio URL.
+ *
+ * Two hops on purpose. VieNeu is CPU-only at roughly 18ms per character, so a
+ * full answer takes 30-45s — far too long to hold a request open. POST /tts
+ * returns a task id straight away and the result lands in Redis, which is the
+ * same path /chat already uses for its automatic voicing.
+ */
+export async function speakText(
+  text: string,
+  opts: { signal?: AbortSignal; pollMs?: number; timeoutMs?: number } = {},
+): Promise<string> {
+  const { signal, pollMs = 1000, timeoutMs = 180_000 } = opts
+
+  const { data } = await http.post('/tts', { text }, { signal })
+  const taskId = (data as { task_id: string }).task_id
+
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
+    await new Promise((r) => setTimeout(r, pollMs))
+    try {
+      const res = await http.get(`/tts/${encodeURIComponent(taskId)}/result`, { signal })
+      const payload = res.data as { event?: string; url?: string; error?: string }
+      if (payload.event === 'speech_ready' && payload.url) return payload.url
+      if (payload.event === 'speech_failed') throw new Error(payload.error ?? 'TTS failed')
+    } catch (e) {
+      // 404 just means "not ready yet" — that is the documented contract of
+      // GET /tts/{id}/result, so it must not abort the poll.
+      const status = (e as { response?: { status?: number } }).response?.status
+      if (status !== 404) throw e
+    }
+  }
+  throw new Error(`TTS timed out after ${Math.round(timeoutMs / 1000)}s`)
+}
+
 // ── User memory CRUD ───────────────────────────────────────────────────────────
 
 export async function listUserMemory() {

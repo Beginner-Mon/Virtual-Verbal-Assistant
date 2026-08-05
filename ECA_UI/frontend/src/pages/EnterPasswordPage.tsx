@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { signIn, signInWithRedirect, resetPassword, confirmResetPassword } from 'aws-amplify/auth'
+import { signIn, resetPassword, confirmResetPassword } from 'aws-amplify/auth'
+import { startGoogleSignIn } from '../lib/googleSignIn'
 import { useRedirectIfAuthenticated } from '../hooks/useRedirectIfAuthenticated'
 import { Loader2 } from 'lucide-react'
 
@@ -67,8 +68,9 @@ export default function EnterPasswordPage() {
     }
   }
 
+  // This page exists because the lookup already resolved `email`.
   const handleGoogleSignIn = () => {
-    signInWithRedirect({ provider: 'Google', options: { prompt: 'SELECT_ACCOUNT' } })
+    startGoogleSignIn(email)
   }
 
   return (

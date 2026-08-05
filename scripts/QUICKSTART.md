@@ -32,6 +32,7 @@ Chỉ có **2 tiến trình** phải tự chạy: **backend** và **frontend**. 
 | PostgreSQL + pgvector | 5433 | Docker `vva-postgres` |
 | Redis | 6379 | Docker `vva-redis` |
 | SearXNG (web search) | 6666 | Docker `vva-searxng` |
+| VieNeu-TTS (giọng nói) | 5000 | `SpeechLLm/api_server.py` — **tuỳ chọn** |
 
 > ⚠️ **Tuyệt đối không dùng cổng 8080.** Đó là service Spring của Owner trên máy này.
 > Backend luôn là **8000**.
@@ -63,6 +64,25 @@ npm run dev
 ```
 
 Mở **http://localhost:5173** → nhấn nút **Chat** ở thanh điều hướng nổi bên trái.
+
+### 2b. Giọng nói (tuỳ chọn)
+
+Bỏ qua bước này thì chat vẫn chạy bình thường, chỉ là không có tiếng.
+
+```bash
+# ⚠️ env là `tts`, KHÔNG phải `firstconda` — firstconda không có gói `vieneu`.
+cd SpeechLLm
+C:/Users/Nguyen/miniconda3/envs/tts/python.exe api_server.py    # :5000
+```
+
+Rồi trong khung chat: menu **`+`** → **"Trả lời bằng giọng nói"**. Mặc định tắt vì lượt có giọng
+mất ~**77 s** so với ~**33 s** chỉ chữ (VieNeu chạy CPU, ~18 ms mỗi ký tự).
+
+Lần synthesize đầu tiên phải nạp model GGUF 223 MB nên chậm hơn hẳn — đừng tưởng treo.
+
+> ⚠️ Chạy backend + TTS cùng lúc ăn gần hết **commit limit** của máy này. Lúc đó `npm run build`
+> có thể chết với `paging file is too small` / `VirtualAlloc failed` — **không phải lỗi code**.
+> Tắt bớt một service rồi build.
 
 ---
 
