@@ -6,6 +6,7 @@ Migrations are raw SQL — no ORM metadata needed.
 
 import asyncio
 from logging.config import fileConfig
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -41,12 +42,37 @@ def _resolve_dsn() -> str:
 
 
 def _to_asyncpg(dsn: str) -> str:
-    """Convert postgresql:// → postgresql+asyncpg://"""
+    """Convert postgresql:// → postgresql+asyncpg://, and libpq SSL args → asyncpg's.
+
+    The same DSN has to work for two different consumers:
+
+      db/postgres.py   raw asyncpg   understands `sslmode` / `channel_binding`
+      here             SQLAlchemy    passes query args straight to asyncpg.connect(),
+                                     which has no such keywords → TypeError
+
+    So a managed DSN copied verbatim from a provider dashboard (they all emit
+    `?sslmode=require`) runs fine in the app and blows up in `alembic upgrade`.
+    Translating here keeps ONE `VVA_PG_DSN` valid for both.
+    """
     if dsn.startswith("postgresql://"):
-        return dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
-    if dsn.startswith("postgresql+asyncpg://"):
+        dsn = dsn.replace("postgresql://", "postgresql+asyncpg://", 1)
+    elif not dsn.startswith("postgresql+asyncpg://"):
         return dsn
-    return dsn
+
+    parsed = urlsplit(dsn)
+    if not parsed.query:
+        return dsn
+
+    kept = []
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key == "sslmode":
+            # libpq names → asyncpg's `ssl` argument.
+            kept.append(("ssl", "disable" if value in ("disable", "allow") else "require"))
+        elif key == "channel_binding":
+            continue  # libpq-only; asyncpg negotiates SCRAM binding by itself
+        else:
+            kept.append((key, value))
+    return urlunsplit(parsed._replace(query=urlencode(kept)))
 
 
 DSN = _resolve_dsn()

@@ -71,8 +71,16 @@ Mở **http://localhost:5173** → nhấn nút **Chat** ở thanh điều hướ
 Bảng `kb_embeddings` rỗng thì **mọi câu hỏi chuyên môn đều bị từ chối** (`mode: refuse`) —
 đây từng là một bug tốn nhiều thời gian truy, nên đừng bỏ qua bước này.
 
+> ⛔ **DỪNG backend trước khi chạy lệnh này.** Nếu uvicorn đang chạy, tiến trình ingest sẽ
+> **segfault** (exit 139) — hai tiến trình cùng nạp native runtime của torch. Nó chết **im lặng,
+> không có traceback**, và vì `--reset` đã xoá bảng trước đó nên **KB rỗng hoàn toàn** → mọi câu hỏi
+> bị từ chối. Đã bị dính 31/07.
+
 ```bash
-python scripts/ingest_kb_pgvector.py --reset      # ~2918 bài tập
+# 1. Ctrl+C ở terminal backend (hoặc kill tiến trình cổng 8000)
+# 2. Nạp KB
+python scripts/ingest_kb_pgvector.py --reset      # ~2918 bài tập, ~9 phút nếu DB ở cloud
+# 3. Bật lại backend
 ```
 
 Kiểm tra:
@@ -146,6 +154,8 @@ python -m pytest tests/langgraph_agents/ -q            # 312, cần Docker + API
 | `402` / `429` từ LLM | Hết tiền/quota tài khoản, không phải lỗi code |
 | `/health/detailed` trả `degraded` | **Bình thường khi chưa chạy TTS** — `speechllm` là optional dependency nhưng vẫn bị tính vào status tổng. `/health` (không `/detailed`) mới là cái để kiểm tra sống/chết |
 | `alembic` báo `Path doesn't exist: alembic` | Chạy sai thư mục — xem chú thích ở bước 2 |
+| Ingest chết `Segmentation fault` / exit 139, log rỗng | **Backend đang chạy.** Tắt uvicorn rồi chạy lại. Kiểm tra `SELECT COUNT(*) FROM kb_embeddings` — nếu 0 thì `--reset` đã xoá sạch, phải nạp lại |
+| Script Python ghi file vào `/tmp/...` mà không thấy đâu | Python bản Windows hiểu `/tmp` là `C:\tmp` (không tồn tại). Dùng đường dẫn Windows đầy đủ |
 
 ---
 

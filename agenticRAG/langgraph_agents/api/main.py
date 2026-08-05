@@ -134,6 +134,29 @@ def create_app() -> FastAPI:
         """Liveness — no dependency checks. Kubernetes/load balancer probe."""
         return {"status": "ok"}
 
+    @application.get("/debug/pgstats")
+    async def pgstats(reset: bool = False):
+        """How many DB round-trips the last request(s) cost. Off unless VVA_PG_STATS=1.
+
+        Exists because a local database hides this entirely: at <1 ms per query
+        the count is invisible, and on a managed database the same code paid
+        +28% per turn. Counting beats guessing — an estimate from total latency
+        was wrong by ~10x.
+        """
+        from ..db.postgres import STATS, STATS_ENABLED
+
+        if not STATS_ENABLED:
+            return {"enabled": False, "hint": "start the server with VVA_PG_STATS=1"}
+        payload = {
+            "enabled": True,
+            "queries": STATS.count,
+            "db_seconds": round(STATS.seconds, 3),
+            "by_kind": {k: {"n": n, "ms": round(t * 1000)} for k, (n, t) in STATS.by_kind.items()},
+        }
+        if reset:
+            STATS.reset()
+        return payload
+
     @application.get("/health/detailed")
     async def health_detailed():
         """Readiness — parallel checks with timeouts, breaker status, MCP."""

@@ -49,7 +49,7 @@ export type StaticSource =
  * Who is allowed to enter this state. Declared ON THE DESTINATION — that is the
  * whole point: adding a state can never break another state's reachability, and
  * you never edit anyone else's row. Plan v1.0 hand-listed per-source arrays and
- * silently dropped `thinking_loop → exercise` (bug 🔴 #2).
+ * silently dropped a sequence transition (bug 🔴 #2).
  */
 export type Reach =
   /** User/backend-driven — reachable from every state. Chat and motion-ready
@@ -78,7 +78,16 @@ interface StateBase {
 }
 
 export type StateDef = StateBase &
-  ({ loop: 'once'; onFinished: CharState } | { loop: 'repeat'; onFinished: null })
+  (
+    | { loop: 'once'; onFinished: CharState }
+    /** One-shot that deliberately FREEZES on its last frame and waits for
+     *  something else to move it on — `thinking_intro` holds the pose until the
+     *  answer arrives. Spelling it out keeps the guarantee above intact: a
+     *  one-shot still cannot be left without a successor *by accident*, only on
+     *  purpose. */
+    | { loop: 'once'; onFinished: null; holdsLastFrame: true }
+    | { loop: 'repeat'; onFinished: null }
+  )
 
 export const STATES: Record<CharState, StateDef> = {
   idle: {
@@ -120,6 +129,7 @@ export const STATES: Record<CharState, StateDef> = {
     },
     loop: 'once',
     onFinished: null,
+    holdsLastFrame: true,
     reach: 'anytime',
     camera: 'head',
     facial: { wander: false, hold: 'neutral' },

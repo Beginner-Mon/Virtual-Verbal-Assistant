@@ -1,7 +1,8 @@
 # Tech Debt & Pending Tasks
 
 > Checklist các việc đã biết nhưng CHƯA làm. Cập nhật khi đóng/ mở item.
-> Last update: 2026-06-13 (K — review cụm A; A0/A3/A5 đóng, R1 GDPR bug mở). Nguồn: worklogs 05→12/06-cont.
+> Last update: 2026-07-31 (K — bổ sung nợ từ FSM refactor, shadow/flash/ground-clamp, quyết định cloud DB).
+> Nguồn trước đó: worklogs 05→12/06-cont; đợt mới: `docs/worklogs/30-07-2026.md`.
 
 Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng · 🟡 nên làm · ⚪ optional
 
@@ -17,6 +18,50 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
       deploy Cognito (`ampx sandbox`/AWS) để có pool thật. (Security review 12/06 Vuln 1;
       integration 18/06, worklog 18/06)
 
+- [x] **Chốt nhà cung cấp DB cloud** — Owner chốt **Neon** (31/07). Plan thi hành: **[`.claude/plans/neon-migration.md`](../../.claude/plans/neon-migration.md)**.
+- [x] **Thi hành plan Neon** — ✅ **XONG 31/07**. Backend `:8000` chạy trên Neon (ap-southeast-1),
+      dữ liệu ghi vào Neon (đã đối chứng local). DSN nằm ở `agenticRAG/agentic_rag_gemini/.env`
+      (gitignored). Chi phí DB thật: **12 query / 1,4 s / lượt = 4,8%** (đo bằng counter, không đoán).
+- [ ] 🔴 **Ingest SEGFAULT khi backend đang chạy** — `scripts/ingest_kb_pgvector.py` chết exit 139,
+      **log rỗng, không traceback**. Khoanh vùng được: chết ở `embed_passages()` (inference torch),
+      **không** phải DB. Tắt uvicorn thì chạy bình thường → hai tiến trình tranh chấp native runtime
+      của torch. Nguy hiểm vì `--reset` xoá bảng TRƯỚC khi crash → **KB rỗng, mọi câu hỏi bị từ chối**.
+      Đã dính 31/07 và mất thời gian truy nhầm hướng.
+      **Cần làm**: cho script tự phát hiện backend đang chạy và từ chối, hoặc đảo thứ tự để chỉ xoá
+      sau khi embed xong. Tạm thời đã ghi cảnh báo ở QUICKSTART §3.
+- [ ] **Tối ưu ingest (`unnest` + `executemany`) — đã thử, đã hoàn nguyên** — gộp 2 round-trip mỗi
+      batch thay vì mỗi record. Lúc thử thì gặp segfault nên tôi **đổ lỗi nhầm cho `executemany`**;
+      thực ra là lỗi tranh chấp torch ở trên. Ý tưởng vẫn đúng và đáng làm lại (ingest ~9 phút →
+      ~18 giây), nhưng **phải kiểm thứ tự `RETURNING`** (Postgres không bảo đảm) — bản thử đã có sẵn
+      truy vấn đối chiếu `content LIKE 'Exercise: ' || title || '%'`.
+- [ ] **Đổi mật khẩu Neon trước khi có dữ liệu người dùng thật** — DSN đã đi qua kênh chat.
+- [ ] **Giữ pool DB ấm** — pool nguội vs ấm chênh **3,29 s vs 1,41 s** mỗi lượt, lớn hơn mọi tối ưu
+      query khác. Gắn với quyết định scale-to-zero của Neon.
+- [ ] **Redis + object storage vẫn ở local** — Postgres đã lên cloud, hai kho này thì chưa. Owner đã
+      có sắp xếp riêng cho Redis; object storage đi hướng AWS S3.
+      Plan hiện ghi **Supabase** (`.claude/CLAUDE.md` Phase 7, `docs/plans/v2.4-plan.md:1151`), còn
+      `docs/plans/reupdate-plan.md:882` vẫn để mở. **"Dời toàn bộ DB" là mô tả chưa đủ** — dữ liệu
+      nằm ở 3 kho, Neon chỉ thay được 1:
+
+      | Kho | Chứa | Neon thay được? |
+      |---|---|---|
+      | PostgreSQL + pgvector | 8 bảng: `users`, `conversations`, `messages`, `summaries`, `user_memory`, `documents`, `kb_embeddings` | ✅ |
+      | Redis | STM session (`db/session_store.py`), circuit breaker, Celery broker, TTS task | ❌ → cần Upstash/Redis Cloud |
+      | File hệ thống | motion BVH/NPZ, sắp có audio TTS | ❌ → cần R2/S3 (Supabase có Storage sẵn) |
+
+      **Ba rủi ro phải xử lý TRƯỚC khi dời:**
+      1. `db/postgres.py` dùng `asyncpg.create_pool` + `register_vector` → endpoint **pooled** của
+         Neon/Supabase chạy PgBouncer transaction mode làm vỡ prepared-statement cache của asyncpg.
+         Phải dùng direct endpoint hoặc `statement_cache_size=0`.
+      2. **Latency**: memory node chạy MỌI request, retrieval là vector search → backend PHẢI cùng
+         region với DB. Backend local (VN) + DB cloud = cộng RTT cho từng query, nhiều query/lượt chat.
+      3. **Scale-to-zero** của Neon: rẻ nhưng request đầu sau idle cold-start ~0.5-2s → user thấy
+         "đang suy nghĩ" lâu hơn. Tắt hoặc chấp nhận.
+
+      **Trước khi cam kết**: spike đo latency thật (đừng quyết bằng cảm tính) + giữ Alembic là nguồn
+      migration duy nhất. Lưu ý lý do dời là **độ tin cậy / không phụ thuộc máy cá nhân / có PITR**,
+      KHÔNG phải hết dung lượng — KB chỉ ~2918 vector 384 chiều.
+
 ## 🟠 Quan trọng
 
 - [ ] **Summarizer E2E với LLM thật** — PR 2 mới có unit test (mock LLM/PG). Cần chạy thủ công:
@@ -28,11 +73,60 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
 - [ ] **Verify general_query thủ công** — cần LLM + SearXNG chạy thật: hỏi "giá vàng?",
       confirm needs_retrieval=true (3-axis, không còn intent enum), web search fire,
       trả lời hữu ích (không refuse). (worklog 28/05 §5, cập nhật theo 3-axis)
+- [ ] **SSAO đang bật nhưng KHÔNG hoạt động** — `ScenePostProcessing.tsx` bật SSAO nhưng
+      `<EffectComposer>` thiếu `enableNormalPass`; console báo 6 lần mỗi lần load
+      `"Please enable the NormalPass in the EffectComposer in order to use SSAO"`. Đang trả giá
+      config + 1 effect pass mà không nhận được occlusion nào. Hai hướng: bật `enableNormalPass`
+      (thêm 1 pass, có thể xung đột outline MToon — chính comment trong file cảnh báo) hoặc tắt
+      `ssao.enabled`. **Cả hai đều đổi hình ảnh → cần Owner quyết.** (worklog 30/07 §4)
+- [ ] **Bloom đang TẮT vì gây frame đen** — `postProcessing.bloom.enabled=false`. Bisect đo được
+      Bloom sinh **1 frame đen đơn lẻ mỗi ~3-5s** (luma 17.8 giữa các frame ~220); `mipmapBlur`
+      không cứu. Bảng số đo đầy đủ nằm trong comment ở `environmentConfig.ts`. Chỉ bật lại khi
+      `@react-three/postprocessing` sửa upstream **và** chạy lại screencast check.
+- [ ] **grader-retry có thể làm ChatPanel nối chữ 2 lần** — synthesizer sinh lại nhưng buffer FE
+      không tách. Owner đề xuất "bỏ live-stream, chỉ gửi sau grader" thay vì vá buffer — **chưa chốt**.
+- [ ] **Backend chưa emit `avatar.emotion`** — hệ facial animation FE đã sẵn sàng (13 module,
+      `avatar.emotion` có trong `api-contract.md`), Conversation node chưa gán emotion metadata.
+- [ ] **Facial ↔ body state chưa đồng bộ** (§9 của `.claude/plans/animation-fsm-refactor.md`) —
+      thân "suy nghĩ" mà mặt tự cười; cười lúc demo bài tập; head-follow đè chuyển động đầu của clip.
+      Sau FSM refactor **chỗ cắm đã sẵn**: `facialOf(state)` trong `lib/AnimationStates.ts` (mỗi state
+      đã khai `facial: { wander, hold? }`), sửa 1 điều kiện ở `AvatarController.ts:115` + truyền
+      attenuation cho `HeadController` (state `exercise` → gain 0). **KHÔNG thêm public method** —
+      đây là data policy, Owner đã bắt đúng điểm này.
+- [ ] **Kimodo runtime delivery (P2)** — `playMotionFile()` phía FE đã sẵn sàng; backend chưa stream
+      motion URL qua SSE. Converter vẫn là CLI thủ công.
+- [ ] **Docker không có restart policy** — tắt máy là mất container, phải `docker compose up -d` tay.
+- [ ] **`/health/detailed` trả `degraded` khi thiếu TTS** — optional dependency kéo cả status tổng.
+      Nên tách critical vs optional trước khi có LB/orchestrator thật.
 
 ## 🟡 Nên làm
 
 - [ ] **`ai_understanding` (AI tự đúc kết về user)** — AI-auto trích facts vào `user_memory`
       (background, throttled mỗi 5 turn). Advisory; `valid` flag sẵn cho conflict. (D14 phase sau)
+- [ ] **`<ContactShadows>` là ô vuông cứng, KHÔNG đi theo nhân vật** — `scale:5`, `far:3`, cố định
+      tại gốc toạ độ. Nhân vật ra khỏi ô → bóng tiếp xúc bị cắt thẳng băng; cao quá `far` → mất bóng.
+      Chưa đụng vì cần Owner xác nhận có thấy không. Fix cùng kiểu `lib/shadowFit.ts`, vài dòng.
+- [ ] **Shadow fitter trễ 1 frame** — chạy trong `useFrame` của `SceneLighting`, đăng ký **trước**
+      `VRMCharacter` (nơi chạy mixer). `fitPadding 0.35` hấp thụ chuyển động thường; chỉ lúc **đổi
+      clip** (nhân vật nhảy pose) mới vượt, đúng 1 frame. Đã ghi ở đầu `lib/shadowFit.ts`.
+- [ ] **2 clip AMASS dùng BVH sinh bởi tool KHÁC** — `motion_7b4b8d9e`, `motion_b28e8284` có
+      **hierarchy khác** `scripts/kimodo_npz_to_bvh.py`. Đã thử regenerate → motion đổi hẳn → phải
+      hoàn nguyên. Ai chạy lại converter trên 2 NPZ đó sẽ ra kết quả khác bản đang dùng. Converter
+      giờ **đọc được** cả 2 định dạng (`load_motion()`), nhưng **đừng regenerate** 2 file này nếu
+      chưa verify lại bằng mắt.
+- [ ] **`get mode(): string` trong `AvatarController`** — nên siết thành union `'engaged' | 'idle'`.
+      1 dòng.
+- [ ] **Head-follow Phase 2 (additive blending)** — `HeadController` hiện ghi đè bone Neck/Head mỗi
+      frame nên đè chuyển động đầu của clip. Gộp chung với mục facial↔body sync ở trên.
+- [ ] **Chất lượng KB corpus** — 2918 record là **gym/fitness**, không phải PT lâm sàng; 53%
+      (1550/2918) có `Description: nan`. Đã fix lỗi "KB rỗng → refuse" nhưng chưa làm nó thành KB
+      lâm sàng. Owner đã gác lại.
+- [ ] **Chưa verify lại được "frame đen" bằng script tự động** — Playwright headed chạy nền treo 3
+      lần liên tiếp ở khâu giải mã ~1100 ảnh JPEG (hạn chế công cụ đo, không phải app). Muốn có số
+      phải chạy tiền cảnh. Fix Bloom vẫn nguyên trong config; các thay đổi sau đó (`shadowFit`,
+      `groundClamp`) không đụng postprocessing.
+- [ ] **Bundle FE nặng** — JS ~2MB (gzip ~580KB) + VRM asset 9-29MB bundle thẳng. Chưa lazy-load/CDN.
+
 ## ⚪ Optional / Phase sau
 
 - [ ] **User upload tài liệu riêng** — ĐÃ QUYẾT (29/05): **Option 1 — KB chỉ của hệ thống.**
@@ -43,6 +137,9 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
       `user_memory`. Không tự ghi thẳng. (plan §4.4 optional) — FEATURE, cần Owner quyết build.
 - [ ] **Profile trigger nâng cao** — ngoài endpoint, cân nhắc trích từ hội thoại. = gộp vào
       `ai_understanding` (🟡). FEATURE, cần Owner quyết.
+- [ ] **Eval dataset ~50 golden case** — đo recall/latency trước-sau khi đổi prompt/model. Là điều
+      kiện tiên quyết để đánh giá việc đổi embedding model (`gte-multilingual-base`).
+- [ ] **CI chạy test mỗi PR + branch protection** — có `release-tests.yml`, chưa xác nhận chặn merge.
 
 > **`vector(384)` hardcode — ĐÃ THỎA, không cần làm**: `E5_DIM=384` (shared/embedding.py) đã là
 > single constant bên Python; chỗ `vector(384)` còn lại nằm trong Alembic migration ĐÃ CHẠY —
