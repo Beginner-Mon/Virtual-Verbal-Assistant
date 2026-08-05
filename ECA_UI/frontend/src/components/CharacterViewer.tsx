@@ -10,6 +10,7 @@ import * as THREE from 'three'
 import { AnimationController } from '../lib/AnimationController'
 import { AnimationRegistry } from '../lib/AnimationRegistry'
 import { DEFAULT_GROUND_CLAMP, GroundClamp } from '../lib/groundClamp'
+import { ASPECT_RANGE, type CameraResponsivePreset } from '../lib/CameraConfig'
 import type { CameraMode } from '../lib/AnimationStates'
 import { useFsmBoot } from '../hooks/useFsmTriggers'
 import { useMotion } from '../contexts/MotionContext'
@@ -24,14 +25,21 @@ import SceneEnvironment from './scene/SceneEnvironment'
 import ScenePostProcessing from './scene/ScenePostProcessing'
 import { GraphicsProvider, useGraphics } from '../contexts/GraphicsContext'
 
-const CAMERA_MODES: Record<CameraMode, { boneName: VRMHumanBoneName; cameraOffset: THREE.Vector3 }> = {
+const CAMERA_MODES: Record<CameraMode, { boneName: VRMHumanBoneName }> = {
+  head: { boneName: VRMHumanBoneName.Head },
+  hips: { boneName: VRMHumanBoneName.Head },
+}
+
+/** Responsive presets per camera mode. wideFraming = current desktop-tuned offsets;
+ *  narrowFraming = mobile-portrait offsets (tune by eye: lower Y, push Z further). */
+const CAMERA_RESPONSIVE_PRESETS: Record<CameraMode, CameraResponsivePreset> = {
   head: {
-    boneName: VRMHumanBoneName.Head,
-    cameraOffset: new THREE.Vector3(0, 0.5, 0),
+    wideFraming: [0, 0.5, 0],
+    narrowFraming: [0, -0.3, 2.0],
   },
   hips: {
-    boneName: VRMHumanBoneName.Head,
-    cameraOffset: new THREE.Vector3(0.5, 2.2, 1.0),
+    wideFraming: [0.5, 2.2, 1.0],
+    narrowFraming: [0.5, 0.5, 4.0],
   },
 }
 
@@ -305,7 +313,7 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
   const { settings: gfx } = useGraphics()
   const controlsRef = useRef<any>(null)
   const vrmRef = useRef<VRM | null>(null)
-  const { camera } = useThree()
+  const { camera, size } = useThree()
   const cameraInitializedRef = useRef(false)
   const cameraTransitionRef = useRef<{
     startPos: THREE.Vector3
@@ -313,6 +321,9 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
     elapsed: number
   } | null>(null)
   const prevCameraModeRef = useRef(cameraMode)
+
+  const responsiveTargetRef = useRef(new THREE.Vector3(0, 0.5, 0))
+  const responsiveDisplayRef = useRef(new THREE.Vector3(0, 0.5, 0))
 
   const TRANSITION_DURATION = 0.6
 
@@ -358,6 +369,25 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
   useFrame((_state, delta) => {
     if (!vrmRef.current || !controlsRef.current) return
 
+    // Compute target responsive offset from canvas aspect ratio
+    const aspect = size.width / size.height
+    const tClamped = Math.max(0, Math.min(1,
+      (ASPECT_RANGE.wide - aspect) / (ASPECT_RANGE.wide - ASPECT_RANGE.narrow)
+    ))
+    const preset = CAMERA_RESPONSIVE_PRESETS[cameraMode]
+    responsiveTargetRef.current.set(
+      THREE.MathUtils.lerp(preset.wideFraming[0], preset.narrowFraming[0], tClamped),
+      THREE.MathUtils.lerp(preset.wideFraming[1], preset.narrowFraming[1], tClamped),
+      THREE.MathUtils.lerp(preset.wideFraming[2], preset.narrowFraming[2], tClamped),
+    )
+
+    // Smooth towards target on resize; snap during camera-mode transition
+    if (cameraTransitionRef.current) {
+      responsiveDisplayRef.current.copy(responsiveTargetRef.current)
+    } else {
+      responsiveDisplayRef.current.lerp(responsiveTargetRef.current, 0.2)
+    }
+
     const mode = CAMERA_MODES[cameraMode]
     const bone =
       vrmRef.current.humanoid.getNormalizedBoneNode(mode.boneName) ??
@@ -374,7 +404,7 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
 
       const currentCustomOffset = new THREE.Vector3(cameraConfig.offsetX, cameraConfig.offsetY, cameraConfig.offsetZ)
       const endTarget = followPos.clone().add(currentCustomOffset)
-      const endPos = followPos.clone().add(mode.cameraOffset).add(currentCustomOffset)
+      const endPos = followPos.clone().add(responsiveDisplayRef.current).add(currentCustomOffset)
 
       camera.position.lerpVectors(t.startPos, endPos, eased)
       controlsRef.current.target.lerpVectors(t.startTarget, endTarget, eased)
@@ -391,7 +421,7 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
 
     if (!cameraInitializedRef.current) {
       controlsRef.current.target.copy(targetPos)
-      camera.position.copy(followPos).add(mode.cameraOffset).add(currentCustomOffset)
+      camera.position.copy(followPos).add(responsiveDisplayRef.current).add(currentCustomOffset)
       camera.lookAt(targetPos)
       controlsRef.current.update()
       cameraInitializedRef.current = true
