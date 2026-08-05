@@ -75,7 +75,9 @@ for (const file of vrmFiles) {
 
   const groups = parseVRMBlendShapes(filePath)
   if (!groups) {
-    manifest[modelId] = { groups: [], emotions: [], visemes: [], blinks: [], lookAts: [], customs: [] }
+    // `groups` is a COUNT everywhere else — emitting `[]` here made the fallback
+    // a different shape from the success path, which no type could describe.
+    manifest[modelId] = { groups: 0, emotions: [], visemes: [], blinks: [], lookAts: [], customs: [] }
     continue
   }
 
@@ -131,14 +133,37 @@ for (const [modelId, data] of Object.entries(manifest)) {
 const allIds = Object.keys(manifest)
 lines.push(`export const allModelIds = ${JSON.stringify(allIds)} as const`)
 lines.push('')
-const firstVar = toVarName(allIds[0] || 'bronya')
-lines.push(`export type VrmManifestEntry = typeof ${firstVar}`)
+lines.push('/** One VRM blendShape group, flattened. */')
+lines.push('export type VrmBlendShape = {')
+lines.push('  readonly name: string')
+lines.push('  readonly emit: string')
+lines.push('  readonly presetName: string | null')
+lines.push("  readonly category: 'emotion' | 'viseme' | 'blink' | 'lookAt' | 'custom'")
+lines.push('  readonly bindCount: number')
+lines.push('  readonly isBinary: boolean')
+lines.push('}')
+lines.push('')
+lines.push('/**')
+lines.push(' * Structural on purpose. This used to be `typeof <first model>`, which baked')
+lines.push(" * that one model's blendShape counts into the type as literals — every other")
+lines.push(' * model then failed to be a `VrmManifestEntry` (14 is not assignable to 18).')
+lines.push(' */')
+lines.push('export type VrmManifestEntry = {')
+lines.push('  readonly groups: number')
+lines.push('  readonly emotions: readonly VrmBlendShape[]')
+lines.push('  readonly visemes: readonly VrmBlendShape[]')
+lines.push('  readonly blinks: readonly VrmBlendShape[]')
+lines.push('  readonly lookAts: readonly VrmBlendShape[]')
+lines.push('  readonly customs: readonly VrmBlendShape[]')
+lines.push('}')
 lines.push('')
 lines.push('export function getManifest(modelId: string): VrmManifestEntry | null {')
 lines.push('  const key = modelId.toLowerCase()')
 for (const id of allIds) {
   const varName = toVarName(id)
-  lines.push(`  if (key === '${id}') return ${varName}`)
+  // Compare against the LOWERCASED id: `key` is already lowercased, so a model
+  // file with any uppercase in its name (Con-Gai-Khang) could never match.
+  lines.push(`  if (key === '${id.toLowerCase()}') return ${varName}`)
 }
 lines.push('  return null')
 lines.push('}')

@@ -19,7 +19,11 @@ langgraph:
     vieneu_tts:
       url: "http://localhost:5000"
       endpoint: "/synthesize"
-      timeout: 15
+      # Measured on this box (VieNeu turbo, CPU): ~18ms per character —
+      # 13 chars 0.4s / 186 chars 3.1s / 558 chars 10.2s. A clinical answer runs
+      # 1500-2500 chars = 28-46s, so the old value of 15 timed out on every real
+      # reply and the UI only ever saw speech_failed.
+      timeout: 120
       circuit_breaker:
         failure_threshold: 3
         cool_down_seconds: 60

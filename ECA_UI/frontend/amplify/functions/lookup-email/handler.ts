@@ -37,7 +37,10 @@ export const handler = async (event: any) => {
       statusCode: 200,
       body: JSON.stringify({
         hasEmail: !!record?.emailSub,
-        hasGoogle: !!record?.googleSub,
+        // `googleLinked` is the flag pre-sign-up sets when it links or anchors a
+        // Google identity. `googleSub` is the pre-single-user field, kept so
+        // accounts created before the change still answer correctly.
+        hasGoogle: !!record?.googleLinked || !!record?.googleSub,
       }),
       headers: corsHeaders,
     }

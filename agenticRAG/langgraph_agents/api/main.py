@@ -35,6 +35,7 @@ from fastapi.responses import JSONResponse
 from langgraph_agents.api.auth import resolve_user_id
 from langgraph_agents.api.schemas import (
     ChatRequest, SessionListItem, SessionListResponse, SessionResumeResponse,
+    TTSRequest, TTSTaskResponse,
     UserMemoryCreate, UserMemoryItem, UserMemoryListResponse,
 )
 from langgraph_agents.api.sse import encode_event, stream_response
@@ -210,6 +211,28 @@ def create_app() -> FastAPI:
                     yield sse_event
 
         return stream_response(event_generator())
+
+    @application.post("/tts", response_model=TTSTaskResponse)
+    async def tts_synthesize(body: TTSRequest):
+        """Fire a TTS job for text the user asked to hear, return its task id.
+
+        Returns immediately rather than blocking: VieNeu runs on CPU at roughly
+        18ms per character, so a full clinical answer is 30-45s. The caller polls
+        GET /tts/{task_id}/result, which already exists for the /chat path.
+        """
+        task_id = str(uuid.uuid4())
+        persona = get_persona(body.persona_id)
+        voice_path = persona.get("voice_identity", {}).get("voice_path")
+        task = asyncio.create_task(synthesize_speech_async(
+            text=body.text,
+            task_id=task_id,
+            voice_path=voice_path,
+        ))
+        # Same reason as the /chat path: without a strong reference the event
+        # loop may garbage-collect a task nobody is awaiting.
+        _pending_tts_tasks.add(task)
+        task.add_done_callback(_pending_tts_tasks.discard)
+        return TTSTaskResponse(task_id=task_id)
 
     @application.get("/tts/{task_id}/result")
     async def tts_result(task_id: str):
@@ -497,7 +520,10 @@ async def _stream_chat(req, request_id, config, state, background_tasks, request
         _tts_task.add_done_callback(_pending_tts_tasks.discard)
         yield encode_event("speech_pending", {"task_id": speech_task_id})
 
-        async for sse_event in _poll_speech_result(speech_task_id, timeout=60):
+        # Must outlast the TTS client's own timeout (services.vieneu_tts.timeout,
+        # 120s). Give up sooner and we emit speech_failed while the task is still
+        # running, then it writes speech_ready to Redis that nobody reads.
+        async for sse_event in _poll_speech_result(speech_task_id, timeout=130):
             yield sse_event
 
     elapsed_ms = round((time.time() - t0) * 1000)

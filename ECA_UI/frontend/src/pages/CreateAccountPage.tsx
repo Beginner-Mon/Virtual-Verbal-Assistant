@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { signUp, confirmSignUp, signIn, signInWithRedirect } from 'aws-amplify/auth'
+import { signUp, confirmSignUp, signIn } from 'aws-amplify/auth'
+import { startGoogleSignIn } from '../lib/googleSignIn'
 import { useRedirectIfAuthenticated } from '../hooks/useRedirectIfAuthenticated'
 import { Loader2 } from 'lucide-react'
 
@@ -56,8 +57,10 @@ export default function CreateAccountPage() {
     }
   }
 
+  // The UI has committed to creating an account for this address, so signing in
+  // with a different Google account must not quietly succeed.
   const handleGoogleSignIn = () => {
-    signInWithRedirect({ provider: 'Google', options: { prompt: 'SELECT_ACCOUNT' } })
+    startGoogleSignIn(email)
   }
 
   return (

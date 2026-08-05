@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Outlet, Navigate } from 'react-router-dom'
-import { fetchAuthSession, fetchUserAttributes } from 'aws-amplify/auth'
+import { fetchAuthSession, fetchUserAttributes, signOut } from 'aws-amplify/auth'
 import { AuthContext, type FetchUserAttributesOutput } from '../contexts/AuthContext'
+import { emailsMatch, takeExpectedEmail } from '../lib/googleSignIn'
 import LoadingOverlay from './ui/LoadingOverlay'
 
 function clearLocalAuthStorage() {
@@ -36,19 +37,21 @@ export default function AuthGuard() {
     fetchAuthSession()
       .then(async s => {
         if (s.tokens) {
-          const linkingEmail = sessionStorage.getItem('linkingEmail') || localStorage.getItem('linkingEmail')
-          sessionStorage.removeItem('linkingEmail')
-          localStorage.removeItem('linkingEmail')
+          // Whichever page started the Google redirect recorded the account it
+          // had committed to. Until this was shared, only the Profile "link
+          // Google" flow set it — so on the login pages a mismatch went
+          // completely unchecked and you were signed in as the other account.
+          const expectedEmail = takeExpectedEmail()
 
           let tokenSource = s
-          if (linkingEmail) {
+          if (expectedEmail) {
             const fresh = await fetchAuthSession({ forceRefresh: true })
             if (fresh.tokens) {
               tokenSource = fresh
             }
 
             const currentEmail = tokenSource.tokens?.idToken?.payload?.email as string
-            if (currentEmail && currentEmail !== linkingEmail) {
+            if (currentEmail && !emailsMatch(currentEmail, expectedEmail)) {
               clearLocalAuthStorage()
               window.location.replace('/login?error=email_mismatch')
               return undefined
@@ -76,18 +79,16 @@ export default function AuthGuard() {
     signingOutRef.current = true
 
     try {
-      const s = await fetchAuthSession()
-      const accessToken = s.tokens?.accessToken?.toString()
-      if (accessToken) {
-        await fetch('', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-amz-json-1.1',
-            'X-Amz-Target': 'AWSCognitoIdentityProviderService.GlobalSignOut',
-          },
-          body: JSON.stringify({ AccessToken: accessToken }),
-        })
-      }
+      // This used to hand-roll a GlobalSignOut call with `fetch('')` — an empty
+      // URL, so it POSTed to the current page, got the app's own HTML back with
+      // a 200, and never threw. The revocation never happened and nothing said
+      // so: signing out only cleared local storage while the Cognito session and
+      // refresh tokens stayed alive server-side.
+      //
+      // Amplify's signOut does the real thing, and for a federated user it also
+      // walks the Cognito logout endpoint (so it may navigate away before the
+      // lines below run — that is fine, they are the fallback).
+      await signOut({ global: true })
     } catch (err) {
       console.warn('[Auth] Global sign-out failed:', err)
     }

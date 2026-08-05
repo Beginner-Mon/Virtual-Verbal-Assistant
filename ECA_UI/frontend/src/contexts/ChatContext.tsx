@@ -9,9 +9,25 @@ import {
   type ReactNode,
 } from 'react'
 import type { Message } from '../components/ChatMessage'
-import { streamChat } from '../lib/api'
+import { getSession, streamChat, type SessionMessage } from '../lib/api'
 import { useMotion } from './MotionContext'
 import testAudio from '../asset/audio/test.wav'
+
+/** Key holding the *pointer* to the conversation, never the conversation.
+ *
+ *  Postgres stays the source of truth, so this survives a move to a hosted
+ *  database untouched — and the day Cognito is switched on, `currentUserId()`
+ *  starts returning the real `sub` and the same session simply belongs to a
+ *  real account instead of a per-browser demo id. */
+const SESSION_KEY = 'vva_session_id'
+
+function loadOrCreateSessionId(): string {
+  const existing = localStorage.getItem(SESSION_KEY)
+  if (existing) return existing
+  const fresh = crypto.randomUUID()
+  localStorage.setItem(SESSION_KEY, fresh)
+  return fresh
+}
 
 function buildInitialMessages(): Message[] {
   const hour = new Date().getHours()
@@ -37,6 +53,11 @@ export interface ChatContextType {
   stageLabel: string | null
   webSearch: boolean
   setWebSearch: (value: boolean) => void
+  voiceReply: boolean
+  setVoiceReply: (value: boolean) => void
+  /** True while the previous conversation is being fetched back on load. */
+  isRestoring: boolean
+  startNewSession: () => void
   handleSend: () => Promise<void>
   handleStop: () => void
   imageUrls: string[]
@@ -55,6 +76,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [isGenerating, setIsGenerating] = useState(false)
   const [stageLabel, setStageLabel] = useState<string | null>(null)
   const [webSearch, setWebSearch] = useState(false)
+  // Off by default: VieNeu runs on CPU and takes ~10-20s for a long Vietnamese
+  // answer, and the backend holds the SSE stream open until it finishes.
+  const [voiceReply, setVoiceReply] = useState(false)
+  const [isRestoring, setIsRestoring] = useState(true)
   const [imageUrls, setImageUrls] = useState<string[]>([])
   const imageUrlsRef = useRef<string[]>([])
 
@@ -63,7 +88,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const isGeneratingRef = useRef(isGenerating)
   isGeneratingRef.current = isGenerating
 
-  const sessionIdRef = useRef<string>(crypto.randomUUID())
+  const sessionIdRef = useRef<string>(loadOrCreateSessionId())
   const abortControllerRef = useRef<AbortController | null>(null)
   const thinkingRef = useRef(false)
 
@@ -80,6 +105,59 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     next.splice(index, 1)
     imageUrlsRef.current = next
     setImageUrls(next)
+  }, [])
+
+  /* ── Restore the conversation this browser was last in ──────────────────
+   *
+   * Runs once on mount. A 404 is the normal case, not an error: a brand-new
+   * session id has no row until the first turn is written, so we simply keep
+   * the greeting. Anything else is logged and also falls back to the greeting —
+   * a failed restore must never leave the user staring at an empty panel. */
+  useEffect(() => {
+    let cancelled = false
+
+    ;(async () => {
+      try {
+        const data = await getSession(sessionIdRef.current)
+        const history = (data?.messages ?? []) as SessionMessage[]
+        if (cancelled || history.length === 0) return
+        setMessages(
+          history.map((m, i) => ({
+            id: `restored-${i}`,
+            role: m.role,
+            content: m.content,
+            timestamp: new Date(m.timestamp),
+            // Audio is not persisted — the WAV lives on the TTS box under a
+            // random name. The per-message speaker button can re-synthesise it.
+          })),
+        )
+      } catch (e) {
+        const status = (e as { response?: { status?: number } }).response?.status
+        if (status !== 404) console.warn('[session] restore failed:', e)
+      } finally {
+        if (!cancelled) setIsRestoring(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  /** Abandon this conversation and start a clean one.
+   *
+   * The old one is not deleted — it stays in Postgres and will be reachable
+   * once the Sessions panel is wired up. */
+  const startNewSession = useCallback(() => {
+    abortControllerRef.current?.abort()
+    const fresh = crypto.randomUUID()
+    localStorage.setItem(SESSION_KEY, fresh)
+    sessionIdRef.current = fresh
+    setMessages(buildInitialMessages())
+    setInput('')
+    setIsTyping(false)
+    setStageLabel(null)
+    setIsGenerating(false)
   }, [])
 
   const endThinking = useCallback(() => {
@@ -120,14 +198,29 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       { id: assistantMsgId, role: 'assistant', content: '', timestamp: new Date() },
     ])
 
-    abortControllerRef.current = new AbortController()
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+    /** True while this stream is still the newest one.
+     *
+     *  With voice on, the backend keeps the stream open long after the text is
+     *  done, and we release the composing UI at `speech_pending` — so the user
+     *  can send a second message while this one is still streaming. Without this
+     *  check the old stream's `done` would clear `isGenerating` for the NEW
+     *  reply. Message updates are exempt: they target their own `assistantMsgId`
+     *  and stay correct however late they land. */
+    const isCurrent = () => abortControllerRef.current === controller
 
     const STAGE_SEARCHING = '\uD83D\uDD0D \u0110ang t\xECm ki\u1EBFm th\xF4ng tin...'
     const STAGE_COMPOSING = '\u270D\uFE0F \u0110ang so\u1EA1n c\xE2u tr\u1EA3 l\u1EDDi...'
 
     try {
       await streamChat(
-        { query: text, sessionId: sessionIdRef.current, webSearch },
+        {
+          query: text,
+          sessionId: sessionIdRef.current,
+          webSearch,
+          outputMode: voiceReply ? 'both' : 'text',
+        },
         (type, data) => {
           if (type === 'stage') {
             const { node, status } = data as { node: string; status: string }
@@ -149,12 +242,51 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 msg.id === assistantMsgId ? { ...msg, content: msg.content + content } : msg
               )
             )
+          } else if (type === 'speech_pending') {
+            // Spin the speaker on this message. Without it the toggle has no
+            // visible effect at all during the 30-45s wait, which reads exactly
+            // like it is broken.
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMsgId ? { ...msg, speechPending: true } : msg
+              )
+            )
+            // The answer text is already complete here — the backend only holds
+            // the stream open to poll Redis for the audio (up to 130s). Release
+            // the composing UI now, otherwise the stop button lingers for two
+            // minutes after the reply is fully readable.
+            if (!isCurrent()) return
+            setStageLabel(null)
+            setIsGenerating(false)
+            endThinking()
+          } else if (type === 'speech_ready') {
+            const { url } = data as { url?: string }
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMsgId
+                  // `autoplay` is what makes voice mode audible. Setting only
+                  // `audioUrl` attaches a file nobody plays, which is why the
+                  // toggle looked identical whether it was on or off.
+                  ? { ...msg, audioUrl: url, speechPending: false, autoplay: !!url }
+                  : msg
+              )
+            )
+          } else if (type === 'speech_failed') {
+            // Text is still there and readable — a missing voice is not worth
+            // an error bubble. Surface it in the console for diagnosis only.
+            console.warn('[TTS]', (data as { error?: string }).error ?? 'speech failed')
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMsgId ? { ...msg, speechPending: false } : msg
+              )
+            )
           } else if (type === 'done') {
+            if (!isCurrent()) return
             setStageLabel(null)
             setIsGenerating(false)
           }
         },
-        abortControllerRef.current.signal,
+        controller.signal,
       )
     } catch (e) {
       if ((e as Error).name !== 'AbortError') {
@@ -167,12 +299,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         )
       }
     } finally {
-      setIsTyping(false)
-      setStageLabel(null)
-      setIsGenerating(false)
-      endThinking()
+      // Same reason as `done`: a superseded stream must not reset the UI that
+      // now belongs to a newer message.
+      if (isCurrent()) {
+        setIsTyping(false)
+        setStageLabel(null)
+        setIsGenerating(false)
+        endThinking()
+      }
     }
-  }, [webSearch, transitionTo, endThinking])
+  }, [webSearch, voiceReply, transitionTo, endThinking])
 
   useEffect(() => {
     return () => {
@@ -192,13 +328,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       stageLabel,
       webSearch,
       setWebSearch,
+      voiceReply,
+      setVoiceReply,
+      isRestoring,
+      startNewSession,
       handleSend,
       handleStop,
       imageUrls,
       addImage,
       removeImage,
     }),
-    [messages, input, isTyping, isGenerating, stageLabel, webSearch, handleSend, handleStop, imageUrls, addImage, removeImage],
+    [messages, input, isTyping, isGenerating, stageLabel, webSearch, voiceReply, isRestoring, startNewSession, handleSend, handleStop, imageUrls, addImage, removeImage],
   )
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>

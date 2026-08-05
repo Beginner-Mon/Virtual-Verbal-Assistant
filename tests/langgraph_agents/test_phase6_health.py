@@ -237,3 +237,53 @@ async def test_run_all_checks_runs_in_parallel():
         # 7 checks each sleep 50ms → sequential = 350ms, parallel < 150ms
         assert elapsed_s < 0.20, f"Took {elapsed_s:.2f}s, expected <0.20s (parallel)"
         assert result["all_ok"] is True
+
+
+# ── check_postgres must not build its own pool ──────────────────────────────
+#
+# Regression guard for the connection leak found 05/08: the probe used to do
+# `PostgresClient()` per call and never close it — 2 connections leaked per
+# probe against Neon, never reclaimed. These tests pin the two properties that
+# fix depends on, because every other test in this file mocks check_postgres
+# away and so covers none of its internals.
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_check_postgres_reuses_shared_client():
+    """It must go through get_pg_client(), never construct a PostgresClient."""
+    shared = MagicMock()
+    shared.connect = AsyncMock()
+    shared.fetchval = AsyncMock(return_value=1)
+
+    from langgraph_agents.api import health
+
+    with patch("langgraph_agents.shared.get_pg_client", return_value=shared), \
+         patch("langgraph_agents.db.postgres.PostgresClient") as ctor:
+        result = await health.check_postgres()
+
+    assert result.ok is True
+    assert ctor.call_count == 0, "check_postgres built its own pool again"
+    shared.connect.assert_awaited_once()
+    shared.fetchval.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_check_postgres_actually_queries_not_just_connects():
+    """A reachable pool with a dead database must report not-ok.
+
+    `connect()` succeeding only proves a pool exists. The probe has to ask the
+    database something.
+    """
+    shared = MagicMock()
+    shared.connect = AsyncMock()
+    shared.fetchval = AsyncMock(side_effect=RuntimeError("server closed connection"))
+
+    from langgraph_agents.api import health
+
+    with patch("langgraph_agents.shared.get_pg_client", return_value=shared):
+        result = await health.check_postgres()
+
+    assert result.ok is False
+    assert "server closed connection" in (result.detail or "")

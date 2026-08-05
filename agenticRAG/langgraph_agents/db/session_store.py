@@ -174,12 +174,18 @@ async def load_session_messages(
     if not header:
         return None
 
+    # `seq_id DESC` is the tie-breaker, and it is not optional: a turn's user
+    # message and its assistant reply are written in one batch and share an
+    # identical `created_at` (verified: both 08:49:10.089752). Ordering on the
+    # timestamp alone leaves the pair's order to the planner, and it really does
+    # come back answer-before-question — which is exactly how the restored
+    # transcript would read.
     if before:
         rows = await pg.fetch(
             """SELECT role, content, token_count, created_at
                FROM messages
                WHERE session_id = $1::uuid AND created_at < $2::timestamptz
-               ORDER BY created_at DESC LIMIT $3""",
+               ORDER BY created_at DESC, seq_id DESC LIMIT $3""",
             session_id, before, limit,
         )
         rows = list(reversed(rows))
@@ -188,7 +194,7 @@ async def load_session_messages(
             """SELECT role, content, token_count, created_at
                FROM messages
                WHERE session_id = $1::uuid
-               ORDER BY created_at DESC LIMIT $2""",
+               ORDER BY created_at DESC, seq_id DESC LIMIT $2""",
             session_id, limit,
         )
         rows = list(reversed(rows))

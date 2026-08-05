@@ -37,14 +37,37 @@ async def check_redis(redis_client, timeout: float = 2.0) -> CheckResult:
         return CheckResult(name="redis", ok=False, latency_ms=elapsed_ms, detail=str(exc))
 
 
-async def check_postgres(timeout: float = 2.0) -> CheckResult:
+async def check_postgres(timeout: float = 5.0) -> CheckResult:
+    """Ping Postgres over the pool the application actually uses.
+
+    This used to do `PostgresClient()` — a brand-new client, and therefore a
+    brand-new pool — on every probe, and never closed it. Measured against Neon:
+    8 connections before, 18 after five probes, still 18 after idling. Two leaked
+    per call, never reclaimed; at a 10s load-balancer interval that walks into
+    Neon's 901-connection ceiling in about an hour.
+
+    It also measured the wrong thing. `connect()` on a fresh client builds a
+    pool, which on a managed database costs 1.3-1.5s — against a 2s budget, so
+    the probe reported `ok: false` on the first call after idle while the
+    database was perfectly healthy. Locally it was sub-millisecond and nobody
+    noticed.
+
+    Now: reuse the shared client (`connect()` is a no-op once the pool is warm)
+    and issue a real `SELECT 1`, which is what "is the database answering?"
+    actually means. The wider budget covers the one cold pool build after boot.
+    """
     t0 = time.perf_counter()
     try:
-        from langgraph_agents.db.postgres import PostgresClient
-        pg = PostgresClient()
+        from langgraph_agents.shared import get_pg_client
+        pg = get_pg_client()
         await asyncio.wait_for(pg.connect(), timeout=timeout)
+        await asyncio.wait_for(pg.fetchval("SELECT 1"), timeout=timeout)
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
         return CheckResult(name="postgres", ok=True, latency_ms=elapsed_ms)
+    except asyncio.TimeoutError:
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+        return CheckResult(name="postgres", ok=False, latency_ms=elapsed_ms,
+                           detail=f"timeout after {timeout}s")
     except Exception as exc:
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
         return CheckResult(name="postgres", ok=False, latency_ms=elapsed_ms, detail=str(exc))

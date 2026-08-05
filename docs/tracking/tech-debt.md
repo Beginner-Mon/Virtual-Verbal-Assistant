@@ -1,8 +1,9 @@
 # Tech Debt & Pending Tasks
 
 > Checklist các việc đã biết nhưng CHƯA làm. Cập nhật khi đóng/ mở item.
-> Last update: 2026-07-31 (K — bổ sung nợ từ FSM refactor, shadow/flash/ground-clamp, quyết định cloud DB).
-> Nguồn trước đó: worklogs 05→12/06-cont; đợt mới: `docs/worklogs/30-07-2026.md`.
+> Last update: 2026-08-05 (K — thi hành Neon, dọn 7 lỗi TS ở FE, nối lại TTS VieNeu).
+> Nguồn trước đó: worklogs 05→12/06-cont; đợt mới: `docs/worklogs/30-07-2026.md`,
+> `docs/worklogs/05-08-2026.md`.
 
 Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng · 🟡 nên làm · ⚪ optional
 
@@ -19,14 +20,14 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
       integration 18/06, worklog 18/06)
 
 - [x] **Chốt nhà cung cấp DB cloud** — Owner chốt **Neon** (31/07). Plan thi hành: **[`.claude/plans/neon-migration.md`](../../.claude/plans/neon-migration.md)**.
-- [x] **Thi hành plan Neon** — ✅ **XONG 31/07**. Backend `:8000` chạy trên Neon (ap-southeast-1),
+- [x] **Thi hành plan Neon** — ✅ **XONG 05/08** (git: `d7851fb`). Backend `:8000` chạy trên Neon (ap-southeast-1),
       dữ liệu ghi vào Neon (đã đối chứng local). DSN nằm ở `agenticRAG/agentic_rag_gemini/.env`
       (gitignored). Chi phí DB thật: **12 query / 1,4 s / lượt = 4,8%** (đo bằng counter, không đoán).
 - [ ] 🔴 **Ingest SEGFAULT khi backend đang chạy** — `scripts/ingest_kb_pgvector.py` chết exit 139,
       **log rỗng, không traceback**. Khoanh vùng được: chết ở `embed_passages()` (inference torch),
       **không** phải DB. Tắt uvicorn thì chạy bình thường → hai tiến trình tranh chấp native runtime
       của torch. Nguy hiểm vì `--reset` xoá bảng TRƯỚC khi crash → **KB rỗng, mọi câu hỏi bị từ chối**.
-      Đã dính 31/07 và mất thời gian truy nhầm hướng.
+      Đã dính 05/08 và mất thời gian truy nhầm hướng.
       **Cần làm**: cho script tự phát hiện backend đang chạy và từ chối, hoặc đảo thứ tự để chỉ xoá
       sau khi embed xong. Tạm thời đã ghi cảnh báo ở QUICKSTART §3.
 - [ ] **Tối ưu ingest (`unnest` + `executemany`) — đã thử, đã hoàn nguyên** — gộp 2 round-trip mỗi
@@ -63,6 +64,18 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
       KHÔNG phải hết dung lượng — KB chỉ ~2918 vector 384 chiều.
 
 ## 🟠 Quan trọng
+
+- [ ] **`AdminLinkProviderForUser` gọi trong PreSignUp có mép sắc đã biết** — đây là cách AWS khuyến
+      nghị, nhưng nhiều báo cáo cho thấy **lần link đầu tiên** tuỳ cấu hình pool có thể lỗi và user
+      phải bấm đăng nhập lại một lần nữa mới vào được. K **chưa verify được** vì máy không có AWS
+      credentials. Khi deploy sandbox xong, test đúng kịch bản: tạo tài khoản email → đăng nhập
+      Google cùng email → xem lần redirect đầu có vào thẳng không. Nếu có lỗi thì cần bắt và hiển thị
+      thông báo "thử lại" thay vì để user thấy lỗi thô. Worklog 05/08 §9.
+- [ ] **`loginHint` là no-op với Google** — AWS ghi rõ *"You can't forward login hints to SAML, Apple,
+      Login With Amazon, Google, or Facebook (Meta) IdPs"*. Giữ trong `lib/googleSignIn.ts` vì vô hại
+      và **sẽ chạy nếu sau này thêm OIDC provider chung**, nhưng **không được tính nó là lớp bảo vệ**.
+      Với Google, tài khoản user chọn là **không thể ràng buộc trước** — chỉ kiểm tra được sau
+      (`takeExpectedEmail`) và không để nó đẻ tài khoản trùng (PreSignUp linking).
 
 - [ ] **Summarizer E2E với LLM thật** — PR 2 mới có unit test (mock LLM/PG). Cần chạy thủ công:
       hội thoại vượt 10k token → row `summaries` xuất hiện, turn sau memory node load chunk,
@@ -126,6 +139,47 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
       phải chạy tiền cảnh. Fix Bloom vẫn nguyên trong config; các thay đổi sau đó (`shadowFit`,
       `groundClamp`) không đụng postprocessing.
 - [ ] **Bundle FE nặng** — JS ~2MB (gzip ~580KB) + VRM asset 9-29MB bundle thẳng. Chưa lazy-load/CDN.
+- [ ] **FE không có test runner** — `package.json` chỉ có `dev/build/lint/preview`, không có `test`.
+      Mọi hồi quy FE hiện chỉ dựa vào `tsc -b`. Backend có 275 test, FE có 0. Cân nhắc vitest +
+      vài test cho `AnimationController` / `shadowFit` / `groundClamp` (logic thuần, dễ test).
+- [ ] **`npm run lint` đỏ: 11 error / 3 warning** — có sẵn, không chặn `build` nên không ai thấy.
+      Gồm `no-explicit-any` ×3 (`lib/bvhToVrm.ts`), `set-state-in-effect` ×2, `refs`-during-render
+      (`FloatingNavBar.tsx:457`), import thừa (`LogOut`, `LucideIcon`), `tick` tự tham chiếu trong
+      `useCallback` (`ChatMessage.tsx:107`). K không sửa vì nằm ngoài phạm vi "chặn build" — cần
+      Owner quyết có đưa `lint` vào `build`/CI không, nếu không nó sẽ cứ trôi tiếp.
+- [ ] **Panel Sessions vẫn là empty state hardcode** — `ChatSessionsPanel.tsx` chưa gọi API nào,
+      dù `api.ts` đã có `listSessions()`/`deleteSession()` và backend đã có `GET /sessions` +
+      `DELETE /sessions/{user}/{session}`. Từ 05/08 session đã giữ qua refresh và có nút "cuộc trò
+      chuyện mới", nhưng **session cũ vẫn không có đường quay lại** — chúng nằm trong Postgres,
+      chỉ thiếu UI. Kèm: cột `conversations.title` có sẵn nhưng **chưa ai ghi**.
+- [ ] **Lịch sử khôi phục không có audio** — WAV nằm trên máy TTS với tên ngẫu nhiên, không lưu kèm
+      transcript. Tin nhắn khôi phục phải bấm nút loa để tổng hợp lại. **Owner đã xác nhận (05/08)
+      đây là hành vi ĐÚNG**, không cần sửa gấp. Khi đẩy audio lên S3 ở Phase 7 thì lưu URL vào
+      `messages` là tự khỏi.
+- [ ] **`bronya.vrm` không có morph viseme** — bindCount của A/I/U/E/O đều **0**: nhóm blendShape có
+      tồn tại nhưng không bind vào morph nào, nên lip sync chạy đúng mà **miệng vẫn đứng im**. Ba
+      model kia đều [1,1,1,1,1]. Mặc định là Con-Gai-Khang nên chưa lộ. **Sửa được bằng cách chỉnh
+      file VRM (VRoid/Blender), KHÔNG sửa được bằng code.** Phát hiện 05/08 khi nối lip sync.
+- [ ] **Lip sync mới là Mode 1 (biên độ)** — `LipSyncController` suy miệng từ RMS, mở/khép theo to
+      nhỏ chứ không theo âm vị. Mode 2 (phoneme viseme) cần timestamp mà VieNeu-GGUF không xuất.
+      Muốn khẩu hình đúng chữ thì phải forced-alignment riêng — việc lớn, chưa cần bây giờ.
+- [ ] **Cân nhắc bật `voiceReply` mặc định** — K để mặc định TẮT dựa trên số 77s, nhưng số đó lấy từ
+      một câu trả lời lâm sàng ~2500 ký tự. Đo thật trên câu trả lời thường (175 và 303 ký tự):
+      TTS chỉ **4,5s / 5,5s**, tổng lượt **12,8s / 12,0s** — giọng nói chỉ thêm ~5s. Quyết định của
+      Owner.
+- [ ] **`/chat` giữ SSE mở tới 130s để chờ TTS** — `_poll_speech_result` chặn `done`. FE đã né bằng
+      cách thả UI ở `speech_pending`, nhưng về kiến trúc nên đổi sang: FE nhận `task_id` rồi **poll
+      `GET /tts/{task_id}/result`** (endpoint đã có sẵn, comment gọi nó là "fallback"). Được: stream
+      đóng sớm, sống sót khi mất kết nối, hợp Phase 7 (cloud + edge). Cần Owner quyết vì đổi luồng.
+- [ ] **TTS đặt tên file sai ngôn ngữ** — `services/vieneu_tts/tasks.py` không gửi `language`, nên
+      `api_server.py` default `"en"` ⇒ văn bản tiếng Việt ra `vieneu_en_*.wav`. **Chỉ sai tên file**,
+      `language` không đi vào `tts.infer()`. Cosmetic, nhưng gây hiểu nhầm khi debug.
+- [ ] **File WAV không ai dọn** — mỗi lượt có giọng đẻ ra ~5 MB trong `SpeechLLm/data/temp_audio/`,
+      không có TTL/cleanup. Chạy vài trăm lượt là đầy đĩa. Phase 7 sẽ đẩy sang S3 nhưng local vẫn cần
+      job dọn.
+- [ ] **Commit limit của máy dev gần cạn** — 44,6/44,7 GB khi chạy đồng thời backend + TTS. Lúc đó
+      `tsc`/`node` **không khởi động nổi** (`paging file is too small`, `VirtualAlloc failed`), rất
+      dễ tưởng nhầm là lỗi code. Cần tăng pagefile hoặc đừng chạy TTS song song lúc build FE.
 
 ## ⚪ Optional / Phase sau
 
@@ -148,6 +202,19 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
 ---
 
 ## Đã xong (tham chiếu — không phải pending)
+
+- ✅ **Tin nhắn trả về sai thứ tự (đáp trước hỏi)** — cặp user/assistant ghi cùng batch nên
+  `created_at` **bằng nhau tuyệt đối**; `load_session_messages` chỉ `ORDER BY created_at DESC` ⇒
+  tie-break tuỳ tiện. Cột `seq_id` có sẵn mà không dùng. Thêm `, seq_id DESC`. Chỉ lộ ra khi bắt đầu
+  khôi phục lịch sử — trước đó không ai đọc endpoint này. K 05/08, worklog §6.
+- ✅ **`AudioButton` kẹt file cũ khi `audioUrl` đổi** — nay adopt prop mới và vứt `<audio>` cũ.
+  K 05/08.
+- ✅ **`/health/detailed` rò 2 kết nối Neon mỗi probe** — `check_postgres` dựng `PostgresClient()`
+  mới mỗi lần gọi và không đóng. Đo: 5 probe → 8→18 kết nối, nghỉ 10 s vẫn 18. `max_connections=901`
+  ⇒ LB probe mỗi 10 s là chết DB sau ~1 giờ. Kèm: budget 2 s so với connect Neon 1,3-1,5 s ⇒ lần đầu
+  sau nghỉ `ok=false`. Sửa: dùng `shared.get_pg_client()` + `SELECT 1` thật + budget 5 s.
+  Sau sửa: **15 probe, rò 0**, latency **91-172 ms**, `status: ready`. +2 test canh (cả 7 test cũ
+  đều mock `check_postgres` nên không canh gì). K 05/08, worklog §5.
 
 - ✅ **HNSW iterative_scan** — pgvector 0.8.2 trên DB; bật `SET hnsw.iterative_scan='relaxed_order'`
   ở pool `_init_conn` (postgres.py, best-effort guarded) → mọi connection có, không cần wrap
