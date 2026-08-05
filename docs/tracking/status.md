@@ -401,6 +401,9 @@ Thay toàn bộ animation string-match bằng state machine data-driven. Plan
 
 ## 3. Còn thiếu / pending (theo mức ưu tiên)
 
+> **Backlog đầy đủ nằm ở [tech-debt.md](tech-debt.md)** (cập nhật 31/07, 27 item mở). Mục này chỉ
+> giữ những thứ đang chặn hoặc cần biết ngay; đừng để hai file trôi khỏi nhau.
+
 ### 🔴 Chặn trước khi ra mạng thật
 | # | Task | Ghi chú |
 |---|---|---|
@@ -483,6 +486,7 @@ python -m pytest tests/langgraph_agents/ -q            # 312 (cần Docker + Dee
 | `ECA_UI/frontend/src/lib/AnimationController.ts` | FSM runtime — invariant "không bao giờ T-pose" nằm ở đây (play trước, fade sau) |
 | `ECA_UI/frontend/src/lib/{AnimationRegistry,CameraController,motionAssets}.ts` | Asset layer · camera+cooldown · glob file animation |
 | `ECA_UI/frontend/src/hooks/useFsmTriggers.ts` | Boot (greeting→idle) + timer trigger, kèm bảng liệt kê MỌI nguồn đổi state |
+| `.claude/plans/neon-migration.md` | **Chuyển PostgreSQL lên Neon** — Owner chốt 31/07, chưa thi hành. Có blocker #0: runtime KHÔNG đọc `VVA_PG_DSN` |
 | `.claude/plans/kimodo-alb-endpoint.md` | ALB endpoint cho Kimodo MCP — implemented, chờ N deploy |
 | `scripts/ingest_kb_pgvector.py` · `scripts/kimodo_npz_to_bvh.py` | KB ingest · Kimodo NPZ→BVH converter |
 | `docs/tracking/tech-debt.md` | Việc tồn (nhánh riêng khỏi status.md này) |
