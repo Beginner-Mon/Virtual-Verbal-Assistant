@@ -27,3 +27,17 @@ export const DEFAULT_CAMERA_CONFIG: CameraConfig = {
   offsetY: 0,
   offsetZ: 0,
 }
+
+export interface CameraResponsivePreset {
+  wideFraming: [number, number, number]
+  narrowFraming: [number, number, number]
+}
+
+/** Aspect ratio thresholds for responsive camera offset interpolation.
+ *  aspect ≥ wide → t=0 (full wide framing, desktop)
+ *  aspect ≤ narrow → t=1 (full narrow framing, mobile portrait)
+ *  Between → lerp */
+export const ASPECT_RANGE = {
+  narrow: 0.6,
+  wide: 1.5,
+} as const
