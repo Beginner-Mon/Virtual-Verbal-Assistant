@@ -39,11 +39,27 @@ function clear(key: string) {
  *   only when the app genuinely does not know yet (a cold "sign in with Google"),
  *   in which case any account is a legitimate answer.
  *
- * `loginHint` is a *hint*: it pre-fills the account but the user can still
- * switch. It narrows the accident, it does not make the mismatch check
- * redundant — `readExpectedEmail` still has to run after the redirect.
+ * ⚠️ `loginHint` does NOT reach Google. The Cognito docs are explicit:
+ *
+ *   "When your authorization request invokes a redirect to OIDC IdPs, Amazon
+ *    Cognito adds a login_hint parameter to the request to that third-party
+ *    authorizer. You can't forward login hints to SAML, Apple, Login With
+ *    Amazon, Google, or Facebook (Meta) IdPs."
+ *   — docs.aws.amazon.com/cognito/latest/developerguide/authorization-endpoint.html
+ *
+ * It is kept because it costs nothing and does work for a generic OIDC provider,
+ * should one be added. But for Google there is simply no way to pre-select the
+ * account through Cognito, so the account the user lands on cannot be
+ * constrained — it can only be *checked afterwards*. That makes
+ * `takeExpectedEmail` the primary defence here, not a backstop.
+ *
+ * `prompt` is different: Cognito forwards every value except `none` to the IdP.
+ * That is why passing SELECT_ACCOUNT literally asked Google for the picker.
  */
-export function startGoogleSignIn(expectedEmail?: string): Promise<void> {
+export function startGoogleSignIn(
+  expectedEmail?: string,
+  { alreadySignedIn = false }: { alreadySignedIn?: boolean } = {},
+): Promise<void> {
   const hint = expectedEmail?.trim()
 
   if (hint) {
@@ -55,9 +71,27 @@ export function startGoogleSignIn(expectedEmail?: string): Promise<void> {
   }
   clear(LEGACY_EXPECTED_EMAIL_KEY)
 
+  const options: { loginHint?: string; prompt?: 'LOGIN' } = {}
+  if (hint) options.loginHint = hint
+
+  if (alreadySignedIn) {
+    // Not cosmetic. Amplify does:
+    //     if (!input?.options?.prompt) await assertUserNotAuthenticated()
+    // so linking a provider from inside an authenticated session throws
+    // UserAlreadyAuthenticatedException unless *some* prompt is set. That —
+    // not the account picker — is why the old code passed SELECT_ACCOUNT.
+    //
+    // 'LOGIN' keeps the bypass but, per the Cognito docs, is forwarded to the
+    // IdP as `prompt=login` — "IdPs that accept this parameter also request a
+    // new authentication attempt from the user". So Google re-authenticates
+    // instead of presenting a list of every account the user owns, which is what
+    // let people link the wrong one.
+    options.prompt = 'LOGIN'
+  }
+
   return signInWithRedirect({
     provider: 'Google',
-    ...(hint ? { options: { loginHint: hint } } : {}),
+    ...(Object.keys(options).length > 0 ? { options } : {}),
   })
 }
 

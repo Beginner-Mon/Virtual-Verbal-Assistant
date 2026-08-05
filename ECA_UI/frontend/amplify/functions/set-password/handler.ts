@@ -1,6 +1,5 @@
 import {
   CognitoIdentityProviderClient,
-  AdminCreateUserCommand,
   AdminSetUserPasswordCommand,
   AdminGetUserCommand,
 } from '@aws-sdk/client-cognito-identity-provider'
@@ -44,35 +43,31 @@ export const handler = async (event: any) => {
       }
     }
 
-    const displayName = claims?.['custom:displayName'] || ''
-
+    // This used to call AdminCreateUser, deliberately minting a SECOND Cognito
+    // user for the same person and recording its sub as `emailSub`. That was the
+    // main source of duplicate accounts. The native user is now created up front
+    // by the PreSignUp trigger — for a Google-first sign-up it is the anchor the
+    // Google identity was linked onto — so there is always exactly one user and
+    // setting a password is just setting a password on it.
     let nativeSub: string
-
     try {
-      const result = await cognitoClient.send(new AdminCreateUserCommand({
-        UserPoolId: userPoolId,
-        Username: email,
-        TemporaryPassword: password,
-        MessageAction: 'SUPPRESS',
-        UserAttributes: [
-          { Name: 'email', Value: email },
-          { Name: 'email_verified', Value: 'true' },
-          { Name: 'preferred_username', Value: displayName },
-        ],
-      }))
-      nativeSub = result.User?.Attributes?.find(
-        (a) => a.Name === 'sub'
-      )?.Value!
-    } catch (e: any) {
-      if (e.name !== 'UsernameExistsException') throw e
-
       const existing = await cognitoClient.send(new AdminGetUserCommand({
         UserPoolId: userPoolId,
         Username: email,
       }))
-      nativeSub = existing.UserAttributes?.find(
-        (a) => a.Name === 'sub'
-      )?.Value!
+      nativeSub = existing.UserAttributes?.find((a) => a.Name === 'sub')?.Value ?? ''
+    } catch (e: any) {
+      // Only reachable for accounts created before the single-user model, or if
+      // PreSignUp failed to anchor. Creating one here would resurrect the
+      // duplicate, so fail loudly instead.
+      console.error('NATIVE_USER_MISSING', JSON.stringify({ email, error: e.name }))
+      return {
+        statusCode: 409,
+        body: JSON.stringify({
+          message: 'This account predates the current sign-in model. Please sign out and sign in again.',
+        }),
+        headers: corsHeaders,
+      }
     }
 
     if (!nativeSub) {

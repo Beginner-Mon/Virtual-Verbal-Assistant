@@ -37,9 +37,10 @@ export default function ProfileContent({ onClose }: Props) {
   }
 
   // Linking is the strictest case: the account is already decided, so any other
-  // Google account is unambiguously wrong.
+  // Google account is unambiguously wrong. `alreadySignedIn` is required here —
+  // this runs from an authenticated session, which Amplify otherwise refuses.
   const handleLinkGoogle = () => {
-    startGoogleSignIn(email)
+    startGoogleSignIn(email, { alreadySignedIn: true })
   }
 
   const scrollTo = (id: string) => {

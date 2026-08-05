@@ -65,6 +65,18 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
 
 ## 🟠 Quan trọng
 
+- [ ] **`AdminLinkProviderForUser` gọi trong PreSignUp có mép sắc đã biết** — đây là cách AWS khuyến
+      nghị, nhưng nhiều báo cáo cho thấy **lần link đầu tiên** tuỳ cấu hình pool có thể lỗi và user
+      phải bấm đăng nhập lại một lần nữa mới vào được. K **chưa verify được** vì máy không có AWS
+      credentials. Khi deploy sandbox xong, test đúng kịch bản: tạo tài khoản email → đăng nhập
+      Google cùng email → xem lần redirect đầu có vào thẳng không. Nếu có lỗi thì cần bắt và hiển thị
+      thông báo "thử lại" thay vì để user thấy lỗi thô. Worklog 05/08 §9.
+- [ ] **`loginHint` là no-op với Google** — AWS ghi rõ *"You can't forward login hints to SAML, Apple,
+      Login With Amazon, Google, or Facebook (Meta) IdPs"*. Giữ trong `lib/googleSignIn.ts` vì vô hại
+      và **sẽ chạy nếu sau này thêm OIDC provider chung**, nhưng **không được tính nó là lớp bảo vệ**.
+      Với Google, tài khoản user chọn là **không thể ràng buộc trước** — chỉ kiểm tra được sau
+      (`takeExpectedEmail`) và không để nó đẻ tài khoản trùng (PreSignUp linking).
+
 - [ ] **Summarizer E2E với LLM thật** — PR 2 mới có unit test (mock LLM/PG). Cần chạy thủ công:
       hội thoại vượt 10k token → row `summaries` xuất hiện, turn sau memory node load chunk,
       `memory_search` từ session khác cùng user tìm thấy. (worklog 12/06 defer)

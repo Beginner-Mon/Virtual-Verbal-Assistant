@@ -37,9 +37,23 @@ export const handler = async (event: any) => {
       }
     }
 
+    // Never throw from here. This trigger runs on EVERY token issuance, so a
+    // missing row or a DynamoDB blip used to mean nobody could sign in at all —
+    // a full authentication outage caused by a lookup that is only enriching
+    // claims. Now that one Cognito user is one person, `sub` is a perfectly good
+    // identity and the mapping is an optimisation, not a prerequisite.
     if (!record) {
-      console.error('USER_MAPPING_NOT_FOUND', JSON.stringify({ cognitoSub }));
-      throw new Error('USER_MAPPING_NOT_FOUND');
+      console.warn('USER_MAPPING_NOT_FOUND_FALLBACK', JSON.stringify({ cognitoSub }));
+      event.response = {
+        claimsOverrideDetails: {
+          claimsToAddOrOverride: {
+            'custom:appUserId': cognitoSub,
+            'custom:email': (request.userAttributes.email as string) || '',
+            'custom:displayName': (request.userAttributes.preferred_username as string) || '',
+          },
+        },
+      };
+      return event;
     }
 
     event.response = {
@@ -61,11 +75,17 @@ export const handler = async (event: any) => {
       hasGoogleSub: !!record.googleSub,
     }));
   } catch (error: any) {
-    if (error.message === 'USER_MAPPING_NOT_FOUND') {
-      throw error;
-    }
-    console.error('PRETOKEN_FAILED', JSON.stringify({ cognitoSub, error: error.message }));
-    throw new Error('USER_MAPPING_NOT_FOUND', { cause: error });
+    // Same rule as above: a DynamoDB failure degrades the claims, it does not
+    // lock the user out. `sub` still identifies them.
+    console.error('PRETOKEN_DEGRADED', JSON.stringify({ cognitoSub, error: error.message }));
+    event.response = {
+      claimsOverrideDetails: {
+        claimsToAddOrOverride: {
+          'custom:appUserId': cognitoSub,
+          'custom:email': (request.userAttributes.email as string) || '',
+        },
+      },
+    };
   }
 
   return event;

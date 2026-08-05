@@ -119,18 +119,35 @@ postConfirmationFn.addToRolePolicy(
 );
 emailLocksTable.grantReadWriteData(postConfirmationFn);
 userMappingsTable.grantReadData(preTokenGenerationFn);
-userMappingsTable.grantReadData(preSignUpFn);
+// pre-sign-up now writes too: it records that Google is available for an email,
+// which PostConfirmation can no longer do for linked/anchored accounts.
+userMappingsTable.grantReadWriteData(preSignUpFn);
 userMappingsTable.grantReadData(backend.authStatusHandler.resources.lambda as Function);
 userMappingsTable.grantReadData(backend.lookupEmailHandler.resources.lambda as Function);
 userMappingsTable.grantReadWriteData(backend.setPasswordHandler.resources.lambda as Function);
 
-// IAM for set-password Lambda
+// IAM for set-password Lambda.
+// AdminCreateUser is deliberately absent: creating a user here is what produced
+// the duplicate account. The native user is anchored by PreSignUp instead.
 (backend.setPasswordHandler.resources.lambda as Function).addToRolePolicy(
   new PolicyStatement({
     actions: [
-      'cognito-idp:AdminCreateUser',
       'cognito-idp:AdminSetUserPassword',
       'cognito-idp:AdminGetUser',
+    ],
+    resources: [userPoolArnDecoupled],
+  }),
+);
+
+// IAM for pre-sign-up: it now resolves and links accounts instead of blindly
+// auto-confirming whatever identity arrives.
+preSignUpFn.addToRolePolicy(
+  new PolicyStatement({
+    actions: [
+      'cognito-idp:ListUsers',
+      'cognito-idp:AdminLinkProviderForUser',
+      'cognito-idp:AdminCreateUser',
+      'cognito-idp:AdminSetUserPassword',
     ],
     resources: [userPoolArnDecoupled],
   }),
