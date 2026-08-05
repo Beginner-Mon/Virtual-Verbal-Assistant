@@ -162,7 +162,7 @@ lines.push('  const key = modelId.toLowerCase()')
 for (const id of allIds) {
   const varName = toVarName(id)
   // Compare against the LOWERCASED id: `key` is already lowercased, so a model
-  // file with any uppercase in its name (Con-Gai-Khang) could never match.
+  // file with any uppercase in its name could never match.
   lines.push(`  if (key === '${id.toLowerCase()}') return ${varName}`)
 }
 lines.push('  return null')

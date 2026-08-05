@@ -1,11 +1,74 @@
 # Tech Debt & Pending Tasks
 
 > Checklist các việc đã biết nhưng CHƯA làm. Cập nhật khi đóng/ mở item.
-> Last update: 2026-08-05 (K — thi hành Neon, dọn 7 lỗi TS ở FE, nối lại TTS VieNeu).
+> Last update: 2026-08-05 (K — Neon, 7 lỗi TS, TTS VieNeu, lip sync, auth 1-user, Capacitor).
+> **Đọc mục 🚧 đầu tiên**: đó là những việc K bị chặn cứng, không phải việc chưa kịp làm.
 > Nguồn trước đó: worklogs 05→12/06-cont; đợt mới: `docs/worklogs/30-07-2026.md`,
 > `docs/worklogs/05-08-2026.md`.
 
 Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng · 🟡 nên làm · ⚪ optional
+
+---
+
+## 🚧 K KHÔNG tự giải quyết được — cần Owner/N
+
+> Danh sách này khác các mục bên dưới: đây **không phải việc chưa làm**, mà là việc
+> **K bị chặn cứng**, kèm lý do chính xác. Ghi 05/08 theo yêu cầu của Owner.
+> Nguyên tắc: mọi thứ ở đây K đã viết xong code hoặc đã chẩn đoán xong — thứ thiếu là
+> **quyền truy cập, phần cứng, hoặc một quyết định**, không phải thời gian.
+
+### Thiếu credentials
+
+- [ ] 🔴 **Toàn bộ auth (Đợt 1 + Đợt 2) CHƯA từng chạy thật** — `npx ampx sandbox` chết ở
+      `[InvalidCredentialError] Failed to load default AWS credentials`. `~/.aws/` rỗng, không có
+      `AWS_PROFILE`/`AWS_ACCESS_KEY_ID`, không có aws-cli, `amplify_outputs.json` chưa từng tồn tại.
+      **Hệ quả**: mục tiêu "không duplicate tài khoản" mới chỉ chứng minh được là **biên dịch được**.
+      Chưa biết `AdminLinkProviderForUser` có link sạch không, IAM đủ chưa, `ListUsers` filter có
+      khớp không, `set-password` trên user đã neo có chạy không — mỗi thứ đều đủ sức làm hỏng đăng nhập.
+      **Gỡ chặn**: `npx ampx configure profile` hoặc đặt biến môi trường AWS.
+- [ ] **Tắt scale-to-zero của Neon** — Owner bảo "tắt tạm" nhưng đây là thao tác trên **dashboard
+      Neon**, K không có tài khoản. Ảnh hưởng: request đầu sau khi idle bị cold-start.
+- [ ] 🔑 **Đổi mật khẩu Neon** — DSN đã đi qua kênh chat. Chỉ Owner làm được.
+
+### Thiếu toolchain
+
+- [ ] 🔴 **Không build/chạy được app mobile** — máy **không có JDK, không có Android SDK**; iOS thì
+      **không thể trên Windows** (cần macOS + Xcode). Nên `npx cap add android` chưa chạy, chưa có
+      thư mục `android/`, và toàn bộ `src/lib/nativeAuth.ts` **chưa từng thực thi một lần nào**.
+      **Gỡ chặn**: cài JDK 17+ và Android Studio; iOS cần máy Mac.
+- [ ] **Không xem được bằng mắt** — lip sync, autoplay TTS, hiệu ứng shadow… K chỉ verify được tới
+      lớp dữ liệu (SSE trả gì, file tải về bao nhiêu byte, tsc/build xanh). Phần "nhìn thấy đúng
+      không" luôn phải Owner làm. Từng thử Playwright nhưng treo ở khâu giải mã ảnh, và có lúc máy
+      cạn commit limit khiến `tsc` còn không khởi động nổi.
+
+### Thiếu hạ tầng bên ngoài (Owner sở hữu)
+
+- [ ] 🔴 **App Links cho mobile auth** — cần **một domain thật** ngài sở hữu, rồi host
+      `/.well-known/assetlinks.json` (Android) và `/.well-known/apple-app-site-association` (iOS),
+      **và** khai cùng redirect URI đó trong **Google Cloud console** (Amplify không đụng tới được).
+      Không có domain thì không có đường nào khác: Amplify bản web **từ chối custom scheme**
+      (`invalidRedirectException`) và với origin mặc định của Capacitor nó tự chọn nhầm
+      `http://localhost:5173/`. Checklist đầy đủ: `docs/mobile-app-links.md`.
+      ⚠️ Fingerprint bản **debug và release khác nhau** — khai thiếu một cái là App Link im lặng
+      không chạy, cực khó đoán.
+
+### Thiếu file nguồn (không sửa được bằng code)
+
+- [ ] **`bronya.vrm` không có morph viseme** — bindCount A/I/U/E/O đều **0**. Lip sync chạy đúng mà
+      miệng vẫn đứng im. Phải chỉnh file VRM bằng VRoid/Blender. Ba model kia đều có.
+- [ ] **2 clip AMASS sinh bởi tool khác** — `motion_7b4b8d9e`, `motion_b28e8284` có hierarchy khác
+      converter hiện tại. Regenerate là motion đổi hẳn. Cần người **nhìn bằng mắt** để duyệt bản mới,
+      K không tự quyết được.
+
+### Chờ quyết định, không chờ code
+
+- [ ] **SSAO**: bật `enableNormalPass` hay tắt hẳn — cả hai đều đổi hình ảnh.
+- [ ] **Panel thông báo**: giữ như Tri làm hay khôi phục mockup cũ (Tri xoá có lý do chính đáng —
+      4 toggle đó không bấm được).
+- [ ] **grader-retry nối chữ 2 lần**: Owner từng đề xuất bỏ live-stream, chưa chốt.
+- [ ] **`voiceReply` mặc định bật hay tắt** — đo lại thì giọng nói chỉ thêm ~5s, không phải gấp đôi
+      như K báo ban đầu.
+- [ ] **TTS: đổi sang FE poll thay vì giữ SSE 130s** — đổi luồng, cần Owner duyệt.
 
 ---
 

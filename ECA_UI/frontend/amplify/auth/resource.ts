@@ -1,4 +1,5 @@
 import { defineAuth, secret } from '@aws-amplify/backend';
+import { OAUTH_REDIRECT_URLS } from '../shared/origins';
 
 export const auth = defineAuth({
   loginWith: {
@@ -15,12 +16,12 @@ export const auth = defineAuth({
           familyName: 'family_name',
         }
       },
-      callbackUrls: [
-        'http://localhost:5173/',
-      ],
-      logoutUrls: [
-        'http://localhost:5173/',
-      ],
+      // Includes the `ecaapp://callback/` custom scheme so the system browser
+      // can hand control back to an installed Capacitor build. Cognito accepts
+      // custom schemes; the same URI must also be registered in the Google
+      // console and declared by the native project.
+      callbackUrls: OAUTH_REDIRECT_URLS,
+      logoutUrls: OAUTH_REDIRECT_URLS,
     }
   },
   userAttributes: {

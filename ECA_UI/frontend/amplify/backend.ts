@@ -7,6 +7,7 @@ import { RestApi, LambdaIntegration, CognitoUserPoolsAuthorizer, AuthorizationTy
 import { Function } from 'aws-cdk-lib/aws-lambda';
 
 import { Table, AttributeType, BillingMode } from 'aws-cdk-lib/aws-dynamodb';
+import { ALLOWED_ORIGINS } from './shared/origins';
 
 const preSignUpHandler = defineFunction({
   name: 'pre-sign-up-handler',
@@ -193,14 +194,24 @@ const authorizer = new CognitoUserPoolsAuthorizer(backend.stack, 'AuthApiAuthori
 api.addGatewayResponse('UnauthorizedResponse', {
   type: ResponseType.UNAUTHORIZED,
   responseHeaders: {
-    'Access-Control-Allow-Origin': "'http://localhost:5173'",
+    // API Gateway builds these before any integration runs, so the caller's
+    // origin cannot be reflected the way the Lambdas do it. '*' is safe for
+    // these two: they are 401/403 shells carrying no user data, and the app
+    // authenticates with an Authorization header rather than cookies, so no
+    // credentialed request is ever widened by it.
+    'Access-Control-Allow-Origin': "'*'",
     'Access-Control-Allow-Headers': "'Content-Type,Authorization'",
   },
 });
 api.addGatewayResponse('AccessDeniedResponse', {
   type: ResponseType.ACCESS_DENIED,
   responseHeaders: {
-    'Access-Control-Allow-Origin': "'http://localhost:5173'",
+    // API Gateway builds these before any integration runs, so the caller's
+    // origin cannot be reflected the way the Lambdas do it. '*' is safe for
+    // these two: they are 401/403 shells carrying no user data, and the app
+    // authenticates with an Authorization header rather than cookies, so no
+    // credentialed request is ever widened by it.
+    'Access-Control-Allow-Origin': "'*'",
     'Access-Control-Allow-Headers': "'Content-Type,Authorization'",
   },
 });
@@ -209,14 +220,14 @@ const apiResource = api.root.addResource('api');
 
 const apiUser = apiResource.addResource('user');
 apiUser.addCorsPreflight({
-  allowOrigins: ['http://localhost:5173'],
+  allowOrigins: ALLOWED_ORIGINS,
   allowMethods: ['GET', 'POST', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
 });
 
 const authStatusRes = apiUser.addResource('auth-status');
 authStatusRes.addCorsPreflight({
-  allowOrigins: ['http://localhost:5173'],
+  allowOrigins: ALLOWED_ORIGINS,
   allowMethods: ['GET', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
 });
@@ -229,7 +240,7 @@ authStatusRes.addMethod('GET', new LambdaIntegration(backend.authStatusHandler.r
 
 const lookupRes = apiResource.addResource('lookup');
 lookupRes.addCorsPreflight({
-  allowOrigins: ['http://localhost:5173'],
+  allowOrigins: ALLOWED_ORIGINS,
   allowMethods: ['GET', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
 });
@@ -241,7 +252,7 @@ lookupRes.addMethod('GET', new LambdaIntegration(backend.lookupEmailHandler.reso
 
 const setPasswordRes = apiUser.addResource('set-password');
 setPasswordRes.addCorsPreflight({
-  allowOrigins: ['http://localhost:5173'],
+  allowOrigins: ALLOWED_ORIGINS,
   allowMethods: ['POST', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
 });
