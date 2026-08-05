@@ -11,6 +11,7 @@ import {
 import type { Message } from '../components/ChatMessage'
 import { streamChat } from '../lib/api'
 import { useMotion } from './MotionContext'
+import testAudio from '../asset/audio/test.wav'
 
 function buildInitialMessages(): Message[] {
   const hour = new Date().getHours()
@@ -21,6 +22,7 @@ function buildInitialMessages(): Message[] {
       role: 'assistant',
       content: `${greeting}! My name is ECA, your Virtual Verbal Assistant. How can I help you today? \uD83C\uDF99\uFE0F`,
       timestamp: new Date(),
+      audioUrl: testAudio,
     },
   ]
 }
