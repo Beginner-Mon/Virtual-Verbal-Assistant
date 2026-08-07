@@ -6,7 +6,7 @@ workflows:
     # Chỉ định thư mục chứa code Capacitor
     working_directory: ECA_UI/frontend
     environment:
-      node: 20
+      node: 22
       java: 17
       vars:
         # Cấu hình biến môi trường cho Google Login native
@@ -46,7 +46,7 @@ workflows:
     instance_type: mac_mini_m1
     working_directory: ECA_UI/frontend
     environment:
-      node: 20
+      node: 22
       xcode: latest
       cocoapods: default
       vars:
