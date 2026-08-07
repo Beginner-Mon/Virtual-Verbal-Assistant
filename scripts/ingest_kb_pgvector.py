@@ -135,6 +135,20 @@ def compose_content(rec: dict) -> str:
 # ── Ingest ────────────────────────────────────────────────────────────────
 
 async def ingest(records: list[dict], *, reset: bool) -> None:
+    """Embed everything first, write only once every vector exists.
+
+    The old order was: delete, then embed for ~9 minutes, then insert. On
+    05/08 `embed_passages` segfaulted partway through — exit 139, no traceback —
+    and because the delete had already committed, the knowledge base was left
+    EMPTY. Every question was refused until a full re-ingest finished.
+
+    Embedding now happens against an untouched database, and the destructive
+    part is a single transaction at the end. A crash during the slow, fragile,
+    native-code phase now costs nothing but time.
+
+    Buffering is cheap at this scale: 2918 records x 384 dims x 4 bytes is about
+    4.5 MB.
+    """
     from langgraph_agents.shared import get_embedding_service, get_pg_client
 
     pg = get_pg_client()
@@ -150,50 +164,65 @@ async def ingest(records: list[dict], *, reset: bool) -> None:
             "       constraint on documents, so a plain re-run would duplicate)."
         )
         return
-    if reset and existing:
-        # CASCADE on kb_embeddings.document_id removes the embeddings too.
-        await pg.execute("DELETE FROM documents WHERE source_type = $1", SOURCE_TYPE)
-        print(f"Reset: deleted {existing} existing '{SOURCE_TYPE}' documents (+ embeddings).")
 
     print("Loading embedding model (offline)...")
     embed = get_embedding_service()
 
     total = len(records)
-    inserted = 0
+    # (record, content, vector) triples, built before anything is deleted.
+    staged: list[tuple[dict, str, object]] = []
 
     for start in range(0, total, EMBED_BATCH):
         batch = records[start:start + EMBED_BATCH]
         contents = [compose_content(r) for r in batch]
 
         # Batch encode — one model call per batch instead of per record.
+        # This is the line that segfaulted. Nothing has been deleted yet.
         vectors = embed.embed_passages(contents)
 
-        for rec, content, vector in zip(batch, contents, vectors):
-            doc_id = await pg.fetchval(
-                """
-                INSERT INTO documents (source_type, external_id, title, metadata)
-                VALUES ($1, $2, $3, $4::jsonb)
-                RETURNING id
-                """,
-                SOURCE_TYPE,
-                rec["name"],
-                rec["name"],
-                _metadata_json(rec),
-            )
-            await pg.execute(
-                """
-                INSERT INTO kb_embeddings (document_id, chunk_index, content, embedding)
-                VALUES ($1, 0, $2, $3)
-                """,
-                doc_id,
-                content,
-                vector,
-            )
-            inserted += 1
+        staged.extend(zip(batch, contents, vectors))
+        print(f"  {len(staged)}/{total} embedded", end="\r", flush=True)
 
-        print(f"  {inserted}/{total} indexed", end="\r", flush=True)
+    print(f"\nEmbedded {len(staged)} records. Writing to the database...")
 
-    print(f"\nDone: {inserted} documents + {inserted} embeddings.")
+    # Reaching for the pool directly: PostgresClient has no transaction helper,
+    # and the delete and the inserts must land together or not at all. Without
+    # this, a failure between them leaves a partially populated KB, which is
+    # harder to notice than an empty one.
+    async with pg._pool.acquire() as conn:  # noqa: SLF001 — maintenance script
+        async with conn.transaction():
+            if reset and existing:
+                # CASCADE on kb_embeddings.document_id removes the embeddings.
+                await conn.execute(
+                    "DELETE FROM documents WHERE source_type = $1", SOURCE_TYPE
+                )
+                print(f"  deleted {existing} existing '{SOURCE_TYPE}' documents")
+
+            inserted = 0
+            for rec, content, vector in staged:
+                doc_id = await conn.fetchval(
+                    """
+                    INSERT INTO documents (source_type, external_id, title, metadata)
+                    VALUES ($1, $2, $3, $4::jsonb)
+                    RETURNING id
+                    """,
+                    SOURCE_TYPE,
+                    rec["name"],
+                    rec["name"],
+                    _metadata_json(rec),
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO kb_embeddings (document_id, chunk_index, content, embedding)
+                    VALUES ($1, 0, $2, $3)
+                    """,
+                    doc_id,
+                    content,
+                    vector,
+                )
+                inserted += 1
+
+    print(f"Done: {inserted} documents + {inserted} embeddings.")
 
 
 def _metadata_json(rec: dict) -> str:
@@ -214,12 +243,53 @@ def _metadata_json(rec: dict) -> str:
 
 # ── CLI ───────────────────────────────────────────────────────────────────
 
+BACKEND_HEALTH_URL = "http://127.0.0.1:8000/health"
+
+
+def _backend_is_running(timeout: float = 2.0) -> bool:
+    """Is the API server up on this machine?
+
+    Two processes loading torch at once is what killed the ingest on 05/08: the
+    embedding call died with SIGSEGV and no traceback, which reads like a bug in
+    this script rather than contention. Checking costs 2 seconds and removes an
+    entire class of confusing failure.
+    """
+    import urllib.error
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(BACKEND_HEALTH_URL, timeout=timeout) as resp:
+            return resp.status == 200
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Ingest exercise KB into pgvector.")
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE, help="documents.txt path")
     parser.add_argument("--reset", action="store_true", help="delete existing rows of this source_type first")
     parser.add_argument("--limit", type=int, default=0, help="only ingest the first N records (smoke test)")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="run even while the backend is up (it will probably segfault)",
+    )
     args = parser.parse_args()
+
+    if _backend_is_running() and not args.force:
+        print(
+            "ABORT: the backend is running on :8000.\n"
+            "\n"
+            "  Embedding here loads torch in a second process and dies with\n"
+            "  SIGSEGV (exit 139, no traceback). This has happened before.\n"
+            "\n"
+            "  1. Stop the backend (Ctrl+C in its terminal)\n"
+            "  2. Re-run this command\n"
+            "  3. Start the backend again\n"
+            "\n"
+            "  --force skips this check if you know better."
+        )
+        return 2
 
     if not args.source.exists():
         print(f"ERROR: source not found: {args.source}")

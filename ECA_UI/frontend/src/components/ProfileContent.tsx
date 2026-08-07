@@ -24,7 +24,37 @@ export default function ProfileContent({ onClose }: Props) {
   }, [])
 
   const emailSub = payload?.['custom:emailSub'] || null
-  const googleSub = payload?.['custom:googleSub'] || null
+
+  /**
+   * Is Google actually attached to this account?
+   *
+   * `custom:googleSub` alone was wrong, which is why the badge stayed on "Not
+   * connected" even right after signing in with Google. That claim is injected
+   * from the UserMappings row, and the row is only written on certain paths —
+   * a linked sign-in resolves to the existing user without a PostConfirmation,
+   * and an anchor created by AdminCreateUser is an admin action, not a sign-up.
+   *
+   * The `identities` claim comes from Cognito itself and lists every federated
+   * provider on the user, so it is true by construction. The custom claim is
+   * kept as a fallback for accounts written before that.
+   */
+  const identities = (() => {
+    const raw = payload?.identities
+    if (!raw) return [] as Array<{ providerName?: string }>
+    // Cognito sends an array, but it arrives JSON-encoded in some token shapes.
+    if (Array.isArray(raw)) return raw as Array<{ providerName?: string }>
+    try {
+      const parsed = JSON.parse(String(raw))
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return []
+    }
+  })()
+
+  const googleLinked =
+    identities.some((i) => i?.providerName?.toLowerCase() === 'google') ||
+    !!payload?.['custom:googleSub'] ||
+    payload?.['custom:googleLinked'] === 'true'
   const displayName = payload?.['custom:displayName'] || null
   const email = payload?.['custom:email'] || user?.signInDetails?.loginId || userAttributes?.email || 'Unknown user'
 
@@ -161,10 +191,10 @@ export default function ProfileContent({ onClose }: Props) {
                 </div>
                 <div>
                   <p className="text-sm font-medium text-foreground">Google</p>
-                  <p className="text-xs text-muted-foreground">{googleSub ? 'Connected' : 'Not connected'}</p>
+                  <p className="text-xs text-muted-foreground">{googleLinked ? 'Connected' : 'Not connected'}</p>
                 </div>
               </div>
-              {googleSub ? (
+              {googleLinked ? (
                 <span className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary">
                   Linked
                 </span>
@@ -178,22 +208,6 @@ export default function ProfileContent({ onClose }: Props) {
               )}
             </div>
 
-            <div className="flex items-center justify-between p-3 rounded-xl border border-border/40 bg-card">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-secondary/60 flex items-center justify-center">
-                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/>
-                  </svg>
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-foreground">GitHub</p>
-                  <p className="text-xs text-muted-foreground">Not connected</p>
-                </div>
-              </div>
-              <button className="px-3 py-1.5 rounded-lg text-xs font-medium border border-border/40 text-foreground hover:bg-secondary/60 transition-colors">
-                Link
-              </button>
-            </div>
           </div>
         </div>
       </div>

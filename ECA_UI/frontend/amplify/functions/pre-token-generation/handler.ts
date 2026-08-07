@@ -62,6 +62,9 @@ export const handler = async (event: any) => {
           'custom:appUserId': record.appUserId,
           'custom:emailSub': record.emailSub || '',
           'custom:googleSub': record.googleSub || '',
+          // Since PreSignUp started linking instead of creating a second user,
+          // `googleSub` is no longer written on every path — this flag is.
+          'custom:googleLinked': record.googleLinked || record.googleSub ? 'true' : 'false',
           'custom:displayName': record.displayName || '',
           'custom:email': record.email || '',
         },

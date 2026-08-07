@@ -1,50 +1,62 @@
 # VVA — Status & Roadmap
 
-> Last update: 2026-08-05 (K) | Branch: `feature/langgraph-rewrite`
+> Last update: 2026-08-08 (K) | Branch: `feature/langgraph-rewrite`
 > Audience: K/N/Owner takeover after context compaction — đọc mục 0 trước tiên.
 
 ---
 
 ## 0. TRẠNG THÁI ĐANG TREO (đọc trước — dễ mất khi compact)
 
-- **Trạng thái service lúc viết file này (05/08)**: backend `:8000` → `{"status":"ok"}` ✅ ·
-  docker `vva-postgres`/`vva-redis`/`vva-searxng` đang chạy ✅ · **frontend `:5173` ĐANG TẮT** ❌
-  (chạy `cd ECA_UI/frontend && npm run dev`). Lệnh đầy đủ ở §5. Docker Desktop có thể chưa bật —
-  nếu `docker compose` báo lỗi pipe thì mở `Docker Desktop.exe` rồi chờ ~5-30s.
-  > Lưu ý: `vva-postgres` local giờ **không còn là DB đang dùng** — chỉ giữ làm đường lùi.
-- 🆕 **PostgreSQL ĐÃ LÊN NEON (05/08)** — backend `:8000` đọc/ghi trên Neon `ap-southeast-1`.
-  DSN nằm ở `agenticRAG/agentic_rag_gemini/.env` (**gitignored**). Dùng **direct endpoint**
-  (KHÔNG phải `-pooler`). Postgres local **vẫn giữ nguyên** làm đường lùi — chưa `down -v`.
-  - **Rollback**: xoá dòng `VVA_PG_DSN` trong file `.env` đó → restart backend → về local.
-  - Chi tiết + số đo: `.claude/plans/neon-migration.md` (v4.0) và `docs/worklogs/05-08-2026.md`.
-  - ⚠️ **Redis và file motion/audio VẪN Ở LOCAL.** Mới chuyển 1 trong 3 kho dữ liệu.
-- **Git**: HEAD = `f418768` (merge nhánh FE của bạn Owner + fix Neon).
-  Merge conflict đã xử lý: chỉ 1 file (`db/postgres.py`) — hai bên dùng tên biến env khác nhau,
-  đã nhận **cả hai** (`VVA_PG_DSN` ưu tiên, `POSTGRES_DSN` alias).
-  ⚠️ **Working tree đang có thay đổi CHƯA COMMIT** (docs + 8 file FE ở mục dưới) — K không tự commit.
-- ✅ **7 lỗi TS ở FE đã sửa (05/08)** — `npm run build` xanh trở lại. Nhân tiện lộ ra **1 bug thật
-  tsc không bắt được**: `getManifest()` so `key` (đã lowercase) với `'Con-Gai-Khang'` ⇒ nhánh chết,
-  model đó không bao giờ lấy được blendShape manifest. Sửa ở **generator**
-  (`frontend/scripts/extract-vrm-meta.mjs`) vì `vrmManifest.ts` là file sinh tự động. Worklog 05/08 §3.
-  - ⚠️ `npm run lint` **vẫn đỏ** (11 error) — trạng thái có sẵn, không nằm trong `build`, chờ Owner.
-  - ⚠️ FE **không có test runner** — không có hồi quy nào ngoài `tsc -b`.
-- 🆕 **TTS VieNeu ĐÃ CHẠY THẬT (05/08)** — chat có tiếng, verify E2E `speech_ready` + WAV 5,1 MB.
-  Bật bằng toggle **"Trả lời bằng giọng nói"** trong menu `+` của khung chat, **mặc định TẮT**
-  (lượt có giọng 76,7 s vs ~33 s chỉ chữ).
-  - **Cần chạy thêm service :5000**: `cd SpeechLLm && C:\Users\Nguyen\miniconda3\envs\tts\python.exe
-    api_server.py`. Lưu ý env là **`tts`**, KHÔNG phải `firstconda` — `firstconda` không có `vieneu`.
-  - 🔴 Đã sửa bug chặn: `config/langgraph.yaml` để `timeout: 15` trong khi TTS chạy **18 ms/ký tự**
-    ⇒ mọi câu trả lời thật đều `speech_failed`. Nay 120 s, poll ở `main.py` 60 → 130 s.
-  - ⚠️ **Chưa xem tận mắt trên trình duyệt** — máy cạn commit limit lúc bật cả 2 service. Đã verify
-    tới lớp SSE + tải file; phần `<audio>` phát là code sẵn của bạn Owner.
-  - ⚠️ Backend `:8000` **đã được K restart** lúc 05/08 để nạp config mới.
+- **Service lúc viết file này (08/08)** — kiểm bằng curl, không phải nhớ:
+  backend `:8000` ✅ 200 · **TTS `:5000` ✅ 200** · frontend `:5173` ✅ 200 ·
+  docker `vva-postgres`/`vva-redis`/`vva-searxng` up 8 ngày ✅
+  > `vva-postgres` local **không còn là DB đang dùng** — chỉ là đường lùi.
+  > TTS phải chạy bằng conda env **`tts`**, không phải `firstconda`.
+- **PostgreSQL trên NEON** (`ap-southeast-1`). DSN ở `agenticRAG/agentic_rag_gemini/.env`
+  (gitignored), **direct endpoint** không phải `-pooler`.
+  - Rollback: xoá dòng `VVA_PG_DSN` → restart backend → về local.
+  - ⚠️ **Redis + file motion/audio VẪN Ở LOCAL** — mới chuyển 1/3 kho.
+- **Git**: HEAD `b7ed02e` (Tri, 07/08 — đổi model sang Ane/anne).
+  **22 file chưa commit** — 7 auth + `ingest_kb_pgvector.py` + health (3) + compose + 4 file
+  test/config FE + package(-lock) + 3 doc. K không tự commit.
+
+### 🔴 CHẶN CỨNG — chỉ Owner gỡ được
+
+- **Không có AWS credentials** ⇒ `npx ampx sandbox` chết ở `InvalidCredentialError`.
+  Hệ quả: **toàn bộ thay đổi auth backend chưa chạy thật lần nào.** Chống trùng tài khoản
+  mới chỉ chứng minh được là *biên dịch được*.
+  Gỡ: `cd ECA_UI/frontend && npx ampx configure profile`
+- **Không có JDK/Android SDK**, iOS bất khả trên Windows ⇒ `src/lib/nativeAuth.ts` chưa
+  thực thi lần nào, chưa có thư mục `android/`.
+- **Chưa có domain cho App Links** ⇒ mobile auth không hoàn tất được. Checklist:
+  `docs/mobile-app-links.md`.
+- Danh sách đầy đủ 13 mục: **`docs/tracking/tech-debt.md` mục 🚧** (đọc mục đó trước tiên).
+
+### ✅ Chạy được NGAY, không cần deploy
+
+- **Bug đăng nhập Google chọn nhầm tài khoản rồi kẹt** — 3/4 lớp đã sửa.
+  Báo cáo có dẫn nguồn: `docs/auth-google-incident.md`. Gốc rễ: *xoá localStorage bị nhầm
+  là đăng xuất* — phiên Cognito là cookie trên domain khác.
+  Lớp thứ 4 (chống tạo user trùng) chờ deploy.
+- **Ingest không thể xoá KB nữa** — đảo thứ tự (embed trước, `DELETE`+insert trong 1
+  transaction) + từ chối chạy khi backend đang bật (exit 2, có `--force`).
+  KB verify 2918/2918.
+- **TTS + lip sync + session persistence** — worklog §4, §6, §8.
+- **`/health/detailed` không còn 503 vì TTS chết** — critical vs optional đã tách.
+  Worklog 08/08 §1.
+- **Docker tự dậy lại sau reboot** — `postgres` + `redis` có restart policy. Worklog 08/08 §2.
+- **FE có test runner** — `npm test` trong `ECA_UI/frontend`: **37 test / 3 file / 285ms**
+  (`AnimationController`, `shadowFit`, `groundClamp`). Worklog 08/08 §3.
 
 ### ⭐ Việc đang làm — thứ tự ưu tiên đã Owner chốt (30/07)
 
 | # | Việc | Trạng thái |
 |---|---|---|
 | **P0** | **PostgreSQL → Neon** | ✅ **XONG 05/08** — cutover rồi, chat chạy trên Neon |
-| **P0** | **7 lỗi TS ở FE** | ✅ **XONG 05/08** — `npm run build` xanh lại. Kèm 1 bug thật `getManifest` không bao giờ khớp `Con-Gai-Khang`. Xem worklog 05/08 §3 |
+| **P0** | **7 lỗi TS ở FE** | ✅ **XONG** — kèm 1 bug thật `getManifest` không bao giờ khớp `Con-Gai-Khang`. Worklog §3 |
+| **P0** | **Deploy auth (Đợt 1+2)** | 🔴 **CHẶN** — không có AWS creds. Code xong, chưa chạy thật |
+| **P0** | **Bug Google chọn nhầm tài khoản** | ✅ **3/4 lớp XONG**, chạy ngay. `docs/auth-google-incident.md` |
+| **P0** | **Ingest xoá sạch KB** | ✅ **XONG** — không thể tái diễn. Worklog §13 |
 | **P0** | **KB ingest vào pgvector** | ✅ **XONG** — 2918 rows, giờ nằm trên Neon |
 | **P0** | **Deploy + verify ALB Kimodo** | ⏸ **Chờ N/Owner** — K KHÔNG tự làm (cần AWS creds + tốn ~$24/ngày g5.xlarge + $0.75/ngày ALB). Plan `.claude/plans/kimodo-alb-endpoint.md` đã implemented, chỉ cần chạy checklist §5 (**nhớ đổi `ALB_ALLOWED_CIDR` → IP/32 trước deploy**) |
 | **P1** | **FSM refactor animation** | ✅ **XONG 30/07** — K implement, **17/17 test xanh**. Xem mục dưới + plan §12 |
@@ -60,10 +72,10 @@
     K đã đoán sai 2 lần trước khi đo (chi tiết ở worklog).
   - Lượt ấm **29,3 s ≈ local 28,4 s** → Neon **không** làm chậm đáng kể. Việc đáng làm nhất là
     **giữ pool ấm** (pool nguội 3,29 s vs ấm 1,41 s).
-  - 🔴 **BẪY: không được chạy `scripts/ingest_kb_pgvector.py` khi backend đang chạy** → segfault
-    exit 139, **log rỗng không traceback**, mà `--reset` đã xoá bảng trước đó ⇒ KB rỗng, mọi câu hỏi
-    bị từ chối. Nguyên nhân: tranh chấp native runtime của torch giữa 2 tiến trình. Quy trình đúng
-    ghi ở `scripts/QUICKSTART.md` §3. K đã dính lỗi này 05/08.
+  - ✅ **BẪY NÀY ĐÃ BỊT (08/08)** — trước đây chạy `ingest_kb_pgvector.py` lúc backend đang bật là
+    segfault exit 139 (tranh chấp torch), mà `--reset` đã xoá bảng trước ⇒ KB rỗng. K đã dính 05/08.
+    Nay script **từ chối chạy** khi thấy `:8000` sống (exit 2, có `--force`), và `DELETE` chỉ xảy ra
+    **sau khi** embed xong, trong cùng 1 transaction. Worklog §13.
   - 🔑 **Đổi mật khẩu Neon** trước khi có dữ liệu người dùng thật (DSN đã đi qua kênh chat).
 - **P0 KB ingest — ĐÃ XONG, verify end-to-end** (30/07): `kb_embeddings` từ **0 → 2918 rows**.
   Script mới `scripts/ingest_kb_pgvector.py` (thay 2 script legacy target ChromaDB), parse
@@ -437,9 +449,15 @@ Thay toàn bộ animation string-match bằng state machine data-driven. Plan
 | 4 | Gỡ `null` khỏi CORS allow-list | tôi thêm để test `file://`, phải bỏ trước production |
 
 ### 🟠 Độ tin cậy / vận hành
-- Docker không có restart policy — tắt máy là tắt container, phải tay động `docker compose up -d`.
-- `/health/detailed` trả 503 khi thiếu TTS (optional dep kéo cả health status) — nên tách
-  critical vs optional trước khi có LB/orchestrator thật.
+- ~~Docker không có restart policy~~ — ✅ **XONG 08/08**. `postgres` + `redis` có
+  `restart: unless-stopped` (+ healthcheck `redis-cli ping`). Áp lên container đang chạy bằng
+  `docker update`, không tạo lại ⇒ redis không mất STM.
+  **Còn treo**: redis chạy **không AOF/RDB** — container sống lại nhưng dữ liệu thì không.
+  Bật `--appendonly yes` là đổi hành vi, chờ N chốt.
+- ~~`/health/detailed` trả 503 khi thiếu TTS~~ — ✅ **XONG 08/08**. `CRITICAL_CHECKS` vs
+  `OPTIONAL_CHECKS`; TTS/SearXNG/MCP hỏng ⇒ `degraded` trên HTTP **200**, instance ở lại LB.
+  Check chưa phân loại mặc định là **critical** + log warning (đề phòng quên phân loại thì lỗi
+  kêu to, không âm thầm miễn trừ). Worklog 08/08 §1.
 
 ### 🟡 Việc code cụ thể
 - **17 file chưa commit** (xem §0 và §8): KB ingest (2 file) + FSM refactor (6 file mới, 4 file sửa)

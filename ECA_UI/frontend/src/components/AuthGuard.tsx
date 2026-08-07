@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Outlet, Navigate } from 'react-router-dom'
 import { fetchAuthSession, fetchUserAttributes, signOut } from 'aws-amplify/auth'
 import { AuthContext, type FetchUserAttributesOutput } from '../contexts/AuthContext'
-import { emailsMatch, takeExpectedEmail } from '../lib/googleSignIn'
+import { AUTH_ERROR_KEY, cognitoLogoutUrl, emailsMatch, takeExpectedEmail } from '../lib/googleSignIn'
 import LoadingOverlay from './ui/LoadingOverlay'
 
 function clearLocalAuthStorage() {
@@ -52,8 +52,16 @@ export default function AuthGuard() {
 
             const currentEmail = tokenSource.tokens?.idToken?.payload?.email as string
             if (currentEmail && !emailsMatch(currentEmail, expectedEmail)) {
+              // Clearing local storage is NOT signing out. Cognito holds its own
+              // managed-login session as a cookie on its own domain, so doing
+              // only this left the rejected account still signed in there: the
+              // next "Continue with Google" was authorised straight back into it
+              // with no prompt at all, and the user had no way out. Bounce
+              // through Cognito's /logout so the session actually ends.
               clearLocalAuthStorage()
-              window.location.replace('/login?error=email_mismatch')
+              sessionStorage.setItem(AUTH_ERROR_KEY, 'email_mismatch')
+              const logoutUrl = cognitoLogoutUrl('/')
+              window.location.replace(logoutUrl ?? '/login?error=email_mismatch')
               return undefined
             }
           }

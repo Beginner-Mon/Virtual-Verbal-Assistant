@@ -1,3 +1,4 @@
+import { Amplify } from 'aws-amplify'
 import { signInWithRedirect } from 'aws-amplify/auth'
 import { isNative, openAuthSessionInSystemBrowser } from './nativeAuth'
 
@@ -59,7 +60,10 @@ function clear(key: string) {
  */
 export function startGoogleSignIn(
   expectedEmail?: string,
-  { alreadySignedIn = false }: { alreadySignedIn?: boolean } = {},
+  {
+    alreadySignedIn = false,
+    forceAccountChoice = false,
+  }: { alreadySignedIn?: boolean; forceAccountChoice?: boolean } = {},
 ): Promise<void> {
   const hint = expectedEmail?.trim()
 
@@ -74,10 +78,23 @@ export function startGoogleSignIn(
 
   const options: {
     loginHint?: string
-    prompt?: 'LOGIN'
+    prompt?: 'LOGIN' | 'SELECT_ACCOUNT'
     authSessionOpener?: (url: string) => Promise<void>
   } = {}
   if (hint) options.loginHint = hint
+
+  if (forceAccountChoice) {
+    // The one case where the account picker is the right answer.
+    //
+    // Ending the Cognito session is not enough on a retry after a rejected
+    // sign-in: per the Cognito docs, "the logout endpoint doesn't sign users out
+    // of OIDC or social identity providers". Google still holds its own session,
+    // so a request carrying no `prompt` lets it silently re-select the very
+    // account we just rejected — the bug reappears with nothing on screen to
+    // explain it. Cognito forwards every `prompt` value except `none` to the
+    // IdP, so this is what makes Google ask again.
+    options.prompt = 'SELECT_ACCOUNT'
+  }
 
   if (isNative()) {
     // Google returns `disallowed_useragent` for OAuth inside an embedded
@@ -122,4 +139,39 @@ export function takeExpectedEmail(): string | null {
 /** Case-insensitive: IdPs are not consistent about the casing they return. */
 export function emailsMatch(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase()
+}
+
+/** Where the login page reads a message left behind by a rejected sign-in. */
+export const AUTH_ERROR_KEY = 'authError'
+
+/**
+ * URL that genuinely ends the Cognito session.
+ *
+ * Clearing localStorage does NOT sign a user out. Cognito keeps its own
+ * managed-login session as a cookie on its own domain, so after a rejected
+ * sign-in the next trip to /oauth2/authorize is authorised straight back into
+ * the same account — no account picker, no Google round-trip, no way for the
+ * user to escape it. That is the "it just logs me in as the wrong account
+ * again" bug; the surviving cookie is Cognito's, not Google's.
+ *
+ * Returns null when OAuth is not configured (demo mode), leaving the caller to
+ * fall back to a local-only clear.
+ */
+export function cognitoLogoutUrl(returnPath = '/'): string | null {
+  const cognito = Amplify.getConfig().Auth?.Cognito
+  const domain = cognito?.loginWith?.oauth?.domain
+  const clientId = cognito?.userPoolClientId
+  if (!domain || !clientId) return null
+
+  // Must match a registered logout URL EXACTLY, or Cognito shows its own error
+  // page instead of coming back. '/' is the one every pool has had since the
+  // beginning, so this works against the currently deployed stack too — the
+  // app then falls through AuthGuard to /login on its own, where the reason is
+  // read back out of sessionStorage.
+  const logoutUri = `${window.location.origin}${returnPath}`
+  return (
+    `https://${domain}/logout` +
+    `?client_id=${encodeURIComponent(clientId)}` +
+    `&logout_uri=${encodeURIComponent(logoutUri)}`
+  )
 }

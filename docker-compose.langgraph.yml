@@ -8,6 +8,11 @@ services:
       POSTGRES_PASSWORD: vva_dev
     ports:
       - "5433:5432"
+    # Without this, a Docker Desktop restart (or a host reboot) leaves the
+    # container stopped and every request fails on a dead pool. searxng already
+    # had the policy; postgres and redis did not, which is backwards — the
+    # optional service survived reboots and the critical ones did not.
+    restart: unless-stopped
     deploy:
       resources:
         limits:
@@ -32,6 +37,12 @@ services:
     ports:
       - "6379:6379"
     command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
     deploy:
       resources:
         limits:

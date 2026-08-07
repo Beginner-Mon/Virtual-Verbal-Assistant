@@ -9,6 +9,8 @@
     "prebuild": "node ./scripts/sync-npz-to-bvh.mjs && node ./scripts/extract-vrm-meta.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -65,7 +67,8 @@
     "tailwindcss": "^4.3.0",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
-    "vite": "^6.4.3"
+    "vite": "^6.4.3",
+    "vitest": "^4.1.10"
   },
   "overrides": {
     "semver": "7.8.1"

@@ -164,9 +164,16 @@ def create_app() -> FastAPI:
         graph = _get_graph()
         redis_client = _get_redis()
         result = await run_all_checks(graph, redis_client)
+        # 503 only when a CRITICAL dep is down (see health.CRITICAL_CHECKS).
+        # A failing optional dep reports status "degraded" on a 200 so the
+        # load balancer keeps this instance in rotation.
         status_code = 200 if result["all_ok"] else 503
         return JSONResponse(
-            content={"status": result["status"], "checks": result["checks"]},
+            content={
+                "status": result["status"],
+                "checks": result["checks"],
+                "degraded": result["degraded"],
+            },
             status_code=status_code,
         )
 
