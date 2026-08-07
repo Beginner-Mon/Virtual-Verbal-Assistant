@@ -1,4 +1,5 @@
 import { signInWithRedirect } from 'aws-amplify/auth'
+import { isNative, openAuthSessionInSystemBrowser } from './nativeAuth'
 
 /**
  * The single entry point for "Continue with Google".
@@ -71,8 +72,18 @@ export function startGoogleSignIn(
   }
   clear(LEGACY_EXPECTED_EMAIL_KEY)
 
-  const options: { loginHint?: string; prompt?: 'LOGIN' } = {}
+  const options: {
+    loginHint?: string
+    prompt?: 'LOGIN'
+    authSessionOpener?: (url: string) => Promise<void>
+  } = {}
   if (hint) options.loginHint = hint
+
+  if (isNative()) {
+    // Google returns `disallowed_useragent` for OAuth inside an embedded
+    // webview, so the sign-in page has to open in the system browser.
+    options.authSessionOpener = openAuthSessionInSystemBrowser
+  }
 
   if (alreadySignedIn) {
     // Not cosmetic. Amplify does:

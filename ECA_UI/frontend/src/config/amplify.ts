@@ -16,6 +16,17 @@ export async function initializeAmplify(): Promise<void> {
     if (!outputs.default || Object.keys(outputs.default).length === 0) {
       throw new Error('Amplify outputs are empty')
     }
+    // Both must be in place BEFORE configure: the callback listener so an
+    // App Link arriving during start-up is not dropped, and the token storage so
+    // Amplify never writes a session to the webview's localStorage first.
+    const { isNative, listenForAuthCallback, useNativeTokenStorage } = await import(
+      '../lib/nativeAuth'
+    )
+    if (isNative()) {
+      await useNativeTokenStorage()
+      await listenForAuthCallback()
+    }
+
     Amplify.configure(outputs.default)
     customOutputs = (outputs.default as any).custom || {}
     isAmplifyConfigured = true

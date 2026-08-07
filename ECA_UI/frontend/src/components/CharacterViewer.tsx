@@ -2,7 +2,7 @@ import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMHumanBoneName } from '@pixiv/three-vrm'
 import type { VRM } from '@pixiv/three-vrm'
-import cgkUrl from '../asset/models/Ane.vrm'
+import anneUrl from '../asset/models/anne.vrm'
 import { useTheme } from '../contexts/ThemeContext'
 import { OrbitControls, Html } from '@react-three/drei'
 import { useRef, useEffect, useState, Suspense, useMemo } from 'react'
@@ -534,13 +534,13 @@ export default function CharacterViewer() {
   const { selectedVrmId, vrmOptions, avatarRef, setClipInfo } = useMotion()
 
   const selectedVrm = vrmOptions.find((o) => o.id === selectedVrmId)
-  const vrmUrl = selectedVrm?.url ?? cgkUrl
+  const vrmUrl = selectedVrm?.url ?? anneUrl
   // Readiness gate driven by VRMCharacter: the model (and this overlay) swap
   // only when the first pose is actually applied — never a timed wait.
   const [viewerReady, setViewerReady] = useState(false)
   // Derive a stable model id ("seele", "bronya", "bronya_long") from the asset
   // label so loadProfile can pick a per-model override.
-  const modelId = (selectedVrm?.label ?? 'Ane.vrm')
+  const modelId = (selectedVrm?.label ?? 'anne.vrm')
     .replace(/\.vrm$/i, '')
     .replace(/^.*\//, '')
     .toLowerCase()

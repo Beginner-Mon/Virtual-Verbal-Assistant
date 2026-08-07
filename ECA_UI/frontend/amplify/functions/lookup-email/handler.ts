@@ -1,15 +1,11 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
 import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb'
+import { corsHeadersFor } from '../shared/cors'
 
 const client = new DynamoDBClient({})
 const docClient = DynamoDBDocumentClient.from(client)
 
 const TABLE_NAME = process.env.USER_MAPPINGS_TABLE_NAME
-const corsHeaders = {
-  'Content-Type': 'application/json',
-  'Access-Control-Allow-Origin': 'http://localhost:5173',
-  'Access-Control-Allow-Headers': 'Content-Type,Authorization',
-}
 
 export const handler = async (event: any) => {
   try {
@@ -19,7 +15,7 @@ export const handler = async (event: any) => {
       return {
         statusCode: 400,
         body: JSON.stringify({ message: 'Missing email parameter' }),
-        headers: corsHeaders,
+        headers: corsHeadersFor(event),
       }
     }
 
@@ -42,14 +38,14 @@ export const handler = async (event: any) => {
         // accounts created before the change still answer correctly.
         hasGoogle: !!record?.googleLinked || !!record?.googleSub,
       }),
-      headers: corsHeaders,
+      headers: corsHeadersFor(event),
     }
   } catch (error) {
     console.error('LOOKUP_FAILED', JSON.stringify({ errorMessage: (error as Error).message }))
     return {
       statusCode: 500,
       body: JSON.stringify({ message: 'Failed to lookup email' }),
-      headers: corsHeaders,
+      headers: corsHeadersFor(event),
     }
   }
 }

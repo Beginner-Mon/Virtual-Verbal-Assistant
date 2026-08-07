@@ -5,17 +5,13 @@ import {
 } from '@aws-sdk/client-cognito-identity-provider'
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
 import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb'
+import { corsHeadersFor } from '../shared/cors'
 
 const cognitoClient = new CognitoIdentityProviderClient({})
 const dynamoClient = new DynamoDBClient({})
 const docClient = DynamoDBDocumentClient.from(dynamoClient)
 
 const TABLE_NAME = process.env.USER_MAPPINGS_TABLE_NAME
-const corsHeaders = {
-  'Content-Type': 'application/json',
-  'Access-Control-Allow-Origin': 'http://localhost:5173',
-  'Access-Control-Allow-Headers': 'Content-Type,Authorization',
-}
 
 export const handler = async (event: any) => {
   try {
@@ -26,7 +22,7 @@ export const handler = async (event: any) => {
       return {
         statusCode: 400,
         body: JSON.stringify({ message: 'Password must be at least 8 characters' }),
-        headers: corsHeaders,
+        headers: corsHeadersFor(event),
       }
     }
 
@@ -39,7 +35,7 @@ export const handler = async (event: any) => {
       return {
         statusCode: 401,
         body: JSON.stringify({ message: 'Unauthorized' }),
-        headers: corsHeaders,
+        headers: corsHeadersFor(event),
       }
     }
 
@@ -66,7 +62,7 @@ export const handler = async (event: any) => {
         body: JSON.stringify({
           message: 'This account predates the current sign-in model. Please sign out and sign in again.',
         }),
-        headers: corsHeaders,
+        headers: corsHeadersFor(event),
       }
     }
 
@@ -74,7 +70,7 @@ export const handler = async (event: any) => {
       return {
         statusCode: 500,
         body: JSON.stringify({ message: 'Failed to resolve native user' }),
-        headers: corsHeaders,
+        headers: corsHeadersFor(event),
       }
     }
 
@@ -97,14 +93,14 @@ export const handler = async (event: any) => {
     return {
       statusCode: 200,
       body: JSON.stringify({ message: 'Password set successfully' }),
-      headers: corsHeaders,
+      headers: corsHeadersFor(event),
     }
   } catch (error: any) {
     console.error('SET_PASSWORD_FAILED', JSON.stringify({ errorMessage: error.message }))
     return {
       statusCode: 500,
       body: JSON.stringify({ message: 'Failed to set password' }),
-      headers: corsHeaders,
+      headers: corsHeadersFor(event),
     }
   }
 }
