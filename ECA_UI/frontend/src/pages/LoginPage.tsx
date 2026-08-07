@@ -16,9 +16,16 @@ export default function LoginPage() {
   const [mismatchError, setMismatchError] = useState(false)
 
   useEffect(() => {
-    if (searchParams.get('error') === 'email_mismatch') {
+    // Check both query param and sessionStorage: the Cognito logout redirect
+    // chain (signOut → Cognito logout endpoint → / → /login) loses query
+    // params, so AuthGuard persists the flag to sessionStorage as fallback.
+    const fromParam = searchParams.get('error') === 'email_mismatch'
+    const fromStorage = sessionStorage.getItem('auth_error') === 'email_mismatch'
+
+    if (fromParam || fromStorage) {
       setMismatchError(true)
-      setSearchParams({}, { replace: true })
+      if (fromParam) setSearchParams({}, { replace: true })
+      sessionStorage.removeItem('auth_error')
     }
   }, [searchParams, setSearchParams])
 

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Outlet, Navigate } from 'react-router-dom'
 import { fetchAuthSession, fetchUserAttributes, signOut } from 'aws-amplify/auth'
 import { AuthContext, type FetchUserAttributesOutput } from '../contexts/AuthContext'
-import { emailsMatch, takeExpectedEmail } from '../lib/googleSignIn'
+import { emailsMatch, peekExpectedEmail, clearExpectedEmail } from '../lib/googleSignIn'
 import LoadingOverlay from './ui/LoadingOverlay'
 
 function clearLocalAuthStorage() {
@@ -41,7 +41,10 @@ export default function AuthGuard() {
           // had committed to. Until this was shared, only the Profile "link
           // Google" flow set it — so on the login pages a mismatch went
           // completely unchecked and you were signed in as the other account.
-          const expectedEmail = takeExpectedEmail()
+          // We use peek instead of a destructive take so that React StrictMode
+          // double-execution doesn't consume the value on the first pass and
+          // cause the second pass to bypass the mismatch check.
+          const expectedEmail = peekExpectedEmail()
 
           let tokenSource = s
           if (expectedEmail) {
@@ -52,10 +55,21 @@ export default function AuthGuard() {
 
             const currentEmail = tokenSource.tokens?.idToken?.payload?.email as string
             if (currentEmail && !emailsMatch(currentEmail, expectedEmail)) {
+              sessionStorage.setItem('auth_error', 'email_mismatch')
+              try {
+                await signOut({ global: true })
+              } catch {
+                // signOut may throw if the session is already partially dead.
+                // Fall through to manual cleanup.
+              }
               clearLocalAuthStorage()
+              clearExpectedEmail()
               window.location.replace('/login?error=email_mismatch')
               return undefined
             }
+            
+            // Match successful, clear the expectation.
+            clearExpectedEmail()
           }
 
           setSession(tokenSource)

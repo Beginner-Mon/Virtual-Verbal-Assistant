@@ -4,7 +4,7 @@ import {
   AdminGetUserCommand,
 } from '@aws-sdk/client-cognito-identity-provider'
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
-import { DynamoDBDocumentClient, UpdateCommand } from '@aws-sdk/lib-dynamodb'
+import { DynamoDBDocumentClient, UpdateCommand, QueryCommand } from '@aws-sdk/lib-dynamodb'
 import { corsHeadersFor } from '../shared/cors'
 
 const cognitoClient = new CognitoIdentityProviderClient({})
@@ -29,9 +29,9 @@ export const handler = async (event: any) => {
     const claims = event.requestContext.authorizer?.claims
     const userPoolId = claims?.iss?.split('/').pop()
     const email = claims?.['custom:email']
-    const appUserId = claims?.['custom:appUserId']
+    const fallbackAppUserId = claims?.['custom:appUserId']
 
-    if (!userPoolId || !email || !appUserId) {
+    if (!userPoolId || !email || !fallbackAppUserId) {
       return {
         statusCode: 401,
         body: JSON.stringify({ message: 'Unauthorized' }),
@@ -81,15 +81,27 @@ export const handler = async (event: any) => {
       Permanent: true,
     }))
 
-    await docClient.send(new UpdateCommand({
+    // Locate the exact DynamoDB record for this email (which might have been created
+    // by pre-sign-up with a random appUserId) so lookup-email recognizes hasEmail: true.
+    const queryResp = await docClient.send(new QueryCommand({
       TableName: TABLE_NAME,
-      Key: { appUserId },
-      UpdateExpression: 'SET emailSub = :sub',
-      ConditionExpression: 'attribute_not_exists(emailSub)',
-      ExpressionAttributeValues: { ':sub': nativeSub },
+      IndexName: 'email-index',
+      KeyConditionExpression: 'email = :email',
+      ExpressionAttributeValues: { ':email': email },
+      Limit: 1,
     }))
 
-    console.log('PASSWORD_SETUP_COMPLETE', JSON.stringify({ appUserId, email, nativeSub }))
+    const targetAppUserId = queryResp.Items?.[0]?.appUserId ?? fallbackAppUserId
+
+    await docClient.send(new UpdateCommand({
+      TableName: TABLE_NAME,
+      Key: { appUserId: targetAppUserId },
+      UpdateExpression: 'SET emailSub = :sub, email = if_not_exists(email, :email)',
+      ExpressionAttributeValues: { ':sub': nativeSub, ':email': email },
+    }))
+
+    console.log('PASSWORD_SETUP_COMPLETE', JSON.stringify({ targetAppUserId, email, nativeSub }))
+
     return {
       statusCode: 200,
       body: JSON.stringify({ message: 'Password set successfully' }),

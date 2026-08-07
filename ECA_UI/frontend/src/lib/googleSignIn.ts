@@ -74,10 +74,22 @@ export function startGoogleSignIn(
 
   const options: {
     loginHint?: string
-    prompt?: 'LOGIN'
+    prompt?: any
     authSessionOpener?: (url: string) => Promise<void>
   } = {}
-  if (hint) options.loginHint = hint
+  
+  if (hint) {
+    options.loginHint = hint
+    // When we know which email the user should sign in with, force Google to
+    // re-authenticate instead of silently picking from its session cookie.
+    options.prompt = 'LOGIN'
+  } else {
+    // When there is no hint (cold login), force Google to show the account
+    // picker. Without this, if the user was just kicked for a mismatch,
+    // Google will silently auto-pick the active session (the wrong account)
+    // again, trapping them in a loop.
+    options.prompt = 'select_account'
+  }
 
   if (isNative()) {
     // Google returns `disallowed_useragent` for OAuth inside an embedded
@@ -89,14 +101,9 @@ export function startGoogleSignIn(
     // Not cosmetic. Amplify does:
     //     if (!input?.options?.prompt) await assertUserNotAuthenticated()
     // so linking a provider from inside an authenticated session throws
-    // UserAlreadyAuthenticatedException unless *some* prompt is set. That —
-    // not the account picker — is why the old code passed SELECT_ACCOUNT.
-    //
-    // 'LOGIN' keeps the bypass but, per the Cognito docs, is forwarded to the
-    // IdP as `prompt=login` — "IdPs that accept this parameter also request a
-    // new authentication attempt from the user". So Google re-authenticates
-    // instead of presenting a list of every account the user owns, which is what
-    // let people link the wrong one.
+    // UserAlreadyAuthenticatedException unless *some* prompt is set.
+    // 'LOGIN' is already set above when hint is present, but if somehow
+    // called without a hint while already signed in, ensure the bypass.
     options.prompt = 'LOGIN'
   }
 
@@ -106,17 +113,18 @@ export function startGoogleSignIn(
   })
 }
 
-/** Read and consume the expected email. Returns null when none was recorded. */
-export function takeExpectedEmail(): string | null {
-  const value =
-    sessionStorage.getItem(EXPECTED_EMAIL_KEY) ??
+/** Read the expected email without consuming it (safe for StrictMode double-execution). */
+export function peekExpectedEmail(): string | null {
+  return sessionStorage.getItem(EXPECTED_EMAIL_KEY) ??
     localStorage.getItem(EXPECTED_EMAIL_KEY) ??
     sessionStorage.getItem(LEGACY_EXPECTED_EMAIL_KEY) ??
     localStorage.getItem(LEGACY_EXPECTED_EMAIL_KEY)
+}
 
+/** Clear the expected email once it has been successfully processed or explicitly rejected. */
+export function clearExpectedEmail(): void {
   clear(EXPECTED_EMAIL_KEY)
   clear(LEGACY_EXPECTED_EMAIL_KEY)
-  return value
 }
 
 /** Case-insensitive: IdPs are not consistent about the casing they return. */
