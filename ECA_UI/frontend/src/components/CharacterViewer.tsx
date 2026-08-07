@@ -2,7 +2,7 @@ import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMHumanBoneName } from '@pixiv/three-vrm'
 import type { VRM } from '@pixiv/three-vrm'
-import cgkUrl from '../asset/models/Con-Gai-Khang.vrm'
+import cgkUrl from '../asset/models/Ane.vrm'
 import { useTheme } from '../contexts/ThemeContext'
 import { OrbitControls, Html } from '@react-three/drei'
 import { useRef, useEffect, useState, Suspense, useMemo } from 'react'
@@ -10,7 +10,7 @@ import * as THREE from 'three'
 import { AnimationController } from '../lib/AnimationController'
 import { AnimationRegistry } from '../lib/AnimationRegistry'
 import { DEFAULT_GROUND_CLAMP, GroundClamp } from '../lib/groundClamp'
-import { type CameraResponsivePreset } from '../lib/CameraConfig'
+import type { CameraResponsivePreset } from '../lib/CameraConfig'
 import type { CameraMode } from '../lib/AnimationStates'
 import { useFsmBoot } from '../hooks/useFsmTriggers'
 import { useMotion } from '../contexts/MotionContext'
@@ -540,7 +540,7 @@ export default function CharacterViewer() {
   const [viewerReady, setViewerReady] = useState(false)
   // Derive a stable model id ("seele", "bronya", "bronya_long") from the asset
   // label so loadProfile can pick a per-model override.
-  const modelId = (selectedVrm?.label ?? 'Con-Gai-Khang.vrm')
+  const modelId = (selectedVrm?.label ?? 'Ane.vrm')
     .replace(/\.vrm$/i, '')
     .replace(/^.*\//, '')
     .toLowerCase()
