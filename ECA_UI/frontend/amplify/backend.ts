@@ -1,4 +1,4 @@
-import { defineBackend, defineFunction } from '@aws-amplify/backend';
+import { defineBackend, defineFunction, secret } from '@aws-amplify/backend';
 import { auth } from './auth/resource';
 import { Stack } from 'aws-cdk-lib';
 import { CfnUserPool, CfnUserPoolDomain } from 'aws-cdk-lib/aws-cognito';
@@ -50,6 +50,21 @@ const setPasswordHandler = defineFunction({
   resourceGroupName: 'auth',
 });
 
+// Links a Google identity onto the caller's own account WITHOUT going through
+// Cognito's sign-up path — see functions/link-google/handler.ts for why the
+// hosted UI cannot do this safely. Needs the Google client id as the audience it
+// verifies ID tokens against; same secret the provider itself uses, so there is
+// one value to rotate.
+const linkGoogleHandler = defineFunction({
+  name: 'link-google',
+  entry: './functions/link-google/handler.ts',
+  timeoutSeconds: 10,
+  resourceGroupName: 'auth',
+  environment: {
+    GOOGLE_CLIENT_ID: secret('GOOGLE_CLIENT_ID'),
+  },
+});
+
 const backend = defineBackend({
   auth,
   preSignUpHandler,
@@ -58,6 +73,7 @@ const backend = defineBackend({
   authStatusHandler,
   lookupEmailHandler,
   setPasswordHandler,
+  linkGoogleHandler,
 });
 
 // --- Cognito User Pool ---
@@ -106,6 +122,7 @@ preSignUpFn.addEnvironment('USER_MAPPINGS_TABLE_NAME', userMappingsTable.tableNa
 (backend.authStatusHandler.resources.lambda as Function).addEnvironment('USER_MAPPINGS_TABLE_NAME', userMappingsTable.tableName);
 (backend.lookupEmailHandler.resources.lambda as Function).addEnvironment('USER_MAPPINGS_TABLE_NAME', userMappingsTable.tableName);
 (backend.setPasswordHandler.resources.lambda as Function).addEnvironment('USER_MAPPINGS_TABLE_NAME', userMappingsTable.tableName);
+(backend.linkGoogleHandler.resources.lambda as Function).addEnvironment('USER_MAPPINGS_TABLE_NAME', userMappingsTable.tableName);
 
 const { region, account } = Stack.of(backend.stack);
 const userPoolArnDecoupled = `arn:aws:cognito-idp:${region}:${account}:userpool/*`;
@@ -126,6 +143,18 @@ userMappingsTable.grantReadWriteData(preSignUpFn);
 userMappingsTable.grantReadData(backend.authStatusHandler.resources.lambda as Function);
 userMappingsTable.grantReadData(backend.lookupEmailHandler.resources.lambda as Function);
 userMappingsTable.grantReadWriteData(backend.setPasswordHandler.resources.lambda as Function);
+userMappingsTable.grantReadWriteData(backend.linkGoogleHandler.resources.lambda as Function);
+
+// IAM for link-google. AdminLinkProviderForUser ONLY — deliberately no
+// AdminCreateUser: this endpoint attaches an identity to an account that already
+// exists, and it must stay structurally incapable of minting one. That is the
+// entire difference between it and the hosted-UI link path it replaces.
+(backend.linkGoogleHandler.resources.lambda as Function).addToRolePolicy(
+  new PolicyStatement({
+    actions: ['cognito-idp:AdminLinkProviderForUser'],
+    resources: [userPoolArnDecoupled],
+  }),
+);
 
 // IAM for set-password Lambda.
 // AdminCreateUser is deliberately absent: creating a user here is what produced
@@ -257,6 +286,19 @@ setPasswordRes.addCorsPreflight({
   allowHeaders: ['Content-Type', 'Authorization'],
 });
 setPasswordRes.addMethod('POST', new LambdaIntegration(backend.setPasswordHandler.resources.lambda, {
+  proxy: true,
+}), {
+  authorizer,
+  authorizationType: AuthorizationType.COGNITO,
+});
+
+const linkGoogleRes = apiUser.addResource('link-google');
+linkGoogleRes.addCorsPreflight({
+  allowOrigins: ALLOWED_ORIGINS,
+  allowMethods: ['POST', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization'],
+});
+linkGoogleRes.addMethod('POST', new LambdaIntegration(backend.linkGoogleHandler.resources.lambda, {
   proxy: true,
 }), {
   authorizer,

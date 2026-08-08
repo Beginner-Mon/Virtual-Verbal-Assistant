@@ -14,6 +14,17 @@ import { isNative, openAuthSessionInSystemBrowser } from './nativeAuth'
  * Only one call site recorded the intended email, so a mismatch on the login
  * pages was never detected at all: picking a different Google account silently
  * signed you in as that other person.
+ *
+ * SCOPE — this is SIGN-IN only. Linking Google to an account you are already
+ * signed into does not come through here any more; it uses `lib/googleLink.ts`,
+ * which talks to Google directly. The reason is not tidiness: through the hosted
+ * UI a link is a *sign-up*, so choosing the wrong account made Cognito create a
+ * real account for that address before any check could run. An `alreadySignedIn`
+ * option used to exist here for that flow and is gone — the flow is gone.
+ *
+ * The remaining callers are all genuinely signed out, where any Google account
+ * the user picks is a legitimate answer and creating one is the correct
+ * behaviour.
  */
 
 const EXPECTED_EMAIL_KEY = 'expectedEmail'
@@ -60,10 +71,7 @@ function clear(key: string) {
  */
 export function startGoogleSignIn(
   expectedEmail?: string,
-  {
-    alreadySignedIn = false,
-    forceAccountChoice = false,
-  }: { alreadySignedIn?: boolean; forceAccountChoice?: boolean } = {},
+  { forceAccountChoice = false }: { forceAccountChoice?: boolean } = {},
 ): Promise<void> {
   const hint = expectedEmail?.trim()
 
@@ -100,21 +108,6 @@ export function startGoogleSignIn(
     // Google returns `disallowed_useragent` for OAuth inside an embedded
     // webview, so the sign-in page has to open in the system browser.
     options.authSessionOpener = openAuthSessionInSystemBrowser
-  }
-
-  if (alreadySignedIn) {
-    // Not cosmetic. Amplify does:
-    //     if (!input?.options?.prompt) await assertUserNotAuthenticated()
-    // so linking a provider from inside an authenticated session throws
-    // UserAlreadyAuthenticatedException unless *some* prompt is set. That —
-    // not the account picker — is why the old code passed SELECT_ACCOUNT.
-    //
-    // 'LOGIN' keeps the bypass but, per the Cognito docs, is forwarded to the
-    // IdP as `prompt=login` — "IdPs that accept this parameter also request a
-    // new authentication attempt from the user". So Google re-authenticates
-    // instead of presenting a list of every account the user owns, which is what
-    // let people link the wrong one.
-    options.prompt = 'LOGIN'
   }
 
   return signInWithRedirect({

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { IdCard, User, KeyRound, Link2, LogOut } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { fetchAuthSession } from 'aws-amplify/auth'
-import { startGoogleSignIn } from '../lib/googleSignIn'
+import { linkGoogleAccount, mountGoogleLinkButton } from '../lib/googleLink'
 import { Avatar, AvatarImage, AvatarFallback } from './ui/avatar'
 
 interface Props {
@@ -66,12 +66,40 @@ export default function ProfileContent({ onClose }: Props) {
     navigate('/set-password')
   }
 
-  // Linking is the strictest case: the account is already decided, so any other
-  // Google account is unambiguously wrong. `alreadySignedIn` is required here —
-  // this runs from an authenticated session, which Amplify otherwise refuses.
-  const handleLinkGoogle = () => {
-    startGoogleSignIn(email, { alreadySignedIn: true })
-  }
+  // ── Linking Google ─────────────────────────────────────────────────────
+  //
+  // Deliberately NOT signInWithRedirect. Through the hosted UI a link is a
+  // sign-up, so choosing the wrong account in Google's chooser made Cognito
+  // create an account for that address before anything could object. Here the
+  // credential goes straight to an authenticated endpoint that refuses a
+  // mismatch without writing anything.
+  const googleButtonRef = useRef<HTMLDivElement | null>(null)
+  const [linkState, setLinkState] = useState<'idle' | 'working' | 'linked'>('idle')
+  const [linkError, setLinkError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const container = googleButtonRef.current
+    if (!container || googleLinked || linkState === 'linked') return
+
+    void mountGoogleLinkButton(container, {
+      loginHint: email,
+      onError: setLinkError,
+      onCredential: async (credential) => {
+        setLinkError(null)
+        setLinkState('working')
+        const result = await linkGoogleAccount(credential)
+        if (result.ok) {
+          setLinkState('linked')
+          // The `identities` claim only changes on a fresh token, and it is what
+          // the badge above reads.
+          await fetchAuthSession({ forceRefresh: true })
+          return
+        }
+        setLinkState('idle')
+        setLinkError(result.message)
+      },
+    })
+  }, [email, googleLinked, linkState])
 
   const scrollTo = (id: string) => {
     setActiveSection(id)
@@ -191,22 +219,30 @@ export default function ProfileContent({ onClose }: Props) {
                 </div>
                 <div>
                   <p className="text-sm font-medium text-foreground">Google</p>
-                  <p className="text-xs text-muted-foreground">{googleLinked ? 'Connected' : 'Not connected'}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {googleLinked || linkState === 'linked' ? 'Connected' : 'Not connected'}
+                  </p>
                 </div>
               </div>
-              {googleLinked ? (
+              {googleLinked || linkState === 'linked' ? (
                 <span className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary">
                   Linked
                 </span>
+              ) : linkState === 'working' ? (
+                <span className="px-3 py-1.5 text-xs text-muted-foreground">Linking…</span>
               ) : (
-                <button
-                  onClick={handleLinkGoogle}
-                  className="px-3 py-1.5 rounded-lg text-xs font-medium border border-border/40 text-foreground hover:bg-secondary/60 transition-colors"
-                >
-                  Link
-                </button>
+                // Google renders its own button in here. Its markup is fixed by
+                // Google and cannot be restyled, so it sits in a plain box
+                // rather than being made to imitate the buttons around it.
+                <div ref={googleButtonRef} className="shrink-0" />
               )}
             </div>
+
+            {linkError && (
+              <p className="text-xs text-destructive px-1" role="alert">
+                {linkError}
+              </p>
+            )}
 
           </div>
         </div>

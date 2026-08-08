@@ -8,7 +8,11 @@ author: K
 
 ## Kết luận
 
-**Có cách xử lý. 3/4 lớp đã sửa xong và chạy được ngay.** Lớp thứ tư chờ deploy.
+**Có cách xử lý. 3/5 lớp đã sửa xong và chạy được ngay.** Hai lớp còn lại chờ deploy.
+
+> **Cập nhật 08/08** — Tri báo bản vá vẫn tạo `b@` trong Cognito + DynamoDB. Đúng.
+> Đó là một lỗi **khác** với lỗi bản vá nhắm tới, và đã có cách sửa riêng:
+> [mục bổ sung 08/08](#bổ-sung-0808--bản-vá-presignup-không-chặn-được-việc-tạo-b).
 
 Về tranh luận nguyên nhân: **cả hai bên đúng một nửa.** Có **hai** phiên sống sót
 trên hai domain khác nhau.
@@ -115,7 +119,8 @@ phải chấp nhận.
 | Storage app | `clearLocalAuthStorage()` — vốn đã có | giữ nguyên |
 | Phiên Cognito | Chuyển hướng qua `/logout` của Cognito | ✅ chạy ngay |
 | Phiên Google | Lần thử lại sau khi lệch ép `prompt=select_account` | ✅ chạy ngay |
-| Tạo tài khoản trùng | PreSignUp link identity vào user sẵn có | ⏸ chờ deploy |
+| Tạo tài khoản trùng cho **cùng một người** | PreSignUp link identity vào user sẵn có | ⏸ chờ deploy |
+| Tạo tài khoản cho **người khác** khi chọn nhầm | Bỏ hosted-UI khỏi luồng link (mục dưới) | ⏸ chờ deploy |
 
 **Chi tiết dễ sập**: `logout_uri` phải khớp *tuyệt đối* với một URL đã đăng ký,
 nên lý do lỗi gửi qua `sessionStorage` chứ không qua query string. `logout_uri`
@@ -135,20 +140,94 @@ theo bản chất, không phụ thuộc bảng phụ.
 
 ---
 
+---
+
+## Bổ sung 08/08 — bản vá PreSignUp **không** chặn được việc tạo `b@`
+
+Tri báo: chọn nhầm vẫn tạo `b@gmail.com` trong Cognito **và** trong DynamoDB.
+Đọc lại code thì đúng, và bảng "Đã sửa" ở trên trước đây ghi gộp làm một dòng nên
+dễ hiểu nhầm. **Đây là hai lỗi khác nhau:**
+
+- Đợt 2 chống *trùng tài khoản cho cùng một người* — `a@` có sẵn email, link Google
+  `a@` → vẫn 1 user. Cái này bản vá xử lý được.
+- Bug của Tri là *tạo tài khoản cho người khác*. Bản vá **không** xử lý.
+
+Đường đi, `functions/pre-sign-up-handler/handler.ts:226-228`:
+
+```ts
+const destination =
+  candidates[0]?.Username ??
+  (await createNativeAnchor(userPoolId, email, request.userAttributes));
+```
+
+Chọn nhầm `b@` → `findLinkableNativeUsers("b@")` trả 0 → `createNativeAnchor` gọi
+`AdminCreateUser` → user `b@` ra đời. Dòng 235 `recordGoogleAvailable("b@")` ghi
+tiếp row DynamoDB.
+
+### Vì sao không sửa được **trong** PreSignUp
+
+PreSignUp không phân biệt được "bấm nhầm lúc link" với "user Google mới đăng ký
+lần đầu". Hai request giống hệt nhau: cùng app client, cùng provider, cùng
+`triggerSource`, một địa chỉ chưa có tài khoản. Cognito không chuyển tiếp state
+nào của ứng dụng để tách hai ca đó — không `state` của OAuth, không client
+metadata. Mà ca thứ hai thì **phải** tạo tài khoản.
+
+### Cách sửa: luồng link không đi qua Cognito nữa
+
+| Trước | Sau |
+|---|---|
+| Profile → `signInWithRedirect` → hosted UI → PreSignUp → `AdminCreateUser` | Profile → Google Identity Services → ID token → `POST /api/user/link-google` |
+
+`amplify/functions/link-google/handler.ts` verify ID token bằng JWKS của Google
+(`aws-jwt-verify`, audience = client id, cả hai cách viết issuer), so email với
+email của **chính người đang đăng nhập**, lệch thì **409** — chưa ghi gì. Khớp thì
+gọi `AdminLinkProviderForUser`.
+
+IAM của lambda này chỉ có đúng `AdminLinkProviderForUser`. **Không** có
+`AdminCreateUser` — nó không tạo nổi user kể cả khi code sai.
+
+Không có sign-up nào xảy ra ⇒ không có Cognito user, không có row DynamoDB.
+
+Phụ thêm: `login_hint` **chạy thật** trên đường này. Cognito không forward được
+sang Google (xem mục bằng chứng), còn GIS thì nhận trực tiếp — nên bảng chọn tài
+khoản của Google mở sẵn đúng địa chỉ đang đăng nhập.
+
+Hosted UI vẫn lo phần **đăng nhập** — chỗ mà một user Google mới thì *đáng* được
+tạo tài khoản.
+
+---
+
 ## Chưa chứng minh được
 
 | Việc | Vì sao |
 |---|---|
 | Toàn bộ thay đổi backend auth | `npx ampx sandbox` chết ở `InvalidCredentialError: Failed to load default AWS credentials`. Chưa deploy lần nào |
-| Chống tạo tài khoản trùng | Hệ quả dòng trên. **Hiện tại chọn nhầm vẫn tạo user Cognito mới.** Khác biệt sau bản vá: thoát ra được, thay vì bị kẹt |
+| Chống tạo tài khoản trùng | Hệ quả dòng trên |
+| `/api/user/link-google` | Hệ quả dòng trên. Cho tới khi deploy, **chọn nhầm vẫn tạo `b@`** — code mới chỉ `tsc` + `eslint` xanh |
 | Bản vá phiên đăng nhập | Mới chỉ `tsc` + `npm run build` xanh. Phải bấm tay mới chắc |
+
+Cần trước khi deploy: đặt `VITE_GOOGLE_CLIENT_ID` cho frontend (client id của
+Google là giá trị công khai, không phải secret), và thêm origin của app vào
+**Authorized JavaScript origins** trong Google Cloud console — GIS chặn theo
+origin, khác với danh sách redirect URI của hosted UI.
 
 ---
 
 ## Cách kiểm chứng
 
+### Luồng link (sau khi deploy)
+
 1. Đăng nhập bằng email `a@…`
-2. Profile → Link Google → **cố ý chọn** `b@…`
-3. Phải bị đá về `/login` kèm cảnh báo lệch tài khoản
-4. Bấm "Continue with Google" lần nữa — **phải hiện lại bảng chọn tài khoản**.
-   Nếu nó lẳng lặng vào thẳng `b@` thì bản vá chưa ăn.
+2. Profile → Account Linked → bấm nút Google → **cố ý chọn** `b@…`
+3. Phải hiện lỗi ngay trong Profile: *"That Google account is b@…, but you are
+   signed in as a@…"*. **Không** bị đá ra ngoài.
+4. Kiểm tra Cognito: **không** được có user `b@`. Kiểm tra DynamoDB `UserMappings`:
+   **không** được có row `b@`. Đây mới là phần cần nhìn tận mắt.
+5. Bấm lại, chọn đúng `a@…` → badge đổi sang **Linked**.
+
+### Luồng đăng nhập (đã chạy được, không cần deploy)
+
+1. Đăng xuất, vào `/login`, "Continue with Google", chọn `b@…` khi app đang chờ `a@…`
+2. Phải bị đá về `/login` kèm cảnh báo lệch tài khoản
+3. Bấm lần nữa — **phải hiện lại bảng chọn tài khoản**. Nếu nó lẳng lặng vào thẳng
+   `b@` thì bản vá chưa ăn.

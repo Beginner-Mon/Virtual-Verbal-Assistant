@@ -26,6 +26,9 @@
   Hệ quả: **toàn bộ thay đổi auth backend chưa chạy thật lần nào.** Chống trùng tài khoản
   mới chỉ chứng minh được là *biên dịch được*.
   Gỡ: `cd ECA_UI/frontend && npx ampx configure profile`
+  Kèm 2 việc phải làm cùng lúc: đặt `VITE_GOOGLE_CLIENT_ID`, và thêm origin của app vào
+  **Authorized JavaScript origins** ở Google Cloud console (GIS chặn theo origin — khác
+  danh sách redirect URI của hosted UI).
 - **Không có JDK/Android SDK**, iOS bất khả trên Windows ⇒ `src/lib/nativeAuth.ts` chưa
   thực thi lần nào, chưa có thư mục `android/`.
 - **Chưa có domain cho App Links** ⇒ mobile auth không hoàn tất được. Checklist:
@@ -55,7 +58,8 @@
 | **P0** | **PostgreSQL → Neon** | ✅ **XONG 05/08** — cutover rồi, chat chạy trên Neon |
 | **P0** | **7 lỗi TS ở FE** | ✅ **XONG** — kèm 1 bug thật `getManifest` không bao giờ khớp `Con-Gai-Khang`. Worklog §3 |
 | **P0** | **Deploy auth (Đợt 1+2)** | 🔴 **CHẶN** — không có AWS creds. Code xong, chưa chạy thật |
-| **P0** | **Bug Google chọn nhầm tài khoản** | ✅ **3/4 lớp XONG**, chạy ngay. `docs/auth-google-incident.md` |
+| **P0** | **Bug Google chọn nhầm tài khoản** | ✅ **3/5 lớp XONG**, chạy ngay. `docs/auth-google-incident.md` |
+| **P0** | **Chọn nhầm vẫn TẠO user `b@`** (Tri báo 08/08) | 🔴 **CHẶN** — cách sửa đã code xong (luồng link bỏ hosted-UI, `POST /api/user/link-google`), chưa deploy. Worklog 08/08 §5 |
 | **P0** | **Ingest xoá sạch KB** | ✅ **XONG** — không thể tái diễn. Worklog §13 |
 | **P0** | **KB ingest vào pgvector** | ✅ **XONG** — 2918 rows, giờ nằm trên Neon |
 | **P0** | **Deploy + verify ALB Kimodo** | ⏸ **Chờ N/Owner** — K KHÔNG tự làm (cần AWS creds + tốn ~$24/ngày g5.xlarge + $0.75/ngày ALB). Plan `.claude/plans/kimodo-alb-endpoint.md` đã implemented, chỉ cần chạy checklist §5 (**nhớ đổi `ALB_ALLOWED_CIDR` → IP/32 trước deploy**) |
