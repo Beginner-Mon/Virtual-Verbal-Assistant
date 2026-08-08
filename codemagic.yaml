@@ -32,7 +32,7 @@ workflows:
           chmod +x gradlew
           ./gradlew assembleDebug
     artifacts:
-      - ECA_UI/frontend/android/app/build/outputs/**/*.apk
+      - android/app/build/outputs/**/*.apk
     publishing:
       email:
         recipients:
