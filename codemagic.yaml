@@ -29,6 +29,7 @@ workflows:
       - name: Build file Android APK
         script: |
           cd android
+          chmod +x gradlew
           ./gradlew assembleDebug
     artifacts:
       - ECA_UI/frontend/android/app/build/outputs/**/*.apk
