@@ -7,7 +7,7 @@ workflows:
     working_directory: ECA_UI/frontend
     environment:
       node: 22
-      java: 17
+      java: 21
       vars:
         # Cấu hình biến môi trường cho Google Login native
         MOBILE_APP_HOST: "app.example.com"
