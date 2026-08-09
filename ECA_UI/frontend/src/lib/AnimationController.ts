@@ -31,6 +31,13 @@ export interface AnimationControllerOptions {
    * readiness signal the loading overlay waits on — an event, never a timeout.
    */
   onClipApplied?: (info: ClipInfo) => void
+  /**
+   * Fires just BEFORE a one-shot auto-transitions to its successor (e.g.
+   * exercise → idle). Use this to capture the character's final world position
+   * and begin ramping the root-motion offset over the crossfade duration.
+   * `crossfadeSec` is the fade duration the mixer will use for this transition.
+   */
+  onBeforeAutoTransition?: (completed: CharState, next: CharState, crossfadeSec: number) => void
 }
 
 type StateListener = (state: CharState) => void
@@ -234,7 +241,11 @@ export class AnimationController {
     const completed = this.state
     this.emit('finished', completed)
     const next = onFinishedOf(completed)
-    if (next) void this.transitionTo(next)
+    if (next) {
+      const fade = crossfadeFor(completed, next)
+      this.options.onBeforeAutoTransition?.(completed, next, fade)
+      void this.transitionTo(next)
+    }
   }
 
   private emit(event: EventName, state: CharState): void {

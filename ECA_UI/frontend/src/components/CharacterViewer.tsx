@@ -10,8 +10,10 @@ import * as THREE from 'three'
 import { AnimationController } from '../lib/AnimationController'
 import { AnimationRegistry } from '../lib/AnimationRegistry'
 import { DEFAULT_GROUND_CLAMP, GroundClamp } from '../lib/groundClamp'
+import { RootMotionAccumulator } from '../lib/rootMotionAccumulator'
 import type { CameraResponsivePreset } from '../lib/CameraConfig'
 import type { CameraMode } from '../lib/AnimationStates'
+import { cameraModeOf, loopModeOf } from '../lib/AnimationStates'
 import { useFsmBoot } from '../hooks/useFsmTriggers'
 import { useMotion } from '../contexts/MotionContext'
 import { AvatarController } from '../avatar/AvatarController'
@@ -136,6 +138,7 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
   const animControllerRef = useRef<AnimationController | null>(null)
   const modelGroupRef = useRef<THREE.Group>(null)
   const groundClampRef = useRef<GroundClamp | null>(null)
+  const rootMotionRef = useRef<RootMotionAccumulator | null>(null)
   const revealedRef = useRef(false)
   const emotionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Drives <primitive visible={...}>: false until the first pose is applied.
@@ -197,6 +200,19 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
             avatarControllerRef.current?.setEmotion(emotion, 1, 600)
           }, delayMs)
         }
+        // Begin root-motion tracking for one-shots that use a wide camera
+        // (currently only `exercise`). The wide camera signals that the clip
+        // has meaningful root translation.
+        if (loopModeOf(info.state) === 'once' && cameraModeOf(info.state) === 'hips') {
+          rootMotionRef.current?.beginOneShot(vrm)
+        }
+      },
+      onBeforeAutoTransition: (_completed, _next, crossfadeSec) => {
+        // Commit the hips displacement BEFORE the successor clip (idle) resets
+        // hips to rest position. This offsets the model group so the character
+        // visually stays at its final position. The offset is ramped in over
+        // the crossfade duration to avoid double-displacement.
+        rootMotionRef.current?.commitOneShot(vrm, crossfadeSec)
       },
     })
 
@@ -241,6 +257,10 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
           groundZ: ENV_CONFIG.shadows.fitGroundZ,
         })
       }
+      if (!rootMotionRef.current) {
+        rootMotionRef.current = new RootMotionAccumulator(modelGroupRef.current)
+      }
+      rootMotionRef.current.update(delta)
       groundClampRef.current.update(vrm)
     }
   })

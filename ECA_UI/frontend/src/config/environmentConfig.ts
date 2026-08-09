@@ -72,7 +72,7 @@ export const ENV_CONFIG = {
   ground: {
     y: -1.5,                                  // matches model group position.y
     // Real shadow-catching ground plane
-    planeSize: 15,
+    planeSize: 200,
     shadowMaterialOpacity: 0.35,
     // drei ContactShadows (screen-space, for extra softness at feet)
     contactShadow: {

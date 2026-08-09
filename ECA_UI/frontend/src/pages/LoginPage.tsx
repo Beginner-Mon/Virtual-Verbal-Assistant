@@ -75,7 +75,12 @@ export default function LoginPage() {
     <div className="h-screen w-screen flex items-center justify-center bg-background">
       <div className="w-full max-w-md px-6 space-y-6">
         <div className="text-center">
-          <h1 className="text-2xl font-semibold text-foreground">Welcome back</h1>
+          <h1 className="text-3xl font-semibold text-foreground">
+            Project{' '}
+            <span className="bg-gradient-to-r from-blue-400 via-purple-500 to-pink-400 bg-clip-text text-transparent">
+              ECA
+            </span>
+          </h1>
           <p className="text-sm text-muted-foreground mt-2">Enter your email to continue.</p>
         </div>
 
