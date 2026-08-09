@@ -119,42 +119,77 @@ def test_health_detailed_all_ok(api_client):
 # ── Readiness: degraded ──────────────────────────────────────────────
 
 
+def _patch_all_checks(**failures):
+    """Patch every check to pass, except the named ones.
+
+    `failures` maps check name → detail string. Returns a context manager.
+    Each mock keeps its own real name: the response is keyed by CheckResult.name,
+    so reusing one shared result would collapse several checks into one entry
+    and quietly stop testing the thing under test.
+    """
+    import contextlib
+
+    from langgraph_agents.api.health import CheckResult
+
+    names = ["redis", "postgres", "graph", "llm", "mcp", "speechllm", "searxng"]
+
+    @contextlib.contextmanager
+    def _cm():
+        with contextlib.ExitStack() as stack:
+            for name in names:
+                mock = stack.enter_context(
+                    patch(f"langgraph_agents.api.health.check_{name}",
+                          new_callable=AsyncMock)
+                )
+                failed = name in failures
+                mock.return_value = CheckResult(
+                    name=name,
+                    ok=not failed,
+                    latency_ms=1.0,
+                    detail=failures.get(name),
+                )
+            yield
+
+    return _cm()
+
+
 @pytest.mark.unit
-def test_health_detailed_degraded_when_redis_down(api_client):
-    """When a check fails, returns 503 with degraded status."""
+def test_health_detailed_unhealthy_when_redis_down(api_client):
+    """A CRITICAL dep down → 503, so the load balancer stops sending traffic."""
     client, _, _ = api_client
 
-    with patch("langgraph_agents.api.health.check_redis",
-               new_callable=AsyncMock) as mock_redis:
-        from langgraph_agents.api.health import CheckResult
-        mock_redis.return_value = CheckResult(
-            name="redis", ok=False, latency_ms=2000.0, detail="connection refused",
-        )
+    with _patch_all_checks(redis="connection refused"):
+        resp = client.get("/health/detailed")
 
-        # Also mock the others to pass
-        with patch("langgraph_agents.api.health.check_postgres",
-                   new_callable=AsyncMock) as mock_pg, \
-             patch("langgraph_agents.api.health.check_llm",
-                   new_callable=AsyncMock) as mock_llm, \
-             patch("langgraph_agents.api.health.check_mcp",
-                   new_callable=AsyncMock) as mock_mcp, \
-             patch("langgraph_agents.api.health.check_speechllm",
-                   new_callable=AsyncMock) as mock_speech, \
-             patch("langgraph_agents.api.health.check_searxng",
-                   new_callable=AsyncMock) as mock_searxng:
-            ok_result = CheckResult(name="x", ok=True, latency_ms=0.0, detail="skipped")
-            mock_pg.return_value = CheckResult(name="postgres", ok=True, latency_ms=1.0)
-            mock_llm.return_value = ok_result
-            mock_mcp.return_value = ok_result
-            mock_speech.return_value = ok_result
-            mock_searxng.return_value = ok_result
+    assert resp.status_code == 503
+    body = resp.json()
+    if isinstance(body, list):
+        body = body[0]
+    assert body["status"] == "unhealthy"
+    assert body["checks"]["redis"]["critical"] is True
 
-            resp = client.get("/health/detailed")
-            assert resp.status_code == 503
-            body = resp.json()
-            if isinstance(body, list):
-                body = body[0]
-            assert body["status"] == "degraded"
+
+@pytest.mark.unit
+def test_health_detailed_stays_live_when_optional_dep_down(api_client):
+    """An OPTIONAL dep down → still 200.
+
+    Regression guard: TTS and SearXNG used to count towards the readiness probe.
+    Because every instance talks to the same TTS box, one TTS outage returned 503
+    from all of them at once and emptied the load balancer — over a feature whose
+    only effect is that replies are not spoken.
+    """
+    client, _, _ = api_client
+
+    with _patch_all_checks(speechllm="connection refused", searxng="HTTP 502"):
+        resp = client.get("/health/detailed")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    if isinstance(body, list):
+        body = body[0]
+    assert body["status"] == "degraded"
+    assert body["checks"]["speechllm"]["critical"] is False
+    assert sorted(body["degraded"]) == ["searxng", "speechllm"]
 
 
 # ── LLM_HEALTHCHECK toggle ───────────────────────────────────────────

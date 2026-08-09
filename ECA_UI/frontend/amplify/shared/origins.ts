@@ -62,8 +62,25 @@ export const ALLOWED_ORIGINS: string[] = [
  */
 export const MOBILE_REDIRECT_PATH = '/auth/callback/';
 
-export const OAUTH_REDIRECT_URLS: string[] = [
+export const OAUTH_CALLBACK_URLS: string[] = [
   `${WEB_DEV_ORIGIN}/`,
   ...(MOBILE_APP_ORIGIN ? [`${MOBILE_APP_ORIGIN}${MOBILE_REDIRECT_PATH}`] : []),
   ...(PROD_WEB_ORIGIN ? [`${PROD_WEB_ORIGIN}/`] : []),
+];
+
+/**
+ * Sign-out targets. `/login` is here for a specific reason.
+ *
+ * When a Google sign-in comes back as the wrong account we cannot simply clear
+ * local storage and redirect: that leaves Cognito's managed-login session cookie
+ * intact on the Cognito domain, so the *next* attempt is silently authorised as
+ * that same wrong account without ever asking again. Ending the session properly
+ * means bouncing through Cognito's /logout, and `logout_uri` must exactly match
+ * one of these registered values.
+ */
+export const OAUTH_LOGOUT_URLS: string[] = [
+  `${WEB_DEV_ORIGIN}/`,
+  `${WEB_DEV_ORIGIN}/login`,
+  ...(MOBILE_APP_ORIGIN ? [`${MOBILE_APP_ORIGIN}/`, `${MOBILE_APP_ORIGIN}/login`] : []),
+  ...(PROD_WEB_ORIGIN ? [`${PROD_WEB_ORIGIN}/`, `${PROD_WEB_ORIGIN}/login`] : []),
 ];

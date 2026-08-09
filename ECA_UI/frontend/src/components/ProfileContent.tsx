@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { IdCard, User, KeyRound, Link2, LogOut } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { fetchAuthSession } from 'aws-amplify/auth'
-import { startGoogleSignIn } from '../lib/googleSignIn'
+import { linkGoogleAccount, mountGoogleLinkButton } from '../lib/googleLink'
 import { Avatar, AvatarImage, AvatarFallback } from './ui/avatar'
 
 interface Props {
@@ -24,22 +24,37 @@ export default function ProfileContent({ onClose }: Props) {
   }, [])
 
   const emailSub = payload?.['custom:emailSub'] || null
-  const googleSub = payload?.['custom:googleSub'] || null
 
-  // Check `identities` in the idToken payload — this is always accurate because
-  // Cognito manages it directly, regardless of whether DynamoDB has `googleSub`.
-  const hasGoogleLinked = (() => {
+  /**
+   * Is Google actually attached to this account?
+   *
+   * `custom:googleSub` alone was wrong, which is why the badge stayed on "Not
+   * connected" even right after signing in with Google. That claim is injected
+   * from the UserMappings row, and the row is only written on certain paths —
+   * a linked sign-in resolves to the existing user without a PostConfirmation,
+   * and an anchor created by AdminCreateUser is an admin action, not a sign-up.
+   *
+   * The `identities` claim comes from Cognito itself and lists every federated
+   * provider on the user, so it is true by construction. The custom claim is
+   * kept as a fallback for accounts written before that.
+   */
+  const identities = (() => {
+    const raw = payload?.identities
+    if (!raw) return [] as Array<{ providerName?: string }>
+    // Cognito sends an array, but it arrives JSON-encoded in some token shapes.
+    if (Array.isArray(raw)) return raw as Array<{ providerName?: string }>
     try {
-      const identities = payload?.identities
-      if (typeof identities === 'string') {
-        return JSON.parse(identities).some((id: any) => id.providerName === 'Google')
-      }
-      if (Array.isArray(identities)) {
-        return identities.some((id: any) => id.providerName === 'Google')
-      }
-    } catch { /* ignore parse errors */ }
-    return !!googleSub
+      const parsed = JSON.parse(String(raw))
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return []
+    }
   })()
+
+  const googleLinked =
+    identities.some((i) => i?.providerName?.toLowerCase() === 'google') ||
+    !!payload?.['custom:googleSub'] ||
+    payload?.['custom:googleLinked'] === 'true'
   const displayName = payload?.['custom:displayName'] || null
   const email = payload?.['custom:email'] || user?.signInDetails?.loginId || userAttributes?.email || 'Unknown user'
 
@@ -51,12 +66,40 @@ export default function ProfileContent({ onClose }: Props) {
     navigate('/set-password')
   }
 
-  // Linking is the strictest case: the account is already decided, so any other
-  // Google account is unambiguously wrong. `alreadySignedIn` is required here —
-  // this runs from an authenticated session, which Amplify otherwise refuses.
-  const handleLinkGoogle = () => {
-    startGoogleSignIn(email, { alreadySignedIn: true })
-  }
+  // ── Linking Google ─────────────────────────────────────────────────────
+  //
+  // Deliberately NOT signInWithRedirect. Through the hosted UI a link is a
+  // sign-up, so choosing the wrong account in Google's chooser made Cognito
+  // create an account for that address before anything could object. Here the
+  // credential goes straight to an authenticated endpoint that refuses a
+  // mismatch without writing anything.
+  const googleButtonRef = useRef<HTMLDivElement | null>(null)
+  const [linkState, setLinkState] = useState<'idle' | 'working' | 'linked'>('idle')
+  const [linkError, setLinkError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const container = googleButtonRef.current
+    if (!container || googleLinked || linkState === 'linked') return
+
+    void mountGoogleLinkButton(container, {
+      loginHint: email,
+      onError: setLinkError,
+      onCredential: async (credential) => {
+        setLinkError(null)
+        setLinkState('working')
+        const result = await linkGoogleAccount(credential)
+        if (result.ok) {
+          setLinkState('linked')
+          // The `identities` claim only changes on a fresh token, and it is what
+          // the badge above reads.
+          await fetchAuthSession({ forceRefresh: true })
+          return
+        }
+        setLinkState('idle')
+        setLinkError(result.message)
+      },
+    })
+  }, [email, googleLinked, linkState])
 
   const scrollTo = (id: string) => {
     setActiveSection(id)
@@ -176,22 +219,30 @@ export default function ProfileContent({ onClose }: Props) {
                 </div>
                 <div>
                   <p className="text-sm font-medium text-foreground">Google</p>
-                  <p className="text-xs text-muted-foreground">{hasGoogleLinked ? 'Connected' : 'Not connected'}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {googleLinked || linkState === 'linked' ? 'Connected' : 'Not connected'}
+                  </p>
                 </div>
               </div>
-              {hasGoogleLinked ? (
+              {googleLinked || linkState === 'linked' ? (
                 <span className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary">
                   Linked
                 </span>
+              ) : linkState === 'working' ? (
+                <span className="px-3 py-1.5 text-xs text-muted-foreground">Linking…</span>
               ) : (
-                <button
-                  onClick={handleLinkGoogle}
-                  className="px-3 py-1.5 rounded-lg text-xs font-medium border border-border/40 text-foreground hover:bg-secondary/60 transition-colors"
-                >
-                  Link
-                </button>
+                // Google renders its own button in here. Its markup is fixed by
+                // Google and cannot be restyled, so it sits in a plain box
+                // rather than being made to imitate the buttons around it.
+                <div ref={googleButtonRef} className="shrink-0" />
               )}
             </div>
+
+            {linkError && (
+              <p className="text-xs text-destructive px-1" role="alert">
+                {linkError}
+              </p>
+            )}
 
           </div>
         </div>

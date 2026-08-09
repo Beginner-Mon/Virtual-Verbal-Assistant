@@ -150,8 +150,49 @@ async def check_searxng(timeout: float = 2.0) -> CheckResult:
         return CheckResult(name="searxng", ok=False, latency_ms=elapsed_ms, detail=str(exc))
 
 
+# Dependencies without which this instance cannot answer a single request.
+# Only these decide the HTTP code, i.e. whether the load balancer keeps sending
+# traffic here.
+CRITICAL_CHECKS = frozenset({"redis", "postgres", "graph", "llm"})
+
+# Dependencies whose absence removes a feature but leaves the assistant usable:
+# no MCP tools, no spoken reply, no web fallback — the chat itself still works,
+# and each of these already degrades gracefully at the call site. Failing the
+# readiness probe on them would pull healthy instances out of rotation over a
+# side feature, and because all instances share these services it would pull out
+# *every* instance at once.
+OPTIONAL_CHECKS = frozenset({"mcp", "speechllm", "searxng"})
+
+
+def _is_critical(name: str) -> bool:
+    """Unlisted checks count as critical.
+
+    A new check added to `run_all_checks` without a decision here would
+    otherwise be silently exempt from the readiness probe — the failure mode
+    that hides outages. Defaulting the other way makes the omission loud.
+    """
+    if name in OPTIONAL_CHECKS:
+        return False
+    if name not in CRITICAL_CHECKS:
+        logger.warning(
+            "health check %r is in neither CRITICAL_CHECKS nor OPTIONAL_CHECKS; "
+            "treating it as critical",
+            name,
+        )
+    return True
+
+
 async def run_all_checks(graph, redis_client) -> dict:
-    """Run all dep checks in parallel. Returns {status, checks} dict for JSON response."""
+    """Run all dep checks in parallel. Returns {status, checks} dict for JSON response.
+
+    `status` is for humans, `all_ok` is for the load balancer:
+
+    | status      | HTTP | meaning                                          |
+    |-------------|------|--------------------------------------------------|
+    | `ready`     | 200  | everything answering                             |
+    | `degraded`  | 200  | an optional dep or a breaker is down; still serve |
+    | `unhealthy` | 503  | a critical dep is down; take this instance out    |
+    """
     results: list[CheckResult] = await asyncio.gather(
         check_redis(redis_client),
         check_postgres(),
@@ -169,6 +210,9 @@ async def run_all_checks(graph, redis_client) -> dict:
             checks[r.name] = {
                 "ok": r.ok,
                 "latency_ms": r.latency_ms,
+                # Stated per check so an on-call reader can tell at a glance
+                # which red entry is the one that took the instance down.
+                "critical": _is_critical(r.name),
             }
             if r.detail:
                 checks[r.name]["detail"] = r.detail
@@ -184,24 +228,40 @@ async def run_all_checks(graph, redis_client) -> dict:
     except Exception:
         pass
 
-    # Health (ok → HTTP 200, fail → 503) is computed ONLY over dependency checks
-    # (dict entries with an "ok" field). Circuit-breaker states are reported for
-    # visibility but do NOT flip the probe to 503: a single role's breaker
-    # opening (e.g. a transient LLM-provider error) must not pull every instance
-    # out of the load balancer — that would cascade across the fleet. An open
-    # breaker surfaces as status "degraded" while the instance stays live (200).
-    all_ok = all(
-        v.get("ok", False)
-        for v in checks.values()
-        if isinstance(v, dict)
-    )
+    # The HTTP code (ok → 200, fail → 503) is computed ONLY over CRITICAL
+    # dependency checks. Two categories are deliberately excluded:
+    #
+    #   - Optional deps (OPTIONAL_CHECKS). TTS being down costs the spoken
+    #     reply, not the conversation.
+    #   - Circuit-breaker states. A single role's breaker opening (e.g. a
+    #     transient LLM-provider error) must not pull every instance out of the
+    #     load balancer — every instance would trip at once and the fleet would
+    #     empty.
+    #
+    # Both still surface, as status "degraded" on a live instance (200).
+    dep_checks = {k: v for k, v in checks.items() if isinstance(v, dict)}
+
+    all_ok = all(v.get("ok", False) for v in dep_checks.values() if v["critical"])
+    optional_down = [k for k, v in dep_checks.items()
+                     if not v["critical"] and not v.get("ok", False)]
     breaker_open = any(
         isinstance(v, str) and v in ("open", "half-open")
         for v in checks.values()
     )
-    status = "ready" if (all_ok and not breaker_open) else "degraded"
+
+    if not all_ok:
+        status = "unhealthy"
+    elif optional_down or breaker_open:
+        status = "degraded"
+    else:
+        status = "ready"
+
+    if optional_down:
+        logger.warning("health: optional dependencies down: %s", ", ".join(optional_down))
+
     return {
         "status": status,
         "checks": checks,
         "all_ok": all_ok,
+        "degraded": optional_down,
     }

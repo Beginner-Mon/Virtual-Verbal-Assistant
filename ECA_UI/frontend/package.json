@@ -9,6 +9,8 @@
     "prebuild": "node ./scripts/sync-npz-to-bvh.mjs && node ./scripts/extract-vrm-meta.mjs",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -33,6 +35,7 @@
     "@tailwindcss/typography": "^0.5.19",
     "@types/three": "^0.184.1",
     "aws-amplify": "^6.17.0",
+    "aws-jwt-verify": "^5.2.1",
     "axios": "^1.18.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -67,7 +70,8 @@
     "tailwindcss": "^4.3.0",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.59.2",
-    "vite": "^6.4.3"
+    "vite": "^6.4.3",
+    "vitest": "^4.1.10"
   },
   "overrides": {
     "semver": "7.8.1"

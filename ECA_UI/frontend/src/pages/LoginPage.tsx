@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { startGoogleSignIn } from '../lib/googleSignIn'
+import { AUTH_ERROR_KEY, startGoogleSignIn } from '../lib/googleSignIn'
 import { customOutputs } from '../config/amplify'
 import { useRedirectIfAuthenticated } from '../hooks/useRedirectIfAuthenticated'
 import { Loader2 } from 'lucide-react'
@@ -16,16 +16,14 @@ export default function LoginPage() {
   const [mismatchError, setMismatchError] = useState(false)
 
   useEffect(() => {
-    // Check both query param and sessionStorage: the Cognito logout redirect
-    // chain (signOut → Cognito logout endpoint → / → /login) loses query
-    // params, so AuthGuard persists the flag to sessionStorage as fallback.
-    const fromParam = searchParams.get('error') === 'email_mismatch'
-    const fromStorage = sessionStorage.getItem('auth_error') === 'email_mismatch'
-
-    if (fromParam || fromStorage) {
+    // Two routes in. The query param is the fallback; normally we now arrive via
+    // Cognito's /logout, which cannot carry one (logout_uri must match a
+    // registered URL exactly), so the reason is parked in sessionStorage.
+    const stored = sessionStorage.getItem(AUTH_ERROR_KEY)
+    if (stored === 'email_mismatch' || searchParams.get('error') === 'email_mismatch') {
       setMismatchError(true)
-      if (fromParam) setSearchParams({}, { replace: true })
-      sessionStorage.removeItem('auth_error')
+      sessionStorage.removeItem(AUTH_ERROR_KEY)
+      if (searchParams.get('error')) setSearchParams({}, { replace: true })
     }
   }, [searchParams, setSearchParams])
 
@@ -59,9 +57,15 @@ export default function LoginPage() {
 
   /** After the lookup we know exactly whose account this is, so hint it and
    *  hold the app to it. Before the lookup we know nothing — any Google account
-   *  is a valid answer, so no hint and no expectation. */
+   *  is a valid answer, so no hint and no expectation.
+   *
+   *  `forceAccountChoice` after a mismatch is what stops the loop: Google's own
+   *  session outlives the Cognito sign-out, so without it the retry silently
+   *  lands on the same rejected account again. */
   const handleGoogleSignIn = () => {
-    startGoogleSignIn(result ? email.trim() : undefined)
+    startGoogleSignIn(result ? email.trim() : undefined, {
+      forceAccountChoice: mismatchError,
+    })
   }
 
   const showGoogleOnly = result && !result.hasEmail && result.hasGoogle
