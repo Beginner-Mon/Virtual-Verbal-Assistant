@@ -25,6 +25,7 @@ import RendererSetup from './scene/RendererSetup'
 import SceneLighting from './scene/SceneLighting'
 import SceneEnvironment from './scene/SceneEnvironment'
 import ScenePostProcessing from './scene/ScenePostProcessing'
+import ClickRipple from './scene/ClickRipple'
 import { GraphicsProvider, useGraphics } from '../contexts/GraphicsContext'
 
 const CAMERA_MODES: Record<CameraMode, { boneName: VRMHumanBoneName }> = {
@@ -569,6 +570,33 @@ export default function CharacterViewer() {
     setClipInfo(null)
   }, [vrmUrl, setClipInfo])
 
+  // Click ripple state — uses native pointerdown with capture to fire before
+  // R3F's internal event system calls stopPropagation on the canvas element.
+  const [clicks, setClicks] = useState<{ id: number; x: number; y: number }[]>([])
+  const clickIdRef = useRef(0)
+  const lastClickTimeRef = useRef(0)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const handler = (e: PointerEvent) => {
+      if (e.pointerType !== 'mouse' && e.pointerType !== 'touch' && e.pointerType !== 'pen') return
+      const now = Date.now()
+      if (now - lastClickTimeRef.current < 200) return
+      lastClickTimeRef.current = now
+      const rect = el.getBoundingClientRect()
+      const id = ++clickIdRef.current
+      setClicks((prev) => [...prev, { id, x: e.clientX - rect.left, y: e.clientY - rect.top }])
+    }
+    el.addEventListener('pointerdown', handler, { capture: true })
+    return () => el.removeEventListener('pointerdown', handler, { capture: true })
+  }, [])
+
+  const removeClick = (id: number) => {
+    setClicks((prev) => prev.filter((c) => c.id !== id))
+  }
+
   // Feed normalized mouse position to the avatar's eye gaze (§4.2 / EyeController).
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
     const controller = avatarRef.current
@@ -581,6 +609,7 @@ export default function CharacterViewer() {
 
   return (
     <div
+      ref={containerRef}
       className="relative w-full h-full overflow-hidden"
       onMouseMove={handleMouseMove}
       style={{
@@ -607,6 +636,11 @@ export default function CharacterViewer() {
           </GraphicsProvider>
         </Suspense>
       </Canvas>
+
+      {/* Click ripple effects */}
+      {clicks.map((c) => (
+        <ClickRipple key={c.id} x={c.x} y={c.y} theme={theme} onDone={() => removeClick(c.id)} />
+      ))}
 
       {/* Loading overlay: shown while the model has no pose yet (initial load
           / model switch). Replaces the old T-pose flash with a spinner. */}

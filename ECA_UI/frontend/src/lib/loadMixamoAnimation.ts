@@ -251,10 +251,6 @@ export async function loadMixamoAnimation(
     return null
   }
 
-  console.log(
-    `[loadMixamoAnimation] Retargeted ${tracks.length} tracks, duration ${clip.duration.toFixed(2)}s`,
-  )
-
   return new THREE.AnimationClip('mixamo-retargeted', clip.duration, tracks)
 }
 
