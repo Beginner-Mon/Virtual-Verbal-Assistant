@@ -9,9 +9,13 @@ _agentic_root = _project_root / "agenticRAG"
 sys.path.insert(0, str(_agentic_root))
 
 # Auto-load .env so HAS_*_KEY checks (and live LLM calls) see the keys.
+#
+# Goes through the service's own loader rather than naming a path: tests that
+# read a different .env from the application are tests of something else.
 try:
-    from dotenv import load_dotenv
-    load_dotenv(_agentic_root / "agentic_rag_gemini" / ".env", override=False)
+    from langgraph_agents.shared.env import load_env
+
+    load_env()
 except ImportError:
     pass
 

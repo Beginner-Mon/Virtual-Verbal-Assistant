@@ -9,8 +9,10 @@ Two production-critical concerns handled here:
    `command: python` for portability, but bare `python` resolves against the
    process PATH and frequently picks the system Python (which lacks
    `langgraph_agents`). We rewrite the command to `sys.executable` and inject
-   `PYTHONPATH` pointing at `agenticRAG/agentic_rag_gemini/` so the subprocess
-   can import the server modules.
+   `PYTHONPATH` pointing at `agenticRAG/` so the subprocess can import the
+   server modules. (It used to say `agenticRAG/agentic_rag_gemini/`; the code
+   stopped doing that when the MCP servers moved into this package, but the
+   comment did not.)
 
 2. **Graceful degradation** — if MCP discovery fails (subprocess crash, network
    timeout, package missing), the graph still builds with only in-process tools

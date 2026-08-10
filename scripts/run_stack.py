@@ -1,3 +1,19 @@
+"""DEPRECATED — starts the pre-LangGraph stack.
+
+This launcher runs `api_server.py` and `main_api.py` out of
+`agenticRAG/agentic_rag_gemini/`, which is the package the current service
+replaced. Its reference to that directory is therefore CORRECT and must not be
+"fixed" to point at `langgraph_agents` — those entry points do not exist there.
+
+The current stack is started directly:
+
+    cd agenticRAG
+    python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8000
+
+See `scripts/QUICKSTART.md`. This file stays until `agentic_rag_gemini` is
+deleted, and goes with it.
+"""
+
 import os
 import re
 import signal

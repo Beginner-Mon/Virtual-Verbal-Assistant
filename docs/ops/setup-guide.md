@@ -26,7 +26,16 @@ tags:
 
 ## One-Command Launch
 
+> ⛔ **HẾT DÙNG (10/08/2026).** Đoạn dưới khởi động stack **trước LangGraph**:
+> ChromaDB + `run_stack.py` + frontend :3000. Cả ba đều không còn là hệ thống
+> đang chạy. Làm theo sẽ dựng lên một stack song song đọc database khác.
+>
+> **Hướng dẫn đang dùng: [`scripts/QUICKSTART.md`](../../scripts/QUICKSTART.md).**
+>
+> Giữ lại đây tới khi `agentic_rag_gemini` bị xoá hẳn, rồi xoá cùng.
+
 ```powershell
+# ⛔ LEGACY — xem cảnh báo trên
 # 1. Start ChromaDB
 docker compose up -d chromadb
 

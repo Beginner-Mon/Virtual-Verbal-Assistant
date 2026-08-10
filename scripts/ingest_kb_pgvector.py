@@ -7,7 +7,7 @@ to ChromaDB; the current stack reads `documents` + `kb_embeddings` via
 table was EMPTY — every clinical/exercise question fell through to refuse or
 web fallback. This script closes that gap.
 
-Source: agenticRAG/agentic_rag_gemini/data/knowledge_base/documents.txt
+Source: data/knowledge_base/documents.txt (legacy path still accepted)
   ~2918 records delimited by a line containing only `---`, each shaped:
 
       Exercise: <name>
@@ -51,7 +51,17 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "agenticRAG"))
 
-DEFAULT_SOURCE = (
+# Canonical location first, legacy second.
+#
+# The corpus used to live only inside `agentic_rag_gemini/`, the package this
+# service replaced — so the knowledge base for the CURRENT system could not be
+# rebuilt without a directory scheduled for deletion. It now lives at
+# `data/knowledge_base/`, outside any one service.
+#
+# The legacy path is still accepted so an un-migrated checkout keeps working;
+# `resolve_source` says which one it used.
+CANONICAL_SOURCE = REPO_ROOT / "data" / "knowledge_base" / "documents.txt"
+LEGACY_SOURCE = (
     REPO_ROOT
     / "agenticRAG"
     / "agentic_rag_gemini"
@@ -59,6 +69,14 @@ DEFAULT_SOURCE = (
     / "knowledge_base"
     / "documents.txt"
 )
+
+
+def resolve_source() -> Path | None:
+    """First existing corpus path, or None."""
+    for candidate in (CANONICAL_SOURCE, LEGACY_SOURCE):
+        if candidate.exists():
+            return candidate
+    return None
 
 SOURCE_TYPE = "exercise_db"
 EMBED_BATCH = 64
@@ -266,7 +284,7 @@ def _backend_is_running(timeout: float = 2.0) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Ingest exercise KB into pgvector.")
-    parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE, help="documents.txt path")
+    parser.add_argument("--source", type=Path, default=None, help="documents.txt path")
     parser.add_argument("--reset", action="store_true", help="delete existing rows of this source_type first")
     parser.add_argument("--limit", type=int, default=0, help="only ingest the first N records (smoke test)")
     parser.add_argument(
@@ -291,11 +309,19 @@ def main() -> int:
         )
         return 2
 
-    if not args.source.exists():
-        print(f"ERROR: source not found: {args.source}")
+    source = args.source or resolve_source()
+    if source is None:
+        print(f"ERROR: corpus not found. Looked in:\n  {CANONICAL_SOURCE}\n  {LEGACY_SOURCE}")
         return 1
+    if not source.exists():
+        print(f"ERROR: source not found: {source}")
+        return 1
+    if source == LEGACY_SOURCE:
+        print(f"NOTE: reading the corpus from the legacy path {source}.\n"
+              f"      Copy it to {CANONICAL_SOURCE} — agentic_rag_gemini is being removed.")
 
-    records = parse_records(args.source)
+    print(f"Source: {source}")
+    records = parse_records(source)
     if not records:
         print("ERROR: no records parsed — check the delimiter/format.")
         return 1

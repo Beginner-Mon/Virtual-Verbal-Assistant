@@ -12,6 +12,14 @@
   docker `vva-postgres`/`vva-redis`/`vva-searxng` up 8 ngày ✅
   > `vva-postgres` local **không còn là DB đang dùng** — chỉ là đường lùi.
   > TTS phải chạy bằng conda env **`tts`**, không phải `firstconda`.
+  > 🔴 **Backend phải chạy bằng `firstconda`.** Trên máy này `python` trần =
+  > Python312, **thiếu `langchain_google_genai`**. Import của nó là *lazy* nên
+  > backend vẫn khởi động bình thường và chỉ chết lúc Gemini fallback được gọi —
+  > tức đúng lúc DeepSeek đang hỏng. `pytest` cũng phải chạy bằng `firstconda`
+  > (Python312 cho 8 test đỏ giả). Worklog 10/08 §0.
+- **Config backend: `agenticRAG/.env`** (10/08). Loader duy nhất:
+  `langgraph_agents/shared/env.py`. File cũ `agentic_rag_gemini/.env` vẫn được chấp
+  nhận nhưng **log WARNING** — chưa xoá, chờ N xác nhận. Mẫu đầy đủ: `agenticRAG/.env.example`.
 - **PostgreSQL trên NEON** (`ap-southeast-1`). DSN ở `agenticRAG/agentic_rag_gemini/.env`
   (gitignored), **direct endpoint** không phải `-pooler`.
   - Rollback: xoá dòng `VVA_PG_DSN` → restart backend → về local.

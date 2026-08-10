@@ -26,8 +26,8 @@ Per-role model strategy (L4 optimization):
 This cuts 2-3 LLM call latencies (planner, retriever rounds, greeting) by 50-70%
 while preserving clinical content quality.
 
-A .env file at agenticRAG/agentic_rag_gemini/.env is auto-loaded if python-dotenv
-is installed.
+Configuration comes from `agenticRAG/.env` — see shared/env.py for the single
+loader and what happens when the file is missing.
 """
 
 import asyncio
@@ -36,41 +36,18 @@ import os
 import threading
 import time
 from functools import lru_cache
-from pathlib import Path
 from typing import Any
 
 from langchain_openai import ChatOpenAI
 from langgraph_agents.core.circuit_breaker import CircuitBreaker
+from langgraph_agents.shared.env import load_env
 
 logger = logging.getLogger("langgraph.llm")
 
 
-def _load_dotenv_once() -> None:
-    """Best-effort load of .env in new parent, legacy nested, or repo-root paths."""
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
-    
-    # Try current parent directory (agenticRAG/.env)
-    env_path = Path(__file__).resolve().parents[1] / ".env"
-    if env_path.exists():
-        load_dotenv(env_path, override=False)
-        return
-        
-    # Try legacy nested directory (agenticRAG/agentic_rag_gemini/.env)
-    legacy_path = Path(__file__).resolve().parents[1] / "agentic_rag_gemini" / ".env"
-    if legacy_path.exists():
-        load_dotenv(legacy_path, override=False)
-        return
-
-    # Try repository root directory (Virtual-Verbal-Assistant/.env)
-    root_path = Path(__file__).resolve().parents[2] / ".env"
-    if root_path.exists():
-        load_dotenv(root_path, override=False)
-
-
-_load_dotenv_once()
+# One loader for the whole service — see shared/env.py. This module used to
+# carry its own search order, subtly different from db/postgres.py's.
+load_env()
 
 
 _DEFAULT_BASE_URL = "https://api.deepseek.com"

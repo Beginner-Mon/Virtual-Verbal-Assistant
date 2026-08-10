@@ -1,9 +1,28 @@
+# Dependencies of the LangGraph service (agenticRAG/langgraph_agents).
+#
+# THIS FILE IS THE WHOLE LIST. It used to be a partial one — five packages the
+# service imports were missing, and it ran anyway only because
+# agentic_rag_gemini/requirements.txt had been installed into the same
+# environment. Anyone installing from this file alone, or building a container
+# from it, got a backend that died on import.
+#
+# `tests/langgraph_agents/test_requirements_complete.py` now compares this file
+# against the actual imports on every test run, so the gap cannot reopen
+# silently.
+
 # Core framework
 langgraph>=0.2.0
 langchain-core>=0.3.0
 
 # LLM provider — DeepSeek via OpenAI-compatible
 langchain-openai>=1.0.0,<2.0.0
+
+# LLM fallback — Gemini. Imported lazily (inside the fallback functions), so a
+# missing install shows up as a failed fallback at 3am rather than at start-up.
+# Upper bound is deliberate: llm.py documents that response content shape is
+# version-dependent (4.2.3 returns content blocks for some models where the code
+# assumes a plain string). Re-verify before crossing a major.
+langchain-google-genai>=4.2.3,<5.0.0
 
 # MCP Integration
 langchain-mcp-adapters>=0.1.0
@@ -13,6 +32,23 @@ mcp>=1.0.0
 asyncpg>=0.29.0
 pgvector>=0.3.0
 alembic>=1.13.0
+# Alembic pulls this in anyway, but `alembic/env.py` imports it directly, so it
+# is a first-class dependency and is declared as one.
+SQLAlchemy>=2.0
+
+# Embeddings — intfloat/multilingual-e5-small, 384-dim, CPU.
+# Both sides of the pipeline go through shared/embedding.py: it prepends the
+# `query: ` / `passage: ` prefixes that e5 REQUIRES, and a mismatch there
+# degrades recall silently rather than failing.
+#
+# Brings torch with it (~2 GB). On a CPU-only box install the CPU wheel first to
+# avoid pulling the CUDA build:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+sentence-transformers>=3.0
+numpy>=1.26
+
+# Config files — config/langgraph.yaml, config/mcp_servers.yaml, alembic
+PyYAML>=6.0
 
 # FastAPI stack — pin to avoid starlette compat breaks
 fastapi>=0.130,<0.140

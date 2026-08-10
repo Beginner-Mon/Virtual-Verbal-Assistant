@@ -11,33 +11,18 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from langgraph_agents.shared.env import env_source, load_env
+from langgraph_agents.shared.logging import get_logger
+
+logger = get_logger("langgraph.db.postgres")
+
 _LOCAL_DSN = "postgresql://vva:vva_dev@localhost:5433/vva"
 
 
-def _load_dotenv_once() -> None:
-    """Load the first .env found, in the same order llm.py uses.
-
-    Searching only one directory is a trap: whichever module is imported first
-    decides whether `VVA_PG_DSN` exists, so the app can silently fall back to
-    the local container depending on import order alone.
-    """
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
-    here = Path(__file__).resolve()
-    for candidate in (
-        here.parents[1] / ".env",                        # langgraph_agents/.env
-        here.parents[2] / ".env",                        # agenticRAG/.env
-        here.parents[2] / "agentic_rag_gemini" / ".env",  # legacy, holds the live config
-        here.parents[3] / ".env",                        # repo root
-    ):
-        if candidate.exists():
-            load_dotenv(candidate, override=False)
-            return
-
-
-_load_dotenv_once()
+# One loader for the whole service. This module used to carry its own copy of
+# the search order, which is how "which .env wins" came to depend on import
+# order. See shared/env.py.
+load_env()
 
 
 def _load_pg_config() -> dict:
@@ -72,13 +57,41 @@ def _resolve_dsn(cfg: dict) -> str:
         value = os.environ.get(name)
         if value:
             return value
-    return cfg.get("dsn", _LOCAL_DSN)
+
+    configured = cfg.get("dsn")
+    if configured:
+        return configured
+
+    # The failure this whole module is shaped around. Landing here means the app
+    # is about to talk to the local container while everything else — Alembic,
+    # the ingest script, whoever exported VVA_PG_DSN in another shell — may be
+    # on the managed database. It reads as "working" right up until the data is
+    # in the wrong place, so it says so out loud.
+    logger.warning(
+        "No %s set and no dsn in langgraph.yaml — falling back to the LOCAL "
+        "database (%s). Configuration source: %s. If you meant to use the "
+        "managed database, this is the bug.",
+        " / ".join(_DSN_ENV_VARS),
+        _LOCAL_DSN,
+        env_source(),
+    )
+    return _LOCAL_DSN
 
 
 _PG_CFG = _load_pg_config()
 _DEFAULT_DSN = _resolve_dsn(_PG_CFG)
 _DEFAULT_POOL_MIN = _PG_CFG.get("pool_min", 2)
 _DEFAULT_POOL_MAX = _PG_CFG.get("pool_max", 10)
+
+
+def get_default_dsn() -> str:
+    """The DSN the application itself uses.
+
+    Exists so scripts and migrations resolve the database the same way the app
+    does instead of inventing their own env var and default — which is how
+    `migrate_messages.py` ended up pointed at a database that was not this one.
+    """
+    return _DEFAULT_DSN
 
 
 class QueryStats:

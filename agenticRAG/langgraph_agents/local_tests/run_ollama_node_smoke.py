@@ -55,23 +55,16 @@ DEFAULT_NODES = [
 
 
 def load_dotenv_once() -> None:
-    """Best-effort load of repo env files used by the existing app."""
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        return
+    """Load the same configuration the service loads.
 
-    package_root = _THIS_FILE.parents[1]
-    agentic_root = _AGENTIC_ROOT
-    repo_root = _THIS_FILE.parents[3]
-    for env_path in (
-        package_root / ".env",
-        agentic_root / ".env",
-        agentic_root / "agentic_rag_gemini" / ".env",
-        repo_root / ".env",
-    ):
-        if env_path.exists():
-            load_dotenv(env_path, override=False)
+    This used to walk its own list of four candidate paths and, unlike the other
+    three copies of that list, loaded EVERY match rather than stopping at the
+    first. A smoke test reading a different merge of .env files than the app is
+    a smoke test that can pass while the app is broken.
+    """
+    from langgraph_agents.shared.env import load_env
+
+    load_env()
 
 
 @tool

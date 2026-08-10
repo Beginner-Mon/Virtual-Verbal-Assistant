@@ -5,18 +5,19 @@ Usage:
 """
 import asyncio
 import json
-import os
-from pathlib import Path
 
 import asyncpg
-from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parents[3] / ".env")
+# Resolve the database the same way the application does, rather than a third
+# way. This script used to load the repo-root `.env` (which the app does not
+# read) and take the DSN from `DATABASE_URL` (which nothing else sets),
+# defaulting to `postgresql://postgres:postgres@localhost:5432/vva` — a
+# different port, a different user, and a different database from both the local
+# container (:5433, user vva) and the managed one. Running it therefore migrated
+# something that was not the application's data, or failed to connect at all.
+from langgraph_agents.db.postgres import get_default_dsn
 
-_DSN = os.getenv(
-    "DATABASE_URL",
-    "postgresql://postgres:postgres@localhost:5432/vva"
-)
+_DSN = get_default_dsn()
 
 
 async def main():

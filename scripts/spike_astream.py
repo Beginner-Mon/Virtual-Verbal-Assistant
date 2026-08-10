@@ -8,10 +8,13 @@ import os
 import sys
 import json
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "agenticRAG", "agentic_rag_gemini"))
+# `langgraph_agents` is a sibling of `agentic_rag_gemini`, not a child of it.
+# This pointed one directory too deep, so the import below could never have
+# resolved and the spike could never have run.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "agenticRAG"))
 
-from dotenv import load_dotenv
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", "agenticRAG", "agentic_rag_gemini", ".env"))
+from langgraph_agents.shared.env import load_env
+load_env()
 
 from langgraph_agents.graph import build_graph_async
 
