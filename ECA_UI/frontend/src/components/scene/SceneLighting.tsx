@@ -25,6 +25,8 @@ interface SceneLightingProps {
 export default function SceneLighting({ vrm }: SceneLightingProps) {
   const lightRef = useRef<THREE.DirectionalLight>(null!)
   const fitterRef = useRef<ShadowCameraFitter | null>(null)
+  const contactShadowGroupRef = useRef<THREE.Group>(null)
+  const scratchRef = useRef(new THREE.Vector3())
 
   const {
     lighting: { main, ambient },
@@ -58,6 +60,21 @@ export default function SceneLighting({ vrm }: SceneLightingProps) {
   // Track the subject. Throttled internally — this is not per-frame work.
   useFrame((_state, delta) => {
     fitterRef.current?.update(vrm, delta * 1000)
+
+    // Make the contact shadow follow the character's root position horizontally
+    if (vrm && contactShadowGroupRef.current) {
+      const hips = vrm.humanoid?.getNormalizedBoneNode('hips' as any)
+      if (hips) {
+        hips.getWorldPosition(scratchRef.current)
+        // Group rotation is [-PI/2, 0, 0] (X-up rotated to Z-up).
+        // The ContactShadows component inside it operates in its own local space
+        // where its X matches world X, and its Y matches world Y (due to rotation).
+        // However, setting the position on the GROUP itself means we use world
+        // coordinates. X and Y in Z-up world.
+        contactShadowGroupRef.current.position.x = scratchRef.current.x
+        contactShadowGroupRef.current.position.y = scratchRef.current.y
+      }
+    }
   })
 
   // DEV handle for the shadow-frustum probe: compare the fitted frustum against
@@ -96,6 +113,13 @@ export default function SceneLighting({ vrm }: SceneLightingProps) {
             object.castShadow = true
             object.receiveShadow = true
           }
+          
+          // Disable frustum culling for skinned meshes. Root motion moves the
+          // bones far from the origin, but the mesh bounding box/sphere is static
+          // (computed in rest pose at origin). When the camera looks at the moved
+          // character, the original origin might fall outside the frustum, causing
+          // three.js to aggressively cull the hair/face meshes and make them disappear.
+          object.frustumCulled = false
         }
       })
   }, [vrm])
@@ -131,7 +155,7 @@ export default function SceneLighting({ vrm }: SceneLightingProps) {
       </mesh>
 
       {/* ── Contact Shadow: soft puddle under feet (XY plane) ──────── */}
-      <group rotation={[-Math.PI / 2, 0, 0]}>
+      <group ref={contactShadowGroupRef} rotation={[-Math.PI / 2, 0, 0]}>
         <ContactShadows
           position={[0, 0, 0]}
           opacity={ground.contactShadow.opacity}

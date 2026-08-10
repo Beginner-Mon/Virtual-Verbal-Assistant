@@ -120,17 +120,18 @@ export function startGoogleSignIn(expectedEmail?: string): Promise<void> {
   return signInWithRedirect({ provider: 'Google', options })
 }
 
-/** Read and consume the expected email. Returns null when none was recorded. */
-export function takeExpectedEmail(): string | null {
-  const value =
-    sessionStorage.getItem(EXPECTED_EMAIL_KEY) ??
+/** Read the expected email without consuming it (safe for StrictMode double-execution). */
+export function peekExpectedEmail(): string | null {
+  return sessionStorage.getItem(EXPECTED_EMAIL_KEY) ??
     localStorage.getItem(EXPECTED_EMAIL_KEY) ??
     sessionStorage.getItem(LEGACY_EXPECTED_EMAIL_KEY) ??
     localStorage.getItem(LEGACY_EXPECTED_EMAIL_KEY)
+}
 
+/** Clear the expected email once it has been successfully processed or explicitly rejected. */
+export function clearExpectedEmail(): void {
   clear(EXPECTED_EMAIL_KEY)
   clear(LEGACY_EXPECTED_EMAIL_KEY)
-  return value
 }
 
 /** Case-insensitive: IdPs are not consistent about the casing they return. */

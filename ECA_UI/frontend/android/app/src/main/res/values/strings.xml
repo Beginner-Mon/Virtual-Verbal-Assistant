@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ECA</string>
+    <string name="title_activity_main">ECA</string>
+    <string name="package_name">com.eca.assistant</string>
+    <string name="custom_url_scheme">com.eca.assistant</string>
+</resources>

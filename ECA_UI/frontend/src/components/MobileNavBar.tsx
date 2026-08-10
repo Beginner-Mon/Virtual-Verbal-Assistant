@@ -32,7 +32,7 @@ export default function MobileNavBar({
   const menuXRef = useRef(0)
   const menuYRef = useRef(80)
   const menuIsDraggingRef = useRef(false)
-  const menuDragStart = useRef<{ x: number; y: number; startMenuX: number; startMenuY: number } | null>(null)
+  const menuDragStart = useRef<{ x: number; y: number; startMenuX: number; startMenuY: number; target?: HTMLElement } | null>(null)
   const menuInitRef = useRef(false)
 
   useEffect(() => {
@@ -67,7 +67,13 @@ export default function MobileNavBar({
     const el = e.currentTarget as HTMLElement
     el.setPointerCapture(e.pointerId)
     el.style.transition = 'none'
-    menuDragStart.current = { x: e.clientX, y: e.clientY, startMenuX: menuXRef.current, startMenuY: menuYRef.current }
+    menuDragStart.current = { 
+      x: e.clientX, 
+      y: e.clientY, 
+      startMenuX: menuXRef.current, 
+      startMenuY: menuYRef.current,
+      target: e.target as HTMLElement
+    }
     menuIsDraggingRef.current = false
   }, [])
 
@@ -93,6 +99,7 @@ export default function MobileNavBar({
 
   const handleMenuPointerUp = useCallback((e: React.PointerEvent) => {
     const wasDragging = menuIsDraggingRef.current
+    const target = menuDragStart.current?.target
     const el = e.currentTarget as HTMLElement
     menuDragStart.current = null
     menuIsDraggingRef.current = false
@@ -104,6 +111,16 @@ export default function MobileNavBar({
       const snapX = center < window.innerWidth / 2 ? 8 : window.innerWidth - btnSize - 8
       menuXRef.current = snapX
       el.style.transform = `translate(${snapX}px, ${menuYRef.current}px)`
+    } else {
+      // It was a click, not a drag. Because we captured the pointer, the native
+      // click event won't fire on the original child target. We simulate it here.
+      if (target && typeof target.click === 'function') {
+        target.click()
+      }
+    }
+    
+    if (el.hasPointerCapture(e.pointerId)) {
+      el.releasePointerCapture(e.pointerId)
     }
   }, [])
 

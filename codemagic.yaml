@@ -1,0 +1,81 @@
+workflows:
+  capacitor-android:
+    name: Capacitor Android Build
+    max_build_duration: 60
+    instance_type: mac_mini_m1
+    # Chỉ định thư mục chứa code Capacitor
+    working_directory: ECA_UI/frontend
+    environment:
+      node: 22
+      java: 21
+      vars:
+        # Cấu hình biến môi trường cho Google Login native
+        MOBILE_APP_HOST: "app.example.com"
+        MOBILE_APP_ORIGIN: "https://app.example.com"
+    scripts:
+      - name: Cài đặt npm packages
+        script: |
+          npm install
+      - name: Cài đặt @capacitor/android (nếu chưa có)
+        script: |
+          npm install @capacitor/android
+      - name: Build Web (Frontend)
+        script: |
+          npm run build
+      - name: Khởi tạo Android (nếu chưa có) và Sync Capacitor
+        script: |
+          npx cap add android || true
+          npx cap sync android
+      - name: Build file Android APK
+        script: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+    artifacts:
+      - android/app/build/outputs/**/*.apk
+    publishing:
+      email:
+        recipients:
+          - your-email@example.com
+        notify:
+          success: true
+          failure: false
+
+  capacitor-ios:
+    name: Capacitor iOS Build
+    max_build_duration: 60
+    instance_type: mac_mini_m1
+    working_directory: ECA_UI/frontend
+    environment:
+      node: 22
+      xcode: latest
+      cocoapods: default
+      vars:
+        MOBILE_APP_HOST: "app.example.com"
+        MOBILE_APP_ORIGIN: "https://app.example.com"
+        # Bật tính năng Automatic Code Signing (Yêu cầu cấu hình trên giao diện Codemagic)
+        # XCODE_WORKSPACE: "ios/App/App.xcworkspace"
+        # XCODE_SCHEME: "App"
+    scripts:
+      - name: Cài đặt npm packages
+        script: |
+          npm install
+      - name: Cài đặt @capacitor/ios (nếu chưa có)
+        script: |
+          npm install @capacitor/ios
+      - name: Build Web (Frontend)
+        script: |
+          npm run build
+      - name: Khởi tạo iOS (nếu chưa có) và Sync Capacitor
+        script: |
+          npx cap add ios || true
+          npx cap sync ios
+      - name: Build file iOS (Unsigned - Để test CI pass)
+        script: |
+          cd ios/App
+          # Lệnh này chỉ build kiểm tra lỗi (không ra file .ipa cài được)
+          # Để ra file .ipa, bạn cần cấu hình Code Signing trên giao diện Codemagic
+          xcodebuild build -workspace App.xcworkspace -scheme App -destination generic/platform=iOS CODE_SIGNING_ALLOWED=NO
+    artifacts:
+      # Sẽ lưu file IPA nếu bạn cấu hình Code Signing thành công
+      - build/ios/ipa/*.ipa
