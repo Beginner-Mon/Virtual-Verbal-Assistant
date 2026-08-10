@@ -208,7 +208,7 @@ function DraggableBar({
             title={item.label}
             className={`
               nav-icon-btn
-              w-10 h-10 rounded-xl flex items-center justify-center
+              w-10 h-10 rounded-xl flex items-center justify-center cursor-pointer
               transition-all duration-200 relative
               ${isActive
                 ? 'bg-primary/20 text-primary shadow-[0_0_12px_rgba(var(--primary-rgb,139,92,246),0.3)]'
@@ -233,7 +233,7 @@ function DraggableBar({
         title="Profile & Settings"
         className={`
           shrink-0 ${isHorizontal ? 'ml-2' : 'mt-2'}
-          rounded-full
+          rounded-full cursor-pointer
         `}
       >
         <AvatarWithLogo size="sm" profilePicture={profilePicture} />
