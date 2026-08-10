@@ -10,8 +10,8 @@ Spec: docs/fixes/latency-optimization-1234.md
 All LLM calls are mocked — no live DeepSeek/Gemini calls are made. Tests that
 exercise the *_fallback* code path always patch get_fallback_chat_model
 explicitly (never rely on it being None) because a real GEMINI_API_KEYS is
-present in the test .env (agenticRAG/agentic_rag_gemini/.env, auto-loaded by
-conftest.py) — an un-mocked fallback would otherwise attempt a live call.
+present in the test .env (agenticRAG/.env, auto-loaded by conftest.py) — an
+un-mocked fallback would otherwise attempt a live call.
 """
 
 import pytest

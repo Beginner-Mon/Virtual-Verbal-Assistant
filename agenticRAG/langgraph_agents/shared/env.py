@@ -14,10 +14,14 @@ One loader, one canonical path, one warning when it is not there.
 
 CANONICAL PATH: `agenticRAG/.env`
 
-The live config still lives at `agenticRAG/agentic_rag_gemini/.env`, left over
-from the package this service replaced. That path is still accepted, and loading
-it logs a warning telling you to move the file — so the running backend does not
-break the moment this lands, but the leftover cannot be forgotten either.
+The legacy path `agenticRAG/agentic_rag_gemini/.env` is still accepted, and
+loading it logs a warning telling you to move the file.
+
+That package was deleted on 10/08/2026, so this looks like dead code — it is not.
+`.env` is gitignored, and `git rm` does not touch ignored files: anyone pulling
+that deletion keeps their old `.env` sitting in a directory git now considers
+gone. Without this fallback their next start-up would silently drop to the local
+database. The warning is how they find out where their config is coming from.
 
 Environment variables already set in the process ALWAYS win: `override=False`
 throughout. A container or a systemd unit passing real environment variables is

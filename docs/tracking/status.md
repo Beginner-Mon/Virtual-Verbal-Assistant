@@ -1,6 +1,6 @@
 # VVA — Status & Roadmap
 
-> Last update: 2026-08-08 (K) | Branch: `feature/langgraph-rewrite`
+> Last update: 2026-08-10 (K) | Branch: `feature/langgraph-rewrite`
 > Audience: K/N/Owner takeover after context compaction — đọc mục 0 trước tiên.
 
 ---
@@ -19,15 +19,18 @@
   > `config_source`. Thiếu package thì log nói rõ thiếu gì, hỏng cái gì, và lệnh
   > cài vào **đúng interpreter đang chạy**. Worklog 10/08 §7.
 - **Config backend: `agenticRAG/.env`** (10/08). Loader duy nhất:
-  `langgraph_agents/shared/env.py`. File cũ `agentic_rag_gemini/.env` vẫn được chấp
-  nhận nhưng **log WARNING** — chưa xoá, chờ N xác nhận. Mẫu đầy đủ: `agenticRAG/.env.example`.
-- **PostgreSQL trên NEON** (`ap-southeast-1`). DSN ở `agenticRAG/agentic_rag_gemini/.env`
+  `langgraph_agents/shared/env.py`. **`agentic_rag_gemini` đã xoá hẳn 10/08.** Loader vẫn
+  chấp nhận `.env` ở đường cũ kèm WARNING — vì `.env` bị gitignore nên `git rm` không
+  xoá nó trên máy ai đã pull. Mẫu đầy đủ: `agenticRAG/.env.example`.
+- **PostgreSQL trên NEON** (`ap-southeast-1`). DSN ở `agenticRAG/.env`
   (gitignored), **direct endpoint** không phải `-pooler`.
   - Rollback: xoá dòng `VVA_PG_DSN` → restart backend → về local.
   - ⚠️ **Redis + file motion/audio VẪN Ở LOCAL** — mới chuyển 1/3 kho.
-- **Git**: HEAD `b7ed02e` (Tri, 07/08 — đổi model sang Ane/anne).
-  **22 file chưa commit** — 7 auth + `ingest_kb_pgvector.py` + health (3) + compose + 4 file
-  test/config FE + package(-lock) + 3 doc. K không tự commit.
+- **Git**: đã commit hết tới 10/08 (N cho phép). `agentic_rag_gemini` **đã xoá** —
+  71 file / 46 MB. CI thay entry "AgenticRAG Gemini" bằng **"LangGraph Service"**:
+  trước đó CI kiểm cái đã bị thay thế, không kiểm cái đang chạy.
+  ⚠️ **N phải restart backend :8000 bằng `firstconda`** — instance đang chạy vẫn là
+  code trước 08/08.
 
 ### 🔴 CHẶN CỨNG — chỉ Owner gỡ được
 
@@ -95,7 +98,7 @@
   - 🔑 **Đổi mật khẩu Neon** trước khi có dữ liệu người dùng thật (DSN đã đi qua kênh chat).
 - **P0 KB ingest — ĐÃ XONG, verify end-to-end** (30/07): `kb_embeddings` từ **0 → 2918 rows**.
   Script mới `scripts/ingest_kb_pgvector.py` (thay 2 script legacy target ChromaDB), parse
-  `agenticRAG/agentic_rag_gemini/data/knowledge_base/documents.txt` (2918 bài tập, phân cách `---`).
+  `data/knowledge_base/documents.txt` (2918 bài tập, phân cách `---`).
   Chạy lại: `python scripts/ingest_kb_pgvector.py --reset` (idempotent theo `source_type`).
   - **Bug tìm được + fix**: migration 002 tạo HNSW cho `summaries` nhưng **bỏ sót** `kb_embeddings`
     → `kb_search` seq scan. Thêm migration `003_kb_hnsw`, đã `alembic upgrade head`, verify planner
@@ -337,7 +340,7 @@ tham khảo CV/portfolio.
   MobileNavBar (bỏ prop `onOpenModal` thừa), 4 trang auth (`'select_account'`→`'SELECT_ACCOUNT'`,
   Amplify đổi enum casing). AuthGuard bypass chuyển từ comment-hack → env-gate
   `VITE_AUTH_DISABLED` (xem §0). **Build production giờ chạy được** (`✓ built in ~12s`).
-- `.env` (`agenticRAG/agentic_rag_gemini/.env`): xoá config chết kiến trúc cũ (Qdrant, ChromaDB,
+- `.env` (`agenticRAG/.env`): xoá config chết kiến trúc cũ (Qdrant, ChromaDB,
   **secret Pinecone đang phơi**, Firebase/Firestore) — giữ đúng những gì code hiện tại đọc.
 - 3 file `FIX-*.md` root dời vào `docs/fixes/` (đồng bộ với reorg).
 
@@ -517,7 +520,7 @@ Thay toàn bộ animation string-match bằng state machine data-driven. Plan
 ```bash
 # 1. Docker (postgres local chỉ còn là đường lùi — DB thật đang ở Neon)
 docker compose -f docker-compose.langgraph.yml up -d postgres redis searxng
-#    DSN Neon nằm ở agenticRAG/agentic_rag_gemini/.env (VVA_PG_DSN, gitignored).
+#    DSN Neon nằm ở agenticRAG/.env (VVA_PG_DSN, gitignored).
 #    Xoá dòng đó = quay về Postgres local.
 
 # 2. Migration (nếu schema đổi)

@@ -70,3 +70,14 @@ kimodo-s3-assets/
 # Kimodo — embedded git repo; use submodule or vendor properly
 text-to-motion/kimodo/kimodo-viser/
 
+
+# Knowledge-base corpora.
+#
+# documents.txt (1.1 MB) IS tracked — it is the source of the 2918-record
+# exercise KB and the only copy outside one laptop.
+#
+# humanml3d_descriptions.jsonl is not: 8 MB, regenerable with
+# scripts/download_humanml3d.py, and nothing in the current service reads it.
+# Kept on disk after agentic_rag_gemini was deleted so a future HumanML3D
+# ingest does not start with a download.
+data/knowledge_base/humanml3d_descriptions.jsonl

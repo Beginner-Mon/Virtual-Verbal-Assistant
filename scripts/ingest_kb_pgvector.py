@@ -318,7 +318,7 @@ def main() -> int:
         return 1
     if source == LEGACY_SOURCE:
         print(f"NOTE: reading the corpus from the legacy path {source}.\n"
-              f"      Copy it to {CANONICAL_SOURCE} — agentic_rag_gemini is being removed.")
+              f"      Copy it to {CANONICAL_SOURCE} — agentic_rag_gemini was deleted 10/08/2026.")
 
     print(f"Source: {source}")
     records = parse_records(source)

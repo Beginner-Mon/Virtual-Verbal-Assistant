@@ -26,17 +26,27 @@ jobs:
       fail-fast: false   # Don't cancel SpeechLLm if AgenticRAG fails
       matrix:
         include:
-          - module_name: "AgenticRAG Gemini"
-            requirements: "agenticRAG/agentic_rag_gemini/requirements.txt"
-            test_dir: "tests/agenticRAG"
-            python_version: "3.11"
-            extra_pythonpath: "agenticRAG/agentic_rag_gemini"
-            artifact_name: "agenticrag-test-results"
-            timeout: 20
+          # Replaces the "AgenticRAG Gemini" entry, deleted along with the
+          # package it tested. Note what that means: until now CI covered the
+          # service that was REPLACED and not the one actually shipping.
+          #
+          # `-m unit` on purpose — the rest of the suite wants a live Postgres,
+          # Redis and an LLM key. Adding service containers is worth doing, but
+          # it is a separate change from deleting a dead package.
+          - module_name: "LangGraph Service"
+            requirements: "requirements-langgraph.txt"
+            test_dir: "tests/langgraph_agents"
+            pytest_args: "-m unit"
+            python_version: "3.12"
+            extra_pythonpath: "agenticRAG"
+            artifact_name: "langgraph-test-results"
+            # sentence-transformers pulls torch (~2 GB); the install dominates.
+            timeout: 40
 
           - module_name: "SpeechLLm"
             requirements: "SpeechLLm/requirements.txt"
             test_dir: "tests/SpeechLLm"
+            pytest_args: ""
             python_version: "3.11"
             extra_pythonpath: "SpeechLLm"
             artifact_name: "speechllm-test-results"
@@ -66,7 +76,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PYTHONPATH: ${{ matrix.extra_pythonpath }}
         run: |
-          python -m pytest ${{ matrix.test_dir }} \
+          python -m pytest ${{ matrix.test_dir }} ${{ matrix.pytest_args }} \
             --override-ini="pythonpath=${{ matrix.extra_pythonpath }}" \
             --junitxml=test-results/${{ matrix.artifact_name }}.xml
         shell: bash
@@ -106,5 +116,5 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Module | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| 🤖 AgenticRAG Gemini | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🤖 LangGraph Service | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| 🗣️ SpeechLLM          | ${{ needs.unit-tests.result }} |" >> $GITHUB_STEP_SUMMARY

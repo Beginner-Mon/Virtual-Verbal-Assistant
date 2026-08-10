@@ -22,29 +22,15 @@ tags:
 | Docker Desktop | `docker compose up -d chromadb` |
 | Redis | `redis-server` in PATH |
 | ffmpeg | In PATH for motion video rendering |
-| GEMINI_API_KEY | Set in `agenticRAG/agentic_rag_gemini/.env` |
+| GEMINI_API_KEYS | Set in `agenticRAG/.env` (mẫu: `agenticRAG/.env.example`) |
 
 ## One-Command Launch
 
-> ⛔ **HẾT DÙNG (10/08/2026).** Đoạn dưới khởi động stack **trước LangGraph**:
-> ChromaDB + `run_stack.py` + frontend :3000. Cả ba đều không còn là hệ thống
-> đang chạy. Làm theo sẽ dựng lên một stack song song đọc database khác.
+> ⛔ **ĐÃ XOÁ (10/08/2026).** Mục này từng hướng dẫn `docker compose up -d chromadb`
+> + `python run_stack.py` + frontend :3000. Cả ba đã biến mất cùng
+> `agentic_rag_gemini` — `run_stack.py` và `start_server.ps1` không còn tồn tại.
 >
 > **Hướng dẫn đang dùng: [`scripts/QUICKSTART.md`](../../scripts/QUICKSTART.md).**
->
-> Giữ lại đây tới khi `agentic_rag_gemini` bị xoá hẳn, rồi xoá cùng.
-
-```powershell
-# ⛔ LEGACY — xem cảnh báo trên
-# 1. Start ChromaDB
-docker compose up -d chromadb
-
-# 2. Launch full stack (API + Orchestrator + Celery + DART + Chat UI)
-conda activate firstconda
-python run_stack.py
-```
-
-Default frontend: `http://localhost:3000`
 
 ## Health Check
 
