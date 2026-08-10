@@ -55,10 +55,19 @@ services:
       - "6666:8080"
     volumes:
       - ./config/searxng:/etc/searxng:rw
+    # SEARXNG_SECRET_KEY comes from here. It used to be interpolated from a
+    # repo-root `.env` that existed to hold that one variable — a whole file, a
+    # whole thing to hand a new teammate, for a single line. It lives in
+    # agenticRAG/.env with the rest of the configuration now.
+    #
+    # `env_file` rather than `${SEARXNG_SECRET_KEY:?...}`: interpolation only
+    # reads the project-directory .env or the shell, so pointing it at another
+    # file would mean every `docker compose` command needing --env-file.
+    env_file:
+      - ./agenticRAG/.env
     environment:
       - SEARXNG_BASE_URL=http://localhost:6666/
       - INSTANCE_NAME=vva-search
-      - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:?must be set — see RUNBOOK}
     restart: unless-stopped
     deploy:
       resources:

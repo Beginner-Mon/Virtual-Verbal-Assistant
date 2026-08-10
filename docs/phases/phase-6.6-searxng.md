@@ -100,13 +100,20 @@ python -c "import secrets; print(secrets.token_hex(32))"
 # → 64-char hex string, ~32 bytes entropy
 ```
 
-Then either export to shell or put in repo-root `.env` (gitignored — verify `.gitignore` covers it):
+> ⚠️ **Đổi 10/08/2026.** Đoạn dưới từng bảo đặt biến này vào `.env` ở **gốc repo**.
+> File đó đã xoá — cả một file chỉ để giữ một biến, tức thêm một thứ phải trao tay
+> cho member mới và thêm một thứ để quên.
+
+Đặt vào **`agenticRAG/.env`**, chung với phần còn lại:
 ```bash
-# repo root .env
+# agenticRAG/.env
 SEARXNG_SECRET_KEY=<paste_64_char_hex_here>
 ```
 
-Docker Compose auto-reads `.env` at the compose-file directory by default.
+`docker-compose.langgraph.yml` đọc file đó qua `env_file` ở service `searxng` —
+**không** phải qua interpolation `${...}`, vì interpolation chỉ đọc `.env` ở thư
+mục chứa compose file hoặc shell, nên trỏ sang chỗ khác sẽ bắt mọi lệnh
+`docker compose` phải kèm `--env-file`.
 
 **Reference**: official SearXNG container template at
 `github.com/searxng/searxng/tree/master/container` uses a separate compose file.
