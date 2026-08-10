@@ -24,6 +24,7 @@ export interface Message {
 
 interface ChatMessageProps {
   message: Message
+  isStreaming?: boolean
 }
 
 function useCopy(text: string) {
@@ -40,7 +41,7 @@ function useCopy(text: string) {
   return { copied, handleCopy }
 }
 
-export default function ChatMessage({ message }: ChatMessageProps) {
+export default function ChatMessage({ message, isStreaming }: ChatMessageProps) {
   const isUser = message.role === 'user'
 
   if (!isUser) {
@@ -55,6 +56,7 @@ export default function ChatMessage({ message }: ChatMessageProps) {
           audioUrl={message.audioUrl}
           speechPending={message.speechPending}
           autoplay={message.autoplay}
+          isStreaming={isStreaming}
         />
       </div>
     )
@@ -77,15 +79,19 @@ function AssistantActions({
   audioUrl,
   speechPending,
   autoplay,
+  isStreaming,
 }: {
   content: string
   audioUrl?: string
   speechPending?: boolean
   autoplay?: boolean
+  isStreaming?: boolean
 }) {
   const { copied, handleCopy } = useCopy(content)
   const [liked, setLiked] = useState(false)
   const [disliked, setDisliked] = useState(false)
+
+  if (isStreaming) return null
 
   const handleLike = () => {
     setLiked((v) => !v)

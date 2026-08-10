@@ -43,8 +43,8 @@ const CAMERA_RESPONSIVE_PRESETS: Record<CameraMode, CameraResponsivePreset> = {
     narrowTargetZ: -0.6,
   },
   hips: {
-    wideFraming: [0.5, 2.2, 1.0],
-    narrowFraming: [0.5, 3.0, 1.0],
+    wideFraming: [1.5, 3.8, 1.5],
+    narrowFraming: [1.5, 4.5, 1.5],
     narrowTargetZ: -0.4,
   },
 }
