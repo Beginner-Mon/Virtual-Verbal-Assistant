@@ -161,7 +161,7 @@ CRITICAL_CHECKS = frozenset({"redis", "postgres", "graph", "llm"})
 # readiness probe on them would pull healthy instances out of rotation over a
 # side feature, and because all instances share these services it would pull out
 # *every* instance at once.
-OPTIONAL_CHECKS = frozenset({"mcp", "speechllm", "searxng"})
+OPTIONAL_CHECKS = frozenset({"mcp", "speechllm", "searxng", "dependencies"})
 
 
 def _is_critical(name: str) -> bool:
@@ -180,6 +180,34 @@ def _is_critical(name: str) -> bool:
             name,
         )
     return True
+
+
+async def check_dependencies() -> CheckResult:
+    """Are the lazily-imported packages actually importable?
+
+    Reported here as well as at start-up because start-up logs scroll away. A
+    missing optional package — the Gemini fallback is the one that bit us — is
+    otherwise invisible right up until the primary provider fails, and then it
+    turns one outage into two.
+
+    Optional by classification: the service really does serve traffic without
+    these, so this must surface as `degraded` on a 200, never as a 503. A
+    missing CRITICAL package cannot reach this code at all — the process would
+    have failed long before, on a module-level import.
+    """
+    t0 = time.perf_counter()
+    from langgraph_agents.shared.preflight import check_lazy_dependencies
+
+    result = check_lazy_dependencies()
+    elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+
+    missing = result.missing_critical + result.missing_optional
+    if not missing:
+        return CheckResult(name="dependencies", ok=True, latency_ms=elapsed_ms)
+    return CheckResult(
+        name="dependencies", ok=False, latency_ms=elapsed_ms,
+        detail="missing: " + ", ".join(d.module for d in missing),
+    )
 
 
 async def run_all_checks(graph, redis_client) -> dict:
@@ -201,6 +229,7 @@ async def run_all_checks(graph, redis_client) -> dict:
         check_mcp(),
         check_speechllm(),
         check_searxng(),
+        check_dependencies(),
         return_exceptions=True,
     )
 

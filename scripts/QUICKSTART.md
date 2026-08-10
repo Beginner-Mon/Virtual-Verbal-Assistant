@@ -53,9 +53,13 @@ docker compose -f docker-compose.langgraph.yml up -d postgres redis searxng
 cd agenticRAG/langgraph_agents && alembic upgrade head && cd ../..
 
 # ── 3. Backend :8000 ──────────────────────────────────────────
-conda activate firstconda
+conda activate firstconda      # ⚠️ BẮT BUỘC — xem §6
 cd agenticRAG
 python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8000 --host 0.0.0.0
+
+# Nhìn 2 dòng log đầu — không cần đoán:
+#   "preflight_ok",     "interpreter": ...\envs\firstconda\python.exe
+#   "startup_complete", "config_source": ...\agenticRAG\.env
 
 # ── 4. Frontend :5173 (terminal khác) ─────────────────────────
 cd ECA_UI/frontend
@@ -166,6 +170,10 @@ python -m pytest tests/langgraph_agents/ -q            # 312, cần Docker + API
 | Triệu chứng | Nguyên nhân & cách xử lý |
 |---|---|
 | `ModuleNotFoundError: langchain_google_genai` khi chạy test | **Sai Python.** `python` mặc định trên PATH không phải env `firstconda`. Gọi thẳng: `/c/Users/Nguyen/miniconda3/envs/firstconda/python -m pytest ...` |
+| Log khởi động có `MISSING DEPENDENCY` / `MISSING OPTIONAL DEPENDENCY` | Cùng nguyên nhân trên, phía backend. Dòng log in sẵn **interpreter đang chạy** và lệnh cài vào đúng nó. Đừng chạy `pip install` trần — `pip` và `python` trên máy này là **hai env khác nhau** |
+| Không thấy dòng `preflight_ok` lúc khởi động | Đang chạy code cũ, hoặc `LOG_LEVEL` cao hơn INFO |
+| `config_source` ghi `(LEGACY ...)` | `.env` còn nằm ở `agentic_rag_gemini/`. Chuyển sang `agenticRAG/.env` |
+| Chat trả lời được nhưng **hỏng đúng lúc DeepSeek lỗi** | Thiếu `langchain_google_genai` ⇒ Gemini fallback không import được. `/health/detailed` → `dependencies.ok: false`, `status: degraded` |
 | `docker compose` báo lỗi pipe | Docker Desktop chưa khởi động xong — mở app rồi chờ ~5-30s |
 | Chat luôn trả lời từ chối (`refuse`) | KB rỗng → chạy §3 |
 | Cổng 8000 bận | Còn tiến trình uvicorn cũ. **Đừng** chuyển sang 8080 |

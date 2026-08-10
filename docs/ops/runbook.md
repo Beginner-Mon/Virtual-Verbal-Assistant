@@ -104,6 +104,29 @@ cd agenticRAG
 python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8000 --host 0.0.0.0 *> ..\vva.log
 ```
 
+**Check the first two log lines.** The `conda activate` above is load-bearing and easy
+to skip — without it `python` is the system interpreter, which lacks some of the
+service's packages. Most are imported at module level and fail loudly, but a few are
+imported lazily, so the server starts fine and only breaks later. The worst is
+`langchain_google_genai`: it is imported inside the Gemini fallback, so a missing copy
+first shows up when DeepSeek has already failed.
+
+Start-up now imports all of them up front and says so:
+
+```
+{"msg": "preflight_ok", "checked": 10, "interpreter": "...\\envs\\firstconda\\python.exe"}
+{"msg": "startup_complete", "graph_loaded": true, "config_source": "...\\agenticRAG\\.env"}
+```
+
+Anything other than `preflight_ok` names the missing package, what it breaks, and the
+interpreter to install it into. `/health/detailed` reports the same as a `dependencies`
+check — non-critical, so it shows `degraded` on a 200 rather than pulling the instance
+out of the load balancer.
+
+`config_source` answers the other start-up question: which `.env` was actually read. If
+it says `(LEGACY ...)`, the file is still in `agentic_rag_gemini/` and should be moved to
+`agenticRAG/.env`.
+
 **Auth:** by default `REQUIRE_AUTH=false` — the backend accepts the client-supplied
 `user_id` (no login needed, correct for internal demo). When a valid Cognito **ID token**
 is sent as `Authorization: Bearer <jwt>`, the backend ignores the client `user_id` and

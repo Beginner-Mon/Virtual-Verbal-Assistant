@@ -13,10 +13,11 @@
   > `vva-postgres` local **không còn là DB đang dùng** — chỉ là đường lùi.
   > TTS phải chạy bằng conda env **`tts`**, không phải `firstconda`.
   > 🔴 **Backend phải chạy bằng `firstconda`.** Trên máy này `python` trần =
-  > Python312, **thiếu `langchain_google_genai`**. Import của nó là *lazy* nên
-  > backend vẫn khởi động bình thường và chỉ chết lúc Gemini fallback được gọi —
-  > tức đúng lúc DeepSeek đang hỏng. `pytest` cũng phải chạy bằng `firstconda`
-  > (Python312 cho 8 test đỏ giả). Worklog 10/08 §0.
+  > Python312, **thiếu `langchain_google_genai`**. `pytest` cũng vậy (Python312
+  > cho 8 test đỏ giả). Worklog 10/08 §0.
+  > ✅ **Không phải đoán nữa** — khởi động in `preflight_ok` + `interpreter` +
+  > `config_source`. Thiếu package thì log nói rõ thiếu gì, hỏng cái gì, và lệnh
+  > cài vào **đúng interpreter đang chạy**. Worklog 10/08 §7.
 - **Config backend: `agenticRAG/.env`** (10/08). Loader duy nhất:
   `langgraph_agents/shared/env.py`. File cũ `agentic_rag_gemini/.env` vẫn được chấp
   nhận nhưng **log WARNING** — chưa xoá, chờ N xác nhận. Mẫu đầy đủ: `agenticRAG/.env.example`.

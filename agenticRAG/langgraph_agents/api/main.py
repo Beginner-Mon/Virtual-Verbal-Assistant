@@ -50,6 +50,8 @@ from langgraph_agents.db.session_store import (
 from langgraph_agents.shared.logging import (
     configure_root_logger, get_logger, with_request_id,
 )
+from langgraph_agents.shared.env import env_source
+from langgraph_agents.shared.preflight import run_preflight
 from langgraph_agents.api.health import run_all_checks
 
 logger = get_logger("langgraph.api")
@@ -95,12 +97,20 @@ def _get_graph():
 async def lifespan(application: FastAPI):
     configure_root_logger(level=os.getenv("LOG_LEVEL", "INFO"))
     logger.info("startup", extra={"event": "lifespan_start"})
+
+    # Before anything else: import the packages that are otherwise imported
+    # lazily, so a missing one surfaces here instead of mid-incident. See
+    # shared/preflight.py. Never raises — an operator who knowingly runs without
+    # the Gemini fallback should still get a server.
+    run_preflight()
+
     global _graph
     _graph = await build_graph_async()
     _get_redis()
     logger.info("startup_complete", extra={
         "event": "lifespan_complete",
         "graph_loaded": _graph is not None,
+        "config_source": env_source(),
     })
     yield
     if _redis is not None:
