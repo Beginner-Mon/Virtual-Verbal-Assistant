@@ -55,17 +55,16 @@ export default function LoginPage() {
     }
   }
 
-  /** After the lookup we know exactly whose account this is, so hint it and
+  /** After the lookup we know exactly whose account this is, so record it and
    *  hold the app to it. Before the lookup we know nothing — any Google account
-   *  is a valid answer, so no hint and no expectation.
+   *  is a valid answer, so no expectation is recorded.
    *
-   *  `forceAccountChoice` after a mismatch is what stops the loop: Google's own
-   *  session outlives the Cognito sign-out, so without it the retry silently
-   *  lands on the same rejected account again. */
+   *  The account chooser is not requested here any more; `startGoogleSignIn`
+   *  always asks for it. It used to be turned on only after a mismatch, which
+   *  meant an ordinary sign-out followed by "Continue with Google" dropped the
+   *  user straight back into the account they had just left. */
   const handleGoogleSignIn = () => {
-    startGoogleSignIn(result ? email.trim() : undefined, {
-      forceAccountChoice: mismatchError,
-    })
+    startGoogleSignIn(result ? email.trim() : undefined)
   }
 
   const showGoogleOnly = result && !result.hasEmail && result.hasGoogle

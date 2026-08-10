@@ -182,5 +182,76 @@ Nếu bước 4 vẫn thấy `b@` thì bản vá chưa ăn — báo lại, đừ
 
 ---
 
+## Phản hồi vòng 2 của Tri (09/08) — mất bảng chọn tài khoản Google
+
+> *"khi logout và continue with google lại, có vẻ như bạn đã thay đổi gì đó, tao
+> đã bị vô thẳng account đã logout chứ không được chọn tài khoản google nữa"*
+
+**Tri đúng. Lỗi của tôi, đã sửa.**
+
+Không phải từ bản vá link hôm qua — từ commit `9fcae53`, lúc tôi gom 4 call site
+inline thành `startGoogleSignIn()`.
+
+### Trước / sau
+
+Trước `9fcae53`, cả 4 trang đều viết y hệt nhau:
+
+```ts
+signInWithRedirect({ provider: 'Google', options: { prompt: 'SELECT_ACCOUNT' } })
+```
+
+Tôi biến `SELECT_ACCOUNT` thành **có điều kiện** — chỉ gửi khi
+`forceAccountChoice`, tức chỉ sau khi đã phát hiện lệch tài khoản. Lý do lúc đó:
+*"bày bảng chọn ra là cách người ta bấm nhầm tài khoản"*.
+
+### Vì sao lý do đó sai
+
+Lý do đó đúng cho luồng **link** (tài khoản đã xác định rồi). Cho luồng **đăng
+nhập** thì nó sai, vì:
+
+1. Đăng xuất **không** kết thúc phiên Google — AWS docs: *"the logout endpoint
+   doesn't sign users out of OIDC or social identity providers"*.
+2. Không có `prompt` ⇒ Google tự chọn phiên đang có ⇒ vào thẳng tài khoản vừa
+   đăng xuất, **không có màn hình nào ở giữa**.
+3. Cognito **không** forward được `login_hint` sang Google, nên bỏ bảng chọn
+   *không* làm giảm khả năng vào nhầm — nó chỉ **lấy mất khả năng chọn đúng**.
+
+Nói gọn: bỏ bảng chọn = bỏ quyền chọn, chứ không phải bỏ rủi ro. Phần chống nhầm
+vẫn là `takeExpectedEmail` so email sau khi quay về, như trước.
+
+### Đã sửa
+
+`src/lib/googleSignIn.ts` — `prompt: 'SELECT_ACCOUNT'` giờ nằm trong khởi tạo
+`options`, **không điều kiện**, không thể lọt:
+
+```ts
+const options: { loginHint?: string; prompt: 'SELECT_ACCOUNT'; ... } = {
+  prompt: 'SELECT_ACCOUNT',
+}
+```
+
+Kiểu của `prompt` là **bắt buộc**, không phải `?:` — bỏ nó ra là tsc đỏ.
+
+Xoá luôn `...(Object.keys(options).length > 0 ? { options } : {})` — chính đoạn
+đó cho phép request bay đi mà **không có** object `options` nào.
+`forceAccountChoice` xoá theo, LoginPage không truyền nữa.
+
+### Pin bằng test
+
+`src/lib/googleSignIn.test.ts` — **7 test**. Cái này đã bật/tắt 2 lần rồi, nên
+không để nó phụ thuộc vào việc ai đó nhớ.
+
+Mutation check: gỡ dòng `prompt` ra → **4 test đỏ** (biết email / không biết email
+/ mọi input / native). Không phải cả file — đúng 4 cái nói về prompt.
+
+`tsc -b` exit 0 · eslint sạch · `npm test` **44/44** · `npm run build` xanh.
+
+### Việc này **chạy được ngay**, không cần deploy
+
+Khác với phần link ở trên — đây là frontend thuần. Tri pull về, `npm run dev`, thử
+lại là thấy.
+
+---
+
 Liên quan: `docs/auth-google-incident.md` (bug phiên đăng nhập, đã sửa 3/5 lớp) ·
-`docs/worklogs/08-08-2026.md` §5
+`docs/worklogs/08-08-2026.md` §5 · `docs/worklogs/09-08-2026.md`

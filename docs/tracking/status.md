@@ -48,8 +48,11 @@
 - **`/health/detailed` không còn 503 vì TTS chết** — critical vs optional đã tách.
   Worklog 08/08 §1.
 - **Docker tự dậy lại sau reboot** — `postgres` + `redis` có restart policy. Worklog 08/08 §2.
-- **FE có test runner** — `npm test` trong `ECA_UI/frontend`: **37 test / 3 file / 285ms**
-  (`AnimationController`, `shadowFit`, `groundClamp`). Worklog 08/08 §3.
+- **FE có test runner** — `npm test` trong `ECA_UI/frontend`: **44 test / 4 file**
+  (`AnimationController`, `shadowFit`, `groundClamp`, `googleSignIn`). Worklog 08/08 §3.
+- **Mất bảng chọn tài khoản Google sau đăng xuất** (Tri báo 09/08) — ✅ **SỬA XONG**,
+  frontend thuần, không cần deploy. `prompt: 'SELECT_ACCOUNT'` trở lại vô điều kiện +
+  7 test pin lại. Worklog 09/08.
 
 ### ⭐ Việc đang làm — thứ tự ưu tiên đã Owner chốt (30/07)
 

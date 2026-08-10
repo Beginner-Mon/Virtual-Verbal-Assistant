@@ -67,12 +67,11 @@ function clear(key: string) {
  * `takeExpectedEmail` the primary defence here, not a backstop.
  *
  * `prompt` is different: Cognito forwards every value except `none` to the IdP.
- * That is why passing SELECT_ACCOUNT literally asked Google for the picker.
+ * `SELECT_ACCOUNT` is therefore what makes Google show its account chooser, and
+ * it is sent on EVERY sign-in — see the comment on `options.prompt` below for
+ * why that is not optional.
  */
-export function startGoogleSignIn(
-  expectedEmail?: string,
-  { forceAccountChoice = false }: { forceAccountChoice?: boolean } = {},
-): Promise<void> {
+export function startGoogleSignIn(expectedEmail?: string): Promise<void> {
   const hint = expectedEmail?.trim()
 
   if (hint) {
@@ -86,23 +85,28 @@ export function startGoogleSignIn(
 
   const options: {
     loginHint?: string
-    prompt?: 'LOGIN' | 'SELECT_ACCOUNT'
+    prompt: 'SELECT_ACCOUNT'
     authSessionOpener?: (url: string) => Promise<void>
-  } = {}
-  if (hint) options.loginHint = hint
-
-  if (forceAccountChoice) {
-    // The one case where the account picker is the right answer.
+  } = {
+    // ALWAYS. Not conditional, and not something to "optimise away" later.
     //
-    // Ending the Cognito session is not enough on a retry after a rejected
-    // sign-in: per the Cognito docs, "the logout endpoint doesn't sign users out
-    // of OIDC or social identity providers". Google still holds its own session,
-    // so a request carrying no `prompt` lets it silently re-select the very
-    // account we just rejected — the bug reappears with nothing on screen to
-    // explain it. Cognito forwards every `prompt` value except `none` to the
-    // IdP, so this is what makes Google ask again.
-    options.prompt = 'SELECT_ACCOUNT'
+    // Signing out does not end Google's session — the Cognito docs are explicit
+    // that "the logout endpoint doesn't sign users out of OIDC or social
+    // identity providers". So after a sign-out, a request carrying no `prompt`
+    // lets Google silently re-select the account that was just signed out of.
+    // The user lands straight back in the account they were trying to leave,
+    // with no screen in between and no way to reach a different one.
+    //
+    // This was briefly made conditional (only after a detected mismatch), on the
+    // theory that showing a chooser is how people pick the wrong account. That
+    // reasoning does not hold here: per the paragraph above, Cognito cannot
+    // constrain which Google account comes back anyway, so removing the chooser
+    // removed the user's ability to CHOOSE without removing the ability to get
+    // it wrong. `takeExpectedEmail` catches a wrong account; nothing else can
+    // offer the right one.
+    prompt: 'SELECT_ACCOUNT',
   }
+  if (hint) options.loginHint = hint
 
   if (isNative()) {
     // Google returns `disallowed_useragent` for OAuth inside an embedded
@@ -110,10 +114,10 @@ export function startGoogleSignIn(
     options.authSessionOpener = openAuthSessionInSystemBrowser
   }
 
-  return signInWithRedirect({
-    provider: 'Google',
-    ...(Object.keys(options).length > 0 ? { options } : {}),
-  })
+  // `options` is never empty now — `prompt` is unconditional — so the old
+  // "spread it only if non-empty" dance is gone. It was also what made it
+  // possible to end up with no `prompt` at all.
+  return signInWithRedirect({ provider: 'Google', options })
 }
 
 /** Read the expected email without consuming it (safe for StrictMode double-execution). */
