@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 import type { Message } from '../components/ChatMessage'
-import { getSession, streamChat, type SessionMessage } from '../lib/api'
+import { getSession, listSessions, deleteSession, streamChat, type SessionMessage } from '../lib/api'
 import { useMotion } from './MotionContext'
 import testAudio from '../asset/audio/test.wav'
 
@@ -43,6 +43,14 @@ function buildInitialMessages(): Message[] {
   ]
 }
 
+export interface SessionItem {
+  session_id: string
+  created_at: string
+  updated_at: string
+  first_user_message_preview: string
+  message_count: number
+}
+
 export interface ChatContextType {
   messages: Message[]
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>
@@ -55,7 +63,6 @@ export interface ChatContextType {
   setWebSearch: (value: boolean) => void
   voiceReply: boolean
   setVoiceReply: (value: boolean) => void
-  /** True while the previous conversation is being fetched back on load. */
   isRestoring: boolean
   startNewSession: () => void
   handleSend: () => Promise<void>
@@ -63,6 +70,13 @@ export interface ChatContextType {
   imageUrls: string[]
   addImage: (file: File) => void
   removeImage: (index: number) => void
+  sessionList: SessionItem[]
+  sessionsDirty: boolean
+  activeSessionId: string
+  refreshSessions: () => Promise<void>
+  switchToSession: (sessionId: string) => Promise<void>
+  deleteSessionAction: (sessionId: string) => Promise<void>
+  markSessionsClean: () => void
 }
 
 const ChatContext = createContext<ChatContextType | null>(null)
@@ -83,12 +97,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [imageUrls, setImageUrls] = useState<string[]>([])
   const imageUrlsRef = useRef<string[]>([])
 
+  const [sessionList, setSessionList] = useState<SessionItem[]>([])
+  const [sessionsDirty, setSessionsDirty] = useState(true)
+  const switchingRef = useRef(false)
+
   const inputRef = useRef(input)
   inputRef.current = input
   const isGeneratingRef = useRef(isGenerating)
   isGeneratingRef.current = isGenerating
 
   const sessionIdRef = useRef<string>(loadOrCreateSessionId())
+  const [activeSessionId, setActiveSessionId] = useState<string>(() => loadOrCreateSessionId())
   const abortControllerRef = useRef<AbortController | null>(null)
   const thinkingRef = useRef(false)
 
@@ -153,11 +172,28 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     const fresh = crypto.randomUUID()
     localStorage.setItem(SESSION_KEY, fresh)
     sessionIdRef.current = fresh
+    setActiveSessionId(fresh)
     setMessages(buildInitialMessages())
     setInput('')
     setIsTyping(false)
     setStageLabel(null)
     setIsGenerating(false)
+    setSessionsDirty(true)
+  }, [])
+
+  const refreshSessions = useCallback(async () => {
+    try {
+      const data = await listSessions()
+      const sessions = (data?.sessions ?? []) as SessionItem[]
+      setSessionList(sessions)
+      setSessionsDirty(false)
+    } catch (e) {
+      console.warn('[sessions] refresh failed:', e)
+    }
+  }, [])
+
+  const markSessionsClean = useCallback(() => {
+    setSessionsDirty(false)
   }, [])
 
   const endThinking = useCallback(() => {
@@ -165,6 +201,54 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     thinkingRef.current = false
     void transitionTo('thinking_outro')
   }, [transitionTo])
+
+  const switchToSession = useCallback(async (sessionId: string) => {
+    if (sessionId === sessionIdRef.current || switchingRef.current) return
+    switchingRef.current = true
+    abortControllerRef.current?.abort()
+
+    try {
+      const data = await getSession(sessionId)
+      const history = (data?.messages ?? []) as SessionMessage[]
+      sessionIdRef.current = sessionId
+      setActiveSessionId(sessionId)
+      localStorage.setItem(SESSION_KEY, sessionId)
+      setInput('')
+      setIsTyping(false)
+      setStageLabel(null)
+      setIsGenerating(false)
+      endThinking()
+
+      if (history.length > 0) {
+        setMessages(
+          history.map((m, i) => ({
+            id: `switched-${i}`,
+            role: m.role,
+            content: m.content,
+            timestamp: new Date(m.timestamp),
+          }))
+        )
+      } else {
+        setMessages(buildInitialMessages())
+      }
+    } catch (e) {
+      console.warn('[session] switch failed:', e)
+    } finally {
+      switchingRef.current = false
+    }
+  }, [endThinking])
+
+  const deleteSessionAction = useCallback(async (sessionId: string) => {
+    try {
+      await deleteSession(sessionId)
+      setSessionList((prev) => prev.filter((s) => s.session_id !== sessionId))
+      if (sessionId === sessionIdRef.current) {
+        startNewSession()
+      }
+    } catch (e) {
+      console.warn('[session] delete failed:', e)
+    }
+  }, [startNewSession])
 
   const handleStop = useCallback(() => {
     abortControllerRef.current?.abort()
@@ -284,6 +368,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             if (!isCurrent()) return
             setStageLabel(null)
             setIsGenerating(false)
+            setSessionsDirty(true)
           }
         },
         controller.signal,
@@ -337,8 +422,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       imageUrls,
       addImage,
       removeImage,
+      sessionList,
+      sessionsDirty,
+      activeSessionId,
+      refreshSessions,
+      switchToSession,
+      deleteSessionAction,
+      markSessionsClean,
     }),
-    [messages, input, isTyping, isGenerating, stageLabel, webSearch, voiceReply, isRestoring, startNewSession, handleSend, handleStop, imageUrls, addImage, removeImage],
+    [messages, input, isTyping, isGenerating, stageLabel, webSearch, voiceReply, isRestoring, startNewSession, handleSend, handleStop, imageUrls, addImage, removeImage, sessionList, sessionsDirty, activeSessionId, refreshSessions, switchToSession, deleteSessionAction, markSessionsClean],
   )
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>

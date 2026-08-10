@@ -28,13 +28,11 @@ function getAvatarMeta(label: string, index: number) {
 }
 
 function AvatarCard({
-  initial,
   color,
   displayName,
   isSelected,
   onClick,
 }: {
-  initial: string
   color: string
   displayName: string
   isSelected: boolean
@@ -57,7 +55,12 @@ function AvatarCard({
       `}
     >
       <div className={`w-full h-[170px] bg-gradient-to-br ${color} flex items-center justify-center relative`}>
-        <span className="text-white text-6xl font-bold opacity-30 select-none">{initial}</span>
+        <img
+          src="/eca-logo.svg"
+          alt=""
+          className="w-40 h-40 opacity-30 select-none"
+          style={{ filter: 'brightness(0) invert(1)' }}
+        />
 
         <div className={`
           absolute inset-x-0 bottom-0 bg-black/60 backdrop-blur-sm py-2 px-2 text-center
@@ -92,11 +95,10 @@ export default function AvatarsPanel() {
         )}
         <div className="grid grid-cols-2 gap-4 pt-0.5 justify-items-center">
           {vrmOptions.map((option, index) => {
-            const { initial, color, displayName } = getAvatarMeta(option.label, index)
+            const { color, displayName } = getAvatarMeta(option.label, index)
             return (
               <AvatarCard
                 key={option.id}
-                initial={initial}
                 color={color}
                 displayName={displayName}
                 isSelected={selectedVrmId === option.id}

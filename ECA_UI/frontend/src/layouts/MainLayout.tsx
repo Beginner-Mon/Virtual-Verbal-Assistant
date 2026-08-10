@@ -30,7 +30,8 @@ export default function MainLayout() {
         <GraphicsProvider>
         <main className="relative h-screen w-screen overflow-hidden bg-background">
         <div className="fixed top-5 left-5 z-[9990] flex items-center opacity-80 transition-opacity hover:opacity-100">
-          <Link to="/" aria-label="Go to home">
+          <Link to="/" aria-label="Go to home" className="flex items-center">
+            <img src="/eca-logo.svg" alt="" className="w-14 h-14" />
             <h1 className="text-2xl font-semibold tracking-[0.18em] text-foreground">ECA</h1>
           </Link>
           <AudioToggle />

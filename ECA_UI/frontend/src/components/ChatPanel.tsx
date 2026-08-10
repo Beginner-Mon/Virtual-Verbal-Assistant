@@ -261,9 +261,6 @@ export default function ChatPanel() {
             e.target.value = ''
           }}
         />
-        <p className="hidden md:block text-[10px] text-muted-foreground/50 mt-2 text-center select-none">
-          Press Enter to send · Shift+Enter for new line
-        </p>
       </div>
     </div>
   )
