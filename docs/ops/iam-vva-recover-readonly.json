@@ -1,0 +1,44 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "WhoAmI",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadStackStateAndFailureEvents",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResources",
+        "cloudformation:ListStacks"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadAmplifyAppAndJobs",
+      "Effect": "Allow",
+      "Action": [
+        "amplify:GetApp",
+        "amplify:GetBranch",
+        "amplify:GetJob",
+        "amplify:ListApps",
+        "amplify:ListBranches",
+        "amplify:ListJobs"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ListSecretNamesButNotValues",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:DescribeParameters",
+        "ssm:GetParametersByPath"
+      ],
+      "Resource": "arn:aws:ssm:*:*:parameter/amplify/*"
+    }
+  ]
+}

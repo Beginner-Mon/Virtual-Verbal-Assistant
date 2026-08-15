@@ -1,0 +1,62 @@
+{
+  "_comment": [
+    "Level 2 — grants the write actions. Attach ALONGSIDE the AWS managed policy",
+    "AdministratorAccess-Amplify, not instead of it.",
+    "",
+    "Why the managed policy is also needed: CloudFormation deletes a stack using",
+    "the CALLER's permissions, so deleting this stack requires permission to",
+    "delete everything inside it — Cognito user pool, Lambda functions, DynamoDB",
+    "tables, API Gateway, IAM roles. Hand-listing those is how a stack ends up",
+    "stuck in DELETE_FAILED halfway through, which is worse than where it started.",
+    "",
+    "Scope: the Resource entries below are deliberately narrowed to this app id.",
+    "Change d32nf9wwqqt016 if you point the script at another app."
+  ],
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DeleteTheStuckBranchStack",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:DeleteStack",
+        "cloudformation:UpdateStack",
+        "cloudformation:ContinueUpdateRollback"
+      ],
+      "Resource": "arn:aws:cloudformation:*:*:stack/amplify-d32nf9wwqqt016-*/*"
+    },
+    {
+      "Sid": "WriteBranchSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:PutParameter",
+        "ssm:DeleteParameter"
+      ],
+      "Resource": "arn:aws:ssm:*:*:parameter/amplify/d32nf9wwqqt016/*"
+    },
+    {
+      "Sid": "EncryptSecureStringWithTheDefaultSsmKey",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:GenerateDataKey"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": "ssm.us-east-1.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "SetBranchEnvVarsAndTriggerDeploys",
+      "Effect": "Allow",
+      "Action": [
+        "amplify:UpdateBranch",
+        "amplify:StartJob",
+        "amplify:StopJob"
+      ],
+      "Resource": "arn:aws:amplify:*:*:apps/d32nf9wwqqt016/*"
+    }
+  ]
+}
