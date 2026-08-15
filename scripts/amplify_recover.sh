@@ -240,6 +240,37 @@ cmd_set_env() {
   echo "  applied to branch $BRANCH — takes effect on the NEXT build"
 }
 
+cmd_spa_routing() {
+  require_aws
+  # Amplify Hosting serves static files. A React Router deep link like /login has
+  # no /login/index.html behind it, so hosting answers 404 — the app never boots
+  # and there is nothing in the console except the 404 itself. Every SPA needs
+  # this rule; nothing in the repo was setting it.
+  #
+  # The source regex deliberately EXCLUDES real file extensions. The naive
+  # "/<*>" rule rewrites everything to index.html, including the .vrm, .bvh,
+  # .fbx and .npz assets this app loads — they would come back as HTML and fail
+  # to parse, which looks like a corrupt model rather than a routing rule.
+  local exts='css|gif|ico|jpg|jpeg|js|png|txt|svg|woff|woff2|ttf|map|json|webp|mp3|wav|vrm|bvh|fbx|npz|glb|gltf|hdr|ktx2'
+  local rules
+  rules=$(cat <<JSON
+[
+  {
+    "source": "</^[^.]+\$|\\\\.(?!($exts)\$)([^.]+\$)/>",
+    "target": "/index.html",
+    "status": "200"
+  }
+]
+JSON
+)
+  echo "applying SPA rewrite to app $APP_ID"
+  echo "  everything without a known file extension -> /index.html (200)"
+  aws amplify update-app --app-id "$APP_ID" --custom-rules "$rules" \
+      --query 'app.customRules' --output json
+  echo
+  echo "Takes effect immediately — hosting rules are not baked into the build."
+}
+
 cmd_deploy() {
   require_aws
 
@@ -280,6 +311,7 @@ case "${1:-status}" in
   set-secrets)  cmd_set_secrets ;;
   delete-stack) cmd_delete_stack ;;
   set-env)      cmd_set_env ;;
+  spa-routing)  cmd_spa_routing ;;
   deploy)       cmd_deploy ;;
   *) sed -n '3,30p' "$0"; exit 2 ;;
 esac
