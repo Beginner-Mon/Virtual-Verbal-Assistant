@@ -142,7 +142,12 @@ function ClerkAuthGuard() {
   const [bridgeReady, setBridgeReady] = useState(false)
 
   useLayoutEffect(() => {
-    setClerkAuthProvider({ getToken, userId })
+    // `useAuth().userId` is `string | null | undefined` — undefined while Clerk
+    // is still loading, null once loaded and signed out. The bridge only cares
+    // about the second distinction, so collapse the two "no user" states rather
+    // than widening its type: `undefined` there would mean every consumer has to
+    // re-decide what it means.
+    setClerkAuthProvider({ getToken, userId: userId ?? null })
     setBridgeReady(true)
     return () => setClerkAuthProvider(null)
   }, [getToken, userId])
