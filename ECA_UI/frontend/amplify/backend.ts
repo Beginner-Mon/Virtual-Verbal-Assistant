@@ -81,8 +81,14 @@ const userPool = backend.auth.resources.userPool;
 const cfnUserPool = userPool.node.defaultChild as CfnUserPool;
 
 // --- DynamoDB Tables ---
+//
+// DynamoDB table names are unique per account + region, and CloudFormation's
+// early ResourceExistenceCheck fails the whole creation with
+// "Validation failed with 2 error(s)" when a template re-uses a name that a
+// deployed stack (the sandbox) already holds. The tables below therefore get
+// a deployment suffix in CI — see tableNameSuffix().
 const userMappingsTable = new Table(backend.stack, 'UserMappings', {
-  tableName: 'UserMappings',
+  tableName: `UserMappings${tableNameSuffix()}`,
   partitionKey: { name: 'appUserId', type: AttributeType.STRING },
   billingMode: BillingMode.PAY_PER_REQUEST,
 });
@@ -103,11 +109,15 @@ userMappingsTable.addGlobalSecondaryIndex({
 });
 
 const emailLocksTable = new Table(backend.stack, 'EmailLocks', {
-  tableName: 'EmailLocks',
+  tableName: `EmailLocks${tableNameSuffix()}`,
   partitionKey: { name: 'email', type: AttributeType.STRING },
   timeToLiveAttribute: 'ttl',
   billingMode: BillingMode.PAY_PER_REQUEST,
 });
+
+console.log(
+  `[backend] table names: UserMappings${tableNameSuffix()}, EmailLocks${tableNameSuffix()}`
+);
 
 // Configure Lambdas
 const preSignUpFn = backend.preSignUpHandler.resources.lambda as Function;
@@ -235,6 +245,27 @@ function cognitoDomainPrefix(): string {
   }
 
   return 'eca-us-east-1';
+}
+
+// Suffix for account-unique resource names (DynamoDB tables). Same derivation
+// as the Cognito domain prefix, for the same reason: a fixed name can be held
+// by exactly one environment. The sandbox owns `UserMappings`/`EmailLocks`;
+// a pipeline deployment with those literal names fails CloudFormation's early
+// ResourceExistenceCheck ("Validation failed with 2 error(s)"). In CI the
+// branch + app id shape a unique suffix; locally (no AWS_BRANCH/AWS_APP_ID)
+// the name stays as-is so the sandbox keeps its tables and data.
+function tableNameSuffix(): string {
+  const branch = process.env.AWS_BRANCH;
+  const appId = process.env.AWS_APP_ID;
+  if (branch && appId) {
+    const slug = branch
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 28);
+    return `-${slug}-${appId.slice(-6).toLowerCase()}`;
+  }
+  return '';
 }
 
 // Find the CfnUserPoolDomain that Amplify auto-creates
