@@ -130,7 +130,7 @@ const cfnUserPool = userPool.node.defaultChild as CfnUserPool;
 // early ResourceExistenceCheck fails the whole creation with
 // "Validation failed with 2 error(s)" when a template re-uses a name that a
 // deployed stack (the sandbox) already holds. The tables below therefore get
-// a deployment suffix in CI — see tableNameSuffix().
+// a deployment suffix in CI — see environmentSuffix() above.
 const userMappingsTable = new Table(backend.stack, 'UserMappings', {
   // Physical name is per-environment; the Lambdas receive it through
   // USER_MAPPINGS_TABLE_NAME below, so nothing downstream hardcodes it.
@@ -162,7 +162,7 @@ const emailLocksTable = new Table(backend.stack, 'EmailLocks', {
 });
 
 console.log(
-  `[backend] table names: UserMappings${tableNameSuffix()}, EmailLocks${tableNameSuffix()}`
+  `[backend] table names: ${userMappingsTable.tableName}, ${emailLocksTable.tableName}`
 );
 
 // Configure Lambdas
