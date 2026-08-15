@@ -223,12 +223,21 @@ cmd_delete_stack() {
 cmd_set_env() {
   require_aws
   local origin="${WEB_APP_ORIGIN:-https://$(echo "$BRANCH" | tr '/_' '-').${APP_ID}.amplifyapp.com}"
+  # Vite reads VITE_* at BUILD time and .env.local is gitignored, so a CI build
+  # sees none of it unless it is set here.
+  local api="${VITE_API_BASE_URL:-http://localhost:8000}"
+
   echo "WEB_APP_ORIGIN=$origin"
-  echo "  (this is the BRANCH url — amplify/shared/origins.ts reads it at synth"
-  echo "   time to build the CORS allow-list and the OAuth redirect URIs)"
+  echo "  (the BRANCH url — amplify/shared/origins.ts reads it at synth time to"
+  echo "   build the CORS allow-list and the OAuth redirect URIs)"
+  echo "VITE_API_BASE_URL=$api"
+  echo "  (baked into the bundle at build time, not read at runtime)"
+
+  # All variables go in ONE call: update-branch REPLACES the whole map, so
+  # setting them one at a time silently deletes the others.
   aws amplify update-branch --app-id "$APP_ID" --branch-name "$BRANCH" \
-      --environment-variables "WEB_APP_ORIGIN=$origin" >/dev/null
-  echo "  applied to branch $BRANCH"
+      --environment-variables "WEB_APP_ORIGIN=$origin,VITE_API_BASE_URL=$api" >/dev/null
+  echo "  applied to branch $BRANCH — takes effect on the NEXT build"
 }
 
 cmd_deploy() {
