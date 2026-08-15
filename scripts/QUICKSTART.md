@@ -136,8 +136,40 @@ VITE_API_BASE_URL=http://localhost:8000
 VITE_AUTH_DISABLED=true      # bỏ qua Cognito, vào thẳng chat
 ```
 
-> Trước khi deploy production: bỏ `VITE_AUTH_DISABLED` (hoặc `=false`), đặt `REQUIRE_AUTH=true`
-> và điền 3 biến Cognito.
+### Bật auth thật
+
+Phải bật **cả hai phía cùng lúc**. Bật một bên = mọi request 401.
+
+```env
+# agenticRAG/.env
+REQUIRE_AUTH=true
+COGNITO_REGION=us-east-1
+COGNITO_USER_POOL_ID=us-east-1_xxxxxxxxx
+COGNITO_APP_CLIENT_ID=xxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+```env
+# ECA_UI/frontend/.env.local
+VITE_AUTH_DISABLED=false
+VITE_USER_POOL_ID=us-east-1_xxxxxxxxx           # BẮT BUỘC
+VITE_USER_POOL_WEB_CLIENT_ID=xxxxxxxxxxxxxx     # BẮT BUỘC
+VITE_COGNITO_DOMAIN=eca-us-east-1.auth.us-east-1.amazoncognito.com  # cần cho Google
+```
+
+Ba điều dễ sập:
+
+1. **`VITE_USER_POOL_ID` + `VITE_USER_POOL_WEB_CLIENT_ID` là bắt buộc** ở frontend.
+   Chỉ đổi `VITE_AUTH_DISABLED=false` thì Amplify không có config ⇒ **không có luồng
+   đăng nhập nào** ⇒ kẹt ở màn login. (Trước 15/08 hai biến này có trong
+   `.env.example` nhưng **không code nào đọc** — chỉ `amplify_outputs.json` mới cấu
+   hình được, mà file đó cần AWS credentials. Giờ đọc thật.)
+2. **Backend chết ngay lúc khởi động** nếu `REQUIRE_AUTH=true` mà thiếu 1 trong 3 biến
+   `COGNITO_*` — cố ý (`api/auth.py:33`), để không âm thầm chạy không auth.
+3. **`VITE_COGNITO_DOMAIN` chỉ là domain** — không `https://`, không path. Thiếu nó thì
+   email/mật khẩu vẫn chạy, "Continue with Google" thì không.
+
+Nếu có AWS credentials thì `npx ampx sandbox` sinh `amplify_outputs.json` và file đó
+**được ưu tiên** hơn mọi biến `VITE_*` ở trên.
 
 ---
 

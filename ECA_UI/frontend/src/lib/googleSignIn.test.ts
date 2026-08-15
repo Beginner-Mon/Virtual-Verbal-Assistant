@@ -106,23 +106,40 @@ describe('startGoogleSignIn', () => {
   })
 
   it('records the expected email so a wrong account can be detected', async () => {
-    const { startGoogleSignIn, takeExpectedEmail } = await load()
+    const { startGoogleSignIn, peekExpectedEmail } = await load()
 
     await startGoogleSignIn('  A@Example.com  ')
 
     // The chooser cannot constrain what comes back — Cognito does not forward
     // login_hint to Google — so this record is the actual defence.
-    expect(takeExpectedEmail()).toBe('A@Example.com')
+    expect(peekExpectedEmail()).toBe('A@Example.com')
   })
 
   it('clears a stale expectation when the app does not know the email', async () => {
-    const { startGoogleSignIn, takeExpectedEmail } = await load()
+    const { startGoogleSignIn, peekExpectedEmail } = await load()
 
     await startGoogleSignIn('a@example.com')
     await startGoogleSignIn()
 
     // A leftover value would reject the next perfectly valid sign-in.
-    expect(takeExpectedEmail()).toBeNull()
+    expect(peekExpectedEmail()).toBeNull()
+  })
+
+  it('does not consume the expectation on read', async () => {
+    // This is why `takeExpectedEmail` was split into peek + clear: React
+    // StrictMode runs effects twice in development, and a read-once accessor
+    // returned the email on the first pass and null on the second. The check
+    // then compared the signed-in account against nothing and let a mismatch
+    // through — in dev only, which is the worst place for it to differ.
+    const { startGoogleSignIn, peekExpectedEmail, clearExpectedEmail } = await load()
+
+    await startGoogleSignIn('a@example.com')
+
+    expect(peekExpectedEmail()).toBe('a@example.com')
+    expect(peekExpectedEmail()).toBe('a@example.com')
+
+    clearExpectedEmail()
+    expect(peekExpectedEmail()).toBeNull()
   })
 
   it('opens the system browser on native, where an embedded webview is refused', async () => {
