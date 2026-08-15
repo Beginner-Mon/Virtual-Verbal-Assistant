@@ -76,6 +76,50 @@ const backend = defineBackend({
   linkGoogleHandler,
 });
 
+/**
+ * Suffix that makes globally-unique resource names unique PER ENVIRONMENT.
+ *
+ * Several AWS resource names are unique across an account+region (DynamoDB
+ * tables) or across all of AWS (Cognito domain prefixes, S3 buckets). Hardcoding
+ * them means exactly one environment can exist. The sandbox created them first,
+ * so every pipeline deploy failed CloudFormation's
+ * `AWS::EarlyValidation::ResourceExistenceCheck` — before any resource was
+ * created, which is why the build log only ever said "Validation failed with
+ * 2 error(s)" with no resource-level events behind it. Two hardcoded table
+ * names, two errors.
+ *
+ * Returns null outside CI, so the EXISTING sandbox keeps the names it already
+ * has. That is not tidiness: changing `tableName` replaces the table, and
+ * replacing it drops every row in it.
+ */
+function environmentSuffix(): string | null {
+  const explicit = process.env.RESOURCE_SUFFIX?.trim();
+  if (explicit) return explicit;
+
+  // Both are set by the Amplify build image; absent locally.
+  const branch = process.env.AWS_BRANCH;
+  const appId = process.env.AWS_APP_ID;
+  if (!branch || !appId) return null;
+
+  const slug = branch
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 28);
+  // App id suffix keeps two apps building the same branch name apart.
+  return `${slug}-${appId.slice(-6).toLowerCase()}`.replace(/-+/g, '-');
+}
+
+const ENV_SUFFIX = environmentSuffix();
+
+/** Physical table name for this environment. */
+const tableName = (base: string): string =>
+  ENV_SUFFIX ? `${base}-${ENV_SUFFIX}` : base;
+
+console.log(
+  `[backend] environment suffix: ${ENV_SUFFIX ?? '(none — sandbox, existing names kept)'}`
+);
+
 // --- Cognito User Pool ---
 const userPool = backend.auth.resources.userPool;
 const cfnUserPool = userPool.node.defaultChild as CfnUserPool;
@@ -88,7 +132,9 @@ const cfnUserPool = userPool.node.defaultChild as CfnUserPool;
 // deployed stack (the sandbox) already holds. The tables below therefore get
 // a deployment suffix in CI — see tableNameSuffix().
 const userMappingsTable = new Table(backend.stack, 'UserMappings', {
-  tableName: `UserMappings${tableNameSuffix()}`,
+  // Physical name is per-environment; the Lambdas receive it through
+  // USER_MAPPINGS_TABLE_NAME below, so nothing downstream hardcodes it.
+  tableName: tableName('UserMappings'),
   partitionKey: { name: 'appUserId', type: AttributeType.STRING },
   billingMode: BillingMode.PAY_PER_REQUEST,
 });
@@ -109,7 +155,7 @@ userMappingsTable.addGlobalSecondaryIndex({
 });
 
 const emailLocksTable = new Table(backend.stack, 'EmailLocks', {
-  tableName: `EmailLocks${tableNameSuffix()}`,
+  tableName: tableName('EmailLocks'),
   partitionKey: { name: 'email', type: AttributeType.STRING },
   timeToLiveAttribute: 'ttl',
   billingMode: BillingMode.PAY_PER_REQUEST,
@@ -229,43 +275,11 @@ preTokenGenerationFn.addPermission('AllowCognitoPreTokenGeneration', { principal
 function cognitoDomainPrefix(): string {
   const explicit = process.env.COGNITO_DOMAIN_PREFIX?.trim();
   if (explicit) return explicit;
-
-  const branch = process.env.AWS_BRANCH;
-  const appId = process.env.AWS_APP_ID;
-  if (branch && appId) {
-    // Prefix rules: lowercase alphanumerics and hyphens, no leading/trailing
-    // hyphen, 63 chars max, and it may not contain "aws", "amazon" or "cognito".
-    const slug = branch
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 28);
-    // App id suffix keeps two apps building the same branch name apart.
-    return `eca-${slug}-${appId.slice(-6).toLowerCase()}`.replace(/-+/g, '-');
-  }
-
-  return 'eca-us-east-1';
-}
-
-// Suffix for account-unique resource names (DynamoDB tables). Same derivation
-// as the Cognito domain prefix, for the same reason: a fixed name can be held
-// by exactly one environment. The sandbox owns `UserMappings`/`EmailLocks`;
-// a pipeline deployment with those literal names fails CloudFormation's early
-// ResourceExistenceCheck ("Validation failed with 2 error(s)"). In CI the
-// branch + app id shape a unique suffix; locally (no AWS_BRANCH/AWS_APP_ID)
-// the name stays as-is so the sandbox keeps its tables and data.
-function tableNameSuffix(): string {
-  const branch = process.env.AWS_BRANCH;
-  const appId = process.env.AWS_APP_ID;
-  if (branch && appId) {
-    const slug = branch
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 28);
-    return `-${slug}-${appId.slice(-6).toLowerCase()}`;
-  }
-  return '';
+  // Same suffix as the tables, so one environment cannot end up half-scoped.
+  // Prefix rules: lowercase alphanumerics and hyphens, no leading or trailing
+  // hyphen, 63 chars, and no "aws"/"amazon"/"cognito" — `environmentSuffix`
+  // already produces a value that satisfies all of them.
+  return ENV_SUFFIX ? `eca-${ENV_SUFFIX}` : 'eca-us-east-1';
 }
 
 // Find the CfnUserPoolDomain that Amplify auto-creates
