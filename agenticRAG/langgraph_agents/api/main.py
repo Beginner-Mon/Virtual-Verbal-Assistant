@@ -33,6 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from langgraph_agents.api.auth import resolve_user_id
+from langgraph_agents.api.billing import router as billing_router
 from langgraph_agents.api.schemas import (
     ChatRequest, SessionListItem, SessionListResponse, SessionResumeResponse,
     TTSRequest, TTSTaskResponse,
@@ -139,6 +140,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    application.include_router(billing_router)
 
     @application.get("/health")
     async def health():

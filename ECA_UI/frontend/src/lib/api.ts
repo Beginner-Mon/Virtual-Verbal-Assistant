@@ -2,15 +2,15 @@
  * VVA API client — PART B auth integration spec.
  *
  * - API_BASE from VITE_API_BASE_URL env (default: http://localhost:8080)
- * - authHeader(): attach Cognito idToken when Amplify is configured + user signed in
- * - currentUserId(): Cognito sub when authed, else stable demo UUID from localStorage
+ * - authHeader(): attach Clerk session token when Clerk Development is configured
+ * - currentUserId(): Clerk user id when authed, else stable demo UUID
  * - streamChat(): real SSE via ReadableStream.getReader() with fallback to text()
  *   (SSE parsing logic ported from ECA_UI/test-ui/sse-test/api.js ~line 506)
  * - Sessions + user_memory CRUD helpers
  */
 
 import axios from 'axios'
-import { fetchAuthSession } from 'aws-amplify/auth'
+import { clerkAuthHeader, clerkUserId } from './clerkAuth'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -27,13 +27,7 @@ const API_BASE: string = _raw
 
 /** Returns { Authorization: 'Bearer <idToken>' } when signed in, else {}. */
 async function authHeader(): Promise<Record<string, string>> {
-  try {
-    const session = await fetchAuthSession()
-    const token = session.tokens?.idToken?.toString()
-    return token ? { Authorization: `Bearer ${token}` } : {}
-  } catch {
-    return {}
-  }
+  return clerkAuthHeader()
 }
 
 // ── Axios instance (REST only) ──────────────────────────────────────────────────
@@ -50,15 +44,10 @@ http.interceptors.request.use(async (config) => {
   return config
 })
 
-/** Stable user id: Cognito sub when authed, else a persistent demo UUID. */
-async function currentUserId(): Promise<string> {
-  try {
-    const session = await fetchAuthSession()
-    const sub = session.tokens?.idToken?.payload?.sub
-    if (sub && typeof sub === 'string') return sub
-  } catch {
-    // not signed in — fall through to demo id
-  }
+/** Stable user id: Clerk subject when authed, else a persistent demo UUID. */
+export async function currentUserId(): Promise<string> {
+  const clerkId = clerkUserId()
+  if (clerkId) return clerkId
 
   const DEMO_KEY = 'vva_demo_user'
   let demoId = localStorage.getItem(DEMO_KEY)
@@ -293,4 +282,53 @@ export async function deleteUserMemory(factId: string) {
     `/users/${encodeURIComponent(userId)}/memory/${encodeURIComponent(factId)}`,
   )
   return data
+}
+
+// ── Zero-cost sandbox billing ────────────────────────────────────────────────
+
+export interface BillingConfig {
+  sandbox_enabled: boolean
+  test_only: true
+  real_transactions_enabled: false
+  clerk_billing_enabled: false
+  stripe_configured: boolean
+  checkout_enabled: boolean
+  webhook_configured: boolean
+}
+
+export interface BillingStatus {
+  access_plan: 'FREE' | 'DEMO'
+  price: 0
+  currency: 'USD'
+  stripe_mode: 'test'
+  real_transactions_enabled: false
+  subscription_status: string | null
+  has_test_customer: boolean
+}
+
+export async function getBillingConfig(): Promise<BillingConfig> {
+  const { data } = await http.get('/billing/config')
+  return data as BillingConfig
+}
+
+export async function getBillingStatus(): Promise<BillingStatus> {
+  const userId = await currentUserId()
+  const { data } = await http.get('/billing/status', { params: { user_id: userId } })
+  return data as BillingStatus
+}
+
+async function openBillingDestination(path: '/billing/checkout' | '/billing/portal') {
+  const userId = await currentUserId()
+  const { data } = await http.post(path, undefined, { params: { user_id: userId } })
+  const url = (data as { url?: string }).url
+  if (!url) throw new Error('Stripe sandbox did not return a destination URL')
+  window.location.assign(url)
+}
+
+export function startSandboxCheckout() {
+  return openBillingDestination('/billing/checkout')
+}
+
+export function openSandboxPortal() {
+  return openBillingDestination('/billing/portal')
 }

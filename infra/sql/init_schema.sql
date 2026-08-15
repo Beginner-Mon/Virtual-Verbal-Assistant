@@ -8,6 +8,25 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at  TIMESTAMPTZ DEFAULT now()
 );
 
+-- Zero-cost internal access. Stripe sandbox state is informational and never
+-- changes access_plan to a paid entitlement.
+CREATE TABLE IF NOT EXISTS billing_accounts (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    access_plan TEXT NOT NULL DEFAULT 'DEMO' CHECK (access_plan IN ('FREE', 'DEMO')),
+    stripe_customer_id TEXT UNIQUE,
+    stripe_subscription_id TEXT UNIQUE,
+    stripe_subscription_status TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS billing_webhook_events (
+    event_id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    livemode BOOLEAN NOT NULL DEFAULT false CHECK (livemode = false),
+    processed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Conversations (session header — không còn cột messages JSONB)
 CREATE TABLE IF NOT EXISTS conversations (
     session_id  UUID PRIMARY KEY DEFAULT gen_random_uuid(),

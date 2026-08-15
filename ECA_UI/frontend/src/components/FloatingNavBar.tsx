@@ -63,7 +63,7 @@ function PanelContent({
   onSessionSelected,
 }: {
   panelId: PanelId
-  onOpenModal?: (type: 'profile' | 'settings' | 'notifications') => void
+  onOpenModal?: (type: 'profile' | 'settings' | 'notifications' | 'billing') => void
   onSessionSelected?: () => void
 }) {
   switch (panelId) {
@@ -253,7 +253,7 @@ export default function FloatingNavBar() {
   const [dockedEdge, setDockedEdge] = useState<DockedEdge>('left')
   const [activePanel, setActivePanel] = useState<PanelId>(null)
   const [isDragging, setIsDragging] = useState(false)
-  const [modalType, setModalType] = useState<'profile' | 'settings' | 'notifications' | null>(null)
+  const [modalType, setModalType] = useState<'profile' | 'settings' | 'notifications' | 'billing' | null>(null)
   const prevPanelRef = useRef<PanelId>(null)
   const barRef = useRef<HTMLDivElement>(null)
 

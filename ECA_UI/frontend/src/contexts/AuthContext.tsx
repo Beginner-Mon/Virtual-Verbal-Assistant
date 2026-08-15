@@ -17,6 +17,7 @@ export interface FetchUserAttributesOutput {
 
 export interface UserContextType {
   signOut?: () => Promise<void>
+  manageAccount?: () => void
   user?: AuthUser
   userAttributes?: FetchUserAttributesOutput
 }

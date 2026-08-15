@@ -2,7 +2,7 @@ import { Settings, IdCard, Bell, CreditCard, LogOut } from 'lucide-react'
 import { useAuth } from '../../contexts/AuthContext'
 
 interface SettingsPanelProps {
-  onOpenModal?: (type: 'profile' | 'settings' | 'notifications') => void
+  onOpenModal?: (type: 'profile' | 'settings' | 'notifications' | 'billing') => void
 }
 
 export default function SettingsPanel({ onOpenModal }: SettingsPanelProps) {
@@ -39,6 +39,7 @@ export default function SettingsPanel({ onOpenModal }: SettingsPanelProps) {
 
       <div className="h-px bg-border/40 my-1" />
       <button
+        onClick={() => onOpenModal?.('billing')}
         className="flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm text-foreground hover:bg-secondary/60 transition-colors"
       >
         <CreditCard className="w-4 h-4 shrink-0" />

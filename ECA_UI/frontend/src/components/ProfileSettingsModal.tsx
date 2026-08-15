@@ -6,9 +6,10 @@ const SettingsContent = lazy(() => import('./SettingsContent'))
 const NotificationsContent = lazy(() => import('./NotificationsContent'))
 const GraphicSettingsContent = lazy(() => import('./GraphicSettingsContent'))
 const AboutUsContent = lazy(() => import('./AboutUsContent'))
+const BillingContent = lazy(() => import('./BillingContent'))
 
 interface ProfileSettingsModalProps {
-  type: 'profile' | 'settings' | 'notifications' | 'graphics' | 'about'
+  type: 'profile' | 'settings' | 'notifications' | 'graphics' | 'about' | 'billing'
   onClose: () => void
   onBack?: () => void
 }
@@ -61,6 +62,8 @@ export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileS
       ? 'User Profile'
       : type === 'notifications'
         ? 'Notifications'
+        : type === 'billing'
+          ? 'Billing Sandbox'
         : type === 'graphics'
           ? 'Graphic Settings'
           : type === 'about'
@@ -104,6 +107,8 @@ export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileS
             <ProfileContent onClose={onClose} />
           ) : type === 'notifications' ? (
             <NotificationsContent />
+          ) : type === 'billing' ? (
+            <BillingContent />
           ) : type === 'graphics' ? (
             <GraphicSettingsContent />
           ) : type === 'about' ? (

@@ -1,12 +1,13 @@
-"""JWT / Cognito auth resolution — PART A, auth integration spec.
+"""JWT auth resolution for Clerk Development or legacy Cognito.
 
 Behaviour (controlled by REQUIRE_AUTH env var, default false):
   - Bearer token present + valid  → user_id = sub from JWT (client value ignored).
   - No/invalid token + REQUIRE_AUTH=false → fallback to client-supplied user_id.
   - No/invalid token + REQUIRE_AUTH=true  → HTTP 401.
 
-At startup: if REQUIRE_AUTH=true but any Cognito env var is missing → ValueError
-(fail loud; avoids silently allowing un-verified requests in production).
+Set ``AUTH_PROVIDER=clerk`` for the zero-cost development setup.  Cognito stays
+available as a compatibility path for existing deployments while they migrate.
+At startup, required provider configuration is validated when REQUIRE_AUTH=true.
 """
 
 from __future__ import annotations
@@ -23,23 +24,42 @@ from langgraph_agents.db.session_store import _to_uuid
 # ── Config from env ────────────────────────────────────────────────────────────
 
 _REQUIRE_AUTH: bool = os.getenv("REQUIRE_AUTH", "false").lower() == "true"
+_AUTH_PROVIDER: str = os.getenv("AUTH_PROVIDER", "cognito").strip().lower()
 _REGION: str = os.getenv("COGNITO_REGION", "")
 _POOL_ID: str = os.getenv("COGNITO_USER_POOL_ID", "")
 _CLIENT_ID: str = os.getenv("COGNITO_APP_CLIENT_ID", "")
+_CLERK_ISSUER: str = os.getenv("CLERK_ISSUER", "").rstrip("/")
+_CLERK_JWKS_URL: str = os.getenv("CLERK_JWKS_URL", "")
+_CLERK_AUDIENCE: str = os.getenv("CLERK_AUDIENCE", "")
+_CLERK_AUTHORIZED_PARTIES: set[str] = {
+    value.strip()
+    for value in os.getenv("CLERK_AUTHORIZED_PARTIES", "").split(",")
+    if value.strip()
+}
 
 # ── Startup guard ──────────────────────────────────────────────────────────────
 # Fail at import time (module load = app startup) when REQUIRE_AUTH=true but
 # Cognito config is incomplete — avoids silently falling back to no-auth.
-if _REQUIRE_AUTH and not all([_REGION, _POOL_ID, _CLIENT_ID]):
-    raise ValueError(
-        "REQUIRE_AUTH=true but one or more Cognito env vars are missing: "
-        "COGNITO_REGION, COGNITO_USER_POOL_ID, COGNITO_APP_CLIENT_ID"
-    )
+if _AUTH_PROVIDER not in {"clerk", "cognito"}:
+    raise ValueError("AUTH_PROVIDER must be 'clerk' or 'cognito'")
+
+if _REQUIRE_AUTH:
+    if _AUTH_PROVIDER == "clerk" and not _CLERK_ISSUER:
+        raise ValueError("REQUIRE_AUTH=true with AUTH_PROVIDER=clerk requires CLERK_ISSUER")
+    if _AUTH_PROVIDER == "cognito" and not all([_REGION, _POOL_ID, _CLIENT_ID]):
+        raise ValueError(
+            "REQUIRE_AUTH=true with AUTH_PROVIDER=cognito requires: "
+            "COGNITO_REGION, COGNITO_USER_POOL_ID, COGNITO_APP_CLIENT_ID"
+        )
 
 # ── JWKS client (module-level cache; PyJWKClient caches keys internally) ──────
 _jwks_client: Optional[PyJWKClient] = None
 
-if _REGION and _POOL_ID:
+if _AUTH_PROVIDER == "clerk" and _CLERK_ISSUER:
+    _JWKS_URL = _CLERK_JWKS_URL or f"{_CLERK_ISSUER}/.well-known/jwks.json"
+    _ISSUER = _CLERK_ISSUER
+    _jwks_client = PyJWKClient(_JWKS_URL, cache_keys=True)
+elif _AUTH_PROVIDER == "cognito" and _REGION and _POOL_ID:
     _JWKS_URL = (
         f"https://cognito-idp.{_REGION}.amazonaws.com/{_POOL_ID}/.well-known/jwks.json"
     )
@@ -51,20 +71,34 @@ else:
 
 
 def _verify_token(token: str) -> Optional[dict]:
-    """Verify a Cognito ID token.  Returns claims dict or None on any failure."""
+    """Verify the configured provider's session/ID token."""
     if _jwks_client is None:
         # No Cognito config — can't verify (only safe when REQUIRE_AUTH=false).
         return None
     try:
         signing_key = _jwks_client.get_signing_key_from_jwt(token)
-        claims = jwt.decode(
-            token,
-            signing_key.key,
-            algorithms=["RS256"],
-            audience=_CLIENT_ID,
-            issuer=_ISSUER,
-        )
-        if claims.get("token_use") != "id":
+        if _AUTH_PROVIDER == "clerk":
+            decode_kwargs = {
+                "algorithms": ["RS256"],
+                "issuer": _ISSUER,
+                "options": {"verify_aud": bool(_CLERK_AUDIENCE)},
+            }
+            if _CLERK_AUDIENCE:
+                decode_kwargs["audience"] = _CLERK_AUDIENCE
+            claims = jwt.decode(token, signing_key.key, **decode_kwargs)
+            if _CLERK_AUTHORIZED_PARTIES and claims.get("azp") not in _CLERK_AUTHORIZED_PARTIES:
+                return None
+        else:
+            claims = jwt.decode(
+                token,
+                signing_key.key,
+                algorithms=["RS256"],
+                audience=_CLIENT_ID,
+                issuer=_ISSUER,
+            )
+            if claims.get("token_use") != "id":
+                return None
+        if not claims.get("sub"):
             return None
         return claims
     except (
