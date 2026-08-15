@@ -1,0 +1,20 @@
+# Line endings.
+#
+# core.autocrlf=true on this team's Windows machines, so anything checked out
+# gets CRLF unless told otherwise. For a shell script that is fatal and the
+# error does not name the cause: bash reads the `\r` as part of the command and
+# reports `$'\r': command not found`, or dies on the shebang.
+#
+# Tri hit exactly that running scripts/amplify_recover.sh and had to strip the
+# CRs by hand. Marking the file types instead means nobody has to do it again.
+
+*.sh   text eol=lf
+*.bash text eol=lf
+
+# Anything with a shebang but no extension lives here too.
+scripts/*.sh text eol=lf
+
+# Windows-native scripts want CRLF.
+*.ps1  text eol=crlf
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
