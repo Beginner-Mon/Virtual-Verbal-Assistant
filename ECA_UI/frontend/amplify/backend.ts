@@ -195,6 +195,27 @@ preSignUpFn.addEnvironment('USER_MAPPINGS_TABLE_NAME', userMappingsTable.tableNa
 (backend.setPasswordHandler.resources.lambda as Function).addEnvironment('USER_MAPPINGS_TABLE_NAME', userMappingsTable.tableName);
 (backend.linkGoogleHandler.resources.lambda as Function).addEnvironment('USER_MAPPINGS_TABLE_NAME', userMappingsTable.tableName);
 
+// Origins are read by shared/origins.ts at module load — esbuild does not
+// inline process.env, so that read happens inside the Lambda at runtime, NOT
+// on the synth machine. The CI machine saw WEB_APP_ORIGIN (the OAUTH lists on
+// the pool prove it), but the live lambdas did not, so their CORS allowlist
+// silently omitted the prod origin and every browser call was blocked. Bake
+// the origins into the lambdas as env vars.
+for (
+  const fn of [
+    preSignUpFn,
+    postConfirmationFn,
+    preTokenGenerationFn,
+    backend.authStatusHandler.resources.lambda as Function,
+    backend.lookupEmailHandler.resources.lambda as Function,
+    backend.setPasswordHandler.resources.lambda as Function,
+    backend.linkGoogleHandler.resources.lambda as Function,
+  ]
+) {
+  fn.addEnvironment('WEB_APP_ORIGIN', process.env.WEB_APP_ORIGIN ?? '');
+  fn.addEnvironment('MOBILE_APP_ORIGIN', process.env.MOBILE_APP_ORIGIN ?? '');
+}
+
 const { region, account } = Stack.of(backend.stack);
 const userPoolArnDecoupled = `arn:aws:cognito-idp:${region}:${account}:userpool/*`;
 
