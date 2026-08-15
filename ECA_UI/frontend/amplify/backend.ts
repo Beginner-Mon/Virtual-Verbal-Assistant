@@ -7,7 +7,22 @@ import { RestApi, LambdaIntegration, CognitoUserPoolsAuthorizer, AuthorizationTy
 import { Function } from 'aws-cdk-lib/aws-lambda';
 
 import { Table, AttributeType, BillingMode } from 'aws-cdk-lib/aws-dynamodb';
-import { ALLOWED_ORIGINS } from './shared/origins';
+import { ALLOWED_ORIGINS, OAUTH_CALLBACK_URLS } from './shared/origins';
+
+// Both lists are built from process.env.WEB_APP_ORIGIN at SYNTH time. If that
+// variable is not set on the Amplify branch, the deployed app's own origin is in
+// neither — the API answers without an Access-Control-Allow-Origin header (the
+// browser reports it as a CORS failure on a 200) and Amplify's OAuth flow throws
+// InvalidOriginException. Two unrelated-looking errors, one missing variable, so
+// the resolved lists go in the build log.
+console.log(`[backend] ALLOWED_ORIGINS: ${ALLOWED_ORIGINS.join(', ') || '(none)'}`);
+console.log(`[backend] OAUTH_CALLBACK_URLS: ${OAUTH_CALLBACK_URLS.join(', ') || '(none)'}`);
+if (!process.env.WEB_APP_ORIGIN) {
+  console.warn(
+    '[backend] WEB_APP_ORIGIN is NOT set — the deployed origin will be missing ' +
+      'from both lists above. Set it on the branch, then rebuild.'
+  );
+}
 
 const preSignUpHandler = defineFunction({
   name: 'pre-sign-up-handler',
