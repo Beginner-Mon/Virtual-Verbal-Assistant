@@ -22,7 +22,7 @@ import { customOutputs } from '../config/amplify'
 const GSI_SRC = 'https://accounts.google.com/gsi/client'
 
 export const GOOGLE_CLIENT_ID: string | undefined =
-  import.meta.env.VITE_GOOGLE_CLIENT_ID
+  (customOutputs?.googleClientId as string | undefined) || undefined
 
 interface GsiCredentialResponse {
   credential: string
@@ -104,7 +104,7 @@ export async function mountGoogleLinkButton(
   { loginHint, onCredential, onError }: MountLinkButtonOptions,
 ): Promise<void> {
   if (!GOOGLE_CLIENT_ID) {
-    onError('Google sign-in is not configured (VITE_GOOGLE_CLIENT_ID is unset).')
+    onError('Google sign-in is not configured (googleClientId is missing from Amplify outputs).')
     return
   }
 

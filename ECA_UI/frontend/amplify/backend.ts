@@ -307,5 +307,12 @@ linkGoogleRes.addMethod('POST', new LambdaIntegration(backend.linkGoogleHandler.
 
 // Output API URL for frontend
 backend.addOutput({
-  custom: { authApiUrl: api.url },
+  custom: {
+    authApiUrl: api.url,
+    // Google client ID is public (Google ships it in the browser itself), so it
+    // can travel through the client config. Sourced from the deploy environment
+    // — the app root's .env (loaded by shared/env.ts) or the CI's console
+    // variables — so the frontend never needs its own VITE_GOOGLE_CLIENT_ID.
+    googleClientId: process.env.GOOGLE_CLIENT_ID ?? '',
+  },
 });
