@@ -233,10 +233,25 @@ cmd_set_env() {
 
 cmd_deploy() {
   require_aws
-  local job
-  job=$(aws amplify start-job --app-id "$APP_ID" --branch-name "$BRANCH" \
-          --job-type RELEASE --query 'jobSummary.jobId' --output text)
-  echo "started job $job — polling every 20s"
+
+  # A push to the branch starts a build on its own, so `deploy` right after one
+  # hits LimitExceededException: "already have pending or running jobs". That is
+  # not a failure — the build being asked for is already underway. Attach to it
+  # instead of erroring out, which is what anyone running this actually wants.
+  local job running
+  running=$(aws amplify list-jobs --app-id "$APP_ID" --branch-name "$BRANCH" --max-results 5 \
+              --query 'jobSummaries[?status==`PENDING` || status==`RUNNING`]|[0].jobId' \
+              --output text 2>/dev/null)
+
+  if [ -n "$running" ] && [ "$running" != "None" ]; then
+    job="$running"
+    echo "job $job is already running (a push starts one automatically) — attaching"
+  else
+    job=$(aws amplify start-job --app-id "$APP_ID" --branch-name "$BRANCH" \
+            --job-type RELEASE --query 'jobSummary.jobId' --output text)
+    echo "started job $job"
+  fi
+  echo "polling every 20s"
   while true; do
     local st
     st=$(aws amplify get-job --app-id "$APP_ID" --branch-name "$BRANCH" --job-id "$job" \
