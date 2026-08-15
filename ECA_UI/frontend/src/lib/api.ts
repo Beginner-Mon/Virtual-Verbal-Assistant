@@ -14,14 +14,35 @@ import { clerkAuthHeader, clerkUserId } from './clerkAuth'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
+const DEFAULT_API_BASE = 'http://localhost:8000'
+
+/**
+ * Missing configuration warns; it does not throw.
+ *
+ * This used to `throw` at module load. Vite bakes env vars in at BUILD time and
+ * `.env.local` is gitignored, so a CI build has none — and a throw at import
+ * time takes down the whole app before it renders a pixel. The deployed page was
+ * a blank screen whose only symptom was a message telling you to create a file
+ * on a machine that is not the one serving it.
+ *
+ * The value is only needed when a request is actually made, so a bad one costs a
+ * failed request, not a dead app. That trade is right in both directions: the UI
+ * can be reviewed without a backend, and the console says exactly what is wrong.
+ *
+ * Note the port: 8080 is taken by another service on the dev machine — the
+ * backend is on 8000. The old message named 8080 while the comment above it said
+ * 8000.
+ */
 const _raw = import.meta.env.VITE_API_BASE_URL as string | undefined
 if (!_raw) {
-  throw new Error(
-    'VITE_API_BASE_URL is not set. Create a .env.local file with:\n' +
-    '  VITE_API_BASE_URL=http://localhost:8080'
+  console.warn(
+    `[api] VITE_API_BASE_URL is not set — falling back to ${DEFAULT_API_BASE}. ` +
+      'Vite reads this at BUILD time: set it in .env.local for local dev, or as ' +
+      'an Amplify Console environment variable for a deployed build. Requests ' +
+      'will fail until it points at a reachable backend.'
   )
 }
-const API_BASE: string = _raw
+const API_BASE: string = _raw || DEFAULT_API_BASE
 
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 

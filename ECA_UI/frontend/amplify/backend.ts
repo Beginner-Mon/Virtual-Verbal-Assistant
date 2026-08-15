@@ -7,7 +7,22 @@ import { RestApi, LambdaIntegration, CognitoUserPoolsAuthorizer, AuthorizationTy
 import { Function } from 'aws-cdk-lib/aws-lambda';
 
 import { Table, AttributeType, BillingMode } from 'aws-cdk-lib/aws-dynamodb';
-import { ALLOWED_ORIGINS } from './shared/origins';
+import { ALLOWED_ORIGINS, OAUTH_CALLBACK_URLS } from './shared/origins';
+
+// Both lists are built from process.env.WEB_APP_ORIGIN at SYNTH time. If that
+// variable is not set on the Amplify branch, the deployed app's own origin is in
+// neither — the API answers without an Access-Control-Allow-Origin header (the
+// browser reports it as a CORS failure on a 200) and Amplify's OAuth flow throws
+// InvalidOriginException. Two unrelated-looking errors, one missing variable, so
+// the resolved lists go in the build log.
+console.log(`[backend] ALLOWED_ORIGINS: ${ALLOWED_ORIGINS.join(', ') || '(none)'}`);
+console.log(`[backend] OAUTH_CALLBACK_URLS: ${OAUTH_CALLBACK_URLS.join(', ') || '(none)'}`);
+if (!process.env.WEB_APP_ORIGIN) {
+  console.warn(
+    '[backend] WEB_APP_ORIGIN is NOT set — the deployed origin will be missing ' +
+      'from both lists above. Set it on the branch, then rebuild.'
+  );
+}
 
 const preSignUpHandler = defineFunction({
   name: 'pre-sign-up-handler',
@@ -76,13 +91,65 @@ const backend = defineBackend({
   linkGoogleHandler,
 });
 
+/**
+ * Suffix that makes globally-unique resource names unique PER ENVIRONMENT.
+ *
+ * Several AWS resource names are unique across an account+region (DynamoDB
+ * tables) or across all of AWS (Cognito domain prefixes, S3 buckets). Hardcoding
+ * them means exactly one environment can exist. The sandbox created them first,
+ * so every pipeline deploy failed CloudFormation's
+ * `AWS::EarlyValidation::ResourceExistenceCheck` — before any resource was
+ * created, which is why the build log only ever said "Validation failed with
+ * 2 error(s)" with no resource-level events behind it. Two hardcoded table
+ * names, two errors.
+ *
+ * Returns null outside CI, so the EXISTING sandbox keeps the names it already
+ * has. That is not tidiness: changing `tableName` replaces the table, and
+ * replacing it drops every row in it.
+ */
+function environmentSuffix(): string | null {
+  const explicit = process.env.RESOURCE_SUFFIX?.trim();
+  if (explicit) return explicit;
+
+  // Both are set by the Amplify build image; absent locally.
+  const branch = process.env.AWS_BRANCH;
+  const appId = process.env.AWS_APP_ID;
+  if (!branch || !appId) return null;
+
+  const slug = branch
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 28);
+  // App id suffix keeps two apps building the same branch name apart.
+  return `${slug}-${appId.slice(-6).toLowerCase()}`.replace(/-+/g, '-');
+}
+
+const ENV_SUFFIX = environmentSuffix();
+
+/** Physical table name for this environment. */
+const tableName = (base: string): string =>
+  ENV_SUFFIX ? `${base}-${ENV_SUFFIX}` : base;
+
+console.log(
+  `[backend] environment suffix: ${ENV_SUFFIX ?? '(none — sandbox, existing names kept)'}`
+);
+
 // --- Cognito User Pool ---
 const userPool = backend.auth.resources.userPool;
 const cfnUserPool = userPool.node.defaultChild as CfnUserPool;
 
 // --- DynamoDB Tables ---
+//
+// DynamoDB table names are unique per account + region, and CloudFormation's
+// early ResourceExistenceCheck fails the whole creation with
+// "Validation failed with 2 error(s)" when a template re-uses a name that a
+// deployed stack (the sandbox) already holds. The tables below therefore get
+// a deployment suffix in CI — see environmentSuffix() above.
 const userMappingsTable = new Table(backend.stack, 'UserMappings', {
-  tableName: 'UserMappings',
+  // Physical name is per-environment; the Lambdas receive it through
+  // USER_MAPPINGS_TABLE_NAME below, so nothing downstream hardcodes it.
+  tableName: tableName('UserMappings'),
   partitionKey: { name: 'appUserId', type: AttributeType.STRING },
   billingMode: BillingMode.PAY_PER_REQUEST,
 });
@@ -103,11 +170,15 @@ userMappingsTable.addGlobalSecondaryIndex({
 });
 
 const emailLocksTable = new Table(backend.stack, 'EmailLocks', {
-  tableName: 'EmailLocks',
+  tableName: tableName('EmailLocks'),
   partitionKey: { name: 'email', type: AttributeType.STRING },
   timeToLiveAttribute: 'ttl',
   billingMode: BillingMode.PAY_PER_REQUEST,
 });
+
+console.log(
+  `[backend] table names: ${userMappingsTable.tableName}, ${emailLocksTable.tableName}`
+);
 
 // Configure Lambdas
 const preSignUpFn = backend.preSignUpHandler.resources.lambda as Function;
@@ -123,6 +194,27 @@ preSignUpFn.addEnvironment('USER_MAPPINGS_TABLE_NAME', userMappingsTable.tableNa
 (backend.lookupEmailHandler.resources.lambda as Function).addEnvironment('USER_MAPPINGS_TABLE_NAME', userMappingsTable.tableName);
 (backend.setPasswordHandler.resources.lambda as Function).addEnvironment('USER_MAPPINGS_TABLE_NAME', userMappingsTable.tableName);
 (backend.linkGoogleHandler.resources.lambda as Function).addEnvironment('USER_MAPPINGS_TABLE_NAME', userMappingsTable.tableName);
+
+// Origins are read by shared/origins.ts at module load — esbuild does not
+// inline process.env, so that read happens inside the Lambda at runtime, NOT
+// on the synth machine. The CI machine saw WEB_APP_ORIGIN (the OAUTH lists on
+// the pool prove it), but the live lambdas did not, so their CORS allowlist
+// silently omitted the prod origin and every browser call was blocked. Bake
+// the origins into the lambdas as env vars.
+for (
+  const fn of [
+    preSignUpFn,
+    postConfirmationFn,
+    preTokenGenerationFn,
+    backend.authStatusHandler.resources.lambda as Function,
+    backend.lookupEmailHandler.resources.lambda as Function,
+    backend.setPasswordHandler.resources.lambda as Function,
+    backend.linkGoogleHandler.resources.lambda as Function,
+  ]
+) {
+  fn.addEnvironment('WEB_APP_ORIGIN', process.env.WEB_APP_ORIGIN ?? '');
+  fn.addEnvironment('MOBILE_APP_ORIGIN', process.env.MOBILE_APP_ORIGIN ?? '');
+}
 
 const { region, account } = Stack.of(backend.stack);
 const userPoolArnDecoupled = `arn:aws:cognito-idp:${region}:${account}:userpool/*`;
@@ -219,22 +311,11 @@ preTokenGenerationFn.addPermission('AllowCognitoPreTokenGeneration', { principal
 function cognitoDomainPrefix(): string {
   const explicit = process.env.COGNITO_DOMAIN_PREFIX?.trim();
   if (explicit) return explicit;
-
-  const branch = process.env.AWS_BRANCH;
-  const appId = process.env.AWS_APP_ID;
-  if (branch && appId) {
-    // Prefix rules: lowercase alphanumerics and hyphens, no leading/trailing
-    // hyphen, 63 chars max, and it may not contain "aws", "amazon" or "cognito".
-    const slug = branch
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 28);
-    // App id suffix keeps two apps building the same branch name apart.
-    return `eca-${slug}-${appId.slice(-6).toLowerCase()}`.replace(/-+/g, '-');
-  }
-
-  return 'eca-us-east-1';
+  // Same suffix as the tables, so one environment cannot end up half-scoped.
+  // Prefix rules: lowercase alphanumerics and hyphens, no leading or trailing
+  // hyphen, 63 chars, and no "aws"/"amazon"/"cognito" — `environmentSuffix`
+  // already produces a value that satisfies all of them.
+  return ENV_SUFFIX ? `eca-${ENV_SUFFIX}` : 'eca-us-east-1';
 }
 
 // Find the CfnUserPoolDomain that Amplify auto-creates

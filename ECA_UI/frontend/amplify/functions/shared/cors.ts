@@ -37,6 +37,14 @@ export function corsHeadersFor(event: any): Record<string, string> {
     return { ...base, 'Access-Control-Allow-Origin': WEB_DEV_ORIGIN };
   }
 
-  console.warn('CORS_ORIGIN_REJECTED', JSON.stringify({ origin }));
+  // Log what it was compared against, not just what was rejected. Without the
+  // allow-list the CloudWatch line says "rejected" and nothing else, while the
+  // browser reports a CORS failure on a 200 — neither end tells you the list is
+  // short because WEB_APP_ORIGIN was unset when the backend was synthesised.
+  console.warn('CORS_ORIGIN_REJECTED', JSON.stringify({
+    origin,
+    allowed: ALLOWED_ORIGINS,
+    hint: 'set WEB_APP_ORIGIN on the Amplify branch and REBUILD — the list is baked in at synth time',
+  }));
   return base;
 }

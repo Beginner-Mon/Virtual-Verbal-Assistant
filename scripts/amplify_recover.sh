@@ -134,16 +134,52 @@ cmd_status() {
 cmd_secrets() {
   require_aws
   # Amplify Gen2 keeps backend secrets in SSM Parameter Store. The exact path
-  # differs between sandbox and branch deployments, so list rather than assume —
-  # guessing the path is how you "set" a secret the build never reads.
-  echo "SSM parameters under /amplify/ (names only, no values):"
-  aws ssm get-parameters-by-path --path "/amplify" --recursive \
-      --query 'Parameters[].Name' --output text 2>/dev/null | tr '\t' '\n' | sed 's/^/  /' \
-    || echo "  none found (or no ssm:GetParametersByPath permission)"
+  # differs between sandbox and branch deployments, so list rather than assume.
+  #
+  # The previous version of this piped into `|| echo "none found"`. With
+  # `set -o pipefail` an AccessDenied from AWS also lands in that branch, so a
+  # permissions problem printed as "no secrets exist" — and the line after it
+  # then drew a conclusion from that. Two different states, one message, wrong
+  # answer. Errors are now shown verbatim.
+  echo "== SSM parameters under /amplify/ =="
+  local out rc
+  set +e
+  out=$(aws ssm get-parameters-by-path --path "/amplify" --recursive \
+          --query 'Parameters[].Name' --output text 2>&1)
+  rc=$?
+  set -e
+
+  if [ $rc -ne 0 ]; then
+    echo "  QUERY FAILED — this is NOT the same as 'no secrets':"
+    echo "$out" | sed 's/^/    /'
+    echo
+    echo "  Add ssm:DescribeParameters + ssm:GetParametersByPath on"
+    echo "  arn:aws:ssm:*:*:parameter/amplify/* (docs/ops/iam-vva-recover-readonly.json)"
+  elif [ -z "$out" ] || [ "$out" = "None" ]; then
+    echo "  (query succeeded and returned nothing — there really are no"
+    echo "   parameters under /amplify/ in this account)"
+  else
+    echo "$out" | tr '\t' '\n' | sed 's/^/  /'
+  fi
+
+  # Probe the exact names directly. `--path` needs list permission; `get-parameter`
+  # needs only read on that one name, so this often answers even when the listing
+  # above is denied.
   echo
-  echo "Expected for this branch: /amplify/${APP_ID}/${BRANCH}/<SECRET_NAME>"
-  echo "If nothing is listed for this app id, the branch build has no secrets —"
-  echo "which fails template validation before any resource is created."
+  echo "== direct probe of the paths this script writes =="
+  for name in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET; do
+    local p="/amplify/${APP_ID}/${BRANCH}/${name}"
+    set +e
+    out=$(aws ssm get-parameter --name "$p" --query 'Parameter.Name' --output text 2>&1)
+    rc=$?
+    set -e
+    if [ $rc -eq 0 ]; then
+      echo "  EXISTS   $p"
+    else
+      echo "  MISSING  $p"
+      echo "$out" | head -1 | sed 's/^/           /'
+    fi
+  done
 }
 
 cmd_set_secrets() {
@@ -187,20 +223,75 @@ cmd_delete_stack() {
 cmd_set_env() {
   require_aws
   local origin="${WEB_APP_ORIGIN:-https://$(echo "$BRANCH" | tr '/_' '-').${APP_ID}.amplifyapp.com}"
+  # Vite reads VITE_* at BUILD time and .env.local is gitignored, so a CI build
+  # sees none of it unless it is set here.
+  local api="${VITE_API_BASE_URL:-http://localhost:8000}"
+
   echo "WEB_APP_ORIGIN=$origin"
-  echo "  (this is the BRANCH url — amplify/shared/origins.ts reads it at synth"
-  echo "   time to build the CORS allow-list and the OAuth redirect URIs)"
+  echo "  (the BRANCH url — amplify/shared/origins.ts reads it at synth time to"
+  echo "   build the CORS allow-list and the OAuth redirect URIs)"
+  echo "VITE_API_BASE_URL=$api"
+  echo "  (baked into the bundle at build time, not read at runtime)"
+
+  # All variables go in ONE call: update-branch REPLACES the whole map, so
+  # setting them one at a time silently deletes the others.
   aws amplify update-branch --app-id "$APP_ID" --branch-name "$BRANCH" \
-      --environment-variables "WEB_APP_ORIGIN=$origin" >/dev/null
-  echo "  applied to branch $BRANCH"
+      --environment-variables "WEB_APP_ORIGIN=$origin,VITE_API_BASE_URL=$api" >/dev/null
+  echo "  applied to branch $BRANCH — takes effect on the NEXT build"
+}
+
+cmd_spa_routing() {
+  require_aws
+  # Amplify Hosting serves static files. A React Router deep link like /login has
+  # no /login/index.html behind it, so hosting answers 404 — the app never boots
+  # and there is nothing in the console except the 404 itself. Every SPA needs
+  # this rule; nothing in the repo was setting it.
+  #
+  # The source regex deliberately EXCLUDES real file extensions. The naive
+  # "/<*>" rule rewrites everything to index.html, including the .vrm, .bvh,
+  # .fbx and .npz assets this app loads — they would come back as HTML and fail
+  # to parse, which looks like a corrupt model rather than a routing rule.
+  local exts='css|gif|ico|jpg|jpeg|js|png|txt|svg|woff|woff2|ttf|map|json|webp|mp3|wav|vrm|bvh|fbx|npz|glb|gltf|hdr|ktx2'
+  local rules
+  rules=$(cat <<JSON
+[
+  {
+    "source": "</^[^.]+\$|\\\\.(?!($exts)\$)([^.]+\$)/>",
+    "target": "/index.html",
+    "status": "200"
+  }
+]
+JSON
+)
+  echo "applying SPA rewrite to app $APP_ID"
+  echo "  everything without a known file extension -> /index.html (200)"
+  aws amplify update-app --app-id "$APP_ID" --custom-rules "$rules" \
+      --query 'app.customRules' --output json
+  echo
+  echo "Takes effect immediately — hosting rules are not baked into the build."
 }
 
 cmd_deploy() {
   require_aws
-  local job
-  job=$(aws amplify start-job --app-id "$APP_ID" --branch-name "$BRANCH" \
-          --job-type RELEASE --query 'jobSummary.jobId' --output text)
-  echo "started job $job — polling every 20s"
+
+  # A push to the branch starts a build on its own, so `deploy` right after one
+  # hits LimitExceededException: "already have pending or running jobs". That is
+  # not a failure — the build being asked for is already underway. Attach to it
+  # instead of erroring out, which is what anyone running this actually wants.
+  local job running
+  running=$(aws amplify list-jobs --app-id "$APP_ID" --branch-name "$BRANCH" --max-results 5 \
+              --query 'jobSummaries[?status==`PENDING` || status==`RUNNING`]|[0].jobId' \
+              --output text 2>/dev/null)
+
+  if [ -n "$running" ] && [ "$running" != "None" ]; then
+    job="$running"
+    echo "job $job is already running (a push starts one automatically) — attaching"
+  else
+    job=$(aws amplify start-job --app-id "$APP_ID" --branch-name "$BRANCH" \
+            --job-type RELEASE --query 'jobSummary.jobId' --output text)
+    echo "started job $job"
+  fi
+  echo "polling every 20s"
   while true; do
     local st
     st=$(aws amplify get-job --app-id "$APP_ID" --branch-name "$BRANCH" --job-id "$job" \
@@ -220,6 +311,7 @@ case "${1:-status}" in
   set-secrets)  cmd_set_secrets ;;
   delete-stack) cmd_delete_stack ;;
   set-env)      cmd_set_env ;;
+  spa-routing)  cmd_spa_routing ;;
   deploy)       cmd_deploy ;;
   *) sed -n '3,30p' "$0"; exit 2 ;;
 esac
