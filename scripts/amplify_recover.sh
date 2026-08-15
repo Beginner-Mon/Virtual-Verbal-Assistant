@@ -71,13 +71,24 @@ cmd_status() {
   echo "  status: $status"
 
   case "$status" in
-    ROLLBACK_COMPLETE|CREATE_FAILED|DELETE_FAILED|REVIEW_IN_PROGRESS)
+    ROLLBACK_COMPLETE|CREATE_FAILED)
       echo
-      echo "  ⚠  This state cannot be updated, only deleted. A stack whose first"
-      echo "     CREATE failed holds no usable template, which is what produces"
-      echo "     'NoStack: CloudFormationStack object does not hold a stack' on"
-      echo "     every later deploy — including after the original cause is fixed."
-      echo "     Next: $0 delete-stack"
+      echo "  The CREATE failed and rolled back. Amplify recreates this stack from"
+      echo "  scratch on the next deploy, so there is usually NOTHING TO DELETE —"
+      echo "  'NoStack: CloudFormationStack object does not hold a stack' in the"
+      echo "  build log is the rollback that just happened, not an old stack in the"
+      echo "  way. Fix the cause and redeploy."
+      echo
+      echo "  If the reason below is 'Validation failed with N error(s)' and there"
+      echo "  is nothing more specific, that is template validation: CloudFormation"
+      echo "  rejected the template before creating any resource, so there are no"
+      echo "  per-resource events to read. DescribeEvents has nothing further —"
+      echo "  the cause has to come from the template itself, not from here."
+      ;;
+    DELETE_FAILED|ROLLBACK_FAILED)
+      echo
+      echo "  ⚠  Stuck part-way through teardown. This one really does need"
+      echo "     $0 delete-stack"
       ;;
     NOT_FOUND)
       echo "  Nothing to clean up. Next: $0 deploy"

@@ -251,9 +251,41 @@ if (cfnDomain) {
   cfnDomain.addPropertyOverride('ManagedLoginVersion', 2);
 }
 
-// Patch missing AttributeDataType on UserPool schema entries
+// Patch missing AttributeDataType on UserPool schema entries.
+//
+// The loop used to be a hardcoded `i <= 4`, i.e. five entries. `defineAuth`
+// declares THREE userAttributes (preferredUsername, givenName, familyName);
+// `loginWith.email` becomes UsernameAttributes, not a Schema entry. So indices
+// 3 and 4 do not exist, and `addPropertyOverride` on a missing index does not
+// no-op — it MATERIALISES the entry, giving CloudFormation two schema members
+// that have an AttributeDataType and no Name. Two invalid members, and the
+// build fails with "Validation failed with 2 error(s)". The count matching the
+// number of declared secrets is a coincidence that cost a day.
+//
+// Iterating over the real length is the fix, with two caveats worth spelling
+// out because the obvious version is wrong:
+//
+//   - `CfnUserPool.schema` is typed `IResolvable | Array<...>`. When it is an
+//     unresolved token, `.length` is `undefined`, and `i < undefined` is false —
+//     so `for (let i = 0; i < cfnUserPool.schema.length; i++)` silently applies
+//     NO patches and looks like it worked. Hence the explicit Array.isArray.
+//   - Zero entries is therefore ambiguous: it means either "no attributes" or
+//     "a token we cannot read". It is logged rather than passed over, because
+//     the patch exists to satisfy CloudFormation and skipping it entirely brings
+//     back whatever it was added to fix.
 if (cfnUserPool) {
-  for (let i = 0; i <= 4; i++) {
+  const schema = cfnUserPool.schema;
+  const entryCount = Array.isArray(schema) ? schema.length : 0;
+
+  console.log(`[backend] user pool schema entries: ${entryCount}`);
+  if (entryCount === 0) {
+    console.warn(
+      '[backend] schema is empty or an unresolved token — AttributeDataType ' +
+        'patches were NOT applied. If CloudFormation rejects the schema, this is why.'
+    );
+  }
+
+  for (let i = 0; i < entryCount; i++) {
     cfnUserPool.addPropertyOverride(`Schema.${i}.AttributeDataType`, 'String');
   }
 }
