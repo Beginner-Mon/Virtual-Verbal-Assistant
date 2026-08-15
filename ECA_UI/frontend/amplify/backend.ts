@@ -193,13 +193,61 @@ preSignUpFn.addPermission('AllowCognitoPreSignUp', { principal: cognitoPrincipal
 postConfirmationFn.addPermission('AllowCognitoPostConfirmation', { principal: cognitoPrincipal });
 preTokenGenerationFn.addPermission('AllowCognitoPreTokenGeneration', { principal: cognitoPrincipal });
 
+/**
+ * Cognito hosted-UI domain prefix.
+ *
+ * These are unique across ALL AWS accounts, not just this one — so a hardcoded
+ * value means exactly one environment can ever exist. `eca-us-east-1` was
+ * hardcoded here, the sandbox took it, and every pipeline deploy after that was
+ * going to fail on a name already in use.
+ *
+ * Resolution order:
+ *   1. COGNITO_DOMAIN_PREFIX — explicit, wins. Set it per environment in the
+ *      Amplify Console, or in your shell for a second developer sandbox.
+ *   2. Derived from the branch + app id in Amplify CI (AWS_BRANCH / AWS_APP_ID
+ *      are set by the build image), so each branch gets its own.
+ *   3. `eca-us-east-1` — unchanged, so the EXISTING sandbox keeps its domain.
+ *      Changing it would replace the domain on a live pool and break every
+ *      redirect URI already registered with Google.
+ *
+ * WHATEVER THIS RESOLVES TO must also appear in:
+ *   - the frontend's VITE_COGNITO_DOMAIN (as `<prefix>.auth.<region>.amazoncognito.com`)
+ *   - Google Cloud console → Authorized redirect URIs
+ *     (`https://<prefix>.auth.<region>.amazoncognito.com/oauth2/idpresponse`)
+ * Those are not derivable from here, which is why the prefix is logged below.
+ */
+function cognitoDomainPrefix(): string {
+  const explicit = process.env.COGNITO_DOMAIN_PREFIX?.trim();
+  if (explicit) return explicit;
+
+  const branch = process.env.AWS_BRANCH;
+  const appId = process.env.AWS_APP_ID;
+  if (branch && appId) {
+    // Prefix rules: lowercase alphanumerics and hyphens, no leading/trailing
+    // hyphen, 63 chars max, and it may not contain "aws", "amazon" or "cognito".
+    const slug = branch
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 28);
+    // App id suffix keeps two apps building the same branch name apart.
+    return `eca-${slug}-${appId.slice(-6).toLowerCase()}`.replace(/-+/g, '-');
+  }
+
+  return 'eca-us-east-1';
+}
+
 // Find the CfnUserPoolDomain that Amplify auto-creates
 const cfnDomain = userPool.node
   .tryFindChild('UserPoolDomain')
   ?.node.defaultChild as CfnUserPoolDomain;
 
 if (cfnDomain) {
-  cfnDomain.domain = 'eca-us-east-1';
+  const prefix = cognitoDomainPrefix();
+  // Printed at synth time so the build log records which domain this deployment
+  // claimed — the value the Google console and the frontend have to match.
+  console.log(`[backend] Cognito hosted-UI domain prefix: ${prefix}`);
+  cfnDomain.domain = prefix;
   cfnDomain.addPropertyOverride('ManagedLoginVersion', 2);
 }
 

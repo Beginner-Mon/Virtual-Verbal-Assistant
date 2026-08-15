@@ -27,8 +27,27 @@ interface AmplifyOutputs {
   custom?: Record<string, unknown>
 }
 
-/** Build a v6 Amplify config from env vars, or null when they are not set. */
-function configFromEnv(): AmplifyOutputs | null {
+/** What we hand to `Amplify.configure`, plus the `custom` block for our own use. */
+interface ResolvedConfig {
+  /** `ResourcesConfig` (camelCase) or a Gen2 outputs object — both accepted. */
+  amplify: Record<string, unknown>
+  custom: Record<string, unknown>
+  source: string
+}
+
+/**
+ * Build a v6 config from env vars, or null when they are not set.
+ *
+ * Emits the NATIVE `ResourcesConfig` shape (`Auth.Cognito.userPoolId`), not the
+ * snake_case `amplify_outputs.json` shape. `Amplify.configure` accepts both, but
+ * it tells them apart by the `version` field that `ampx` writes into the JSON.
+ * A hand-built snake_case object without it is read as a ResourcesConfig, where
+ * `auth.user_pool_id` means nothing — so configure() succeeds, `Auth` ends up
+ * empty, and the first call to `signInWithRedirect` throws
+ * `AuthUserPoolException: Auth UserPool not configured`. The camelCase shape has
+ * no such ambiguity.
+ */
+function configFromEnv(): ResolvedConfig | null {
   const userPoolId = import.meta.env.VITE_USER_POOL_ID as string | undefined
   const userPoolClientId = import.meta.env.VITE_USER_POOL_WEB_CLIENT_ID as string | undefined
   const domain = import.meta.env.VITE_COGNITO_DOMAIN as string | undefined
@@ -41,28 +60,33 @@ function configFromEnv(): AmplifyOutputs | null {
   const origin = window.location.origin
 
   return {
-    auth: {
-      user_pool_id: userPoolId,
-      user_pool_client_id: userPoolClientId,
-      aws_region: (import.meta.env.VITE_COGNITO_REGION as string | undefined)
-        // v6 does not need the region separately — it is the prefix of the pool
-        // id — but the field is part of the outputs shape.
-        ?? userPoolId.split('_')[0],
-      ...(domain
-        ? {
-            oauth: {
-              domain,
-              scopes: ['email', 'profile', 'openid'],
-              // Must match the URLs registered on the app client EXACTLY, or
-              // Cognito answers with its own error page instead of coming back.
-              // `amplify/shared/origins.ts` registers the dev origin with a
-              // trailing slash, and `/` + `/login` for sign-out.
-              redirect_sign_in_uri: [`${origin}/`],
-              redirect_sign_out_uri: [`${origin}/`, `${origin}/login`],
-              response_type: 'code',
-            },
-          }
-        : {}),
+    amplify: {
+      Auth: {
+        Cognito: {
+          userPoolId,
+          userPoolClientId,
+          ...(domain
+            ? {
+                loginWith: {
+                  oauth: {
+                    // Domain only — Amplify adds the scheme. A value with
+                    // `https://` produces a malformed authorize URL.
+                    domain: domain.replace(/^https?:\/\//, '').replace(/\/$/, ''),
+                    scopes: ['email', 'profile', 'openid'],
+                    // Must match the URLs registered on the app client EXACTLY,
+                    // or Cognito answers with its own error page instead of
+                    // coming back. `amplify/shared/origins.ts` registers the dev
+                    // origin with a trailing slash, and `/` + `/login` for
+                    // sign-out.
+                    redirectSignIn: [`${origin}/`],
+                    redirectSignOut: [`${origin}/`, `${origin}/login`],
+                    responseType: 'code' as const,
+                  },
+                },
+              }
+            : {}),
+        },
+      },
     },
     custom: {
       // The API Gateway base for the auth Lambdas (set-password, lookup-email,
@@ -71,6 +95,7 @@ function configFromEnv(): AmplifyOutputs | null {
         ? { authApiUrl: import.meta.env.VITE_AUTH_API_URL as string }
         : {}),
     },
+    source: `VITE_* env vars${domain ? '' : ' (no VITE_COGNITO_DOMAIN — Google sign-in disabled)'}`,
   }
 }
 
@@ -91,8 +116,11 @@ export async function initializeAmplify(): Promise<void> {
     const { Amplify } = await import('aws-amplify')
 
     const fromFile = await outputsFromFile()
-    const outputs = fromFile ?? configFromEnv()
-    if (!outputs) {
+    const resolved: ResolvedConfig | null = fromFile
+      ? { amplify: fromFile, custom: fromFile.custom ?? {}, source: 'amplify_outputs.json' }
+      : configFromEnv()
+
+    if (!resolved) {
       throw new Error('no amplify_outputs.json and no VITE_USER_POOL_ID — demo mode')
     }
 
@@ -111,11 +139,26 @@ export async function initializeAmplify(): Promise<void> {
       await listenForAuthCallback()
     }
 
-    Amplify.configure(outputs)
-    customOutputs = outputs.custom || {}
+    Amplify.configure(resolved.amplify)
+    customOutputs = resolved.custom
+
+    // Read the config BACK rather than trusting that configure() understood it.
+    // It does not throw on a shape it fails to parse — it just ends up with no
+    // user pool, and the failure surfaces much later as
+    // `AuthUserPoolException: Auth UserPool not configured` from whichever
+    // sign-in call the user happened to press first.
+    const applied = Amplify.getConfig().Auth?.Cognito
+    if (!applied?.userPoolId) {
+      throw new Error(
+        `configure() accepted the ${resolved.source} config but no user pool came ` +
+          'back out of getConfig() — the shape was not understood'
+      )
+    }
+
     isAmplifyConfigured = true
     console.log(
-      `[Auth] Amplify configured from ${fromFile ? 'amplify_outputs.json' : 'VITE_* env vars'}`
+      `[Auth] Amplify configured from ${resolved.source} — pool ${applied.userPoolId}` +
+        `${applied.loginWith?.oauth ? ', hosted UI ready' : ', NO hosted UI (Google sign-in will fail)'}`
     )
   } catch (err) {
     console.warn(

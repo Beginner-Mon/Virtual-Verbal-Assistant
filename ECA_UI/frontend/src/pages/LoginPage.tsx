@@ -14,6 +14,9 @@ export default function LoginPage() {
   const [result, setResult] = useState<{ hasEmail: boolean; hasGoogle: boolean } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [mismatchError, setMismatchError] = useState(false)
+  /** True when we showed both options because the lookup endpoint is absent,
+   *  rather than because the account genuinely has both methods. */
+  const [lookupSkipped, setLookupSkipped] = useState(false)
 
   useEffect(() => {
     // Two routes in. The query param is the fallback; normally we now arrive via
@@ -35,7 +38,24 @@ export default function LoginPage() {
 
     try {
       const apiUrl = customOutputs?.authApiUrl
-      if (!apiUrl) throw new Error('API not configured')
+
+      // No lookup endpoint — offer both sign-in methods instead of blocking.
+      //
+      // This used to throw "API not configured" and stop the user at the email
+      // box, which reads like auth is broken. It is not: the lookup only decides
+      // which screen to send you to next, and Cognito is what actually accepts
+      // or rejects a sign-in. The endpoint is an API Gateway deployed with the
+      // Amplify backend, so it is absent whenever the app is pointed at a pool
+      // by VITE_* variables rather than by amplify_outputs.json.
+      //
+      // Claiming both methods exist is the safe guess: it shows every route the
+      // user could take. The cost is that a brand-new address is no longer
+      // auto-routed to /create-account — there is a link for that below.
+      if (!apiUrl) {
+        setResult({ hasEmail: true, hasGoogle: true })
+        setLookupSkipped(true)
+        return
+      }
 
       const res = await fetch(`${apiUrl}api/lookup?email=${encodeURIComponent(email.trim())}`)
       if (!res.ok) throw new Error('Failed to look up email')
@@ -140,7 +160,11 @@ export default function LoginPage() {
         {showBoth && (
           <div className="space-y-3 text-center">
             <p className="text-sm text-muted-foreground">
-              <strong className="text-foreground">{email.trim()}</strong> has both email and Google sign-in.
+              {lookupSkipped ? (
+                <>Pick how you want to sign in as <strong className="text-foreground">{email.trim()}</strong>.</>
+              ) : (
+                <><strong className="text-foreground">{email.trim()}</strong> has both email and Google sign-in.</>
+              )}
             </p>
             <button
               onClick={() => navigate('/enter-password', { state: { email: email.trim() } })}
@@ -165,6 +189,21 @@ export default function LoginPage() {
               </svg>
               Continue with Google
             </button>
+
+            {lookupSkipped && (
+              // Without the lookup we cannot tell a new address from an existing
+              // one, so the route to sign-up has to be offered rather than
+              // chosen automatically.
+              <p className="text-xs text-muted-foreground pt-1">
+                No account yet?{' '}
+                <button
+                  onClick={() => navigate('/create-account', { state: { email: email.trim() } })}
+                  className="underline hover:text-foreground transition-colors"
+                >
+                  Create one
+                </button>
+              </p>
+            )}
           </div>
         )}
 
