@@ -87,12 +87,31 @@ cmd_status() {
       ;;
   esac
 
-  # Why it failed, most recent first. This is the part the console buries.
+  # Why it failed. This is the only place the actual reason appears — the build
+  # log just says "Validation failed with N error(s). Call DescribeEvents".
+  #
+  # A rolled-back stack is usually deleted straight after, and once it is,
+  # describe-stack-events NO LONGER ACCEPTS THE NAME — only the full stack id.
+  # Looking it up is the difference between reading the real cause and guessing
+  # from the error count.
   echo
-  echo "== last failure events =="
-  aws cloudformation describe-stack-events --stack-name "$STACK" \
-      --query 'StackEvents[?contains(ResourceStatus, `FAILED`)].[Timestamp,LogicalResourceId,ResourceStatusReason]' \
-      --output text 2>/dev/null | head -10 || echo "  (no events — stack may not exist)"
+  echo "== failure events (the actual reason) =="
+  local target="$STACK"
+  if [ "$status" = "NOT_FOUND" ]; then
+    target=$(aws cloudformation list-stacks \
+               --stack-status-filter ROLLBACK_COMPLETE DELETE_COMPLETE CREATE_FAILED ROLLBACK_FAILED \
+               --query "StackSummaries[?StackName=='${STACK}']|[0].StackId" --output text 2>/dev/null)
+    if [ -z "$target" ] || [ "$target" = "None" ]; then
+      echo "  no deleted stack found under that name either — nothing to read"
+      return 0
+    fi
+    echo "  (stack is gone; reading events by id)"
+  fi
+
+  aws cloudformation describe-stack-events --stack-name "$target" \
+      --query 'StackEvents[?ResourceStatusReason!=null && contains(ResourceStatus, `FAILED`)].[LogicalResourceId,ResourceStatusReason]' \
+      --output text 2>/dev/null | head -20 \
+    || echo "  (could not read events)"
 
   echo
   echo "== last Amplify job =="
