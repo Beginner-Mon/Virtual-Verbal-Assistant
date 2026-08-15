@@ -44,6 +44,7 @@ def _fallback_persona(persona_id: str) -> dict:
         "personality": "Tone: Warm, professional, encouraging",
         "behavioral_rules": "Use Vietnamese by default. Keep responses helpful.",
         "response_formatting": "Keep under 300 words.",
+        "safety_templates": {},
     }
 
 
@@ -60,6 +61,23 @@ def _parse_voice_identity(text: str) -> dict:
                 result["voice_path"] = val
             elif key == "language":
                 result["language"] = val
+    return result
+
+
+def _parse_safety_templates(text: str) -> dict[str, str]:
+    """Parse ## Safety Templates section into {tag: template_text} dict."""
+    if not text:
+        return {}
+    result: dict[str, str] = {}
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        key = key.strip()
+        val = val.strip().strip('"').strip("'")
+        if key and val:
+            result[key] = val
     return result
 
 
@@ -102,6 +120,9 @@ def _load_persona(persona_id: str) -> dict:
     if current_body and current_header:
         sections[current_header] = "\n".join(current_body).strip()
 
+    safety_raw = sections.pop("safety_templates", "")
+    safety_templates = _parse_safety_templates(safety_raw)
+
     voice_lines = sections.pop("voice_identity", "")
     voice_identity = _parse_voice_identity(voice_lines)
 
@@ -116,6 +137,7 @@ def _load_persona(persona_id: str) -> dict:
         "personality": sections.get("personality", ""),
         "behavioral_rules": sections.get("behavioral_rules", ""),
         "response_formatting": sections.get("response_formatting", ""),
+        "safety_templates": safety_templates,
     }
 
 

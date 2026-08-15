@@ -22,8 +22,10 @@ import time
 from typing import Callable
 
 from langchain_core.messages import ToolMessage
+from langchain_core.runnables import RunnableConfig
 
 from langgraph_agents.state import AgentState
+from langgraph_agents.nodes._persona_loader import get_persona
 from langgraph_agents.shared.logging import get_logger
 
 logger = get_logger("langgraph.grader")
@@ -61,7 +63,7 @@ def _has_disclaimer(text: str) -> bool:
     """Check for wellness scope disclaimer."""
     patterns = [
         r"(?:tư vấn|hướng dẫn)\s*(?:wellness|sức khỏe|thể chất)",
-        r"(?:không thay thế|không phải là)\s*(?:cho\s*(?:việc\s*)?)?(?:khám|chẩn đoán|điều trị)\s*(?:lâm sàng|y tế|y khoa)",
+        r"(?:không thay thế|không phải là)\s*(?:cho\s*(?:việc\s*)?)?(?:thăm\s*)?(?:khám|chẩn đoán|điều trị)\s*(?:lâm sàng|y tế|y khoa)",
         r"(?:tham khảo|chỉ mang tính)\s*(?:tham khảo|giáo dục)",
         r"(?:wellness|educational|informational)\s*(?:advice|purpose)",
         r"(?:không phải|không thể)\s*(?:thay thế|coi là)\s*(?:lời khuyên y tế|chẩn đoán)",
@@ -205,6 +207,25 @@ TAG_RULES: dict[str, tuple[str, Callable[[str], bool], str]] = {
     ),
 }
 
+# ── Default safety templates (fallback when persona doesn't define them) ──
+
+DEFAULT_SAFETY_TEMPLATES: dict[str, str] = {
+    "red_flag_screen": (
+        "⚠️ **Cảnh báo quan trọng:** Triệu chứng bạn mô tả có thể là dấu hiệu "
+        "của một tình trạng nghiêm trọng. Bạn nên NGỪNG tập luyện ngay và đi "
+        "khám bác sĩ chuyên khoa để được chẩn đoán chính xác."
+    ),
+    "referral_advice": (
+        "📋 **Lưu ý:** Với câu hỏi này, tôi khuyên bạn nên tham khảo ý kiến "
+        "bác sĩ hoặc chuyên gia y tế. Tôi chỉ có thể cung cấp thông tin tham "
+        "khảo về wellness, không thay thế chẩn đoán lâm sàng."
+    ),
+    "scope_disclaimer": (
+        "📋 *Thông tin này chỉ mang tính tham khảo về wellness và không thay "
+        "thế cho việc khám và chẩn đoán y tế chuyên nghiệp.*"
+    ),
+}
+
 # Startup assertion: ensure planner vocabulary ⊆ TAG_RULES (D7)
 # Called once at module import — catches drift between planner and grader.
 _PLANNER_TAGS = frozenset({
@@ -223,6 +244,17 @@ _UNAUTHORIZED_DISCLAIMER = (
     "📋 *Thông tin này chưa được kiểm chứng bởi chuyên gia y tế. "
     "Vui lòng tham khảo ý kiến bác sĩ trước khi áp dụng.*"
 )
+
+
+def get_safety_text(tag: str, persona_id: str) -> str:
+    """Get safety template for tag, persona-customized if available.
+
+    Falls back to DEFAULT_SAFETY_TEMPLATES if the persona hasn't
+    defined its own safety_templates, or if the tag is missing.
+    """
+    persona = get_persona(persona_id)
+    custom = persona.get("safety_templates", {}).get(tag)
+    return custom or DEFAULT_SAFETY_TEMPLATES.get(tag, "")
 
 
 # ── Grader logic ─────────────────────────────────────────────────────────
@@ -292,13 +324,13 @@ def _grade_tags(final_answer: str, required_outputs: list[str]) -> dict:
 
 # ── Node ─────────────────────────────────────────────────────────────────
 
-async def grader_node(state: AgentState) -> dict:
+async def grader_node(state: AgentState, config: RunnableConfig) -> dict:
     """Tag-driven grader node — M.3.
 
-    Reads: required_outputs (tags), final_answer
+    Reads: required_outputs (tags), final_answer, persona_id (from config)
     Logic:
       - required_outputs=[] → skipped by routing (D8), this node never called
-      - safety tag missing → inject template cứng (NO retry — D6)
+      - safety tag missing → inject persona-aware template (NO retry — D6)
       - quality tag missing → retry max 1 (D6)
       - retry_count >= 1 + still failing quality → pass_with_warning
       - D32: unverified disclaimer appended at END on pass_with_warning
@@ -307,6 +339,7 @@ async def grader_node(state: AgentState) -> dict:
     required_outputs = state.get("required_outputs", [])
     final_answer = state.get("final_answer", "")
     retry_count = state.get("retry_count", 0)
+    persona_id = config["configurable"].get("persona_id", "eca_default")
 
     # Safety: required_outputs=[] should never reach grader (D8 + D15 routing)
     if not required_outputs:
@@ -329,11 +362,10 @@ async def grader_node(state: AgentState) -> dict:
 
     # ── SAFETY MISSING → inject template cứng (D6: NO retry) ─────────
     if result["safety_missing"]:
-        # Inject safety templates at START of answer (D32)
+        # Inject persona-aware safety templates at START of answer (D32)
         templates = []
         for tag in result["safety_missing"]:
-            _, _, tmpl = TAG_RULES[tag]
-            templates.append(tmpl)
+            templates.append(get_safety_text(tag, persona_id))
 
         safety_block = "\n\n---\n\n".join(templates)
         modified_answer = f"{safety_block}\n\n---\n\n{final_answer}"

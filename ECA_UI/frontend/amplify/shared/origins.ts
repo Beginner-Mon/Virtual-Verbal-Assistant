@@ -1,3 +1,7 @@
+// Must be the FIRST import: it loads .env before the module-evaluation-time
+// consts below (PROD_WEB_ORIGIN, ALLOWED_ORIGINS, OAUTH_*_URLS) are computed.
+import './env'
+
 /**
  * Every origin allowed to talk to the auth API, in one place.
  *
@@ -33,8 +37,10 @@ export const WEB_DEV_ORIGIN = 'http://localhost:5173';
 export const MOBILE_APP_ORIGIN = process.env.MOBILE_APP_ORIGIN;
 
 /**
- * Production web origin, supplied at deploy time.
+ * Production web origin.
  *
+ * Read from the app root's `.env` file (loaded by ./env.ts) or, failing that,
+ * from the process environment — the CI's console variables win over the file.
  * Deliberately not defaulted to anything: a wrong guess here either blocks the
  * real site or silently widens the allowlist.
  */
