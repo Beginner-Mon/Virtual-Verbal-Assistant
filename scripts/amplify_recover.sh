@@ -134,16 +134,52 @@ cmd_status() {
 cmd_secrets() {
   require_aws
   # Amplify Gen2 keeps backend secrets in SSM Parameter Store. The exact path
-  # differs between sandbox and branch deployments, so list rather than assume —
-  # guessing the path is how you "set" a secret the build never reads.
-  echo "SSM parameters under /amplify/ (names only, no values):"
-  aws ssm get-parameters-by-path --path "/amplify" --recursive \
-      --query 'Parameters[].Name' --output text 2>/dev/null | tr '\t' '\n' | sed 's/^/  /' \
-    || echo "  none found (or no ssm:GetParametersByPath permission)"
+  # differs between sandbox and branch deployments, so list rather than assume.
+  #
+  # The previous version of this piped into `|| echo "none found"`. With
+  # `set -o pipefail` an AccessDenied from AWS also lands in that branch, so a
+  # permissions problem printed as "no secrets exist" — and the line after it
+  # then drew a conclusion from that. Two different states, one message, wrong
+  # answer. Errors are now shown verbatim.
+  echo "== SSM parameters under /amplify/ =="
+  local out rc
+  set +e
+  out=$(aws ssm get-parameters-by-path --path "/amplify" --recursive \
+          --query 'Parameters[].Name' --output text 2>&1)
+  rc=$?
+  set -e
+
+  if [ $rc -ne 0 ]; then
+    echo "  QUERY FAILED — this is NOT the same as 'no secrets':"
+    echo "$out" | sed 's/^/    /'
+    echo
+    echo "  Add ssm:DescribeParameters + ssm:GetParametersByPath on"
+    echo "  arn:aws:ssm:*:*:parameter/amplify/* (docs/ops/iam-vva-recover-readonly.json)"
+  elif [ -z "$out" ] || [ "$out" = "None" ]; then
+    echo "  (query succeeded and returned nothing — there really are no"
+    echo "   parameters under /amplify/ in this account)"
+  else
+    echo "$out" | tr '\t' '\n' | sed 's/^/  /'
+  fi
+
+  # Probe the exact names directly. `--path` needs list permission; `get-parameter`
+  # needs only read on that one name, so this often answers even when the listing
+  # above is denied.
   echo
-  echo "Expected for this branch: /amplify/${APP_ID}/${BRANCH}/<SECRET_NAME>"
-  echo "If nothing is listed for this app id, the branch build has no secrets —"
-  echo "which fails template validation before any resource is created."
+  echo "== direct probe of the paths this script writes =="
+  for name in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET; do
+    local p="/amplify/${APP_ID}/${BRANCH}/${name}"
+    set +e
+    out=$(aws ssm get-parameter --name "$p" --query 'Parameter.Name' --output text 2>&1)
+    rc=$?
+    set -e
+    if [ $rc -eq 0 ]; then
+      echo "  EXISTS   $p"
+    else
+      echo "  MISSING  $p"
+      echo "$out" | head -1 | sed 's/^/           /'
+    fi
+  done
 }
 
 cmd_set_secrets() {
