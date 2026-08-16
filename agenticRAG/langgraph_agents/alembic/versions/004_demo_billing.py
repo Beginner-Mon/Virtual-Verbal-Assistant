@@ -16,6 +16,16 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # One statement per op.execute(). The runtime driver is asyncpg, which sends
+    # statements as prepared statements and rejects a batch with
+    # "cannot insert multiple commands into a prepared statement".
+    #
+    # This migration originally passed all four statements as one string, so it
+    # could never run: the billing tables were missing from Neon from the day
+    # the billing code shipped, and every /billing/* endpoint queried a table
+    # that did not exist. Nothing failed loudly at deploy time because nobody
+    # ran the migration until later. Migration 002 avoids this with a
+    # _split_sql() helper; 003 got away with it by having a single statement.
     op.execute(
         """
         CREATE TABLE IF NOT EXISTS billing_accounts (
@@ -27,19 +37,26 @@ def upgrade() -> None:
             stripe_subscription_status  TEXT,
             created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now()
-        );
-        COMMENT ON COLUMN billing_accounts.access_plan IS
-            'Internal entitlement only; deliberately restricted to FREE/DEMO.';
-
+        )
+        """
+    )
+    op.execute(
+        "COMMENT ON COLUMN billing_accounts.access_plan IS "
+        "'Internal entitlement only; deliberately restricted to FREE/DEMO.'"
+    )
+    op.execute(
+        """
         CREATE TABLE IF NOT EXISTS billing_webhook_events (
             event_id       TEXT PRIMARY KEY,
             event_type     TEXT NOT NULL,
             livemode       BOOLEAN NOT NULL DEFAULT false CHECK (livemode = false),
             processed_at   TIMESTAMPTZ NOT NULL DEFAULT now()
-        );
-        COMMENT ON TABLE billing_webhook_events IS
-            'Stripe sandbox webhook receipts only; live events are rejected by code and schema.';
+        )
         """
+    )
+    op.execute(
+        "COMMENT ON TABLE billing_webhook_events IS "
+        "'Stripe sandbox webhook receipts only; live events are rejected by code and schema.'"
     )
 
 

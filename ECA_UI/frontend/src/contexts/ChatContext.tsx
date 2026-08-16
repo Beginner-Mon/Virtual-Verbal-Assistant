@@ -82,7 +82,7 @@ export interface ChatContextType {
 const ChatContext = createContext<ChatContextType | null>(null)
 
 export function ChatProvider({ children }: { children: ReactNode }) {
-  const { transitionTo } = useMotion()
+  const { transitionTo, selectedVrmId } = useMotion()
 
   const [messages, setMessages] = useState<Message[]>(() => buildInitialMessages())
   const [input, setInput] = useState('')
@@ -304,6 +304,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           sessionId: sessionIdRef.current,
           webSearch,
           outputMode: voiceReply ? 'both' : 'text',
+          // The selected character IS the persona: characters.slug is what the
+          // backend caches personas under, and ChatRequest.persona_id already
+          // accepts exactly this shape. Picking an avatar changes how the
+          // assistant speaks, which until now it did not.
+          personaId: selectedVrmId || undefined,
         },
         (type, data) => {
           if (type === 'stage') {
@@ -393,7 +398,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         endThinking()
       }
     }
-  }, [webSearch, voiceReply, transitionTo, endThinking])
+  }, [webSearch, voiceReply, selectedVrmId, transitionTo, endThinking])
 
   useEffect(() => {
     return () => {

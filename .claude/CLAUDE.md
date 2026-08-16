@@ -11,38 +11,53 @@
 
 Healthcare/wellness multimodal AI assistant combining conversational AI, 3D motion synthesis, and voice I/O. Domain: physical therapy exercise recommendations with clinical safety.
 
-## Current Architecture (develop branch — baseline)
+## Current Architecture (as built, `feature/langgraph-rewrite`)
 
 ```
-ECA UI (HTML/JS)           Port 3000
-FastAPI Gateway            Port 8080 (orchestrator), 8000 (AgenticRAG)
-AgenticRAG                 Gemini 2.5-Flash, ChromaDB (8100), custom Double-RAG
-DART text-to-motion        WSL/CUDA, diffusion model, Port 5001
-SpeechLLm                  Whisper STT + Coqui/ElevenLabs TTS, Port 5000
-Infrastructure             Redis (Celery broker), Firebase (sessions), Docker (ChromaDB)
+ECA UI                     Vite 6 + React 19 + TS, Capacitor for mobile, Amplify hosting
+LangGraph service          Port 8000, FastAPI + SSE (agenticRAG/langgraph_agents)
+PostgreSQL + pgvector      Neon, ap-southeast-1, PG 17.10 (cutover 31/07)
+Redis                      STM + TTS task results — STILL LOCAL, not yet hosted
+Kimodo text-to-motion      GPU MCP server (replaced DART); ECS deploy awaiting Owner
+VieNeu-TTS                 CPU Vietnamese TTS (replaced Coqui/ElevenLabs)
+Auth                       AWS Cognito via Amplify Gen 2
+Infra                      AWS CDK — see infra/README.md for the two-track split
 ```
 
-Key files: `agents/api_orchestrator.py` (780 lines, main orchestrator), `retrieval/rag_pipeline.py` (759 lines), `memory/vector_store.py` (912 lines), `text-to-motion/DART/mcp_server.py` (production-ready FastMCP server).
+Key files: `agenticRAG/langgraph_agents/graph.py` (graph wiring),
+`api/main.py` (FastAPI + SSE), `nodes/synthesizer.py` (persona applied here),
+`db/postgres.py` (asyncpg client), `text-to-motion/DART/mcp_server.py`.
 
-## Active Plan: LangGraph Re-Architecture (v2.2)
+> Firebase, ChromaDB, DART, Celery and the `agentic_rag_gemini` package are all
+> gone. `agents/api_orchestrator.py`, `retrieval/rag_pipeline.py` and
+> `memory/vector_store.py` were deleted on 10/08 (71 files, 46 MB).
 
-**Full plan**: `.claude/plans/purrfect-herding-kahn.md`
-**Worklogs**: `docs/worklogs/19-05-2026.md` (planning), `docs/worklogs/20-05-2026.md` (N's reviews + v2.2)
-**Branch**: `feature/langgraph-rewrite` (to be created from `develop`)
+## Active Plan: LangGraph Re-Architecture
 
-### Target Architecture
+**Decisions**: ADR-001…005 in `docs/worklogs/19-05-2026.md`, D1–D33 in `docs/plans/reupdate-plan.md`, ADR-006 in `docs/worklogs/16-08-2026.md`
+**Graph + persona reference**: `docs/architecture/langgraph-flow-persona.md`
+**Status**: `docs/tracking/status.md`
+**Branch**: `feature/langgraph-rewrite`
 
-Replace custom orchestrator with **LangGraph multi-agent supervisor**:
+### Graph as built
 
-| Node         | Role                                                     | LLM calls |
-| ------------ | -------------------------------------------------------- | --------- |
-| Manager      | Intent classification + routing (fast model)             | 1         |
-| Memory       | Redis STM + PostgreSQL/pgvector LTM (always runs)        | 0         |
-| Retrieval    | pgvector search + web fallback, HyDE                     | 0-1       |
-| Reasoning    | Clinical analysis, constraint extraction (heavy model)   | 1         |
-| Validator    | Validate sub-agent outputs + build raw_answer + fallback | 0         |
-| Conversation | Apply persona MD styling, stream via SSE                 | 1         |
-| Dispatch     | Approval gate (motion) + fire Celery tasks               | 0         |
+The v2.2 node design below was **not** what shipped. Actual nodes
+(`graph.py:180-235`):
+
+| Node             | Role                                                       | LLM calls |
+| ---------------- | ---------------------------------------------------------- | --------- |
+| memory           | Redis STM + user facts + summary chunks; runs first        | 0         |
+| planner          | 3-axis: required_outputs / resolved_query / routing bits   | 1         |
+| retriever_agent  | Self-selects tools; loops with `tools`                     | 1         |
+| tools            | ToolNode (pgvector, web search)                            | 0         |
+| kimodo           | Motion generation via MCP, gated on `needs_motion`         | 0         |
+| **synthesizer**  | **Universal responder — applies persona styling**          | 1         |
+| grader           | Rule-based tag check + persona safety templates            | 0         |
+| error_handler    | Writes `final_answer` directly                             | 0         |
+
+The v2.2 `Manager`/`Reasoning`/`Validator`/`Dispatch`/`Conversation` nodes do
+not exist. `conversation.py` was deleted in Phase 6.9 and its persona work moved
+into `synthesizer.py`; `nodes/_persona_loader.py` is the surviving fragment.
 
 ### Key Decisions (v2.2)
 
@@ -51,9 +66,9 @@ Replace custom orchestrator with **LangGraph multi-agent supervisor**:
 - **VieNeu-TTS-GGUF**: Replaces Coqui/ElevenLabs. CPU-only Vietnamese TTS, frees 100% GPU for Kimodo.
 - **SSE + REST POST**: Replaces WebSocket (ADR-005 revised). CDN-friendly, auto-reconnect via EventSource.
 - **Approval Gate**: Clinical safety — user must approve before 3D motion render. Saves GPU + prevents unsafe exercise demos.
-- **PostgreSQL (pgvector)**: Replaces Firebase + ChromaDB. Single DB for structured + vector data.
+- **PostgreSQL (pgvector)**: Replaces Firebase + ChromaDB. Single DB for structured + vector data. **Now hosted on Neon** (`VVA_PG_DSN`, direct endpoint — not `-pooler`; see `.claude/plans/neon-migration.md`).
 - **Redis**: STM + Celery broker + task result persistence + approval gate payloads.
-- **Celery**: Kept for async background tasks (Kimodo render, VieNeu-TTS, doc indexing).
+- ~~**Celery**: Kept for async background tasks.~~ **Reversed in v2.4.1** — `celery_app = None`, not in requirements. Background work uses `asyncio.create_task` with a strong-reference set (`main.py:69-73`).
 - **Error routing**: 3 severity levels (CRITICAL/RECOVERABLE/IGNORABLE). Graceful degradation when worker down.
 - **Deployment**: Hybrid Edge-Cloud target. **Local-first** for Phases 0-6, then split to Cloud (VPS+Supabase) + Edge (HP ProDesk 48GB RAM, RTX 3060).
 

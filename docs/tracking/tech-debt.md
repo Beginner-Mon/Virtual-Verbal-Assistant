@@ -1,7 +1,12 @@
 # Tech Debt & Pending Tasks
 
 > Checklist các việc đã biết nhưng CHƯA làm. Cập nhật khi đóng/ mở item.
-> Last update: 2026-08-05 (K — Neon, 7 lỗi TS, TTS VieNeu, lip sync, auth 1-user, Capacitor).
+> Last update: 2026-08-16 (K — Track 2 Lambda catalog: rate limit, concurrency, latency, migration).
+> Trước đó: 2026-08-05 (K — Neon, 7 lỗi TS, TTS VieNeu, lip sync, auth 1-user, Capacitor).
+>
+> ⚠️ **Mục "Thiếu credentials" bên dưới đã lạc hậu**: 16/08 Owner xác nhận máy **có** AWS
+> credentials (account `244203483654`, IAM user `admin`), và đã deploy thật `VvaCharacterStack` +
+> `VvaAssetStack`. Các item auth trong đó cần kiểm lại chứ không còn bị chặn vì credentials.
 > **Đọc mục 🚧 đầu tiên**: đó là những việc K bị chặn cứng, không phải việc chưa kịp làm.
 > Nguồn trước đó: worklogs 05→12/06-cont; đợt mới: `docs/worklogs/30-07-2026.md`,
 > `docs/worklogs/05-08-2026.md`.
@@ -127,6 +132,58 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
       KHÔNG phải hết dung lượng — KB chỉ ~2918 vector 384 chiều.
 
 ## 🟠 Quan trọng
+
+### Track 2 — Lambda catalog (ghi 16/08, worklog `16-08-2026.md` §6b)
+
+- [ ] 🔴 **Chưa có rate limit ở bất kỳ tầng nào.** CloudFront **chưa gắn WAF** (`WebACLId` rỗng),
+      Lambda **chưa set reserved concurrency**, Function URL không có throttle. Thứ duy nhất đang
+      chặn là cache CloudFront (TTL 300s cho `/characters*`, `immutable 1 năm` cho VRM). Budget
+      $10/$20 đã có nên sẽ báo sớm. **Chưa khuyến nghị WAF** — WebACL ~$5/tháng + $1/rule +
+      $0.60/triệu request, tức ngốn 25-50% ngân sách để chống mối nguy mà cache đã chặn phần lớn.
+      Làm khi có traffic thật.
+- [ ] 🔴 **Hạn mức Lambda concurrency của account = 10, và là `Unreserved` tức DÙNG CHUNG** với
+      toàn bộ Lambda khác, kể cả auth trigger của Amplify (`post-confirmation`,
+      `pre-token-generation`). Một đợt burst vào `/characters` về lý thuyết làm nghẽn đăng nhập
+      Cognito. Đã đo: 50 request đồng thời → 10× 200, 40× 429. **Phải xin nâng quota trước khi
+      chuyển endpoint per-user (`/sessions`, `/users/*/memory`) sang Lambda** — những cái đó không
+      cache được nên sẽ ăn thẳng vào pool.
+- [ ] 🟠 **Warm duration 436 ms, gần như toàn bộ là chặng vượt Thái Bình Dương.** Lambda ở
+      `us-east-1`, Neon ở `ap-southeast-1`: mỗi lần gọi tốn 2 round trip (liveness `SELECT 1` +
+      query) × ~215 ms. Query 4 dòng có index chỉ tốn vài ms. **Chuyển Neon sang us-east-1 sẽ đưa
+      về ~20-30 ms** — nhanh hơn ~15 lần và rẻ hơn chừng đó. Cold start 3019 ms (init 539 ms + bắt
+      tay TLS/SCRAM xuyên Thái Bình Dương + Neon scale-to-zero).
+- [ ] 🟡 **Giảm memory Lambda 256 → 128 MB.** Đang dùng tối đa **103 MB**. Lambda cấp CPU tỉ lệ
+      memory, nhưng hàm này **chờ mạng chứ không tính toán** nên giảm CPU gần như không làm chậm.
+      Cắt đôi GB-giây. Một dòng trong `character_stack.py`.
+- [ ] 🟡 **`PriceClass_All` → `PriceClass_200`.** Đang trả tiền cho edge Nam Mỹ/châu Phi không dùng.
+      `_200` vẫn phủ châu Á. Miễn phí, đổi một dòng.
+- [ ] 🟡 **`AWSLambdaBasicExecutionRole` cấp `logs:*` trên `Resource: "*"`** — managed policy chuẩn
+      của AWS, là chỗ duy nhất chưa least-privilege trong toàn bộ Track 2. Muốn chặt thì thay bằng
+      inline policy giới hạn `/aws/lambda/vva-characters`. Rủi ro thực tế thấp (chỉ ghi log được).
+- [ ] 🟡 **`GET /characters/{slug}` chưa ai gọi.** Xây theo draft plan §4.1 nhưng frontend chỉ dùng
+      list + `avatar-profile`. Xoá cho gọn, hoặc giữ nếu sắp làm trang chi tiết nhân vật.
+- [ ] 🟡 **CloudFront access log đang tắt.** Không có dữ liệu để điều tra khi có sự cố hoặc để biết
+      bao nhiêu request thật sự tới origin. Bật thì tốn phí lưu S3.
+- [ ] ⚪ **`aws-cdk-lib` thiếu `lambda:InvokeFunction` cho OAC + Function URL** — đã vá bằng
+      `CfnPermission` thủ công trong `asset_stack.py`. **Xoá khi CDK cấp đủ cả hai action.** Theo
+      dõi `aws-samples/remote-swe-agents#361`.
+- [ ] ⚪ **GLB parser trùng nhau** giữa `ECA_UI/frontend/scripts/extract-vrm-meta.mjs` (Node, cho
+      frontend) và `scripts/upload_characters_to_s3.py` (Python, cho DB). Chấp nhận — hai consumer,
+      hai bộ field khác nhau, và đã đối chiếu khớp tuyệt đối trên cả 4 model.
+
+### Migration & test (16/08)
+
+- [ ] 🔴 **`asyncpg` không chạy được `op.execute()` nhiều câu lệnh** — đây là lý do thật khiến
+      `004_demo_billing` chưa bao giờ áp được lên Neon, chứ không phải ai quên chạy. Đã tách `004`
+      và `005` thành mỗi câu một `op.execute()`. **CI nên có bước chạy `alembic upgrade head` trên
+      DB tạm** để bắt loại lỗi này ngay khi commit, thay vì phát hiện lúc deploy.
+- [ ] 🟠 **12 test đỏ sẵn từ trước** (đã chứng minh bằng cách stash rồi chạy đối chứng trên baseline):
+      `test_phase2_5_grader.py` (5) gọi `grader_node(state)` nhưng signature là `(state, config)`;
+      `test_phase5_sse.py` (7) trả 401 vì `agenticRAG/.env:56` đặt `REQUIRE_AUTH=true` mà test chưa
+      mock token.
+- [ ] 🟡 **Không chỗ nào trong repo ghi môi trường Python nào dùng cho việc gì.**
+      `C:\Miniconda\envs\firstconda` là env backend, `infra/.venv` là env CDK. Thiếu tài liệu này
+      đã khiến K kết luận sai "máy chưa có venv dự án". Ghi vào `scripts/QUICKSTART.md`.
 
 - [ ] **`AdminLinkProviderForUser` gọi trong PreSignUp có mép sắc đã biết** — đây là cách AWS khuyến
       nghị, nhưng nhiều báo cáo cho thấy **lần link đầu tiên** tuỳ cấu hình pool có thể lỗi và user

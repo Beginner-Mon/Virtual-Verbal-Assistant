@@ -14,6 +14,7 @@ import type { AnimationRegistry } from '../lib/AnimationRegistry'
 import { CameraController } from '../lib/CameraController'
 import { STATE_OPTIONS, type CameraMode, type CharState } from '../lib/AnimationStates'
 import { MOTION_FILES, type MotionFile } from '../lib/motionAssets'
+import { fetchCharacters, isCompatible, type Character } from '../lib/characters'
 import { useAutoAfterTrigger } from '../hooks/useFsmTriggers'
 import instrumentalUrl from '../asset/audio/instrumental-ver.mp3'
 import { DEFAULT_CAMERA_CONFIG, type CameraConfig } from '../lib/CameraConfig'
@@ -21,33 +22,61 @@ import { DEFAULT_CAMERA_CONFIG, type CameraConfig } from '../lib/CameraConfig'
 export type { CameraMode }
 
 type AssetOption = {
+  /** characters.slug — also what gets sent back as ChatRequest.persona_id. */
   id: string
   label: string
   url: string
+  character?: Character
 }
 
-const VRM_ASSET_MODULES = import.meta.glob('../asset/**/*.vrm', {
-  eager: true,
-  import: 'default',
-}) as Record<string, string>
+/**
+ * Rollback switch for the S3 migration. `false` restores the old behaviour of
+ * loading .vrm files bundled by Vite.
+ *
+ * The fallback glob is deliberately NOT eager: an eager glob bundles all ~57 MB
+ * into the build whether the flag is on or off, which is the exact cost this
+ * change exists to remove. Lazy, the files stay out of the JS bundle and are
+ * only fetched if the flag is off.
+ *
+ * Once the .vrm files are removed from the repo this returns an empty list and
+ * the flag can be deleted along with it.
+ */
+const USE_S3_MODELS = import.meta.env.VITE_USE_S3_MODELS !== 'false'
 
-function buildVrmOptions(modules: Record<string, string>): AssetOption[] {
-  return Object.entries(modules)
-    .map(([assetPath, url]) => ({
+const VRM_ASSET_LOADERS = import.meta.glob('../asset/**/*.vrm', {
+  import: 'default',
+}) as Record<string, () => Promise<string>>
+
+async function loadBundledVrmOptions(): Promise<AssetOption[]> {
+  const entries = await Promise.all(
+    Object.entries(VRM_ASSET_LOADERS).map(async ([assetPath, load]) => ({
       id: assetPath,
       label: assetPath.replace(/^\.\.\/asset\//, '').replace(/\\/g, '/'),
-      url,
+      url: await load(),
     }))
+  )
+  return entries
     .filter((o) => !/bronya_long/i.test(o.label)) // 0 blendshape groups — unusable
     .sort((left, right) => left.label.localeCompare(right.label))
 }
 
-const BUILTIN_VRM_OPTIONS = buildVrmOptions(VRM_ASSET_MODULES)
+function toAssetOption(character: Character): AssetOption {
+  return {
+    id: character.slug,
+    label: character.display_name,
+    url: character.vrm_url,
+    character,
+  }
+}
 
 interface MotionContextType {
   selectedVrmId: string
   setSelectedVrmId: (id: string) => void
   vrmOptions: AssetOption[]
+  /** False while the catalog request is in flight — nothing to render yet. */
+  vrmOptionsLoading: boolean
+  /** Set when the catalog could not be fetched; the picker shows it verbatim. */
+  vrmOptionsError: string | null
 
   /**
    * FSM — the single entry point for every state change. Returns false when the
@@ -102,10 +131,52 @@ interface MotionContextType {
 const MotionContext = createContext<MotionContextType | null>(null)
 
 export function MotionProvider({ children }: { children: ReactNode }) {
-  const defaultVrmId =
-    BUILTIN_VRM_OPTIONS.find((o) => /anne/i.test(o.label))?.id ?? BUILTIN_VRM_OPTIONS[0]?.id ?? ''
+  const [vrmOptions, setVrmOptions] = useState<AssetOption[]>([])
+  const [vrmOptionsLoading, setVrmOptionsLoading] = useState(true)
+  const [vrmOptionsError, setVrmOptionsError] = useState<string | null>(null)
+  const [selectedVrmId, setSelectedVrmId] = useState('')
 
-  const [selectedVrmId, setSelectedVrmId] = useState(defaultVrmId)
+  // The catalog comes from the CDN now, so the option list starts empty and the
+  // default selection can only be made once it arrives — hence the effect
+  // rather than a lazily-initialised useState.
+  useEffect(() => {
+    const abort = new AbortController()
+
+    async function load() {
+      try {
+        const options = USE_S3_MODELS
+          ? (await fetchCharacters(abort.signal))
+              // A model with incompatible_reasons still appears in the picker,
+              // greyed out with the reason — it is data the user should see,
+              // not a row to hide. Only the default selection skips them.
+              .map(toAssetOption)
+          : await loadBundledVrmOptions()
+
+        if (abort.signal.aborted) return
+
+        setVrmOptions(options)
+        setSelectedVrmId((current) => {
+          if (current && options.some((o) => o.id === current)) return current
+          const usable = options.filter((o) => !o.character || isCompatible(o.character))
+          const preferred = usable.find((o) => /anne/i.test(o.id) || /anne/i.test(o.label))
+          return preferred?.id ?? usable[0]?.id ?? options[0]?.id ?? ''
+        })
+        setVrmOptionsError(null)
+      } catch (err) {
+        if (abort.signal.aborted || (err as Error)?.name === 'AbortError') return
+        console.error('[MotionContext] character catalog failed', err)
+        setVrmOptionsError(
+          err instanceof Error ? err.message : 'Could not load the character catalog'
+        )
+      } finally {
+        if (!abort.signal.aborted) setVrmOptionsLoading(false)
+      }
+    }
+
+    void load()
+    return () => abort.abort()
+  }, [])
+
   const [isPlaying, setIsPlaying] = useState(true)
   const [speed, setSpeed] = useState(1.0)
   const [clipInfo, setClipInfo] = useState<{ tracks: number; duration: number } | null>(null)
@@ -195,7 +266,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
       transitionTo,
       playMotionFile,
       setVrm: setSelectedVrmId,
-      vrmIds: BUILTIN_VRM_OPTIONS.map((o) => o.id),
+      vrmIds: vrmOptions.map((o) => o.id),
       get state() {
         return animController?.currentState ?? null
       },
@@ -209,7 +280,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
         return [...stateHistoryRef.current]
       },
     }
-  }, [transitionTo, playMotionFile, animController, cameraController, currentState])
+  }, [transitionTo, playMotionFile, animController, cameraController, currentState, vrmOptions])
 
   // Background music state
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -239,7 +310,9 @@ export function MotionProvider({ children }: { children: ReactNode }) {
     () => ({
       selectedVrmId,
       setSelectedVrmId,
-      vrmOptions: BUILTIN_VRM_OPTIONS,
+      vrmOptions,
+      vrmOptionsLoading,
+      vrmOptionsError,
       transitionTo,
       currentState,
       stateOptions: STATE_OPTIONS,
@@ -263,6 +336,9 @@ export function MotionProvider({ children }: { children: ReactNode }) {
     }),
     [
       selectedVrmId,
+      vrmOptions,
+      vrmOptionsLoading,
+      vrmOptionsError,
       transitionTo,
       currentState,
       playMotionFile,

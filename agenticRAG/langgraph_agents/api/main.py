@@ -41,7 +41,7 @@ from langgraph_agents.api.schemas import (
 )
 from langgraph_agents.api.sse import encode_event, stream_response
 from langgraph_agents.graph import build_graph_async
-from langgraph_agents.nodes._persona_loader import get_persona
+from langgraph_agents.nodes._persona_loader import get_persona, preload_personas_from_db
 from langgraph_agents.services.vieneu_tts.tasks import synthesize_speech_async
 from langgraph_agents.nodes.summarizer import maybe_summarize
 from langgraph_agents.db.session_store import (
@@ -51,6 +51,7 @@ from langgraph_agents.db.session_store import (
 from langgraph_agents.shared.logging import (
     configure_root_logger, get_logger, with_request_id,
 )
+from langgraph_agents.shared import get_pg_client
 from langgraph_agents.shared.env import env_source
 from langgraph_agents.shared.preflight import run_preflight
 from langgraph_agents.api.health import run_all_checks
@@ -108,9 +109,16 @@ async def lifespan(application: FastAPI):
     global _graph
     _graph = await build_graph_async()
     _get_redis()
+
+    # Character personas live in the DB (characters.persona) but get_persona is
+    # synchronous, so they are read once here rather than per request. Returns 0
+    # and logs when the DB is unreachable; personas/*.md then serve every lookup.
+    personas_loaded = await preload_personas_from_db()
+
     logger.info("startup_complete", extra={
         "event": "lifespan_complete",
         "graph_loaded": _graph is not None,
+        "personas_loaded": personas_loaded,
         "config_source": env_source(),
     })
     yield
@@ -289,7 +297,6 @@ def create_app() -> FastAPI:
     async def delete_session(user_id: str, session_id: str, request: Request):
         """Delete a session row + clear its Redis STM."""
         uid = await resolve_user_id(request, user_id)
-        from langgraph_agents.shared import get_pg_client
         pg = get_pg_client()
         await pg.connect()
         result = await pg.execute(

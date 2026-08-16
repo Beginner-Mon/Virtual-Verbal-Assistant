@@ -88,3 +88,50 @@ export function loadProfile(modelId: string): AvatarProfile {
   if (override) return override
   return { ...PROFILE_REGISTRY.default, modelId }
 }
+
+// ── Remote profiles (characters.avatar_profile) ──────────────────────────────
+
+const remoteProfileCache = new Map<string, AvatarProfile>()
+
+function isUsableProfile(value: unknown): value is AvatarProfile {
+  // The column defaults to '{}', so a character seeded before its profile was
+  // written would otherwise hand back an object with no recipes and no viseme
+  // map — the avatar attaches, drives nothing, and looks frozen rather than
+  // broken. Falling back to the bundled profile is strictly better than that.
+  if (!value || typeof value !== 'object') return false
+  const p = value as Partial<AvatarProfile>
+  return Boolean(p.recipes && p.visemes && p.blinkChannel)
+}
+
+/**
+ * Resolve a profile for a model, preferring the one stored alongside the
+ * character in the database so a new character needs no frontend deploy.
+ *
+ * Falls back to the bundled `PROFILE_REGISTRY` on any failure — a CDN blip
+ * should cost the model its per-model overrides, not its face.
+ */
+export async function loadProfileAsync(
+  modelId: string,
+  signal?: AbortSignal
+): Promise<AvatarProfile> {
+  const key = modelId.toLowerCase()
+
+  const cached = remoteProfileCache.get(key)
+  if (cached) return cached
+
+  try {
+    const { fetchAvatarProfile } = await import('../lib/characters')
+    const raw = await fetchAvatarProfile(key, signal)
+    if (isUsableProfile(raw)) {
+      const profile = { ...raw, modelId: key }
+      remoteProfileCache.set(key, profile)
+      return profile
+    }
+    console.warn(`[AvatarProfile] ${key}: remote profile incomplete, using bundled`)
+  } catch (err) {
+    if ((err as Error)?.name === 'AbortError') throw err
+    console.warn(`[AvatarProfile] ${key}: remote profile unavailable, using bundled`, err)
+  }
+
+  return loadProfile(key)
+}
