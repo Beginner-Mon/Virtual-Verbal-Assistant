@@ -1,13 +1,9 @@
-import { useState, useEffect, useCallback, useRef, useLayoutEffect } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Outlet, Navigate } from 'react-router-dom'
-import { useAuth as useClerkAuth, useClerk, useUser } from '@clerk/react'
 import { fetchAuthSession, fetchUserAttributes, signOut } from 'aws-amplify/auth'
 import { AuthContext, type FetchUserAttributesOutput } from '../contexts/AuthContext'
 import { AUTH_ERROR_KEY, clearExpectedEmail, cognitoLogoutUrl, emailsMatch, peekExpectedEmail } from '../lib/googleSignIn'
 import LoadingOverlay from './ui/LoadingOverlay'
-import { setClerkAuthProvider } from '../lib/clerkAuth'
-
-const clerkConfigured = Boolean(import.meta.env.VITE_CLERK_PUBLISHABLE_KEY)
 
 function clearLocalAuthStorage() {
   const purge = (storage: Storage) => {
@@ -135,56 +131,13 @@ function CognitoAuthGuard() {
   )
 }
 
-function ClerkAuthGuard() {
-  const { isLoaded, isSignedIn, userId, getToken } = useClerkAuth()
-  const { user } = useUser()
-  const clerk = useClerk()
-  const [bridgeReady, setBridgeReady] = useState(false)
-
-  useLayoutEffect(() => {
-    // `useAuth().userId` is `string | null | undefined` — undefined while Clerk
-    // is still loading, null once loaded and signed out. The bridge only cares
-    // about the second distinction, so collapse the two "no user" states rather
-    // than widening its type: `undefined` there would mean every consumer has to
-    // re-decide what it means.
-    setClerkAuthProvider({ getToken, userId: userId ?? null })
-    setBridgeReady(true)
-    return () => setClerkAuthProvider(null)
-  }, [getToken, userId])
-
-  if (!isLoaded || !bridgeReady) {
-    return <LoadingOverlay text="Initializing Workspace..." fullScreen={true} />
-  }
-  if (!isSignedIn) return <Navigate to="/login" replace />
-
-  const email = user?.primaryEmailAddress?.emailAddress ?? ''
-  const displayName = user?.fullName ?? user?.username ?? email.split('@')[0]
-  const attrs = {
-    sub: userId ?? undefined,
-    email,
-    email_verified: user?.primaryEmailAddress?.verification?.status === 'verified' ? 'true' : 'false',
-    given_name: user?.firstName ?? undefined,
-    family_name: user?.lastName ?? undefined,
-    picture: user?.imageUrl,
-    display_name: displayName,
-  }
-
-  return (
-    <AuthContext.Provider
-      value={{
-        signOut: () => clerk.signOut({ redirectUrl: '/login' }),
-        manageAccount: () => clerk.openUserProfile(),
-        user: { signInDetails: { loginId: email } },
-        userAttributes: attrs,
-      }}
-    >
-      <div className="flex h-screen w-screen bg-background">
-        <Outlet />
-      </div>
-    </AuthContext.Provider>
-  )
-}
-
-export default function AuthGuard() {
-  return clerkConfigured ? <ClerkAuthGuard /> : <CognitoAuthGuard />
-}
+// A second guard backed by Clerk used to sit here, selected when
+// VITE_CLERK_PUBLISHABLE_KEY was set. It could never run: `@clerk/react`'s hooks
+// need a <ClerkProvider> above them and none was ever added, so setting that
+// variable crashed the app on first render, while leaving it unset meant the
+// token bridge it owned was never registered and every API call went out with no
+// Authorization header. Identity is Cognito's job here — the user pool, its
+// triggers and the OAuth wiring in amplify/ are all built around it.
+//
+// `lib/clerkAuth.ts` is that bridge. It is kept, and nothing imports it now.
+export default CognitoAuthGuard

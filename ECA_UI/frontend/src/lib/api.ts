@@ -2,15 +2,15 @@
  * VVA API client — PART B auth integration spec.
  *
  * - API_BASE from VITE_API_BASE_URL env (default: http://localhost:8080)
- * - authHeader(): attach Clerk session token when Clerk Development is configured
- * - currentUserId(): Clerk user id when authed, else stable demo UUID
+ * - authHeader(): attach Cognito idToken when Amplify is configured + user signed in
+ * - currentUserId(): Cognito sub when authed, else stable demo UUID from localStorage
  * - streamChat(): real SSE via ReadableStream.getReader() with fallback to text()
  *   (SSE parsing logic ported from ECA_UI/test-ui/sse-test/api.js ~line 506)
  * - Sessions + user_memory CRUD helpers
  */
 
 import axios from 'axios'
-import { clerkAuthHeader, clerkUserId } from './clerkAuth'
+import { fetchAuthSession } from 'aws-amplify/auth'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -46,9 +46,23 @@ const API_BASE: string = _raw || DEFAULT_API_BASE
 
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 
-/** Returns { Authorization: 'Bearer <idToken>' } when signed in, else {}. */
+/**
+ * Returns { Authorization: 'Bearer <idToken>' } when signed in, else {}.
+ *
+ * Reads the session from Amplify rather than a bridge object the UI has to
+ * register. `ea57480` routed this through Clerk instead, and the registration
+ * only ever happened inside a Clerk-specific guard that the app never rendered —
+ * so this returned {} for every request and the API was called with no
+ * credentials at all. Nothing failed loudly; requests just went out anonymous.
+ */
 async function authHeader(): Promise<Record<string, string>> {
-  return clerkAuthHeader()
+  try {
+    const session = await fetchAuthSession()
+    const token = session.tokens?.idToken?.toString()
+    return token ? { Authorization: `Bearer ${token}` } : {}
+  } catch {
+    return {}
+  }
 }
 
 // ── Axios instance (REST only) ──────────────────────────────────────────────────
@@ -65,10 +79,24 @@ http.interceptors.request.use(async (config) => {
   return config
 })
 
-/** Stable user id: Clerk subject when authed, else a persistent demo UUID. */
+/**
+ * Stable user id: Cognito sub when authed, else a persistent demo UUID.
+ *
+ * The demo id is a last resort, not a normal path — it is per-browser and
+ * random, so anything keyed by it (sessions, user_memory, billing) belongs to
+ * the browser rather than the account. While this read the Clerk bridge it fell
+ * through to that id for EVERY signed-in user.
+ *
+ * Exported because the billing helpers below pass it as an explicit user_id.
+ */
 export async function currentUserId(): Promise<string> {
-  const clerkId = clerkUserId()
-  if (clerkId) return clerkId
+  try {
+    const session = await fetchAuthSession()
+    const sub = session.tokens?.idToken?.payload?.sub
+    if (sub && typeof sub === 'string') return sub
+  } catch {
+    // not signed in — fall through to demo id
+  }
 
   const DEMO_KEY = 'vva_demo_user'
   let demoId = localStorage.getItem(DEMO_KEY)
