@@ -11,7 +11,19 @@ export default function LoginPage() {
   useRedirectIfAuthenticated()
   const [email, setEmail] = useState('')
   const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState<{ hasEmail: boolean; hasGoogle: boolean } | null>(null)
+  /**
+   * The lookup outcome, carrying the address it actually ran against.
+   *
+   * `email` is here rather than read from the input because the input keeps
+   * changing. Everything below the Continue button — the summary line, both
+   * navigations, and the expectation handed to Google sign-in — describes ONE
+   * address: the one the lookup answered for. Reading the live field meant
+   * editing it silently re-pointed all of them at an address nothing had
+   * checked, while the panel still showed the old verdict.
+   */
+  const [result, setResult] = useState<
+    { email: string; hasEmail: boolean; hasGoogle: boolean } | null
+  >(null)
   const [error, setError] = useState<string | null>(null)
   const [mismatchError, setMismatchError] = useState(false)
   /** True when we showed both options because the lookup endpoint is absent,
@@ -31,7 +43,10 @@ export default function LoginPage() {
   }, [searchParams, setSearchParams])
 
   const handleLookup = async () => {
-    if (!email.trim()) return
+    // Pinned once, here. Every use below refers to the address this lookup was
+    // for, even if the field has moved on by the time the response lands.
+    const lookedUp = email.trim()
+    if (!lookedUp) return
     setLoading(true)
     setError(null)
     setResult(null)
@@ -52,21 +67,21 @@ export default function LoginPage() {
       // user could take. The cost is that a brand-new address is no longer
       // auto-routed to /create-account — there is a link for that below.
       if (!apiUrl) {
-        setResult({ hasEmail: true, hasGoogle: true })
+        setResult({ email: lookedUp, hasEmail: true, hasGoogle: true })
         setLookupSkipped(true)
         return
       }
 
-      const res = await fetch(`${apiUrl}api/lookup?email=${encodeURIComponent(email.trim())}`)
+      const res = await fetch(`${apiUrl}api/lookup?email=${encodeURIComponent(lookedUp)}`)
       if (!res.ok) throw new Error('Failed to look up email')
 
       const data = await res.json()
-      setResult(data)
+      setResult({ ...data, email: lookedUp })
 
       if (!data.hasEmail && !data.hasGoogle) {
-        navigate('/create-account', { state: { email: email.trim() } })
+        navigate('/create-account', { state: { email: lookedUp } })
       } else if (data.hasEmail && !data.hasGoogle) {
-        navigate('/enter-password', { state: { email: email.trim() } })
+        navigate('/enter-password', { state: { email: lookedUp } })
       }
     } catch (err: any) {
       setError(err.message || 'Something went wrong')
@@ -84,11 +99,13 @@ export default function LoginPage() {
    *  meant an ordinary sign-out followed by "Continue with Google" dropped the
    *  user straight back into the account they had just left. */
   const handleGoogleSignIn = () => {
-    startGoogleSignIn(result ? email.trim() : undefined)
+    startGoogleSignIn(result?.email)
   }
 
   const showGoogleOnly = result && !result.hasEmail && result.hasGoogle
   const showBoth = result && result.hasEmail && result.hasGoogle
+  /** Only rendered inside the two blocks above, where a result exists. */
+  const lookedUpEmail = result?.email ?? ''
 
   return (
     <div className="h-screen w-screen flex items-center justify-center bg-background">
@@ -140,7 +157,7 @@ export default function LoginPage() {
         {showGoogleOnly && (
           <div className="space-y-3 text-center">
             <p className="text-sm text-muted-foreground">
-              <strong className="text-foreground">{email.trim()}</strong> is linked to a Google account.
+              <strong className="text-foreground">{lookedUpEmail}</strong> is linked to a Google account.
             </p>
             <button
               onClick={handleGoogleSignIn}
@@ -161,13 +178,13 @@ export default function LoginPage() {
           <div className="space-y-3 text-center">
             <p className="text-sm text-muted-foreground">
               {lookupSkipped ? (
-                <>Pick how you want to sign in as <strong className="text-foreground">{email.trim()}</strong>.</>
+                <>Pick how you want to sign in as <strong className="text-foreground">{lookedUpEmail}</strong>.</>
               ) : (
-                <><strong className="text-foreground">{email.trim()}</strong> has both email and Google sign-in.</>
+                <><strong className="text-foreground">{lookedUpEmail}</strong> has both email and Google sign-in.</>
               )}
             </p>
             <button
-              onClick={() => navigate('/enter-password', { state: { email: email.trim() } })}
+              onClick={() => navigate('/enter-password', { state: { email: lookedUpEmail } })}
               className="w-full px-4 py-2.5 rounded-lg text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
             >
               Sign in with Password
@@ -197,7 +214,7 @@ export default function LoginPage() {
               <p className="text-xs text-muted-foreground pt-1">
                 No account yet?{' '}
                 <button
-                  onClick={() => navigate('/create-account', { state: { email: email.trim() } })}
+                  onClick={() => navigate('/create-account', { state: { email: lookedUpEmail } })}
                   className="underline hover:text-foreground transition-colors"
                 >
                   Create one
