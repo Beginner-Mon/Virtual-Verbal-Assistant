@@ -156,10 +156,22 @@ export async function initializeAmplify(): Promise<void> {
     }
 
     isAmplifyConfigured = true
-    console.log(
-      `[Auth] Amplify configured from ${resolved.source} — pool ${applied.userPoolId}` +
-        `${applied.loginWith?.oauth ? ', hosted UI ready' : ', NO hosted UI (Google sign-in will fail)'}`
-    )
+
+    // Success is dev-only chatter: it named the pool id on every production page
+    // load. That id is not a secret — it ships in the bundle and rides along on
+    // every Cognito request — but announcing it buys nothing once the app works.
+    //
+    // A MISSING hosted UI still warns in production, because that is the state
+    // where "Continue with Google" is dead and the page otherwise looks fine.
+    if (import.meta.env.DEV) {
+      console.log(
+        `[Auth] Amplify configured from ${resolved.source} — pool ${applied.userPoolId}` +
+          `${applied.loginWith?.oauth ? ', hosted UI ready' : ''}`
+      )
+    }
+    if (!applied.loginWith?.oauth) {
+      console.warn('[Auth] no hosted UI configured — Google sign-in will fail')
+    }
   } catch (err) {
     console.warn(
       '%c⚠ Amplify not configured — running in demo mode',

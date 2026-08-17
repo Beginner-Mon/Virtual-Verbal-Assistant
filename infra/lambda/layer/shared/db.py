@@ -1,11 +1,26 @@
 """Database connection helper for VVA Lambda functions.
 
-Connects to RDS via RDS Proxy using IAM Authentication.
-DB connection params are read from SSM Parameter Store at cold start.
-Auth token is refreshed every ~14 minutes (token lifetime = 15 min).
+Supports the project's two infrastructure tracks, selected by DB_MODE:
 
-Environment variables (set by CDK LambdaStack):
-    DB_PARAM_PREFIX  — SSM parameter path prefix (e.g., /vva/db)
+    DB_MODE=rds   (default, Track 1 — frozen)
+        Lambda inside the VPC → RDS Proxy, IAM auth, connection params from
+        four plain SSM parameters under DB_PARAM_PREFIX. Auth token refreshed
+        every ~14 min (lifetime 15 min).
+
+    DB_MODE=neon  (Track 2 — active)
+        Lambda outside any VPC → Neon over TLS, one SSM SecureString holding
+        the whole DSN. No IAM auth, no RDS Proxy, no NAT gateway, and no
+        interface VPC endpoints: a function outside the VPC reaches SSM over
+        the ordinary internet path, so the endpoint costs that motivated
+        Track 2 never arise.
+
+One module, two branches, deliberately: forking the file would leave two
+copies of the connection cache and the type serializers to keep in sync.
+
+Environment variables:
+    DB_MODE          — "rds" | "neon" (default "rds")
+    DB_PARAM_PREFIX  — rds mode: SSM path prefix (e.g., /vva/db)
+    NEON_DSN_PARAM   — neon mode: SSM SecureString name (e.g., /vva/neon/dsn)
 """
 
 from __future__ import annotations
@@ -16,6 +31,7 @@ import time
 import uuid
 from datetime import datetime, date
 from decimal import Decimal
+from urllib.parse import urlsplit, unquote
 
 import boto3
 import pg8000.dbapi
@@ -31,21 +47,56 @@ _token_ts: float = 0.0
 _TOKEN_REFRESH_SECS = 14 * 60  # Refresh token every 14 min (expires at 15)
 
 
+def _mode() -> str:
+    return os.environ.get("DB_MODE", "rds").strip().lower()
+
+
+def _parse_dsn(dsn: str) -> dict:
+    """Split a postgresql:// DSN into pg8000's separate connect kwargs.
+
+    pg8000 takes host/port/database/user/password individually — it has no
+    URL form — so a DSN copied from the Neon dashboard has to be taken apart.
+    Credentials are percent-decoded: Neon passwords routinely contain
+    characters that are escaped in a URL and must not reach the server that way.
+    """
+    parts = urlsplit(dsn)
+    if parts.scheme not in ("postgresql", "postgres"):
+        raise ValueError(f"unsupported DSN scheme: {parts.scheme!r}")
+
+    database = parts.path.lstrip("/") or "neondb"
+    return {
+        "host": parts.hostname,
+        "port": parts.port or 5432,
+        "database": database,
+        "user": unquote(parts.username or ""),
+        "password": unquote(parts.password or ""),
+    }
+
+
 def _get_config() -> dict:
     """Read DB connection params from SSM Parameter Store (cached).
 
-    Reads all parameters under DB_PARAM_PREFIX (e.g., /vva/db/) and
-    returns them as a dict keyed by the last path segment:
+    rds mode — reads every parameter under DB_PARAM_PREFIX and keys them by
+    the last path segment:
         /vva/db/proxy_endpoint → config["proxy_endpoint"]
         /vva/db/port           → config["port"]
         /vva/db/name           → config["name"]
         /vva/db/username       → config["username"]
+
+    neon mode — reads one SecureString (WithDecryption) and splits the DSN.
     """
     global _config
     if _config is not None:
         return _config
 
     ssm = boto3.client("ssm")
+
+    if _mode() == "neon":
+        name = os.environ["NEON_DSN_PARAM"]
+        resp = ssm.get_parameter(Name=name, WithDecryption=True)
+        _config = _parse_dsn(resp["Parameter"]["Value"])
+        return _config
+
     prefix = os.environ["DB_PARAM_PREFIX"]
     resp = ssm.get_parameters_by_path(Path=prefix + "/", Recursive=False)
 
@@ -109,21 +160,25 @@ def get_connection() -> pg8000.dbapi.Connection:
             _conn = None
 
     config = _get_config()
-    token = _get_auth_token(config)
 
-    # TLS context for RDS Proxy (require_tls=True on proxy).
-    # ssl.create_default_context() trusts the Amazon Root CA that signs
-    # RDS certificates — no custom CA bundle needed in Lambda runtime.
+    # TLS for both tracks. ssl.create_default_context() trusts the system CA
+    # bundle, which covers the Amazon Root CA signing RDS certificates and the
+    # public CA behind Neon alike — no custom bundle in either mode.
     ssl_context = ssl.create_default_context()
 
-    _conn = pg8000.dbapi.connect(
-        host=config["proxy_endpoint"],
-        port=int(config.get("port", 5432)),
-        database=config.get("name", "vva"),
-        user=config["username"],
-        password=token,                 # IAM auth token instead of password
-        ssl_context=ssl_context,
-    )
+    if _mode() == "neon":
+        _conn = pg8000.dbapi.connect(ssl_context=ssl_context, **config)
+    else:
+        token = _get_auth_token(config)
+        _conn = pg8000.dbapi.connect(
+            host=config["proxy_endpoint"],
+            port=int(config.get("port", 5432)),
+            database=config.get("name", "vva"),
+            user=config["username"],
+            password=token,             # IAM auth token instead of password
+            ssl_context=ssl_context,
+        )
+
     _conn.autocommit = True
     return _conn
 

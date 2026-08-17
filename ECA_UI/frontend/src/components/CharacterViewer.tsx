@@ -2,7 +2,6 @@ import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMHumanBoneName } from '@pixiv/three-vrm'
 import type { VRM } from '@pixiv/three-vrm'
-import anneUrl from '../asset/models/anne.vrm'
 import { useTheme } from '../contexts/ThemeContext'
 import { OrbitControls, Html } from '@react-three/drei'
 import { useRef, useEffect, useState, Suspense, useMemo } from 'react'
@@ -17,7 +16,7 @@ import { cameraModeOf, loopModeOf } from '../lib/AnimationStates'
 import { useFsmBoot } from '../hooks/useFsmTriggers'
 import { useMotion } from '../contexts/MotionContext'
 import { AvatarController } from '../avatar/AvatarController'
-import { loadProfile } from '../avatar/AvatarProfile'
+import { loadProfileAsync } from '../avatar/AvatarProfile'
 import LoadingOverlay from './ui/LoadingOverlay'
 import { disposeVRM } from '../lib/vrmDispose'
 import { ENV_CONFIG } from '../config/environmentConfig'
@@ -163,15 +162,36 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
   // Facial-animation controller lifecycle: attach on VRM load, detach on
   // model change / unmount. Kept out of React state — this ref IS the handle
   // (facial-animation-plan.md §8 rules 2-4).
+  // The profile now comes from the character record, so this awaits before
+  // attaching. Cheap in context: the VRM this runs after is a 10-18 MB
+  // download, and loadProfileAsync falls back to the bundled registry rather
+  // than failing, so the wait is bounded by one small request either way.
   useEffect(() => {
     if (!vrm) return
-    const controller = new AvatarController(vrm, loadProfile(modelId))
-    avatarControllerRef.current = controller
-    avatarRef.current = controller
+    const abort = new AbortController()
+    let controller: AvatarController | null = null
+
+    void (async () => {
+      let profile
+      try {
+        profile = await loadProfileAsync(modelId, abort.signal)
+      } catch {
+        return // aborted — the model changed or the component unmounted
+      }
+      if (abort.signal.aborted) return
+
+      controller = new AvatarController(vrm, profile)
+      avatarControllerRef.current = controller
+      avatarRef.current = controller
+    })()
+
     return () => {
-      controller.detach()
-      if (avatarRef.current === controller) avatarRef.current = null
-      avatarControllerRef.current = null
+      abort.abort()
+      if (controller) {
+        controller.detach()
+        if (avatarRef.current === controller) avatarRef.current = null
+        avatarControllerRef.current = null
+      }
     }
   }, [vrm, modelId, avatarRef])
 
@@ -552,16 +572,19 @@ return (
 
 export default function CharacterViewer() {
   const { theme } = useTheme()
-  const { selectedVrmId, vrmOptions, avatarRef, setClipInfo } = useMotion()
+  const { selectedVrmId, vrmOptions, vrmOptionsError, avatarRef, setClipInfo } = useMotion()
 
   const selectedVrm = vrmOptions.find((o) => o.id === selectedVrmId)
-  const vrmUrl = selectedVrm?.url ?? anneUrl
+  // No local fallback any more: the models live on the CDN, so until the
+  // catalog answers there is genuinely no URL to render. Bundling anne.vrm as a
+  // safety net would put the 15.8 MB this change removes straight back in.
+  const vrmUrl = selectedVrm?.url
   // Readiness gate driven by VRMCharacter: the model (and this overlay) swap
   // only when the first pose is actually applied — never a timed wait.
   const [viewerReady, setViewerReady] = useState(false)
-  // Derive a stable model id ("seele", "bronya", "bronya_long") from the asset
-  // label so loadProfile can pick a per-model override.
-  const modelId = (selectedVrm?.label ?? 'anne.vrm')
+  // Stable model id for loadProfile. With the catalog it is already the slug;
+  // the bundled-fallback path still yields a label like "models/anne.vrm".
+  const modelId = (selectedVrm?.id ?? selectedVrm?.label ?? 'anne')
     .replace(/\.vrm$/i, '')
     .replace(/^.*\//, '')
     .toLowerCase()
@@ -626,13 +649,15 @@ export default function CharacterViewer() {
       >
         <Suspense fallback={null}>
           <GraphicsProvider>
-          <Scene
-            theme={theme}
-            vrmUrl={vrmUrl}
-            modelId={modelId}
-            onReady={setViewerReady}
-            avatarRef={avatarRef}
-          />
+          {vrmUrl && (
+            <Scene
+              theme={theme}
+              vrmUrl={vrmUrl}
+              modelId={modelId}
+              onReady={setViewerReady}
+              avatarRef={avatarRef}
+            />
+          )}
           </GraphicsProvider>
         </Suspense>
       </Canvas>
@@ -643,8 +668,21 @@ export default function CharacterViewer() {
       ))}
 
       {/* Loading overlay: shown while the model has no pose yet (initial load
-          / model switch). Replaces the old T-pose flash with a spinner. */}
-      {!viewerReady && <LoadingOverlay text="Loading 3D Avatar..." />}
+          / model switch). Replaces the old T-pose flash with a spinner.
+          A catalog failure is called out by name — without this the screen is
+          an indistinguishable spinner whether the CDN is unreachable or the
+          model is merely still downloading. */}
+      {!viewerReady && (
+        <LoadingOverlay
+          text={
+            vrmOptionsError
+              ? `Could not load characters: ${vrmOptionsError}`
+              : vrmUrl
+                ? 'Loading 3D Avatar...'
+                : 'Loading characters...'
+          }
+        />
+      )}
 
       {/* Bottom gradient */}
       <div className="absolute bottom-0 left-0 right-0 h-24 pointer-events-none bg-gradient-to-t from-background/80 to-transparent" />

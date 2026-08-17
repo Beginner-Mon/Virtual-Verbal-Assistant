@@ -96,7 +96,7 @@ export default function RendererSetup({ vrm }: RendererSetupProps) {
       }
     })
 
-    if (corrections > 0) {
+    if (corrections > 0 && import.meta.env.DEV) {
       console.log(`[RendererSetup] Corrected ${corrections} material setting(s)`)
     }
   }, [vrm])

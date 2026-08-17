@@ -11,6 +11,10 @@
 *.sh   text eol=lf
 *.bash text eol=lf
 
+# Same reason: the Amplify build reads this with `nvm use $(cat .nvmrc)`, and a
+# trailing CR makes it ask for a version named "22.18.0\r".
+.nvmrc text eol=lf
+
 # Anything with a shebang but no extension lives here too.
 scripts/*.sh text eol=lf
 
@@ -18,3 +22,16 @@ scripts/*.sh text eol=lf
 *.ps1  text eol=crlf
 *.bat  text eol=crlf
 *.cmd  text eol=crlf
+
+# Lockfile never auto-merges.
+#
+# @aws-amplify/*-construct ship bundled deps, and npm serialises a bundled tree
+# differently between npm versions - one writes the nested @opentelemetry/core
+# entries, another hoists and drops them. Both sides then look like valid
+# lockfiles, so `ort` picks one silently and npm ci dies on the other machine.
+#
+# That is what broke Amplify deployment #21: a merge took the side missing
+# @opentelemetry/core@2.0.0, which @opentelemetry/resources@2.0.0 pins exactly.
+# Forcing a conflict makes whoever merges choose on purpose.
+
+ECA_UI/frontend/package-lock.json merge=binary

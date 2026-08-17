@@ -3,6 +3,7 @@
 Extracted from conversation.py for reuse.
 """
 
+import json
 import logging
 import re
 from pathlib import Path
@@ -151,6 +152,73 @@ def get_persona(persona_id: str) -> dict:
     if not persona.get("_fallback"):
         _persona_cache[persona_id] = persona
     return persona
+
+
+_PERSONA_SECTIONS = (
+    "title", "identity", "voice_identity", "personality",
+    "behavioral_rules", "response_formatting", "safety_templates",
+)
+
+
+async def preload_personas_from_db() -> int:
+    """Load every active character's persona into the cache. Returns the count.
+
+    Called once from the FastAPI lifespan. `get_persona` stays synchronous:
+    the alternative — querying inside it — makes it async and forces all four
+    call sites (synthesizer, grader, and both TTS paths) to change, to buy a
+    round trip to Neon in Singapore on every cache miss. The catalog is four
+    rows that change approximately never, so reading it at startup costs one
+    query and nothing at request time.
+
+    Never raises. A DB that is down at startup leaves the cache empty and every
+    lookup falls through to personas/*.md exactly as before — the markdown files
+    stay in the repo precisely so this degradation is a non-event.
+
+    Consequence to know: a persona edited in the DB needs a process restart to
+    take effect. That is already true of the markdown files (no TTL, no
+    invalidation), so this changes nothing operationally.
+    """
+    try:
+        from langgraph_agents.shared import get_pg_client
+
+        pg = get_pg_client()
+        await pg.connect()
+        rows = await pg.fetch(
+            "SELECT slug, persona FROM characters WHERE is_active ORDER BY sort_order"
+        )
+    except Exception as exc:
+        logger.warning(
+            "persona_preload_failed", extra={"error": str(exc)},
+        )
+        return 0
+
+    loaded = 0
+    for row in rows:
+        slug = row["slug"]
+        persona = row["persona"]
+
+        # asyncpg hands back JSONB as a string unless a codec is registered.
+        if isinstance(persona, (str, bytes)):
+            try:
+                persona = json.loads(persona)
+            except (ValueError, TypeError):
+                logger.warning("persona_preload_bad_json", extra={"slug": slug})
+                continue
+
+        if not isinstance(persona, dict) or not persona.get("identity"):
+            # An empty/partial JSONB would otherwise shadow a perfectly good
+            # markdown file with a persona that renders a blank system prompt.
+            logger.warning("persona_preload_incomplete", extra={"slug": slug})
+            continue
+
+        persona.setdefault("persona_id", slug)
+        for section in _PERSONA_SECTIONS:
+            persona.setdefault(section, {} if section.endswith(("_templates", "_identity")) else "")
+        _persona_cache[slug] = persona
+        loaded += 1
+
+    logger.info("persona_preload", extra={"count": loaded, "rows": len(rows)})
+    return loaded
 
 
 _MODE_HINTS = {
