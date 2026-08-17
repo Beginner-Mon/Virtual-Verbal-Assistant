@@ -109,13 +109,25 @@ qua chat** — DSN Neon chứa mật khẩu trong URL.
 Ai làm gì: **Tri** tạo project + gửi DSN. **N** chạy migration + ingest (máy N đã
 có sẵn model embedding cache).
 
-1. **Tri** — Neon console → New project → region **AWS us-east-1**, Postgres cùng
-   phiên bản với project cũ. Bật extension không cần làm tay: migration `002` có
-   `CREATE EXTENSION IF NOT EXISTS vector`.
+1. **Tri** — Neon console → New project → region **AWS us-east-1**,
+   **Postgres 17** (project cũ đang chạy **17.10**).
+
+   Không cần đặt gì thêm:
+   - **Extension `vector`**: migration `002` có `CREATE EXTENSION IF NOT EXISTS vector`.
+     Project cũ đang dùng pgvector **0.8.0**; Neon cấp bản mới nhất nó hỗ trợ, không
+     cần khớp chính xác.
+   - **Tên database / role**: để mặc định (`neondb` / `neondb_owner`). Không có gì
+     trong code hardcode tên đó — tất cả đọc từ DSN.
+   - **Branch**: dùng `main` mặc định. Repo không dùng tính năng branching của Neon.
 
 2. **Tri** — copy **DIRECT connection string**, không phải `-pooler`.
    Pooler không hỗ trợ prepared statement mà asyncpg dùng. Chuỗi phải có
    `?sslmode=require`.
+
+   > Gửi **nguyên chuỗi**, không cần tách. N chỉ dán vào một chỗ duy nhất.
+   > **Không** đặt DSN vào `config/langgraph.yaml` — file đó **được commit**,
+   > dòng `dsn:` trong đó là fallback local (`vva:vva_dev@localhost:5433`) và
+   > phải giữ nguyên như vậy.
 
 3. **N** — sửa `agenticRAG/.env`:
    ```
@@ -156,6 +168,30 @@ có sẵn model embedding cache).
 | Không có `VVA_PG_DSN` | Backend **vẫn chạy**, âm thầm rơi về Postgres local | Log giờ có cảnh báo `falling back to the LOCAL database` — đọc nó |
 
 ---
+
+## Những thứ KHÔNG phải đụng tới
+
+Hỏi trước cho khỏi phải hỏi:
+
+| | Có phải đổi không |
+| --- | --- |
+| Amplify Console (env vars, secrets) | **Không.** Lambda auth dùng DynamoDB + Cognito, không hề gọi Postgres |
+| `amplify/backend.ts`, bảng DynamoDB | **Không** |
+| Redis | **Không.** Vẫn ở local, không liên quan region Neon |
+| `config/langgraph.yaml` | **Không.** Dòng `dsn:` là fallback local, giữ nguyên |
+| `pool_min` / `pool_max` (2/10) | **Không** cần đổi. Neon free tier chịu được. Nếu sau này thấy lỗi hết connection thì mới hạ |
+| Code ứng dụng | **Không một dòng nào.** Chỉ đổi một biến môi trường |
+
+## Xoá project cũ khi nào
+
+**Không xoá cùng ngày.** Giữ tới khi:
+
+1. `/health/detailed` → `postgres ok`
+2. Một câu hỏi thật qua `/chat` trả `mode: synthesize` có trích `exercise_db`
+3. Chạy được ít nhất một buổi dev không sự cố
+
+Rồi mới xoá — **Tri xoá**, vì Tri là người tạo. Neon tính tiền theo storage nên
+để thêm vài ngày gần như miễn phí.
 
 ## Nghiệm thu
 
