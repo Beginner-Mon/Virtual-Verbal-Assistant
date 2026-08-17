@@ -177,10 +177,31 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
       `004_demo_billing` chưa bao giờ áp được lên Neon, chứ không phải ai quên chạy. Đã tách `004`
       và `005` thành mỗi câu một `op.execute()`. **CI nên có bước chạy `alembic upgrade head` trên
       DB tạm** để bắt loại lỗi này ngay khi commit, thay vì phát hiện lúc deploy.
-- [ ] 🟠 **12 test đỏ sẵn từ trước** (đã chứng minh bằng cách stash rồi chạy đối chứng trên baseline):
-      `test_phase2_5_grader.py` (5) gọi `grader_node(state)` nhưng signature là `(state, config)`;
-      `test_phase5_sse.py` (7) trả 401 vì `agenticRAG/.env:56` đặt `REQUIRE_AUTH=true` mà test chưa
-      mock token.
+- [ ] 🟠 **12 test đỏ sẵn từ trước — hai nguyên nhân khác nhau.** Đã chứng minh không phải do đợt
+      character-identity (stash 2 file backend rồi chạy đối chứng: baseline cũng đúng 12 đỏ).
+      Chạy lại với `REQUIRE_AUTH=false` tách bạch được hai nhóm: 7 test SSE **pass**, 5 test grader
+      **vẫn fail**.
+
+      - **5 test `test_phase2_5_grader.py` — đỏ ở MỌI nơi, kể cả CI.** `d18e744` (11/08, "add safety
+        template for each persona") thêm tham số `config` vào `grader_node` vì `grader.py:342` cần
+        `config["configurable"]["persona_id"]`. Test lần cuối được sửa ở `47c67d0` (12/06) nên vẫn
+        gọi `grader_node(state)` → `TypeError`. Cả hai file đều `@pytest.mark.unit` nên CI **có**
+        chọn chúng ⇒ **CI đang đỏ mà không ai để ý, hoặc không chạy trên nhánh này** — cần xác minh
+        (máy chưa cài `gh`). Sửa: truyền `{"configurable": {"persona_id": "eca_default"}}`, 5 dòng.
+
+      - [ ] 🔴 **7 test `test_phase5_sse.py` — bộ test KHÔNG hermetic.** `shared/env.py:120` gọi
+        `load_env()` lúc import, nạp `agenticRAG/.env` (gitignore) vào `os.environ`; `auth.py:26`
+        đọc `REQUIRE_AUTH` **một lần lúc import module**. `.env:56` đặt `true` nên test POST `/chat`
+        không kèm token bị 401. Trên CI không có `.env` → mặc định `false` → **xanh**.
+        Cùng một commit, hai kết quả tuỳ máy.
+
+        Đây mới là phần nguy hiểm: bộ test nói dối về trạng thái thật. Đúng loại bệnh mà
+        `test_requirements_complete.py` được viết ra để chống ("fails on the machine that adds the
+        import rather than on the machine that deploys it") — cùng bệnh, chỗ khác. Sửa ở
+        `conftest.py`: đặt `REQUIRE_AUTH=false` **trước khi** app được import, vá cả lớp vấn đề chứ
+        không riêng 7 test.
+
+      Owner quyết định (17/08): sửa sau khi merge vào `feature/langgraph-rewrite`.
 - [ ] 🟡 **Không chỗ nào trong repo ghi môi trường Python nào dùng cho việc gì.**
       `C:\Miniconda\envs\firstconda` là env backend, `infra/.venv` là env CDK. Thiếu tài liệu này
       đã khiến K kết luận sai "máy chưa có venv dự án". Ghi vào `scripts/QUICKSTART.md`.
