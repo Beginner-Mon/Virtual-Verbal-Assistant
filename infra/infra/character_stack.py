@@ -175,6 +175,20 @@ class CharacterStack(Stack):
             # 10s: one indexed read of a four-row table. The only slow path is a
             # cold start landing on a Neon compute that has scaled to zero.
             timeout=Duration.seconds(10),
+            # 256 MB, and measured rather than guessed. 128 MB was tried on the
+            # theory that a function waiting on a network round trip does not
+            # need CPU. True while warm — 5 ms became 8 ms — but cold start is
+            # CPU-bound (module imports, pg8000, the TLS handshake) and went from
+            # 1260 ms to 3252 ms.
+            #
+            # That also makes it more expensive, not less: a cold invocation
+            # costs 0.125 GB x 3.252 s = 0.41 GB-s at 128 MB against
+            # 0.25 GB x 1.26 s = 0.32 GB-s at 256 MB. And cold is the common case
+            # here precisely because CloudFront caches the catalog so well — the
+            # origin is hit rarely enough that containers rarely stay warm.
+            #
+            # Peak usage is ~103 MB, so 128 MB would also leave only 25 MB of
+            # headroom.
             memory_size=256,
             description="GET /characters — VRM catalog served from Neon",
         )

@@ -116,6 +116,11 @@ class AssetStack(Stack):
         self.distribution = cloudfront.Distribution(
             self, "AssetDistribution",
             comment="VVA assets (VRM models) + character catalog",
+            # PRICE_CLASS_200 covers North America, Europe and Asia — including
+            # the users this is built for. The default (all edge locations) adds
+            # South America, Australia and Africa at a higher per-GB rate for
+            # traffic this project does not have.
+            price_class=cloudfront.PriceClass.PRICE_CLASS_200,
             default_behavior=cloudfront.BehaviorOptions(
                 origin=origins.S3BucketOrigin.with_origin_access_control(self.bucket),
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,

@@ -22,10 +22,27 @@ import logging
 import re
 
 from shared.db import get_connection, fetch_all, fetch_one
-from shared.response import success, error
+from shared.response import success as _success, error
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+# Browser cache lifetime for catalog responses. Deliberately set here and not in
+# shared/response.py: that helper is shared with the session CRUD handlers, whose
+# responses are per-user and must never be stored anywhere. Only this catalog is
+# public and identical for every viewer.
+#
+# CloudFront caches at the edge regardless (its cache policy decides that). What
+# this adds is the browser's own cache, which turns a page reload from five
+# requests into zero. Matched to the distribution's 300s TTL so the two layers
+# cannot disagree about how stale a response may be.
+_CACHE_SECONDS = 300
+
+
+def success(body: dict, status_code: int = 200) -> dict:
+    resp = _success(body, status_code)
+    resp["headers"] = {**resp["headers"], "Cache-Control": f"public, max-age={_CACHE_SECONDS}"}
+    return resp
 
 # Same shape the backend enforces on ChatRequest.persona_id, because a slug is
 # exactly what the frontend sends back as persona_id once a character is picked.
