@@ -1,8 +1,21 @@
-"""Grader edge case tests — M.3 rule-based, deterministic, safety/quality.
+"""Tests for the grader node (Phase 2.5).
+
+`grader_node(state, config)` reads `persona_id` out of `config["configurable"]`
+(grader.py:342) to pick the safety template. Every call below therefore passes a
+config; five of them omitted it and failed with
+`grader_node() missing 1 required positional argument: 'config'` — the node grew
+the parameter and the tests were not updated with it.
+
+`GRADER_CONFIG` holds the default persona so the assertions stay about grading
+rather than about persona lookup.
 """
 
 import pytest
 from unittest.mock import patch
+
+#: Minimal RunnableConfig — grader only reads `persona_id` from it.
+GRADER_CONFIG = {"configurable": {"persona_id": "eca_default"}}
+
 
 from langgraph_agents.state import AgentState
 
@@ -167,7 +180,7 @@ class TestGraderNode:
             "total_tokens": 0, "required_outputs": [],
             "final_answer": "Xin chao!",
         }
-        result = await grader_node(state)
+        result = await grader_node(state, GRADER_CONFIG)
         assert result["grader_result"] == "pass"
 
     @pytest.mark.asyncio
@@ -179,7 +192,7 @@ class TestGraderNode:
             "required_outputs": ["referral_advice"],
             "final_answer": "Bai tap nay tot cho bac si.",
         }
-        result = await grader_node(state)
+        result = await grader_node(state, GRADER_CONFIG)
         assert result["grader_result"] in ("pass_with_warning", "retry")
 
     @pytest.mark.asyncio
@@ -191,7 +204,7 @@ class TestGraderNode:
             "required_outputs": ["exercise_protocol", "exercise_steps"],
             "final_answer": "Tap squat rat tot.",
         }
-        result = await grader_node(state)
+        result = await grader_node(state, GRADER_CONFIG)
         assert result["grader_result"] == "retry"
         assert result.get("grader_feedback", "")
 
@@ -205,7 +218,7 @@ class TestGraderNode:
             "required_outputs": ["exercise_protocol"],
             "final_answer": "Tap squat tot.",
         }
-        result = await grader_node(state)
+        result = await grader_node(state, GRADER_CONFIG)
         # After retry exhaustion, should NOT retry again
         assert result["grader_result"] in ("pass_with_warning", "retry")
 
@@ -232,5 +245,5 @@ class TestGraderNode:
             ],
             "final_answer": full_answer,
         }
-        result = await grader_node(state)
+        result = await grader_node(state, GRADER_CONFIG)
         assert result["grader_result"] == "pass"

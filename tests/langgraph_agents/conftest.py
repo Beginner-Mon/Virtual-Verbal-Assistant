@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -7,6 +8,18 @@ import pytest
 _project_root = Path(__file__).resolve().parents[2]
 _agentic_root = _project_root / "agenticRAG"
 sys.path.insert(0, str(_agentic_root))
+
+# Pin the auth gate OFF for the suite, BEFORE .env is loaded.
+#
+# `api/auth.py` reads REQUIRE_AUTH once at import time. The SSE tests post to
+# /chat without a token, so with REQUIRE_AUTH=true in a developer's `agenticRAG/.env`
+# all seven of them return 401 and fail — and `.env` is gitignored, so the suite
+# passed or failed depending on a file nobody else can see. Turning auth on locally
+# should not look like seven broken tests.
+#
+# `load_env` uses override=False, so setting it here wins over the file. Tests that
+# are ABOUT the gate set it themselves and re-import the module.
+os.environ.setdefault("REQUIRE_AUTH", "false")
 
 # Auto-load .env so HAS_*_KEY checks (and live LLM calls) see the keys.
 #
