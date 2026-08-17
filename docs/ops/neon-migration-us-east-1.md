@@ -9,7 +9,13 @@ to: Tri, N
 
 ## Kết luận ngắn
 
-**Đích đến đúng, nhưng làm bây giờ là lỗ.** Số đo trên máy N, hôm nay:
+**Làm đi.** N đã chốt: giai đoạn này là lên cloud, backend trên máy chỉ còn để
+test. `us-east-1` khớp với chỗ Cognito và Amplify đang nằm.
+
+Phần đo bên dưới **không phải lý do để dừng** — nó ở đây để khi lượt chat local
+chậm hẳn đi, không ai mất một buổi đi tìm "bug hiệu năng" mà thật ra là địa lý.
+
+Số đo trên máy N, hôm nay:
 
 | Đích | TCP connect (trung vị) |
 | --- | --- |
@@ -33,13 +39,13 @@ Trên AWS `us-east-1` hiện chỉ có frontend (Amplify) và mấy lambda auth 
 auth dùng **DynamoDB + Cognito, không đụng Neon**. Nên hôm nay **không có gì ở
 us-east-1 gọi Neon cả**; đổi region chỉ kéo dài đường dây từ Việt Nam.
 
-**Đáng làm khi**: backend LangGraph được deploy lên `us-east-1`. Lúc đó
-DB cùng region là ~1-2 ms/query thay vì 53 ms, tiết kiệm ~600 ms/lượt — và
-`ap-southeast-1` mới là bên chịu phạt.
+Khi backend LangGraph lên `us-east-1`, DB cùng region còn ~1-2 ms/query thay vì
+53 ms — **tiết kiệm ~600 ms mỗi lượt** so với ap-southeast-1 hiện tại. Đó là thứ
+đang mua. Cái giá là +2,5 s/lượt trên máy local, tự hết khi backend lên cloud.
 
-Nếu vẫn muốn làm trước để "khỏi phải làm hai lần": được, nhưng phải biết là đổi
-lấy **+2,5 s mỗi lượt** trong suốt thời gian dev còn ở local. Đề xuất: làm cùng
-lúc với việc deploy backend, không làm riêng.
+**Việc còn lại quan trọng hơn migration này**: backend chưa được deploy. Chừng
+nào chưa, không có gì hưởng lợi từ region mới — chỉ có local chịu phạt. Nếu hai
+việc cách nhau xa, cân nhắc làm migration ngay trước lúc deploy backend.
 
 ---
 
