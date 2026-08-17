@@ -22,9 +22,13 @@
   `langgraph_agents/shared/env.py`. **`agentic_rag_gemini` đã xoá hẳn 10/08.** Loader vẫn
   chấp nhận `.env` ở đường cũ kèm WARNING — vì `.env` bị gitignore nên `git rm` không
   xoá nó trên máy ai đã pull. Mẫu đầy đủ: `agenticRAG/.env.example`.
-- **PostgreSQL trên NEON** (`ap-southeast-1`). DSN ở `agenticRAG/.env`
-  (gitignored), **direct endpoint** không phải `-pooler`.
+- **PostgreSQL trên NEON** (`us-east-1`, PG 18.4, pgvector 0.8.6 — chuyển 17/08,
+  cùng vùng với Lambda). Project cũ ở `ap-southeast-1` **đã xoá**. DSN ở
+  `agenticRAG/.env` (gitignored), **direct endpoint** không phải `-pooler`.
+  - ⚠️ Hostname Neon đời mới có đoạn `.c-NN`: direct = pooled **chỉ bỏ `-pooler`**,
+    bỏ luôn `.c-NN` sẽ lỗi xác thực.
   - Rollback: xoá dòng `VVA_PG_DSN` → restart backend → về local.
+  - Đo được sau khi chuyển vùng: Lambda warm **436 ms → 5 ms**.
   - ⚠️ **Redis + file motion/audio VẪN Ở LOCAL** — mới chuyển 1/3 kho.
 - **Git**: đã commit hết tới 10/08 (N cho phép). `agentic_rag_gemini` **đã xoá** —
   71 file / 46 MB. CI thay entry "AgenticRAG Gemini" bằng **"LangGraph Service"**:

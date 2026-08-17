@@ -37,7 +37,14 @@ from aws_cdk import (
 )
 from constructs import Construct
 
+# The deployed frontend must be here, not only the dev origins. A CORS list that
+# covers localhost and nothing else fails exactly once — in production, after the
+# release, with the browser reporting a blocked fetch rather than anything that
+# points at this file. Override per deploy with
+# `-c allowed_origins=https://a,https://b`, but the default has to be correct on
+# its own: a context flag is lost the moment someone deploys without it.
 _DEFAULT_ALLOWED_ORIGINS = [
+    "https://release.d32nf9wwqqt016.amplifyapp.com",
     "http://localhost:5173",
     "http://localhost:3000",
 ]

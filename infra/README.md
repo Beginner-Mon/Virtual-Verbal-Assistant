@@ -12,7 +12,7 @@ deployed. Read this before running any `cdk` command.
 ```
 Internet → CloudFront ─┬─ /characters*  → Lambda Function URL (OUTSIDE any VPC)
                        │                       ↓ TLS, same region
-                       │                    Neon Postgres (ap-southeast-1)
+                       │                    Neon Postgres (us-east-1)
                        └─ /*             → S3 (private, OAC)
 ```
 
@@ -38,10 +38,11 @@ so only CloudFront's OAC can invoke it.
 
 ```bash
 # Prerequisite, once — the DSN is a secret and must not enter a CFN template.
-# Use the DIRECT Neon endpoint (no "-pooler" in the hostname) unless the
-# pooled one has been verified against pg8000's prepared statements.
+# Use the DIRECT endpoint: the pooled hostname with only "-pooler" removed.
+# Newer Neon hostnames carry a ".c-NN" segment that must be KEPT — dropping it
+# as well fails authentication.
 aws ssm put-parameter --name /vva/neon/dsn --type SecureString \
-  --value 'postgresql://USER:PASS@ep-xxx.ap-southeast-1.aws.neon.tech/neondb?sslmode=require'
+  --value 'postgresql://USER:PASS@ep-xxx.c-NN.us-east-1.aws.neon.tech/neondb?sslmode=require'
 
 cdk deploy VvaCharacterStack     # needs Docker running (layer bundling)
 cdk deploy VvaAssetStack

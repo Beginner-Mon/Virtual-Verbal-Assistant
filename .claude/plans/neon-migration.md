@@ -1,5 +1,11 @@
 # Plan: Chuyển PostgreSQL lên Neon
 
+> ⚠️ **LỊCH SỬ — project Neon mô tả ở đây (ap-southeast-1) đã bị XOÁ ngày 17/08/2026.**
+> Dự án chuyển sang project Neon mới ở **us-east-1** để cùng vùng với Lambda; xem
+> `docs/worklogs/16-08-2026.md` §6c. Mọi hostname và số đo latency dưới đây thuộc về
+> hạ tầng cũ và **không còn đúng**. Phần vẫn còn giá trị: §2 (DSN resolution),
+> §3.1 (sslmode vs ssl), §3.3 (pooled phá prepared statement), §13 (executemany segfault).
+
 **Status:** v4.0 — **ĐÃ CUTOVER 31/07**. Backend `:8000` chạy trên Neon, dữ liệu ghi vào Neon
 (đã đối chứng với local). Chi phí DB thật: **12 query / 1,4 s / lượt (4,8%)** — xem §3.8.
 **Ngày:** 31/07/2026 — K

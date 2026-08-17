@@ -22,10 +22,11 @@ Prerequisite, created out of band because it is a secret and must not live in
 a CloudFormation template:
 
     aws ssm put-parameter --name /vva/neon/dsn --type SecureString \\
-        --value 'postgresql://USER:PASS@ep-xxx.ap-southeast-1.aws.neon.tech/neondb?sslmode=require'
+        --value 'postgresql://USER:PASS@ep-xxx.c-NN.us-east-1.aws.neon.tech/neondb?sslmode=require'
 
-Use the DIRECT endpoint if the pooled one turns out to break pg8000's prepared
-statements; see the plan's B4 note. Layer bundling requires Docker.
+Use the DIRECT endpoint: the pooled hostname with only `-pooler` removed. Newer
+Neon hostnames carry a `.c-NN` segment that must be KEPT — dropping it as well
+fails authentication.
 """
 
 from __future__ import annotations
