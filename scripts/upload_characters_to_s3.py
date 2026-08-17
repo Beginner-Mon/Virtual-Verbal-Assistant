@@ -40,6 +40,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODELS_DIR = REPO_ROOT / "ECA_UI" / "frontend" / "src" / "asset" / "models"
 PROFILE_EXPORTER = REPO_ROOT / "ECA_UI" / "frontend" / "scripts" / "export-avatar-profiles.mjs"
+MANIFEST_PATH = Path(__file__).resolve().parent / "characters.seed.json"
 
 sys.path.insert(0, str(REPO_ROOT / "agenticRAG"))
 
@@ -197,10 +198,55 @@ def display_name_for(slug: str, persona: dict) -> str:
     return slug.replace("-", " ").replace("_", " ").title()
 
 
+def build_records_from_manifest(cdn_base: str) -> list[dict]:
+    """Seed from scripts/characters.seed.json when the .vrm files are absent.
+
+    The models were removed from the repo once they lived on the CDN, which left
+    this script unable to seed a fresh database — the exact thing it exists for.
+    Only two facts actually require the binary: the content hash in the S3 key
+    and the extracted vrm_metadata. Both are committed here, so persona (from
+    personas/*.md) and avatar_profile (from the frontend modules) still come from
+    their real sources and cannot drift.
+
+    Regenerate with --write-manifest after adding or replacing a model.
+    """
+    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    profiles = load_avatar_profiles(sorted(manifest))
+
+    records = []
+    for slug, entry in sorted(manifest.items(), key=lambda kv: kv[1].get("sort_order", 0)):
+        persona = load_persona(slug)
+        key = f"models/{slug}/{entry['s3_digest']}.vrm"
+        records.append({
+            "slug": slug,
+            "display_name": entry.get("display_name") or display_name_for(slug, persona),
+            "description": None,
+            "local_path": None,
+            "s3_key": key,
+            "vrm_url": f"{cdn_base.rstrip('/')}/{key}" if cdn_base else key,
+            "vrm_metadata": entry["vrm_metadata"],
+            "avatar_profile": profiles.get(slug, {}),
+            "persona": persona,
+            "voice_language": persona.get("voice_identity", {}).get("language", "vi"),
+            "sort_order": entry.get("sort_order", 0),
+        })
+    return records
+
+
 def build_records(cdn_base: str) -> list[dict]:
     vrm_files = sorted(MODELS_DIR.glob("*.vrm"))
     if not vrm_files:
-        raise SystemExit(f"No .vrm files found in {MODELS_DIR}")
+        if MANIFEST_PATH.exists():
+            print(f"No .vrm files in {MODELS_DIR} — seeding from {MANIFEST_PATH.name}")
+            return build_records_from_manifest(cdn_base)
+        raise SystemExit(
+            f"No .vrm files in {MODELS_DIR} and no {MANIFEST_PATH.name} to fall\n"
+            f"back on. The models were removed from the repo once they lived on the\n"
+            f"CDN, so seeding a fresh database needs one of:\n"
+            f"  git checkout <commit-before-removal> -- {MODELS_DIR.relative_to(REPO_ROOT)}\n"
+            f"  then re-run with --write-manifest to recreate {MANIFEST_PATH.name}\n"
+            f"or copy the characters rows from a database that already has them."
+        )
 
     slugs = [f.stem for f in vrm_files]
     profiles = load_avatar_profiles(slugs)
@@ -238,6 +284,9 @@ def upload(records: list[dict], bucket: str) -> None:
 
     s3 = boto3.client("s3")
     for rec in records:
+        if rec["local_path"] is None:
+            print(f"  skip upload {rec['s3_key']} (seeded from manifest, no local file)")
+            continue
         print(f"  uploading {rec['local_path'].name} -> s3://{bucket}/{rec['s3_key']}")
         s3.upload_file(
             str(rec["local_path"]), bucket, rec["s3_key"],
@@ -285,10 +334,29 @@ def main() -> None:
     ap.add_argument("--bucket", help="S3 bucket (AssetStack output AssetBucketName)")
     ap.add_argument("--cdn", default="", help="CloudFront base URL (AssetStack output AssetBaseUrl)")
     ap.add_argument("--dry-run", action="store_true", help="extract and print only; no AWS, no DB")
+    ap.add_argument("--write-manifest", action="store_true",
+                    help="refresh characters.seed.json from the local .vrm files, then exit")
     args = ap.parse_args()
 
-    if not args.dry_run and not (args.bucket and args.cdn):
-        ap.error("--bucket and --cdn are required unless --dry-run")
+    if args.write_manifest:
+        records = build_records(args.cdn)
+        manifest = {
+            r["slug"]: {
+                "display_name": r["display_name"],
+                "s3_digest": r["s3_key"].rsplit("/", 1)[-1].removesuffix(".vrm"),
+                "sort_order": r["sort_order"],
+                "vrm_metadata": r["vrm_metadata"],
+            }
+            for r in records
+        }
+        MANIFEST_PATH.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8")
+        print(f"wrote {MANIFEST_PATH} ({len(manifest)} characters)")
+        return
+
+    if not args.dry_run and not args.cdn:
+        ap.error("--cdn is required unless --dry-run")
 
     records = build_records(args.cdn)
 

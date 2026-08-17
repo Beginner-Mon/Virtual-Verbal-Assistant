@@ -40,6 +40,12 @@ from infra.kimodo_ecs_stack import KimodoEcsStack
 
 app = cdk.App()
 
+# Applied to every taggable resource in every stack below, so cost reports and
+# resource searches can separate this project from anything else in the account.
+# Set on the App rather than per-stack: a stack added later inherits it without
+# anyone having to remember.
+cdk.Tags.of(app).add("Project", "ECA")
+
 env = cdk.Environment(
     account=os.getenv("CDK_DEFAULT_ACCOUNT"),
     region=os.getenv("CDK_DEFAULT_REGION"),

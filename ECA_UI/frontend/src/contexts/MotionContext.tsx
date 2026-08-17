@@ -29,37 +29,6 @@ type AssetOption = {
   character?: Character
 }
 
-/**
- * Rollback switch for the S3 migration. `false` restores the old behaviour of
- * loading .vrm files bundled by Vite.
- *
- * The fallback glob is deliberately NOT eager: an eager glob bundles all ~57 MB
- * into the build whether the flag is on or off, which is the exact cost this
- * change exists to remove. Lazy, the files stay out of the JS bundle and are
- * only fetched if the flag is off.
- *
- * Once the .vrm files are removed from the repo this returns an empty list and
- * the flag can be deleted along with it.
- */
-const USE_S3_MODELS = import.meta.env.VITE_USE_S3_MODELS !== 'false'
-
-const VRM_ASSET_LOADERS = import.meta.glob('../asset/**/*.vrm', {
-  import: 'default',
-}) as Record<string, () => Promise<string>>
-
-async function loadBundledVrmOptions(): Promise<AssetOption[]> {
-  const entries = await Promise.all(
-    Object.entries(VRM_ASSET_LOADERS).map(async ([assetPath, load]) => ({
-      id: assetPath,
-      label: assetPath.replace(/^\.\.\/asset\//, '').replace(/\\/g, '/'),
-      url: await load(),
-    }))
-  )
-  return entries
-    .filter((o) => !/bronya_long/i.test(o.label)) // 0 blendshape groups — unusable
-    .sort((left, right) => left.label.localeCompare(right.label))
-}
-
 function toAssetOption(character: Character): AssetOption {
   return {
     id: character.slug,
@@ -144,13 +113,10 @@ export function MotionProvider({ children }: { children: ReactNode }) {
 
     async function load() {
       try {
-        const options = USE_S3_MODELS
-          ? (await fetchCharacters(abort.signal))
-              // A model with incompatible_reasons still appears in the picker,
-              // greyed out with the reason — it is data the user should see,
-              // not a row to hide. Only the default selection skips them.
-              .map(toAssetOption)
-          : await loadBundledVrmOptions()
+        // A model with incompatible_reasons still appears in the picker, greyed
+        // out with the reason — it is data the user should see, not a row to
+        // hide. Only the default selection skips them.
+        const options = (await fetchCharacters(abort.signal)).map(toAssetOption)
 
         if (abort.signal.aborted) return
 
