@@ -20,7 +20,6 @@ import stripe
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from langgraph_agents.api.auth import resolve_user_id
 from langgraph_agents.shared import get_pg_client
 
 
@@ -29,6 +28,19 @@ router = APIRouter(prefix="/billing", tags=["billing"])
 
 class CheckoutResponse(BaseModel):
     url: str
+
+
+async def resolve_user_id(request: Request, fallback_user_id: str | None) -> str:
+    """Load the full application's auth/session stack only when it is needed.
+
+    Keeping this import lazy lets the billing-only local runner exercise Stripe
+    without pretending that Redis, the LLM graph, and the rest of the service
+    are required for Checkout.  The normal application still reaches the exact
+    same resolver on every billing request.
+    """
+    from langgraph_agents.api.auth import resolve_user_id as resolve_auth_user_id
+
+    return await resolve_auth_user_id(request, fallback_user_id)
 
 
 def _sandbox_enabled() -> bool:
