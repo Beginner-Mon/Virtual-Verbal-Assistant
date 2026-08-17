@@ -74,6 +74,12 @@ phải di chuyển. Project cũ nên giữ tới khi cái mới chạy ổn.
 repo; phần còn lại là mock. Đây là lý do việc này rẻ — và cũng là lý do nó sẽ
 **không** còn rẻ sau khi có người dùng thật.
 
+Coi như **mất sạch** là đúng tinh thần: 8 user, 14 hội thoại, 48 tin nhắn biến
+mất. Không tiếc, nhưng nói ra để không ai chờ chúng xuất hiện lại.
+
+**Không nằm trong Postgres, nên không bị ảnh hưởng:** Redis (STM + Celery), file
+motion/audio, model embedding cache — tất cả vẫn ở local.
+
 ### ⚠️ Neon hiện tại đang chậm hơn `head` một migration
 
 `alembic heads` = `004_demo_billing`, nhưng bảng `billing_accounts` **không tồn
@@ -168,6 +174,66 @@ có sẵn model embedding cache).
 | Không có `VVA_PG_DSN` | Backend **vẫn chạy**, âm thầm rơi về Postgres local | Log giờ có cảnh báo `falling back to the LOCAL database` — đọc nó |
 
 ---
+
+## Knowledge base — phần duy nhất là dữ liệu thật
+
+Đây là thứ duy nhất mất đi mà **phải dựng lại**, không phải chấp nhận mất.
+
+| | |
+| --- | --- |
+| Nguồn | `data/knowledge_base/documents.txt`, 1,1 MB, **đã commit** |
+| Số bản ghi | 2 918 bài tập, phân cách bằng dòng `---` |
+| Model | `intfloat/multilingual-e5-small`, **384 chiều** |
+| Prefix | `query:` / `passage:` — **bắt buộc**, cả hai phía đi qua `shared/embedding.py` |
+| Bảng | `documents` (metadata) + `kb_embeddings` (vector), FK CASCADE |
+
+### ⏱ Ingest sang us-east-1 sẽ lâu hơn nhiều — đừng tưởng nó treo
+
+Script insert **tuần tự 2 câu lệnh mỗi bản ghi** (một `INSERT ... RETURNING id`,
+một insert embedding) = **5 836 round-trip**.
+
+| Đích | Ước tính |
+| --- | --- |
+| ap-southeast-1 (đo thật) | ~9 phút |
+| **us-east-1** | `5836 × 0,26 s ≈ **25 phút**` chỉ riêng phần đi-về mạng, cộng thời gian embed ⇒ **~30 phút** |
+
+Chạy thử 50 bản ghi trước cho chắc, rồi mới chạy full:
+
+```bash
+python scripts/ingest_kb_pgvector.py --reset --limit 50
+```
+
+> Có thể rút xuống còn vài giây bằng cách gộp insert (`executemany` hoặc `COPY`).
+> Chưa làm — nêu ra để không ai tưởng 30 phút là chuyện bình thường.
+
+### Nghiệm thu KB: đếm dòng KHÔNG đủ
+
+2918 dòng vẫn có thể là 2918 vector rác (sai model, thiếu prefix, sai chiều).
+Ba thứ phải kiểm:
+
+```sql
+-- 1. Đúng chiều
+SELECT vector_dims(embedding) FROM kb_embeddings LIMIT 1;        -- phải = 384
+
+-- 2. Index HNSW có thật (thiếu nó thì kb_search seq scan — vẫn chạy, chỉ chậm,
+--    và đã từng bị sót đúng ở bảng này trong migration 002)
+SELECT indexname FROM pg_indexes WHERE tablename = 'kb_embeddings';
+--    phải có idx_kb_emb_embedding
+
+-- 3. Metadata sinh đúng
+SELECT count(*) FROM documents WHERE metadata->>'has_description' = 'true';
+--    phải = 1368
+```
+
+Rồi hỏi thật một câu qua `/chat` — phải ra `mode: synthesize` có trích
+`exercise_db`. Ra `refuse` nghĩa là KB rỗng hoặc recall hỏng.
+
+> **1 368 / 2 918** bản ghi có description thật; phần còn lại `Description: nan`
+> lọt từ export pandas, chỉ index được structured field. Con số này **giữ nguyên
+> sau khi dựng lại** — nếu ra khác là ingest có vấn đề, không phải corpus.
+>
+> Riêng chuyện corpus này là **gym/fitness chứ không phải PT lâm sàng** thì vẫn là
+> câu hỏi mở cho Owner, không liên quan tới việc chuyển vùng.
 
 ## Những thứ KHÔNG phải đụng tới
 
