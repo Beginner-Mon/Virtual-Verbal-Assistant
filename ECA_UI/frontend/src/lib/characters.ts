@@ -51,6 +51,10 @@ export interface Character {
   vrm_metadata: VrmMetadata
   voice_language: string
   sort_order: number
+  /** Chat-surface copy — greeting, stage labels, error line, input placeholder.
+   *  Optional because the catalog Lambda only returns it once redeployed with
+   *  the column; see characterCopy.uiStringsFor for the fallback. */
+  ui_strings?: Record<string, string>
 }
 
 interface CharacterListResponse {

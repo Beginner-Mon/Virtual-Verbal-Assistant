@@ -156,21 +156,21 @@ TAG_RULES: dict[str, tuple[str, Callable[[str], bool], str]] = {
         "safety",
         _has_danger_warning,
         # Template cứng (appended when missing):
-        "⚠️ **Cảnh báo quan trọng:** Triệu chứng bạn mô tả có thể là dấu hiệu "
+        "**Cảnh báo quan trọng:** Triệu chứng bạn mô tả có thể là dấu hiệu "
         "của một tình trạng nghiêm trọng. Bạn nên NGỪNG tập luyện ngay và đi "
         "khám bác sĩ chuyên khoa để được chẩn đoán chính xác.",
     ),
     "referral_advice": (
         "safety",
         _has_referral,
-        "📋 **Lưu ý:** Với câu hỏi này, tôi khuyên bạn nên tham khảo ý kiến "
+        "**Lưu ý:** Với câu hỏi này, tôi khuyên bạn nên tham khảo ý kiến "
         "bác sĩ hoặc chuyên gia y tế. Tôi chỉ có thể cung cấp thông tin tham "
         "khảo về wellness, không thay thế chẩn đoán lâm sàng.",
     ),
     "scope_disclaimer": (
         "safety",
         _has_disclaimer,
-        "📋 *Thông tin này chỉ mang tính tham khảo về wellness và không thay "
+        "*Thông tin này chỉ mang tính tham khảo về wellness và không thay "
         "thế cho việc khám và chẩn đoán y tế chuyên nghiệp.*",
     ),
 
@@ -209,21 +209,12 @@ TAG_RULES: dict[str, tuple[str, Callable[[str], bool], str]] = {
 
 # ── Default safety templates (fallback when persona doesn't define them) ──
 
+# Derived from TAG_RULES rather than restated. These three strings used to be a
+# verbatim second copy of the safety templates above, which is a standing
+# invitation to edit one and not the other — and that is exactly what nearly
+# happened while stripping the emoji out of both.
 DEFAULT_SAFETY_TEMPLATES: dict[str, str] = {
-    "red_flag_screen": (
-        "⚠️ **Cảnh báo quan trọng:** Triệu chứng bạn mô tả có thể là dấu hiệu "
-        "của một tình trạng nghiêm trọng. Bạn nên NGỪNG tập luyện ngay và đi "
-        "khám bác sĩ chuyên khoa để được chẩn đoán chính xác."
-    ),
-    "referral_advice": (
-        "📋 **Lưu ý:** Với câu hỏi này, tôi khuyên bạn nên tham khảo ý kiến "
-        "bác sĩ hoặc chuyên gia y tế. Tôi chỉ có thể cung cấp thông tin tham "
-        "khảo về wellness, không thay thế chẩn đoán lâm sàng."
-    ),
-    "scope_disclaimer": (
-        "📋 *Thông tin này chỉ mang tính tham khảo về wellness và không thay "
-        "thế cho việc khám và chẩn đoán y tế chuyên nghiệp.*"
-    ),
+    tag: rule[2] for tag, rule in TAG_RULES.items() if rule[0] == "safety"
 }
 
 # Startup assertion: ensure planner vocabulary ⊆ TAG_RULES (D7)
@@ -241,7 +232,7 @@ assert _PLANNER_TAGS == set(TAG_RULES.keys()), (
 
 # ── Warning message for pass_with_warning ─────────────────────────────────
 _UNAUTHORIZED_DISCLAIMER = (
-    "📋 *Thông tin này chưa được kiểm chứng bởi chuyên gia y tế. "
+    "*Thông tin này chưa được kiểm chứng bởi chuyên gia y tế. "
     "Vui lòng tham khảo ý kiến bác sĩ trước khi áp dụng.*"
 )
 

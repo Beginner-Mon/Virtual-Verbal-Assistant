@@ -14,6 +14,7 @@ export default function ChatPanel() {
     isTyping,
     isGenerating,
     stageLabel,
+    ui,
     webSearch,
     setWebSearch,
     voiceReply,
@@ -134,7 +135,7 @@ export default function ChatPanel() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Type your message…"
+            placeholder={ui.placeholder}
             disabled={isGenerating}
             className="w-full bg-transparent px-3 py-2 text-xs md:text-sm text-foreground placeholder:text-muted-foreground/70 resize-none focus:outline-none disabled:opacity-50"
           />

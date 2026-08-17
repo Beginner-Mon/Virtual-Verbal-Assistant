@@ -41,7 +41,9 @@ from langgraph_agents.api.schemas import (
 )
 from langgraph_agents.api.sse import encode_event, stream_response
 from langgraph_agents.graph import build_graph_async
-from langgraph_agents.nodes._persona_loader import get_persona, preload_personas_from_db
+from langgraph_agents.nodes._persona_loader import (
+    get_persona, get_ui_string, preload_personas_from_db,
+)
 from langgraph_agents.services.vieneu_tts.tasks import synthesize_speech_async
 from langgraph_agents.nodes.summarizer import maybe_summarize
 from langgraph_agents.db.session_store import (
@@ -503,7 +505,9 @@ async def _stream_chat(req, request_id, config, state, background_tasks, request
                     conversation_stage_started = True
                 yield encode_event("token", {"content": payload["content"]})
 
-    final_answer = final_state.get("final_answer") or "Xin lỗi, tôi không thể xử lý yêu cầu này."
+    final_answer = final_state.get("final_answer") or get_ui_string(
+        req.persona_id or "eca_default", "error_unavailable"
+    )
 
     # Eager session write
     if final_state.get("final_answer"):
