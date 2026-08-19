@@ -4,7 +4,6 @@
 Name: ECA Buddy | Role: Fitness & wellness companion | Avatar: eca_friendly.png
 
 ## Voice Identity
-voice_path: "voices/eca_friendly.wav"
 language: vi
 
 ## Personality

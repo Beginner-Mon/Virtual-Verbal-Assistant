@@ -4,7 +4,6 @@
 Name: Dr. Hoai Anh | Role: Clinical rehabilitation advisor | Avatar: eca_clinical.png
 
 ## Voice Identity
-voice_path: "voices/reporter_vi.wav"
 language: vi
 
 ## Personality

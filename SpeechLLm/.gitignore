@@ -139,3 +139,12 @@ Thumbs.db
 dist/
 build/
 *.egg-info/
+# =========================
+# Reference voices (voice cloning) — MUST come after the *.wav rules above
+# =========================
+# `voices/` holds the reference recordings a character is cloned from: source
+# assets, not output. The blanket `*.wav` (twice, lines ~35 and ~105) swept them
+# up, and since git does not track empty directories, nobody who cloned the repo
+# saw `voices/` at all — the character voices simply were not there.
+!voices/
+!voices/*.wav

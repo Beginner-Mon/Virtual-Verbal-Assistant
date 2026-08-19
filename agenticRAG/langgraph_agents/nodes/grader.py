@@ -26,6 +26,7 @@ from langchain_core.runnables import RunnableConfig
 
 from langgraph_agents.state import AgentState
 from langgraph_agents.nodes._persona_loader import get_persona
+from langgraph_agents.shared.lang import detect_lang
 from langgraph_agents.shared.logging import get_logger
 
 logger = get_logger("langgraph.grader")
@@ -226,6 +227,28 @@ DEFAULT_SAFETY_TEMPLATES: dict[str, str] = {
     ),
 }
 
+# English counterparts. These are injected VERBATIM — the grader is rule-based
+# and never calls an LLM — so a user who asked in English used to receive a
+# perfectly English answer with a Vietnamese safety warning stapled to it. That
+# is worst precisely where it matters most: the red-flag text is the one
+# sentence the reader must not skip.
+DEFAULT_SAFETY_TEMPLATES_EN: dict[str, str] = {
+    "red_flag_screen": (
+        "⚠️ **Important warning:** the symptoms you describe may indicate a "
+        "serious condition. Please STOP exercising now and see a doctor for a "
+        "proper diagnosis."
+    ),
+    "referral_advice": (
+        "📋 **Note:** for this question I recommend consulting a doctor or a "
+        "qualified health professional. I can only offer general wellness "
+        "information, which does not replace a clinical diagnosis."
+    ),
+    "scope_disclaimer": (
+        "📋 *This is general wellness information and does not replace "
+        "professional medical examination or diagnosis.*"
+    ),
+}
+
 # Startup assertion: ensure planner vocabulary ⊆ TAG_RULES (D7)
 # Called once at module import — catches drift between planner and grader.
 _PLANNER_TAGS = frozenset({
@@ -245,16 +268,37 @@ _UNAUTHORIZED_DISCLAIMER = (
     "Vui lòng tham khảo ý kiến bác sĩ trước khi áp dụng.*"
 )
 
+_UNAUTHORIZED_DISCLAIMER_EN = (
+    "📋 *This information has not been verified by a health professional. "
+    "Please consult a doctor before acting on it.*"
+)
 
-def get_safety_text(tag: str, persona_id: str) -> str:
+
+def _unauthorized_disclaimer(lang: str) -> str:
+    return _UNAUTHORIZED_DISCLAIMER_EN if lang == "en" else _UNAUTHORIZED_DISCLAIMER
+
+
+def get_safety_text(tag: str, persona_id: str, lang: str = "vi") -> str:
     """Get safety template for tag, persona-customized if available.
 
-    Falls back to DEFAULT_SAFETY_TEMPLATES if the persona hasn't
-    defined its own safety_templates, or if the tag is missing.
+    Resolution order, most specific first:
+        persona `<tag>.<lang>` → persona `<tag>` → DEFAULT for `<lang>` → ""
+
+    `lang` defaults to "vi" so every existing caller and test keeps its current
+    behaviour; only callers that know the answer's language pass it.
+
+    The persona's plain `<tag>` sits ABOVE the English default on purpose: a
+    persona that customised its warning did so for a reason, and silently
+    replacing it with the generic English one would drop that customisation. A
+    persona that wants a different English wording declares `<tag>.en`.
     """
     persona = get_persona(persona_id)
-    custom = persona.get("safety_templates", {}).get(tag)
-    return custom or DEFAULT_SAFETY_TEMPLATES.get(tag, "")
+    templates = persona.get("safety_templates", {})
+    custom = templates.get(f"{tag}.{lang}") or templates.get(tag)
+    if custom:
+        return custom
+    defaults = DEFAULT_SAFETY_TEMPLATES_EN if lang == "en" else DEFAULT_SAFETY_TEMPLATES
+    return defaults.get(tag, "")
 
 
 # ── Grader logic ─────────────────────────────────────────────────────────
@@ -350,6 +394,17 @@ async def grader_node(state: AgentState, config: RunnableConfig) -> dict:
 
     result = _grade_tags(final_answer, required_outputs)
 
+    # Injected text must match the language the synthesizer actually answered
+    # in, not the persona's nominal one — an English answer used to get its
+    # safety warning stapled on in Vietnamese. The query is the tie-breaker for
+    # answers too short to classify.
+    persona = get_persona(persona_id)
+    lang = str(detect_lang(
+        final_answer,
+        query=config["configurable"].get("query"),
+        fallback=persona.get("voice_identity", {}).get("language", "vi"),
+    ))
+
     elapsed_ms = round((time.perf_counter() - t0) * 1000)
 
     # ── PASS ──────────────────────────────────────────────────────────
@@ -365,7 +420,7 @@ async def grader_node(state: AgentState, config: RunnableConfig) -> dict:
         # Inject persona-aware safety templates at START of answer (D32)
         templates = []
         for tag in result["safety_missing"]:
-            templates.append(get_safety_text(tag, persona_id))
+            templates.append(get_safety_text(tag, persona_id, lang))
 
         safety_block = "\n\n---\n\n".join(templates)
         modified_answer = f"{safety_block}\n\n---\n\n{final_answer}"
@@ -373,12 +428,13 @@ async def grader_node(state: AgentState, config: RunnableConfig) -> dict:
         # Also append unverified disclaimer if quality also failed (D32: CUỐI)
         disclaimer = ""
         if result["quality_missing"]:
-            disclaimer = f"\n\n---\n\n{_UNAUTHORIZED_DISCLAIMER}"
+            disclaimer = f"\n\n---\n\n{_unauthorized_disclaimer(lang)}"
             modified_answer += disclaimer
 
         logger.warning("node_complete", extra={
             "node": "grader", "result": "pass_with_warning",
             "elapsed_ms": elapsed_ms,
+            "lang": lang,
             "safety_missing": result["safety_missing"],
             "quality_missing": result["quality_missing"],
         })
@@ -407,7 +463,7 @@ async def grader_node(state: AgentState, config: RunnableConfig) -> dict:
         "quality_missing": result["quality_missing"],
         "retry_count": retry_count,
     })
-    modified_answer = f"{final_answer}\n\n---\n\n{_UNAUTHORIZED_DISCLAIMER}"
+    modified_answer = f"{final_answer}\n\n---\n\n{_unauthorized_disclaimer(lang)}"
     return {
         "grader_result": "pass_with_warning",
         "final_answer": modified_answer,
