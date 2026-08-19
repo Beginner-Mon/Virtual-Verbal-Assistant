@@ -1,6 +1,6 @@
 # VVA — Status & Roadmap
 
-> Last update: 2026-08-10 (K) | Branch: `feature/langgraph-rewrite`
+> Last update: 2026-08-17 (K) | Branch: `feature/langgraph-rewrite`
 > Audience: K/N/Owner takeover after context compaction — đọc mục 0 trước tiên.
 
 ---
@@ -30,11 +30,29 @@
   - Rollback: xoá dòng `VVA_PG_DSN` → restart backend → về local.
   - Đo được sau khi chuyển vùng: Lambda warm **436 ms → 5 ms**.
   - ⚠️ **Redis + file motion/audio VẪN Ở LOCAL** — mới chuyển 1/3 kho.
-- **Git**: đã commit hết tới 10/08 (N cho phép). `agentic_rag_gemini` **đã xoá** —
-  71 file / 46 MB. CI thay entry "AgenticRAG Gemini" bằng **"LangGraph Service"**:
-  trước đó CI kiểm cái đã bị thay thế, không kiểm cái đang chạy.
-  ⚠️ **N phải restart backend :8000 bằng `firstconda`** — instance đang chạy vẫn là
-  code trước 08/08.
+  - 🔴 **`.env` trên máy N VẪN TRỎ PROJECT CŨ đã bị xoá** ⇒
+    `InvalidPasswordError`. `.env` gitignored nên push của Tri không sửa được.
+    **Cần Tri gửi DSN mới.** Nghiệm thu DB (2918 rows · 384 dims ·
+    `idx_kb_emb_embedding` · 1368 has_description) **chưa chạy được**. Tiêu chí đầy
+    đủ: `docs/ops/neon-migration-us-east-1.md`. Worklog 17/08 §2.
+- **Git**: HEAD `2991b4a`, đã push, working tree sạch. `agentic_rag_gemini` **đã
+  xoá** — 71 file / 46 MB. CI thay entry "AgenticRAG Gemini" bằng
+  **"LangGraph Service"**: trước đó CI kiểm cái đã bị thay thế, không kiểm cái
+  đang chạy.
+- **Unit tests: 294 passed** (17/08, chạy bằng `firstconda`). Sửa 12 test đỏ:
+  5 cái do `grader_node` mọc thêm tham số `config`, 7 cái do **K** bật
+  `REQUIRE_AUTH=true` trong `.env` — `api/auth.py` đọc cờ đó lúc import nên test
+  SSE nhận 401. `conftest` giờ pin `REQUIRE_AUTH=false`, vì `.env` gitignored thì
+  suite pass/fail theo một file không ai khác thấy. Worklog 17/08 §1.
+- **`stripe` phải cài vào `firstconda`** — `api/billing.py:19` import module-level,
+  thiếu là **backend không khởi động**, không chỉ test đỏ.
+  `pip install -r requirements-langgraph.txt`.
+- 🆕 **Voice cloning — N chốt 17/08, CHƯA LÀM.** Bắt buộc dùng giọng clone, chọn
+  `.wav` theo **nhân vật trên UI** và theo **ngôn ngữ câu trả lời**
+  (`seele_en.wav` / `reporter_vi.wav`), fallback preset khi thiếu file. Hiện
+  `voice_path: ""` ⇒ **đang chạy 100% giọng preset**. `SpeechLLm/.gitignore:105`
+  có `*.wav` nên `voices/` không nằm trong git (Tri clone về không thấy) — phải
+  sửa rule khi làm. Spec + checklist: worklog 17/08 §4.
 
 ### 🔴 CHẶN CỨNG — chỉ Owner gỡ được
 
