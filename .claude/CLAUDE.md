@@ -16,7 +16,7 @@ Healthcare/wellness multimodal AI assistant combining conversational AI, 3D moti
 ```
 ECA UI                     Vite 6 + React 19 + TS, Capacitor for mobile, Amplify hosting
 LangGraph service          Port 8000, FastAPI + SSE (agenticRAG/langgraph_agents)
-PostgreSQL + pgvector      Neon, ap-southeast-1, PG 17.10 (cutover 31/07)
+PostgreSQL + pgvector      Neon, us-east-1, PG 18.4, pgvector 0.8.6 (chuyển 17/08)
 Redis                      STM + TTS task results — STILL LOCAL, not yet hosted
 Kimodo text-to-motion      GPU MCP server (replaced DART); ECS deploy awaiting Owner
 VieNeu-TTS                 CPU Vietnamese TTS (replaced Coqui/ElevenLabs)
