@@ -44,6 +44,22 @@ if (!_raw) {
 }
 const API_BASE: string = _raw || DEFAULT_API_BASE
 
+/**
+ * Where the session and user-memory endpoints live.
+ *
+ * Those moved to their own Lambda: serving a session list should not require
+ * keeping the whole agent process alive, since that one imports torch at boot to
+ * run a few SQL statements. /chat and /tts stay on API_BASE because they need
+ * the graph.
+ *
+ * Defaults to API_BASE, so an unset value means "one backend, as before" rather
+ * than a broken app — the same reasoning as the warning above. There is a
+ * precedent for the split: VITE_ASSET_BASE_URL in lib/characters.ts already
+ * points the character catalog at CloudFront.
+ */
+const CRUD_BASE: string =
+  (import.meta.env.VITE_CRUD_API_URL as string | undefined) || API_BASE
+
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 
 /**
@@ -68,22 +84,53 @@ async function authHeader(): Promise<Record<string, string>> {
 // also throws on non-2xx, unifying error handling.
 // NOTE: streamChat() below intentionally stays on fetch — axios (XHR) cannot stream
 // SSE tokens progressively.
-const http = axios.create({ baseURL: API_BASE })
+/**
+ * One factory, so the two instances cannot drift apart on auth.
+ *
+ * The backend takes identity only from this header — there is no user_id
+ * parameter to fall back on any more — so an instance created without the
+ * interceptor does not degrade, it 401s on every call.
+ */
+function makeClient(baseURL: string) {
+  const client = axios.create({ baseURL })
+  client.interceptors.request.use(async (config) => {
+    const auth = await authHeader()
+    if (auth.Authorization) config.headers.set('Authorization', auth.Authorization)
+    return config
+  })
+  return client
+}
 
-http.interceptors.request.use(async (config) => {
-  const auth = await authHeader()
-  if (auth.Authorization) config.headers.set('Authorization', auth.Authorization)
-  return config
-})
+// Agent: /tts and its result polling. /chat uses fetch, see streamChat.
+const http = makeClient(API_BASE)
+
+// CRUD Lambda: sessions, user memory, billing.
+const crud = makeClient(CRUD_BASE)
 
 /**
- * Stable user id: Cognito sub when authed, else a persistent demo UUID.
+ * Fire-and-forget wake-up, called once when the app mounts.
  *
- * The demo id is a last resort, not a normal path — it is per-browser and
- * random, so anything keyed by it (sessions, user_memory, billing) belongs to
- * the browser rather than the account.
+ * Both halves of the first request are cold otherwise: the Lambda container and
+ * Neon's compute, which suspends when idle. Doing it at mount spends that time
+ * while the user is still looking at the shell, instead of on their first click.
+ * Failures are ignored on purpose — this is an optimisation, and the real
+ * request will report anything genuinely wrong.
+ */
+export function wakeCrudApi(): void {
+  void fetch(`${CRUD_BASE}/health`, { method: 'GET' }).catch(() => {})
+}
+
+/**
+ * The signed-in user's Cognito sub, else a per-browser demo UUID.
  *
- * Exported because the billing helpers below pass it as an explicit user_id.
+ * NOT an identity as far as the API is concerned, and no longer sent to it.
+ * Every endpoint now derives the user from the verified token; the demo branch
+ * below reaches a server that answers 401, whatever it returns. Treat this as a
+ * client-side key — for local storage, cache keys, UI state — and nothing more.
+ *
+ * The branch is kept because the UI still needs *something* stable to key on
+ * before sign-in. If you find yourself passing the result to the API, that is
+ * the bug this comment exists to prevent.
  */
 export async function currentUserId(): Promise<string> {
   try {
@@ -154,7 +201,6 @@ export async function streamChat(
   const { query, sessionId, personaId = 'eca_default', outputMode = 'text', webSearch = false } =
     options
 
-  const userId = await currentUserId()
   const extraHeaders = await authHeader()
 
   const resp = await fetch(`${API_BASE}/chat`, {
@@ -164,9 +210,10 @@ export async function streamChat(
       Accept: 'text/event-stream',
       ...extraHeaders,
     },
+    // No user_id: the server reads identity from the Authorization header, and
+    // ChatRequest no longer has the field.
     body: JSON.stringify({
       query,
-      user_id: userId,
       session_id: sessionId,
       persona_id: personaId,
       output_mode: outputMode,
@@ -237,25 +284,22 @@ export async function streamChat(
 
 // ── Session CRUD ───────────────────────────────────────────────────────────────
 
+// No user_id anywhere below. The server reads it from the Bearer token, so
+// sending one would be a claim about who we are rather than a parameter — and
+// the routes no longer accept it.
+
 export async function listSessions() {
-  const userId = await currentUserId()
-  const { data } = await http.get('/sessions', { params: { user_id: userId } })
+  const { data } = await crud.get('/sessions')
   return data
 }
 
 export async function getSession(sessionId: string) {
-  const userId = await currentUserId()
-  const { data } = await http.get(`/sessions/${encodeURIComponent(sessionId)}`, {
-    params: { user_id: userId },
-  })
+  const { data } = await crud.get(`/sessions/${encodeURIComponent(sessionId)}`)
   return data
 }
 
 export async function deleteSession(sessionId: string) {
-  const userId = await currentUserId()
-  const { data } = await http.delete(
-    `/sessions/${encodeURIComponent(userId)}/${encodeURIComponent(sessionId)}`,
-  )
+  const { data } = await crud.delete(`/sessions/${encodeURIComponent(sessionId)}`)
   return data
 }
 
@@ -307,14 +351,12 @@ export async function speakText(
 // ── User memory CRUD ───────────────────────────────────────────────────────────
 
 export async function listUserMemory() {
-  const userId = await currentUserId()
-  const { data } = await http.get(`/users/${encodeURIComponent(userId)}/memory`)
+  const { data } = await crud.get('/me/memory')
   return data
 }
 
 export async function createUserMemory(factText: string, category?: string) {
-  const userId = await currentUserId()
-  const { data } = await http.post(`/users/${encodeURIComponent(userId)}/memory`, {
+  const { data } = await crud.post('/me/memory', {
     fact_text: factText,
     category,
   })
@@ -322,10 +364,7 @@ export async function createUserMemory(factText: string, category?: string) {
 }
 
 export async function deleteUserMemory(factId: string) {
-  const userId = await currentUserId()
-  const { data } = await http.delete(
-    `/users/${encodeURIComponent(userId)}/memory/${encodeURIComponent(factId)}`,
-  )
+  const { data } = await crud.delete(`/me/memory/${encodeURIComponent(factId)}`)
   return data
 }
 
@@ -351,20 +390,23 @@ export interface BillingStatus {
   has_test_customer: boolean
 }
 
+// Billing stays on API_BASE: the feature is unfinished, so it was left out of
+// the CRUD Lambda move. It has dropped its user_id parameter all the same —
+// that was the auth change, which applies to every endpoint regardless of where
+// it is served.
+
 export async function getBillingConfig(): Promise<BillingConfig> {
   const { data } = await http.get('/billing/config')
   return data as BillingConfig
 }
 
 export async function getBillingStatus(): Promise<BillingStatus> {
-  const userId = await currentUserId()
-  const { data } = await http.get('/billing/status', { params: { user_id: userId } })
+  const { data } = await http.get('/billing/status')
   return data as BillingStatus
 }
 
 async function openBillingDestination(path: '/billing/checkout' | '/billing/portal') {
-  const userId = await currentUserId()
-  const { data } = await http.post(path, undefined, { params: { user_id: userId } })
+  const { data } = await http.post(path, undefined)
   const url = (data as { url?: string }).url
   if (!url) throw new Error('Stripe sandbox did not return a destination URL')
   window.location.assign(url)

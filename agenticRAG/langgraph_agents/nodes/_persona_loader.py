@@ -46,6 +46,7 @@ def _fallback_persona(persona_id: str) -> dict:
         "behavioral_rules": "Use Vietnamese by default. Keep responses helpful.",
         "response_formatting": "Keep under 300 words.",
         "safety_templates": {},
+        "ui_strings": {},
     }
 
 
@@ -65,8 +66,13 @@ def _parse_voice_identity(text: str) -> dict:
     return result
 
 
-def _parse_safety_templates(text: str) -> dict[str, str]:
-    """Parse ## Safety Templates section into {tag: template_text} dict."""
+def _parse_key_values(text: str) -> dict[str, str]:
+    """Parse a `key: "value"` section into a dict. One entry per line.
+
+    Used by `## Safety Templates` and `## UI Strings` alike — the two sections
+    have the same shape, so they share the parser rather than growing a second
+    copy of the quote-stripping.
+    """
     if not text:
         return {}
     result: dict[str, str] = {}
@@ -122,7 +128,13 @@ def _load_persona(persona_id: str) -> dict:
         sections[current_header] = "\n".join(current_body).strip()
 
     safety_raw = sections.pop("safety_templates", "")
-    safety_templates = _parse_safety_templates(safety_raw)
+    safety_templates = _parse_key_values(safety_raw)
+
+    # Display copy for the chat surface — greeting, stage labels, error lines,
+    # input placeholder. Popped like the two above so it never leaks into the
+    # system prompt: these strings are for the user's screen, not the model.
+    ui_raw = sections.pop("ui_strings", "")
+    ui_strings = _parse_key_values(ui_raw)
 
     voice_lines = sections.pop("voice_identity", "")
     voice_identity = _parse_voice_identity(voice_lines)
@@ -136,9 +148,15 @@ def _load_persona(persona_id: str) -> dict:
         "identity": sections.get("identity", ""),
         "voice_identity": voice_identity,
         "personality": sections.get("personality", ""),
+        # Optional. `voice` is speech habits, `examples` verbatim sample lines —
+        # the two sections a model actually imitates. Personas written before
+        # they existed return "" and render exactly as they used to.
+        "voice": sections.get("voice", ""),
+        "examples": sections.get("examples", ""),
         "behavioral_rules": sections.get("behavioral_rules", ""),
         "response_formatting": sections.get("response_formatting", ""),
         "safety_templates": safety_templates,
+        "ui_strings": ui_strings,
     }
 
 
@@ -154,10 +172,45 @@ def get_persona(persona_id: str) -> dict:
     return persona
 
 
+# Chat-surface copy used when a persona ships no `## UI Strings` section. These
+# are verbatim the strings that used to be hard-coded at the call sites, so a
+# persona without its own copy behaves exactly as it did before.
+_DEFAULT_UI_STRINGS = {
+    "error_system": "Xin lỗi, hệ thống đang gặp sự cố. Vui lòng thử lại sau.",
+    "error_partial": "Đã có lỗi nhỏ, nhưng tôi vẫn cố gắng trả lời.",
+    "error_unavailable": "Xin lỗi, tôi không thể xử lý yêu cầu này.",
+}
+
+
+def get_ui_string(persona_id: str, key: str, default: str = "") -> str:
+    """One chat-surface string for a character, with a safe fallback.
+
+    Display copy only — this must never be fed to the model. Keeping the read
+    path separate from build_persona_prompt is what stops UI text drifting into
+    the model's instructions, and it is why `ui_strings` is popped out of
+    `sections` during parsing rather than left to render with the rest.
+    """
+    value = (get_persona(persona_id).get("ui_strings") or {}).get(key)
+    if value:
+        return value
+    return default or _DEFAULT_UI_STRINGS.get(key, "")
+
+
 _PERSONA_SECTIONS = (
     "title", "identity", "voice_identity", "personality",
     "behavioral_rules", "response_formatting", "safety_templates",
+    # `voice` (speech habits) and `examples` (verbatim sample lines) are the two
+    # sections that actually move a model. Both are optional: a persona without
+    # them renders exactly as before.
+    "voice", "examples",
+    # Chat-surface copy. Never reaches the model — see get_ui_string.
+    "ui_strings",
 )
+
+# Sections whose default is an empty dict rather than an empty string. Keyed by
+# suffix because the alternative is a second list to keep in sync with the one
+# above.
+_DICT_SECTION_SUFFIXES = ("_templates", "_identity", "_strings")
 
 
 async def preload_personas_from_db() -> int:
@@ -213,7 +266,9 @@ async def preload_personas_from_db() -> int:
 
         persona.setdefault("persona_id", slug)
         for section in _PERSONA_SECTIONS:
-            persona.setdefault(section, {} if section.endswith(("_templates", "_identity")) else "")
+            persona.setdefault(
+                section, {} if section.endswith(_DICT_SECTION_SUFFIXES) else ""
+            )
         _persona_cache[slug] = persona
         loaded += 1
 
@@ -229,6 +284,86 @@ _MODE_HINTS = {
 }
 
 
+def persona_name(persona: dict) -> str:
+    """Display name for the character.
+
+    `identity` is authored as prose but older files start it with a
+    "Name: X | Role: ..." metadata line, so try that first and fall back to the
+    file's `# Heading`. The two disagree on purpose for eca_default, whose
+    heading is "ECA Default" and whose character is Seele.
+    """
+    identity = persona.get("identity") or ""
+    match = re.search(r"\bName:\s*([^|\n]+)", identity)
+    if match:
+        return match.group(1).strip()
+    title = (persona.get("title") or "").strip()
+    return title or persona.get("persona_id", "the assistant")
+
+
+def _example_lines(persona: dict, mode: str, limit: int = 2) -> list[str]:
+    """Sample lines from `## Examples`, preferring ones tagged for this mode.
+
+    Authored as `- (mode) text`, e.g. `- (chat) Chào bạn!`. An untagged line is
+    usable in any mode. Falls back to untagged/other lines so a persona that
+    only wrote two examples still gets a card.
+    """
+    raw = persona.get("examples") or ""
+    if not raw:
+        return []
+
+    tagged: list[str] = []
+    untagged: list[str] = []
+    for line in raw.split("\n"):
+        line = line.strip().lstrip("-").strip()
+        if not line:
+            continue
+        match = re.match(r"^\((\w+)\)\s*(.+)$", line)
+        if match:
+            if match.group(1).lower() == mode:
+                tagged.append(match.group(2).strip())
+        else:
+            untagged.append(line)
+
+    return (tagged + untagged)[:limit]
+
+
+def build_voice_card(persona: dict, mode: str) -> str:
+    """A short reminder of who is speaking, placed LAST in the message list.
+
+    The full persona block sits at the top of the system prompt, which is right
+    for prompt caching and wrong for everything else: by the time the model
+    starts generating it has read several thousand tokens of retrieved evidence,
+    tag contracts and formatting instructions — all of them more recent, more
+    concrete and more imitable than "Tone: Warm, professional, encouraging".
+
+    Restating the voice in ~100 tokens at the very end buys the recency that
+    would otherwise need a second LLM call to restyle the answer. That second
+    call would cost a full round trip *and* break streaming, because a restyling
+    pass cannot emit its first token until the content pass has finished.
+
+    Deliberately small. This is a reminder, not a second copy of the persona:
+    duplicating the whole block would pay for those tokens twice and give the
+    model two places to disagree with itself.
+    """
+    name = persona_name(persona)
+    parts = [f"## Who is speaking\nYou are {name}."]
+
+    voice = (persona.get("voice") or persona.get("personality") or "").strip()
+    if voice:
+        parts.append(voice)
+
+    examples = _example_lines(persona, mode)
+    if examples:
+        quoted = "\n".join(f'  "{e}"' for e in examples)
+        parts.append(f"Lines that sound like you:\n{quoted}")
+
+    parts.append(
+        f"Write the next message as {name}. Keep the facts and every safety "
+        f"warning exactly as required above — only the voice is yours."
+    )
+    return "\n\n".join(parts)
+
+
 def build_persona_prompt(persona: dict, mode: str) -> str:
     """Build system prompt from persona sections for LLM styling/generation.
 
@@ -238,10 +373,15 @@ def build_persona_prompt(persona: dict, mode: str) -> str:
     """
     hint = _MODE_HINTS.get(mode, "")
     hint_block = f"\n\n## Turn hint\n{hint}" if hint else ""
-    return f"""You are {persona['identity']}.
+
+    # Optional — personas written before the schema grew still render fine.
+    voice = (persona.get("voice") or "").strip()
+    voice_block = f"\n\n## How you speak\n{voice}" if voice else ""
+
+    return f"""You are {persona['identity']}
 
 ## Your Personality
-{persona['personality']}
+{persona['personality']}{voice_block}
 
 ## Rules
 {persona['behavioral_rules']}

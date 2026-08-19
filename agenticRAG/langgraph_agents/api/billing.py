@@ -18,9 +18,11 @@ from typing import Any
 from urllib.parse import urlparse
 
 import stripe
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 
+from langgraph_agents.api.auth import bearer_scheme, current_user_id
 from langgraph_agents.shared import get_pg_client
 
 
@@ -31,17 +33,28 @@ class CheckoutResponse(BaseModel):
     url: str
 
 
-async def resolve_user_id(request: Request, fallback_user_id: str | None) -> str:
-    """Load the full application's auth/session stack only when it is needed.
+async def billing_user_id(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> str:
+    """The calling user, resolved through the application's normal auth.
 
-    Keeping this import lazy lets the billing-only local runner exercise Stripe
-    without pretending that Redis, the LLM graph, and the rest of the service
-    are required for Checkout.  The normal application still reaches the exact
-    same resolver on every billing request.
+    An alias for current_user_id, kept because billing_local.py and the tests
+    substitute it through app.dependency_overrides — a seam that belongs to one
+    app object, unlike the module attribute reassignment it replaced.
+
+    The parameter has to be declared here, not delegated. An earlier version was
+    `async def billing_user_id(request: Request)` calling `current_user_id(request)`,
+    which type-checks and always fails: current_user_id takes credentials, so the
+    Request went in where the bearer token was expected and every real billing
+    call died on `Request.credentials`. Nothing caught it — test_billing.py calls
+    the handlers with a uid directly, and billing_local.py overrides this — so
+    the only untested path was the production one.
+
+    The import is no longer lazy because it no longer needs to be: api.auth
+    validates its provider config in get_auth_config(), called from the app
+    lifespan, so importing it costs nothing and demands nothing.
     """
-    from langgraph_agents.api.auth import resolve_user_id as resolve_auth_user_id
-
-    return await resolve_auth_user_id(request, fallback_user_id)
+    return await current_user_id(credentials)
 
 
 def _sandbox_enabled() -> bool:
@@ -161,8 +174,7 @@ async def billing_config():
 
 
 @router.get("/status")
-async def billing_status(request: Request, user_id: str = Query("anonymous")):
-    uid = await resolve_user_id(request, user_id)
+async def billing_status(uid: str = Depends(billing_user_id)):
     row = await _ensure_demo_account(uid)
     return {
         "access_plan": row["access_plan"],
@@ -176,8 +188,7 @@ async def billing_status(request: Request, user_id: str = Query("anonymous")):
 
 
 @router.post("/checkout", response_model=CheckoutResponse)
-async def create_checkout(request: Request, user_id: str = Query("anonymous")):
-    uid = await resolve_user_id(request, user_id)
+async def create_checkout(request: Request, uid: str = Depends(billing_user_id)):
     account = await _ensure_demo_account(uid)
     stripe_client = _stripe_client()
     app_url = _app_url(request)
@@ -213,8 +224,7 @@ async def create_checkout(request: Request, user_id: str = Query("anonymous")):
 
 
 @router.post("/portal", response_model=CheckoutResponse)
-async def create_portal(request: Request, user_id: str = Query("anonymous")):
-    uid = await resolve_user_id(request, user_id)
+async def create_portal(request: Request, uid: str = Depends(billing_user_id)):
     account = await _ensure_demo_account(uid)
     customer_id = account.get("stripe_customer_id")
     if not customer_id:

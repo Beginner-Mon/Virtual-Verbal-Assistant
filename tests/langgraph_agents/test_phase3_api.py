@@ -35,9 +35,12 @@ class TestSchemas:
     def test_chat_request_defaults(self):
         from langgraph_agents.api.schemas import ChatRequest
         req = ChatRequest(query="Xin chào")
-        assert req.user_id == "anonymous"
         assert req.output_mode == "text"
         assert req.persona_id == "eca_default"
+        # Identity is not part of the request. It comes from the Bearer token
+        # via Depends(current_user_id); a body field would be a client-supplied
+        # claim about who is calling.
+        assert not hasattr(req, "user_id")
 
     @pytest.mark.unit
     def test_chat_response_serialization(self):

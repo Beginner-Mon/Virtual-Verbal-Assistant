@@ -50,10 +50,15 @@ _SLUG_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 # Every column the client is allowed to see. Listed explicitly rather than
 # SELECT * so that adding a column to `characters` can never leak it by default.
+#
+# `ui_strings` is the character's chat-surface copy — greeting, stage labels,
+# error lines. It is deliberately a separate column from `persona`: persona is
+# the system prompt and must never reach a browser, while this exists only to be
+# rendered in one. Keep prompt text out of it.
 _PUBLIC_COLUMNS = """
     slug, display_name, description,
     vrm_url, thumbnail_url, vrm_metadata,
-    voice_language, sort_order
+    voice_language, sort_order, ui_strings
 """
 
 

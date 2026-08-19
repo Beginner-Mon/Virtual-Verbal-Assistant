@@ -55,6 +55,13 @@ LAZY_DEPENDENCIES: tuple[LazyDependency, ...] = (
     LazyDependency("sentence_transformers", "embeddings — retrieval returns nothing", critical=True),
     LazyDependency("dotenv", "loading .env (real env vars still work)", critical=False),
     LazyDependency(
+        "boto3",
+        "reading the database DSN from SSM — only used when VVA_PG_DSN_PARAM is "
+        "set, which is the deployed path; a local run with VVA_PG_DSN needs none "
+        "of it. The Lambda runtime ships boto3, so this cannot be missing there",
+        critical=False,
+    ),
+    LazyDependency(
         "langchain_google_genai",
         "the Gemini fallback — the service looks healthy until DeepSeek fails, "
         "then fails a second time on the way out",

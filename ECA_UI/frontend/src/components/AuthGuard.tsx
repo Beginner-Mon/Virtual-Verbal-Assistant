@@ -119,9 +119,14 @@ function CognitoAuthGuard() {
     return <LoadingOverlay text="Initializing Workspace..." fullScreen={true} />
   }
 
-  // Auth gate. Bypassed in demo mode via VITE_AUTH_DISABLED=true (set in .env.local) so
-  // the app runs without Cognito configured. In production (var unset) a missing session
-  // redirects to /login — mirrors the backend REQUIRE_AUTH flag.
+  // Auth gate. VITE_AUTH_DISABLED=true (in .env.local) skips it so the login
+  // screen and the layout can be worked on without signing in.
+  //
+  // It no longer mirrors anything on the backend: the REQUIRE_AUTH flag it used
+  // to pair with is gone, because a code path that turns verification off does
+  // not belong in the production artifact. The server now derives identity from
+  // a verified token in every environment, so bypassing this gate gets you the
+  // shell and a 401 from every request — which is the honest outcome.
   if (import.meta.env.VITE_AUTH_DISABLED !== 'true' && !session) {
     return <Navigate to="/login" replace />
   }

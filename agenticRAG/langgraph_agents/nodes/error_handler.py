@@ -1,30 +1,48 @@
+from langchain_core.runnables import RunnableConfig
+
 from langgraph_agents.state import AgentState, ErrorSeverity
+from langgraph_agents.nodes._persona_loader import get_ui_string
 from langgraph_agents.shared.logging import get_logger
 
 logger = get_logger("langgraph.error_handler")
 
 
-async def error_handler_node(state: AgentState) -> dict:
+async def error_handler_node(
+    state: AgentState, config: RunnableConfig | None = None
+) -> dict:
     """Generate graceful error message from errors list.
 
     After Phase 6.9: writes final_answer directly (no longer routed through
-    conversation node for styling — that node was deleted).
+    conversation node for styling — that node was deleted). The wording now
+    comes from the selected character's `## UI Strings`, because this is the one
+    message a user is guaranteed to read on a bad day and it was the only reply
+    in the product that belonged to nobody.
+
+    `config` is optional on purpose. LangGraph injects it either way, and a
+    required second parameter would break every existing caller that passes only
+    state — which is precisely why five grader tests are currently red with
+    "grader_node() missing 1 required positional argument: 'config'".
     """
     errors = state.get("errors", [])
     critical = [e for e in errors if e.get("severity") == ErrorSeverity.CRITICAL]
     critical_count = len(critical)
     total_count = len(errors)
 
+    persona_id = "eca_default"
+    if config:
+        persona_id = config.get("configurable", {}).get("persona_id") or persona_id
+
     if critical:
-        msg = "Xin lỗi, hệ thống đang gặp sự cố. Vui lòng thử lại sau."
+        msg = get_ui_string(persona_id, "error_system")
         logger.error("error_handler_invoked", extra={
             "node": "error_handler", "total_errors": total_count,
-            "critical_errors": critical_count,
+            "critical_errors": critical_count, "persona_id": persona_id,
         })
     else:
-        msg = "Đã có lỗi nhỏ, nhưng tôi vẫn cố gắng trả lời."
+        msg = get_ui_string(persona_id, "error_partial")
         logger.warning("error_handler_invoked", extra={
             "node": "error_handler", "total_errors": total_count,
+            "persona_id": persona_id,
         })
 
     return {"final_answer": msg}

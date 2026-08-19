@@ -1,0 +1,36 @@
+# Runtime dependencies for the CRUD API Lambda.
+#
+# A deliberate subset of requirements-langgraph.txt, not a copy: this function
+# serves api/crud_app.py, which is forbidden from importing the graph, the nodes
+# or shared.embedding. Leaving sentence-transformers out is the entire point —
+# it brings torch, ~2 GB, to run a handful of SQL statements.
+#
+# The list was measured rather than guessed (import crud_app in a clean
+# interpreter, diff sys.modules), then two runtime-only entries were added back
+# that no import-time probe can see:
+#   * asyncpg — imported inside PostgresClient.connect(), not at module scope
+#   * uvicorn — started by run.sh, never imported by the app
+#
+# Versions track requirements-langgraph.txt. When that file moves, move this one:
+# a Lambda running a different FastAPI than local development is a bug that only
+# shows up after deploy.
+
+# Web
+fastapi>=0.130,<0.140
+starlette>=1.0,<2.0
+uvicorn>=0.30,<1.0
+pydantic>=2
+
+# Data. boto3 is NOT listed — the Lambda runtime ships it, and db/postgres.py
+# imports it lazily only on the SSM path, so local development never needs it.
+asyncpg>=0.29.0
+redis>=5.0.0,<6.0.0
+
+# Auth. The [crypto] extra pulls `cryptography`, which has compiled binaries —
+# hence the manylinux wheel download in infra/build_crud_api.py rather than a
+# plain `pip install` from Windows.
+PyJWT[crypto]>=2.8.0
+
+# Config
+python-dotenv>=1.0.0
+PyYAML>=6.0

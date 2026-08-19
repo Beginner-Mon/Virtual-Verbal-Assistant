@@ -77,8 +77,9 @@ async def test_checkout_uses_test_session_and_keeps_demo_metadata(monkeypatch):
     user_id = "00000000-0000-0000-0000-000000000001"
     request = SimpleNamespace(headers={"origin": "http://localhost:5173"})
 
+    # No auth patching: uid is now the handler's second parameter, supplied by
+    # Depends(billing_user_id) at runtime and passed directly here.
     with (
-        patch.object(billing, "resolve_user_id", AsyncMock(return_value=user_id)),
         patch.object(
             billing,
             "_ensure_demo_account",
@@ -119,18 +120,52 @@ async def test_checkout_rejects_a_live_session_response(monkeypatch):
     with (
         patch.object(
             billing,
-            "resolve_user_id",
-            AsyncMock(return_value="00000000-0000-0000-0000-000000000001"),
-        ),
-        patch.object(
-            billing,
             "_ensure_demo_account",
             AsyncMock(return_value={"access_plan": "DEMO", "stripe_customer_id": None}),
         ),
         patch.object(billing, "_stripe_client", return_value=fake_client),
     ):
         with pytest.raises(HTTPException) as exc_info:
-            await billing.create_checkout(request, "demo")
+            await billing.create_checkout(
+                request, "00000000-0000-0000-0000-000000000001",
+            )
 
     assert exc_info.value.status_code == 502
     assert "non-sandbox" in exc_info.value.detail
+
+
+# ── The wiring, not the handlers ──────────────────────────────────────────────
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [("get", "/billing/status"), ("post", "/billing/checkout"), ("post", "/billing/portal")],
+)
+def test_billing_routes_reject_an_unauthenticated_call(method, path):
+    """Exercise Depends(billing_user_id) rather than calling handlers with a uid.
+
+    Every other test in this file passes the uid in as an argument, which skips
+    the dependency entirely — so when billing_user_id was written as
+    `(request: Request)` delegating to `current_user_id(request)`, the Request
+    landed in the credentials parameter and every real call died with an
+    AttributeError. The suite stayed green because billing_local.py overrides
+    this dependency and the tests bypass it: the only unexercised path was
+    production.
+
+    No Cognito configuration is needed. A missing Authorization header is
+    rejected before any token is verified, which is what makes this a unit test.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    app = FastAPI()
+    app.include_router(billing.router)
+
+    response = getattr(TestClient(app, raise_server_exceptions=False), method)(path)
+
+    assert response.status_code == 401, (
+        f"{method.upper()} {path} answered {response.status_code}. A 500 here means "
+        f"the dependency raised instead of refusing; a 200 means it let an "
+        f"anonymous caller through."
+    )

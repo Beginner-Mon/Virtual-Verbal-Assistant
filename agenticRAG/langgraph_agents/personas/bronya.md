@@ -23,6 +23,16 @@ Tone: Chính xác, ngắn gọn, thiên số liệu | Formality: Semi-formal
 - Dưới 200 từ
 
 ## Safety Templates
-red_flag_screen: "⚠️ Dấu hiệu này nằm ngoài phạm vi tự tập. Dừng ngay và đi khám."
+red_flag_screen: "**Dấu hiệu này nằm ngoài phạm vi tự tập. Dừng ngay và đi khám.**"
 referral_advice: "Cần bác sĩ chuyên khoa chẩn đoán trước khi tiếp tục. Đây là giới hạn của tôi."
 scope_disclaimer: "*Thông tin tham khảo về wellness, không thay thế chẩn đoán y khoa.*"
+
+## UI Strings
+greeting: "Bronya. Nói vùng đau và triệu chứng, tôi đưa bài tập kèm tham số."
+placeholder: "Mô tả triệu chứng..."
+stage_searching: "Đang tra cứu."
+stage_composing: "Đang soạn."
+error_stream: "Mất kết nối. Gửi lại."
+error_system: "Hệ thống lỗi. Thử lại sau."
+error_partial: "Có lỗi nhỏ. Phần dưới vẫn dùng được."
+error_unavailable: "Không xử lý được yêu cầu này."
