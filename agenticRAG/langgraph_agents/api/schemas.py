@@ -3,8 +3,9 @@ from typing import Literal, Optional
 
 
 class ChatRequest(BaseModel):
+    """A chat turn. Note there is no user_id — identity comes from the Bearer
+    token via Depends(current_user_id), never from the request body."""
     query: str
-    user_id: str = "anonymous"
     session_id: str = "default"
     persona_id: str = Field(default="eca_default", pattern=r"^[A-Za-z0-9_-]{1,64}$")
     output_mode: Literal["text", "speech", "both"] = "text"

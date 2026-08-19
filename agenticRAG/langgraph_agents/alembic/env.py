@@ -22,12 +22,22 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # ── DSN resolution ──────────────────────────────────────────────────────
-# Priority: env var > langgraph.yaml > alembic.ini default
+# Priority: VVA_PG_DSN_OWNER > VVA_PG_DSN > langgraph.yaml > alembic.ini default
+#
+# Migrations need the role that OWNS the tables; the application deliberately
+# runs as something less privileged. Since 007_rls the application connects as
+# `eca_user`, which has no CREATE and is subject to row-level security — running
+# `alembic upgrade` as that role fails on the first DDL statement.
+#
+# So VVA_PG_DSN keeps meaning "the DSN the application uses" and the owner
+# credential gets its own name, rather than the two silently competing for one
+# variable.
 def _resolve_dsn() -> str:
     import os
-    env_dsn = os.environ.get("VVA_PG_DSN")
-    if env_dsn:
-        return _to_asyncpg(env_dsn)
+    for name in ("VVA_PG_DSN_OWNER", "VVA_PG_DSN"):
+        env_dsn = os.environ.get(name)
+        if env_dsn:
+            return _to_asyncpg(env_dsn)
 
     # <repo_root>/config/langgraph.yaml — env.py lives at agenticRAG/langgraph_agents/alembic/
     config_path = Path(__file__).resolve().parents[3] / "config" / "langgraph.yaml"

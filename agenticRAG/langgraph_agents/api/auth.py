@@ -1,146 +1,278 @@
-"""JWT auth resolution for Clerk Development or legacy Cognito.
+"""JWT identity for Clerk or Cognito.
 
-Behaviour (controlled by REQUIRE_AUTH env var, default false):
-  - Bearer token present + valid  → user_id = sub from JWT (client value ignored).
-  - No/invalid token + REQUIRE_AUTH=false → fallback to client-supplied user_id.
-  - No/invalid token + REQUIRE_AUTH=true  → HTTP 401.
+Identity comes from the verified token and from nowhere else. There is no
+environment variable, and no branch, that lets a caller name itself: a request
+without a valid Bearer token is a 401 in every environment.
 
-Set ``AUTH_PROVIDER=clerk`` for the zero-cost development setup.  Cognito stays
-available as a compatibility path for existing deployments while they migrate.
-At startup, required provider configuration is validated when REQUIRE_AUTH=true.
+That is deliberate. The previous design carried a ``REQUIRE_AUTH`` flag whose
+"false" setting made the client-supplied ``user_id`` the identity — an
+auth-disabling code path shipped inside the production artifact, one wrong
+environment variable away from being live, and silent when it was. Environments
+are separated here by TRUST ROOT instead: development points
+``COGNITO_USER_POOL_ID`` at an ``ampx sandbox`` pool, production points it at the
+production pool. Same code on both sides, so what runs in development is what
+runs in production, and a dev-pool token is rejected by production because the
+issuer does not match.
+
+Importing this module does nothing. Configuration is read and validated by
+``verify_auth_config()``, which each app calls from its lifespan, and the JWKS
+client is built on first use. That split matters: a module that validates
+production configuration at import time forces every importer — tests included —
+to satisfy production preconditions, which is how a test suite ends up carrying
+fake credentials just to get past an import. Startup still fails loudly on bad
+config (on Lambda, an INIT failure), because the lifespan runs at boot.
+
+Tests substitute identity through FastAPI's ``dependency_overrides`` — a seam
+that lives only inside the test process and cannot be switched on by
+configuration:
+
+    app.dependency_overrides[current_user_id] = lambda: "00000000-...-0001"
+
+Configuration:
+    AUTH_PROVIDER   — "clerk" | "cognito" (default "cognito")
+    cognito         — COGNITO_REGION, COGNITO_USER_POOL_ID, COGNITO_APP_CLIENT_ID
+    clerk           — CLERK_ISSUER (+ optional CLERK_JWKS_URL, CLERK_AUDIENCE,
+                      CLERK_AUTHORIZED_PARTIES)
 """
 
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
+from functools import lru_cache
 from typing import Optional
 
 import jwt
-from fastapi import HTTPException, Request
-from jwt import PyJWKClient, PyJWKClientError
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jwt import PyJWKClient
 
+from langgraph_agents.db.postgres import bind_request_user
 from langgraph_agents.db.session_store import _to_uuid
+from langgraph_agents.shared.logging import get_logger
 
-# ── Config from env ────────────────────────────────────────────────────────────
+logger = get_logger("langgraph.api.auth")
 
-_REQUIRE_AUTH: bool = os.getenv("REQUIRE_AUTH", "false").lower() == "true"
-_AUTH_PROVIDER: str = os.getenv("AUTH_PROVIDER", "cognito").strip().lower()
-_REGION: str = os.getenv("COGNITO_REGION", "")
-_POOL_ID: str = os.getenv("COGNITO_USER_POOL_ID", "")
-_CLIENT_ID: str = os.getenv("COGNITO_APP_CLIENT_ID", "")
-_CLERK_ISSUER: str = os.getenv("CLERK_ISSUER", "").rstrip("/")
-_CLERK_JWKS_URL: str = os.getenv("CLERK_JWKS_URL", "")
-_CLERK_AUDIENCE: str = os.getenv("CLERK_AUDIENCE", "")
-_CLERK_AUTHORIZED_PARTIES: set[str] = {
-    value.strip()
-    for value in os.getenv("CLERK_AUTHORIZED_PARTIES", "").split(",")
-    if value.strip()
-}
+_UNAUTHENTICATED = HTTPException(
+    status_code=401,
+    detail="authentication required",
+    headers={"WWW-Authenticate": "Bearer"},
+)
 
-# ── Startup guard ──────────────────────────────────────────────────────────────
-# Fail at import time (module load = app startup) when REQUIRE_AUTH=true but
-# Cognito config is incomplete — avoids silently falling back to no-auth.
-if _AUTH_PROVIDER not in {"clerk", "cognito"}:
-    raise ValueError("AUTH_PROVIDER must be 'clerk' or 'cognito'")
 
-if _REQUIRE_AUTH:
-    if _AUTH_PROVIDER == "clerk" and not _CLERK_ISSUER:
-        raise ValueError("REQUIRE_AUTH=true with AUTH_PROVIDER=clerk requires CLERK_ISSUER")
-    if _AUTH_PROVIDER == "cognito" and not all([_REGION, _POOL_ID, _CLIENT_ID]):
-        raise ValueError(
-            "REQUIRE_AUTH=true with AUTH_PROVIDER=cognito requires: "
-            "COGNITO_REGION, COGNITO_USER_POOL_ID, COGNITO_APP_CLIENT_ID"
+# ── Configuration ─────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class AuthConfig:
+    provider: str
+    issuer: str
+    jwks_url: str
+    audience: Optional[str]
+    authorized_parties: frozenset[str]
+
+
+@lru_cache(maxsize=1)
+def get_auth_config() -> AuthConfig:
+    """Read and validate provider configuration. Cached for the process.
+
+    Raises ValueError when the selected provider is not fully configured. There
+    is no partially-configured mode: a service that cannot verify a token has
+    nothing useful to do, and the failure belongs at startup rather than spread
+    across every request as a 401 that looks like a user problem.
+    """
+    provider = os.getenv("AUTH_PROVIDER", "cognito").strip().lower()
+    if provider not in {"clerk", "cognito"}:
+        raise ValueError("AUTH_PROVIDER must be 'clerk' or 'cognito'")
+
+    if provider == "clerk":
+        issuer = os.getenv("CLERK_ISSUER", "").rstrip("/")
+        if not issuer:
+            raise ValueError("AUTH_PROVIDER=clerk requires CLERK_ISSUER")
+        audience = os.getenv("CLERK_AUDIENCE", "") or None
+        return AuthConfig(
+            provider=provider,
+            issuer=issuer,
+            jwks_url=os.getenv("CLERK_JWKS_URL", "") or f"{issuer}/.well-known/jwks.json",
+            audience=audience,
+            authorized_parties=frozenset(
+                value.strip()
+                for value in os.getenv("CLERK_AUTHORIZED_PARTIES", "").split(",")
+                if value.strip()
+            ),
         )
 
-# ── JWKS client (module-level cache; PyJWKClient caches keys internally) ──────
-_jwks_client: Optional[PyJWKClient] = None
-
-if _AUTH_PROVIDER == "clerk" and _CLERK_ISSUER:
-    _JWKS_URL = _CLERK_JWKS_URL or f"{_CLERK_ISSUER}/.well-known/jwks.json"
-    _ISSUER = _CLERK_ISSUER
-    _jwks_client = PyJWKClient(_JWKS_URL, cache_keys=True)
-elif _AUTH_PROVIDER == "cognito" and _REGION and _POOL_ID:
-    _JWKS_URL = (
-        f"https://cognito-idp.{_REGION}.amazonaws.com/{_POOL_ID}/.well-known/jwks.json"
+    region = os.getenv("COGNITO_REGION", "")
+    pool_id = os.getenv("COGNITO_USER_POOL_ID", "")
+    client_id = os.getenv("COGNITO_APP_CLIENT_ID", "")
+    if not all([region, pool_id, client_id]):
+        raise ValueError(
+            "AUTH_PROVIDER=cognito requires: COGNITO_REGION, COGNITO_USER_POOL_ID, "
+            "COGNITO_APP_CLIENT_ID"
+        )
+    issuer = f"https://cognito-idp.{region}.amazonaws.com/{pool_id}"
+    return AuthConfig(
+        provider=provider,
+        issuer=issuer,
+        jwks_url=f"{issuer}/.well-known/jwks.json",
+        audience=client_id,
+        authorized_parties=frozenset(),
     )
-    _ISSUER = f"https://cognito-idp.{_REGION}.amazonaws.com/{_POOL_ID}"
-    _jwks_client = PyJWKClient(_JWKS_URL, cache_keys=True)
-else:
-    _JWKS_URL = ""
-    _ISSUER = ""
+
+
+def verify_auth_config() -> None:
+    """Fail now if this process cannot verify tokens. Call from app lifespan.
+
+    Exists so the failure lands at startup — visible in a deploy, an INIT failure
+    on Lambda — instead of arriving later as a 401 on every request, which is
+    indistinguishable from users holding bad tokens.
+    """
+    config = get_auth_config()
+    logger.info("auth_config_ok", extra={
+        "provider": config.provider, "issuer": config.issuer,
+    })
+
+
+@lru_cache(maxsize=1)
+def get_jwks_client() -> PyJWKClient:
+    """The JWKS client, built on first use.
+
+    PyJWKClient fetches the key set over HTTPS on the first verification and
+    caches keys in-process afterwards. Outside a VPC this needs no NAT — same
+    reasoning as infra/infra/character_stack.py.
+    """
+    return PyJWKClient(get_auth_config().jwks_url, cache_keys=True)
+
+
+# ── Verification ──────────────────────────────────────────────────────────────
 
 
 def _verify_token(token: str) -> Optional[dict]:
-    """Verify the configured provider's session/ID token."""
-    if _jwks_client is None:
-        # No Cognito config — can't verify (only safe when REQUIRE_AUTH=false).
-        return None
+    """Verify the configured provider's session/ID token.
+
+    Returns the claims, or None when the token is not acceptable. Both failure
+    kinds return None — the caller 401s either way, which is the right answer
+    when we cannot prove who is calling — but they are logged differently on
+    purpose. See the except clauses.
+    """
     try:
-        signing_key = _jwks_client.get_signing_key_from_jwt(token)
-        if _AUTH_PROVIDER == "clerk":
+        config = get_auth_config()
+        signing_key = get_jwks_client().get_signing_key_from_jwt(token)
+
+        if config.provider == "clerk":
             decode_kwargs = {
                 "algorithms": ["RS256"],
-                "issuer": _ISSUER,
-                "options": {"verify_aud": bool(_CLERK_AUDIENCE)},
+                "issuer": config.issuer,
+                "options": {"verify_aud": bool(config.audience)},
             }
-            if _CLERK_AUDIENCE:
-                decode_kwargs["audience"] = _CLERK_AUDIENCE
+            if config.audience:
+                decode_kwargs["audience"] = config.audience
             claims = jwt.decode(token, signing_key.key, **decode_kwargs)
-            if _CLERK_AUTHORIZED_PARTIES and claims.get("azp") not in _CLERK_AUTHORIZED_PARTIES:
+            if config.authorized_parties and claims.get("azp") not in config.authorized_parties:
+                logger.debug("token_rejected", extra={"reason": "azp_not_authorized"})
                 return None
         else:
             claims = jwt.decode(
                 token,
                 signing_key.key,
                 algorithms=["RS256"],
-                audience=_CLIENT_ID,
-                issuer=_ISSUER,
+                audience=config.audience,
+                issuer=config.issuer,
             )
             if claims.get("token_use") != "id":
+                logger.debug("token_rejected", extra={"reason": "token_use_not_id"})
                 return None
+
         if not claims.get("sub"):
+            logger.debug("token_rejected", extra={"reason": "no_sub"})
             return None
         return claims
-    except (
-        jwt.exceptions.InvalidTokenError,
-        PyJWKClientError,
-        Exception,  # network errors, malformed JWKS, etc.
-    ):
+
+    except jwt.exceptions.InvalidTokenError as exc:
+        # The token itself is bad — expired, wrong audience, wrong issuer, bad
+        # signature. Routine, and the correct answer is simply "no".
+        logger.debug("token_rejected", extra={"error": str(exc)})
+        return None
+
+    except Exception as exc:
+        # Everything else means we could not REACH a verdict: the JWKS fetch
+        # failed, the key set is malformed, the provider is misconfigured. The
+        # response is still a 401 (fail closed), but this must not be logged as
+        # "bad token" — that conflation is how a Cognito outage looks like every
+        # user suddenly holding an invalid credential, with nothing in the logs
+        # to say otherwise.
+        logger.warning(
+            "token_verification_unavailable",
+            extra={"error": str(exc), "error_type": type(exc).__name__},
+        )
         return None
 
 
-async def resolve_user_id(
-    request: Request,
-    fallback_user_id: Optional[str],
+# ── The dependency ────────────────────────────────────────────────────────────
+
+# auto_error=False so a missing credential reaches our own handler: HTTPBearer's
+# built-in error is a 403, and "you did not authenticate" is a 401.
+#
+# Public because billing.py declares the same parameter: a dependency that wraps
+# current_user_id has to take credentials itself and pass them on, so it needs
+# this exact scheme object. One instance, so the OpenAPI document describes one
+# security scheme rather than two identical ones.
+bearer_scheme = HTTPBearer(
+    auto_error=False,
+    description="Cognito ID token. Locally, mint one with scripts/dev_token.ps1.",
+)
+
+
+async def current_user_id(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
 ) -> str:
-    """Extract + verify the Bearer token; return a UUID string for the caller.
+    """FastAPI dependency: the calling user's id, from the verified token only.
 
-    Args:
-        request:          FastAPI Request (used to read the Authorization header).
-        fallback_user_id: user_id supplied by the client (body / query / path).
-                          Used only when there is no valid token AND
-                          REQUIRE_AUTH=false.
+    Use as ``uid: str = Depends(current_user_id)``. Never accept a user id from
+    the request itself — a path, query or body value is input, not identity.
 
-    Returns:
-        A UUID string (via _to_uuid) representing the authenticated or demo user.
+    Declared through HTTPBearer rather than by reading the header directly, so
+    OpenAPI records that these routes need a credential: /docs then offers an
+    Authorize button, which is the difference between being able to try the API
+    from the browser and having to reach for curl.
 
     Raises:
-        HTTPException(401): when token is absent/invalid AND REQUIRE_AUTH=true.
+        HTTPException(401): no Bearer token, or one that does not verify.
     """
-    auth_header: str = request.headers.get("Authorization", "")
+    if credentials is None:
+        raise _UNAUTHENTICATED
 
-    if auth_header.startswith("Bearer "):
-        token = auth_header[len("Bearer "):]
-        claims = _verify_token(token)
-        if claims is not None:
-            # Valid token — sub is already a UUID from Cognito; _to_uuid is a
-            # no-op for valid UUIDs but keeps the return type consistent.
-            return _to_uuid(claims["sub"])
-        # Token present but invalid — treat same as absent.
+    claims = _verify_token(credentials.credentials)
+    if claims is None:
+        raise _UNAUTHENTICATED
 
-    # No valid token
-    if _REQUIRE_AUTH:
-        raise HTTPException(status_code=401, detail="authentication required")
+    # Cognito's sub is already a UUID; _to_uuid is a no-op for those and keeps
+    # the return type consistent for providers whose sub is not.
+    user_id = _to_uuid(claims["sub"])
 
-    # Demo / dev fallback — honour client-supplied user_id
-    return _to_uuid(fallback_user_id or "anonymous")
+    # Row-level security reads the user from the database session, and this is
+    # the only place that value is allowed to originate: it has just been taken
+    # from a verified signature. Binding it here rather than in each handler
+    # means a handler cannot forget, and cannot substitute something the caller
+    # supplied. See db/postgres.py.
+    bind_request_user(user_id)
+    return user_id
+
+
+def override_user(user_id: str):
+    """Build a replacement for current_user_id, for dependency_overrides.
+
+        app.dependency_overrides[current_user_id] = override_user("0000-...-0001")
+
+    Use this rather than `lambda: uid`. Overriding the dependency replaces
+    everything it does, including binding the user for row-level security — so a
+    bare lambda produces a request that is authenticated as far as the handler is
+    concerned and anonymous as far as the database is concerned. Every query then
+    fails with `unrecognized configuration parameter "app.user_id"`, which points
+    at the database rather than at the override that caused it.
+    """
+    async def _override() -> str:
+        bind_request_user(user_id)
+        return user_id
+
+    return _override

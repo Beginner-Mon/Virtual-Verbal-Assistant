@@ -7,3 +7,8 @@ __pycache__
 # CDK asset staging directory
 .cdk.staging
 cdk.out
+
+# Lambda deployment package, produced by build_crud_api.py. 16 MB of vendored
+# dependencies rebuilt from lambda/crud_api/requirements.txt on demand — a build
+# artifact, not source.
+build/

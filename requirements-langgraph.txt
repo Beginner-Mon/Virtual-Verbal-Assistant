@@ -31,6 +31,14 @@ mcp>=1.0.0
 # Database
 asyncpg>=0.29.0
 pgvector>=0.3.0
+# Reads the connection string from an SSM SecureString when VVA_PG_DSN_PARAM is
+# set — the deployed path, where a DSN in a Lambda environment variable would sit
+# in plaintext in the CloudFormation template. Declared here even though the
+# Lambda runtime already ships it, because db/postgres.py imports it and a local
+# run against SSM would otherwise fail with an ImportError. It is deliberately
+# NOT in infra/lambda/crud_api/requirements.txt: adding ~100 MB to the deployment
+# zip to ship what the runtime already provides.
+boto3>=1.34.0
 alembic>=1.13.0
 # Alembic pulls this in anyway, but `alembic/env.py` imports it directly, so it
 # is a first-class dependency and is declared as one.
