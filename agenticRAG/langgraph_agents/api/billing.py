@@ -7,7 +7,8 @@ Billing in this service is deliberately unable to process real money:
 * live webhook events are rejected before any database write; and
 * Stripe state never changes the internal ``FREE``/``DEMO`` entitlement.
 
-Clerk is used only for authentication. Clerk Billing is not used here.
+Authentication is handled by Amplify/Cognito. Billing integrates with Stripe
+directly and does not use an authentication-provider billing product.
 """
 
 from __future__ import annotations
@@ -152,7 +153,7 @@ async def billing_config():
         "sandbox_enabled": _sandbox_enabled(),
         "test_only": True,
         "real_transactions_enabled": False,
-        "clerk_billing_enabled": False,
+        "direct_stripe_integration": True,
         "stripe_configured": fully_configured,
         "checkout_enabled": _sandbox_enabled() and fully_configured,
         "webhook_configured": _webhook_configured(),

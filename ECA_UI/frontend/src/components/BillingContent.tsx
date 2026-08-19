@@ -106,8 +106,9 @@ export default function BillingContent() {
               Sandbox only — real transactions disabled
             </h3>
             <p className="mt-1 text-sm text-muted-foreground">
-              Checkout uses Stripe test data and fake cards. Clerk Billing is disabled,
-              and Stripe subscription state cannot grant paid application access.
+              Checkout uses Stripe test data and fake cards. Billing is integrated
+              directly with Stripe, and subscription state cannot grant paid
+              application access.
             </p>
           </div>
         </div>

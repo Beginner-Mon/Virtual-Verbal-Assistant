@@ -1,7 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Outlet, Navigate } from 'react-router-dom'
 import { fetchAuthSession, fetchUserAttributes, signOut } from 'aws-amplify/auth'
-import { AuthContext, type FetchUserAttributesOutput } from '../contexts/AuthContext'
+import {
+  AuthContext,
+  type AuthUser,
+  type FetchUserAttributesOutput,
+} from '../contexts/AuthContext'
 import { AUTH_ERROR_KEY, clearExpectedEmail, cognitoLogoutUrl, emailsMatch, peekExpectedEmail } from '../lib/googleSignIn'
 import LoadingOverlay from './ui/LoadingOverlay'
 
@@ -27,10 +31,10 @@ function clearLocalAuthStorage() {
 }
 
 function CognitoAuthGuard() {
-  const [user, setUser] = useState<any>(null)
+  const [user, setUser] = useState<AuthUser | undefined>(undefined)
   const [attrs, setAttrs] = useState<FetchUserAttributesOutput | undefined>(undefined)
   const [ready, setReady] = useState(false)
-  const [session, setSession] = useState<any>(null)
+  const [session, setSession] = useState<Awaited<ReturnType<typeof fetchAuthSession>> | null>(null)
   const signingOutRef = useRef(false)
 
   useEffect(() => {
@@ -83,7 +87,7 @@ function CognitoAuthGuard() {
       })
       .catch(() => {
         setSession(null)
-        setUser(null)
+        setUser(undefined)
       })
       .finally(() => setReady(true))
   }, [])
@@ -131,13 +135,7 @@ function CognitoAuthGuard() {
   )
 }
 
-// A second guard backed by Clerk used to sit here, selected when
-// VITE_CLERK_PUBLISHABLE_KEY was set. It could never run: `@clerk/react`'s hooks
-// need a <ClerkProvider> above them and none was ever added, so setting that
-// variable crashed the app on first render, while leaving it unset meant the
-// token bridge it owned was never registered and every API call went out with no
-// Authorization header. Identity is Cognito's job here — the user pool, its
-// triggers and the OAuth wiring in amplify/ are all built around it.
-//
-// `lib/clerkAuth.ts` is that bridge. It is kept, and nothing imports it now.
+// Amplify Auth and its Cognito user pool are the application's single identity
+// system. The pool, Lambda triggers, Google OAuth flow, and backend token
+// verifier all depend on the Cognito subject carried in the Amplify ID token.
 export default CognitoAuthGuard

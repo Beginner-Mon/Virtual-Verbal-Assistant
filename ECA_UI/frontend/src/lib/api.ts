@@ -49,11 +49,8 @@ const API_BASE: string = _raw || DEFAULT_API_BASE
 /**
  * Returns { Authorization: 'Bearer <idToken>' } when signed in, else {}.
  *
- * Reads the session from Amplify rather than a bridge object the UI has to
- * register. `ea57480` routed this through Clerk instead, and the registration
- * only ever happened inside a Clerk-specific guard that the app never rendered —
- * so this returned {} for every request and the API was called with no
- * credentials at all. Nothing failed loudly; requests just went out anonymous.
+ * Reads the session directly from Amplify, avoiding a separate provider bridge
+ * that could leave API requests anonymous when it was not initialized.
  */
 async function authHeader(): Promise<Record<string, string>> {
   try {
@@ -84,8 +81,7 @@ http.interceptors.request.use(async (config) => {
  *
  * The demo id is a last resort, not a normal path — it is per-browser and
  * random, so anything keyed by it (sessions, user_memory, billing) belongs to
- * the browser rather than the account. While this read the Clerk bridge it fell
- * through to that id for EVERY signed-in user.
+ * the browser rather than the account.
  *
  * Exported because the billing helpers below pass it as an explicit user_id.
  */
@@ -339,7 +335,7 @@ export interface BillingConfig {
   sandbox_enabled: boolean
   test_only: true
   real_transactions_enabled: false
-  clerk_billing_enabled: false
+  direct_stripe_integration: true
   stripe_configured: boolean
   checkout_enabled: boolean
   webhook_configured: boolean

@@ -24,7 +24,7 @@ async def test_config_is_disabled_without_explicit_opt_in(monkeypatch):
     assert result["sandbox_enabled"] is False
     assert result["checkout_enabled"] is False
     assert result["real_transactions_enabled"] is False
-    assert result["clerk_billing_enabled"] is False
+    assert result["direct_stripe_integration"] is True
 
 
 @pytest.mark.unit
