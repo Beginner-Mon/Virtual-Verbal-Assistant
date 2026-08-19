@@ -1,6 +1,6 @@
 # VVA — Status & Roadmap
 
-> Last update: 2026-08-10 (K) | Branch: `feature/langgraph-rewrite`
+> Last update: 2026-08-17 (K) | Branch: `feature/langgraph-rewrite`
 > Audience: K/N/Owner takeover after context compaction — đọc mục 0 trước tiên.
 
 ---
@@ -30,11 +30,32 @@
   - Rollback: xoá dòng `VVA_PG_DSN` → restart backend → về local.
   - Đo được sau khi chuyển vùng: Lambda warm **436 ms → 5 ms**.
   - ⚠️ **Redis + file motion/audio VẪN Ở LOCAL** — mới chuyển 1/3 kho.
-- **Git**: đã commit hết tới 10/08 (N cho phép). `agentic_rag_gemini` **đã xoá** —
-  71 file / 46 MB. CI thay entry "AgenticRAG Gemini" bằng **"LangGraph Service"**:
-  trước đó CI kiểm cái đã bị thay thế, không kiểm cái đang chạy.
-  ⚠️ **N phải restart backend :8000 bằng `firstconda`** — instance đang chạy vẫn là
-  code trước 08/08.
+  - 🔴 **`.env` trên máy N VẪN TRỎ PROJECT CŨ đã bị xoá** ⇒
+    `InvalidPasswordError`. `.env` gitignored nên push của Tri không sửa được.
+    **Cần Tri gửi DSN mới.** Nghiệm thu DB (2918 rows · 384 dims ·
+    `idx_kb_emb_embedding` · 1368 has_description) **chưa chạy được**. Tiêu chí đầy
+    đủ: `docs/ops/neon-migration-us-east-1.md`. Worklog 17/08 §2.
+- **Git**: HEAD `2991b4a`, đã push, working tree sạch. `agentic_rag_gemini` **đã
+  xoá** — 71 file / 46 MB. CI thay entry "AgenticRAG Gemini" bằng
+  **"LangGraph Service"**: trước đó CI kiểm cái đã bị thay thế, không kiểm cái
+  đang chạy.
+- **Unit tests: 331 passed / 0 failed** (19/08 sau merge, chạy bằng `firstconda`).
+  17/08 sửa 12 test đỏ: 5 cái do `grader_node` mọc thêm tham số `config`, 7 cái
+  do **K** bật `REQUIRE_AUTH=true` trong `.env` — `api/auth.py` đọc cờ đó lúc
+  import nên test SSE nhận 401. Worklog 17/08 §1.
+  > Cách chữa hôm 17/08 (`conftest` pin `REQUIRE_AUTH=false`) **không còn nữa**:
+  > 18/08 xoá hẳn cờ đó khỏi `api/auth.py`, nên không còn công tắc nào tắt auth ở
+  > bất kỳ môi trường nào. Test cần danh tính thì cài qua
+  > `app.dependency_overrides[current_user_id] = auth.override_user(uid)`.
+- **`stripe` phải cài vào `firstconda`** — `api/billing.py:19` import module-level,
+  thiếu là **backend không khởi động**, không chỉ test đỏ.
+  `pip install -r requirements-langgraph.txt`.
+- 🆕 **Voice cloning — N chốt 17/08, CHƯA LÀM.** Bắt buộc dùng giọng clone, chọn
+  `.wav` theo **nhân vật trên UI** và theo **ngôn ngữ câu trả lời**
+  (`seele_en.wav` / `reporter_vi.wav`), fallback preset khi thiếu file. Hiện
+  `voice_path: ""` ⇒ **đang chạy 100% giọng preset**. `SpeechLLm/.gitignore:105`
+  có `*.wav` nên `voices/` không nằm trong git (Tri clone về không thấy) — phải
+  sửa rule khi làm. Spec + checklist: worklog 17/08 §4.
 
 ### 🔴 CHẶN CỨNG — chỉ Owner gỡ được
 
@@ -227,8 +248,9 @@
   đột outline MToon) hoặc tắt `ssao.enabled`.
 - **Docs đã reorg** (đã ổn định từ phiên trước): root `FIX-*.md` cũ giờ ở
   `docs/{architecture,ops,plans,fixes,tracking,archive}/`. File này ở **`docs/tracking/status.md`**.
-- **Auth demo bypass**: env-gate `VITE_AUTH_DISABLED=true` trong `ECA_UI/frontend/.env.local` →
-  vào thẳng chat không cần Cognito. Production: bỏ/`=false` + `REQUIRE_AUTH=true` + 3 biến Cognito.
+- **~~Auth demo bypass~~ — không còn tồn tại (18/08).** `VITE_AUTH_DISABLED=true` giờ chỉ bỏ qua
+  màn login ở frontend; backend không có đường nào trả lời một request không token, nên mọi API
+  call sẽ 401. Chỉ dùng khi sửa giao diện màn login. Muốn dev thật thì đăng nhập vào pool sandbox.
 - **DeepSeek + Gemini**: từng hết tiền/quota cùng lúc phiên 21/07 (đã verify sống, không phải
   bug) → Owner đã nạp lại DeepSeek. Lỗi `402`/`429` lại = vấn đề tài khoản, không phải code.
 - **Gemini context caching** (phiên 22/07, `docs/worklogs/22-07-2026.md`): hạ tầng đã code + test
@@ -466,7 +488,7 @@ Thay toàn bộ animation string-match bằng state machine data-driven. Plan
 | # | Task | Ghi chú |
 |---|---|---|
 | ~~0~~ | ~~Ingest KB vào pgvector~~ | ✅ **XONG 30/07** — 2918 rows, `scripts/ingest_kb_pgvector.py`. Còn treo: chất lượng corpus (gym/fitness, không phải PT lâm sàng) — xem §0 |
-| 1 | Bật auth thật: `REQUIRE_AUTH=true` + config Cognito thật + `VITE_AUTH_DISABLED=false` | cơ chế đã code xong, chỉ chưa bật |
+| ~~1~~ | ~~Bật auth thật~~ | ✅ **XONG 18/08** — không còn gì để "bật". `REQUIRE_AUTH` đã bị xoá cùng đường code chạy khi không có token; `user_id` biến khỏi mặt API ở 12 endpoint; danh tính chỉ đến từ token đã xác minh. `VITE_AUTH_DISABLED` giờ chỉ bỏ qua màn login ở frontend — mọi API call vẫn 401. Hai môi trường tách bằng **trust root** (pool sandbox vs pool production), không bằng cờ |
 | 2 | Rate limiting cho `/chat` | chưa có gì chặn spam → cháy quota LLM |
 | 3 | Secret management (chuyển `.env` key sang secret manager) | trước khi deploy cloud |
 | 4 | Gỡ `null` khỏi CORS allow-list | tôi thêm để test `file://`, phải bỏ trước production |

@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -7,6 +8,19 @@ import pytest
 _project_root = Path(__file__).resolve().parents[2]
 _agentic_root = _project_root / "agenticRAG"
 sys.path.insert(0, str(_agentic_root))
+
+# There used to be an `os.environ.setdefault("REQUIRE_AUTH", "false")` here,
+# pinning the auth gate off for the suite so that a developer with
+# REQUIRE_AUTH=true in their gitignored `agenticRAG/.env` did not see seven SSE
+# tests fail. It survived the 19-08 merge as a line about a flag that no longer
+# exists: the flag was deleted on 18-08, and with it the only code path that
+# ever answered a request without a verified token.
+#
+# Left as a comment rather than deleted outright because the line reads as
+# documentation that a bypass is available. It is not. Tests that post to /chat
+# now install an identity through app.dependency_overrides — see
+# auth.override_user — which is a seam in one app object rather than a global
+# switch. test_auth.py::test_no_bypass_path_exists fails if the flag returns.
 
 # Auto-load .env so HAS_*_KEY checks (and live LLM calls) see the keys.
 #
