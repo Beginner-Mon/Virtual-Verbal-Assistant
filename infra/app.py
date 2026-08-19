@@ -5,6 +5,7 @@ Two tracks live side by side. Only one is synthesised by default.
 
 TRACK 2 — cost-optimised (active)
     VvaCharacterStack ── Lambda (no VPC) → Neon over TLS
+    VvaCrudApiStack   ── sessions + user memory, Lambda Web Adapter → Neon (pooled)
     VvaAssetStack     ── private S3 + CloudFront, /characters* → the Lambda
     VvaVpcStack       ── deployed, ~$0 (no NAT, no interface endpoints)
 
@@ -36,6 +37,7 @@ import aws_cdk as cdk
 from infra.vpc_stack import VpcStack
 from infra.asset_stack import AssetStack
 from infra.character_stack import CharacterStack
+from infra.crud_api_stack import CrudApiStack
 from infra.kimodo_ecs_stack import KimodoEcsStack
 
 app = cdk.App()
@@ -65,6 +67,21 @@ asset_stack = AssetStack(
     characters_fn_url=character_stack.fn_url,
     env=env,
 )
+
+# ── Track 2: session + user-memory CRUD ─────────────────────────────
+# Serves api/crud_app.py under the Lambda Web Adapter. Deliberately NOT behind
+# CloudFront: per-user data is not cacheable, and OAC signs Function URL requests
+# without hashing the body, which would make every POST need the browser to send
+# x-amz-content-sha256.
+#
+# Needs the production Cognito pool it should trust, and its package built first:
+#     python infra/build_crud_api.py
+#     cdk deploy VvaCrudApiStack -c cognito_user_pool_id=... -c cognito_app_client_id=...
+#
+# Constructed only when those are supplied, so `cdk synth` of the other stacks
+# does not fail on a stack nobody asked for.
+if app.node.try_get_context("cognito_user_pool_id"):
+    crud_api_stack = CrudApiStack(app, "VvaCrudApiStack", env=env)
 
 # ── Kimodo ECS (GPU MCP Server) ─────────────────────────────────────
 kimodo_ecs = KimodoEcsStack(app, "VvaKimodoEcsStack", vpc=vpc_stack.vpc, env=env)

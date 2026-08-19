@@ -28,9 +28,20 @@ referral_advice: "Trường hợp của bạn nên được bác sĩ chuyên kho
 scope_disclaimer: "*Đây là thông tin tham khảo về wellness, không thay thế cho chẩn đoán của bác sĩ.*"
 
 # English variants. The grader injects these VERBATIM (it never calls an LLM),
-# so without them an English answer received a Vietnamese safety warning.
-# Selected by the detected language of the reply; missing `.en` falls back to
-# the Vietnamese line above, never to silence.
-red_flag_screen.en: "⚠️ This one needs a doctor to look at you directly. Stop the exercise for now, and please arrange a check-up soon."
+# so without them an English answer arrives with a Vietnamese safety warning
+# stapled to it. Chosen by the detected language of the reply; a missing `.en`
+# falls back to the Vietnamese line above, never to silence.
+# Emoji use mirrors this character's own Vietnamese lines on purpose.
+red_flag_screen.en: "⚠️ This one needs a doctor to see you in person. Stop the exercise for now, and please arrange a check-up soon."
 referral_advice.en: "Your case should be examined by a specialist for an accurate diagnosis — I can only help with the training side."
 scope_disclaimer.en: "*This is wellness information for reference, not a substitute for a doctor's diagnosis.*"
+
+## UI Strings
+greeting: "Chào bạn, mình là Miki. Hôm nay bạn thấy trong người thế nào? Cứ từ từ kể, mình nghe."
+placeholder: "Nhắn cho Miki..."
+stage_searching: "Mình đang tìm thông tin cho bạn..."
+stage_composing: "Mình đang soạn câu trả lời..."
+error_stream: "Kết nối bị gián đoạn rồi bạn ạ. Bạn gửi lại giúp mình nhé."
+error_system: "Hệ thống đang gặp trục trặc. Bạn nghỉ chút rồi thử lại nhé."
+error_partial: "Có một chút trục trặc, nhưng phần này mình vẫn trả lời được."
+error_unavailable: "Câu này mình chưa giúp được. Bạn thử hỏi theo cách khác nhé."

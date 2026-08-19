@@ -1,11 +1,16 @@
 """FastAPI layer for the LangGraph v2.5 pipeline.
 
 POST /chat        → SSE stream (stage + tool + token + done events)
+POST /tts         → fire a TTS job, returns a task id
+GET  /tts/{task_id}/result   → poll Redis for TTS result (fallback)
 GET  /health      → liveness (no dependency checks)
 GET  /health/detailed → readiness (parallel DB/Redis/LLM checks, 3s timeout each)
-GET  /tts/{task_id}/result   → poll Redis for TTS result (fallback)
-GET  /sessions    → list user sessions
-GET  /sessions/{session_id} → load session messages
+DELETE /sessions/{sid}/messages/{mid}, DELETE /me → GDPR
+
+Sessions and user memory are not here: they come from api/routes_crud.py, which
+this app mounts and the CRUD Lambda (api/crud_app.py) serves on its own. What
+stays in this file needs the graph, or fires background work after responding —
+which a Lambda cannot do, since the sandbox freezes when the response returns.
 """
 
 from __future__ import annotations
@@ -28,26 +33,26 @@ if os.getenv("EMBEDDING_ALLOW_DOWNLOAD") != "1":
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 import redis.asyncio as aioredis
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Query, Request
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Request
 from fastapi.responses import JSONResponse
 
-from langgraph_agents.api.auth import resolve_user_id
+from langgraph_agents.api.auth import current_user_id, verify_auth_config
 from langgraph_agents.api.billing import router as billing_router
+from langgraph_agents.api.crud_app import add_cors
+from langgraph_agents.api.routes_crud import router as crud_router
 from langgraph_agents.api.schemas import (
-    ChatRequest, SessionListItem, SessionListResponse, SessionResumeResponse,
-    TTSRequest, TTSTaskResponse,
-    UserMemoryCreate, UserMemoryItem, UserMemoryListResponse,
+    ChatRequest, TTSRequest, TTSTaskResponse,
 )
 from langgraph_agents.api.sse import encode_event, stream_response
 from langgraph_agents.graph import build_graph_async
-from langgraph_agents.nodes._persona_loader import get_persona, preload_personas_from_db
+from langgraph_agents.nodes._persona_loader import (
+    get_persona, get_ui_string, preload_personas_from_db,
+)
 from langgraph_agents.services.vieneu_tts.tasks import synthesize_speech_async
 from langgraph_agents.services.vieneu_tts.voice import resolve_voice
 from langgraph_agents.nodes.summarizer import maybe_summarize
 from langgraph_agents.db.session_store import (
-    list_user_sessions, load_session_messages,
-    populate_stm_from_messages, write_session_turn,
+    load_session_messages, populate_stm_from_messages, write_session_turn,
 )
 from langgraph_agents.shared.logging import (
     configure_root_logger, get_logger, with_request_id,
@@ -101,6 +106,11 @@ async def lifespan(application: FastAPI):
     configure_root_logger(level=os.getenv("LOG_LEVEL", "INFO"))
     logger.info("startup", extra={"event": "lifespan_start"})
 
+    # Allowed to raise, and first: a process that cannot verify tokens should
+    # fail its deploy rather than answer 401 to everyone and look like a user
+    # problem. Unlike run_preflight() below, this one is not survivable.
+    verify_auth_config()
+
     # Before anything else: import the packages that are otherwise imported
     # lazily, so a missing one surfaces here instead of mid-incident. See
     # shared/preflight.py. Never raises — an operator who knowingly runs without
@@ -134,22 +144,14 @@ def create_app() -> FastAPI:
     # CORS — frontend at port 3000 (or wherever) calls backend cross-origin.
     # Browser sends OPTIONS preflight before POST /chat; without this middleware
     # FastAPI returns 405 Method Not Allowed and the browser blocks the request.
-    _ALLOWED_ORIGINS = [
-        o.strip()
-        for o in os.getenv(
-            "ALLOWED_ORIGINS",
-            "http://localhost:3000,http://localhost:8080,http://localhost:5173",
-        ).split(",")
-        if o.strip()
-    ]
-    application.add_middleware(
-        CORSMiddleware,
-        allow_origins=_ALLOWED_ORIGINS,
-        allow_credentials=False,      # "*" + credentials disallowed by spec
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # Shared with crud_app so the two deployments cannot disagree about origins.
+    add_cors(application)
     application.include_router(billing_router)
+
+    # The session and user-memory routes, defined once in routes_crud.py and
+    # served here as well as by the CRUD Lambda. Mounting the same router is
+    # what keeps local development exercising the code that gets deployed.
+    application.include_router(crud_router)
 
     @application.get("/health")
     async def health():
@@ -199,25 +201,39 @@ def create_app() -> FastAPI:
         )
 
     @application.post("/chat")
-    async def chat(req: ChatRequest, request: Request, background_tasks: BackgroundTasks):
+    async def chat(
+        req: ChatRequest,
+        request: Request,
+        background_tasks: BackgroundTasks,
+        uid: str = Depends(current_user_id),
+    ):
         graph = _get_graph()
         if graph is None:
             raise HTTPException(503, "Graph not loaded yet")
         request_id = str(uuid.uuid4())
 
-        uid = await resolve_user_id(request, req.user_id)
-
         # Lazy STM warm-up: if Redis STM is empty (new session or resumed from
         # history), backfill it from PostgreSQL before the graph runs. This is a
         # prerequisite of /chat — not a side effect of session resume — so it
         # lives here rather than in GET /sessions/{id}.
+        #
+        # The PostgreSQL read comes FIRST and is also the existence check.
+        # DELETE /sessions/{id} runs on the CRUD Lambda, which has no Redis, so
+        # it cannot clear stm:{session_id} — a deleted session can leave its
+        # short-term memory behind. Trusting a cache whose row is gone would let
+        # a deleted conversation keep talking, so a session with no rows gets its
+        # STM key dropped rather than reused.
         try:
-            if not await _get_redis().get(f"stm:{req.session_id}"):
-                recent = await load_session_messages(
-                    user_id=uid, session_id=req.session_id, limit=6,
-                )
-                if recent and recent["messages"]:
+            recent = await load_session_messages(
+                user_id=uid, session_id=req.session_id, limit=6,
+            )
+            if recent and recent["messages"]:
+                if not await _get_redis().get(f"stm:{req.session_id}"):
                     await populate_stm_from_messages(req.session_id, recent["messages"])
+            else:
+                # No rows: either a brand-new session (nothing to drop) or one
+                # that was deleted while its STM survived.
+                await _get_redis().delete(f"stm:{req.session_id}")
         except Exception as exc:
             logger.warning("stm_warmup_failed", extra={"error": str(exc)})
 
@@ -279,123 +295,22 @@ def create_app() -> FastAPI:
         except (json.JSONDecodeError, TypeError):
             raise HTTPException(500, "Corrupt task result in cache")
 
-    @application.get("/sessions", response_model=SessionListResponse)
-    async def list_sessions(request: Request, user_id: str = Query(...), limit: int = 50):
-        uid = await resolve_user_id(request, user_id)
-        rows = await list_user_sessions(user_id=uid, limit=limit)
-        return SessionListResponse(
-            sessions=[SessionListItem(**r) for r in rows],
-            total=len(rows),
-        )
-
-    @application.get("/sessions/{session_id}", response_model=SessionResumeResponse)
-    async def get_session(session_id: str, request: Request, user_id: str = Query(...), limit: int = 50):
-        uid = await resolve_user_id(request, user_id)
-        row = await load_session_messages(user_id=uid, session_id=session_id, limit=limit)
-        if not row:
-            raise HTTPException(404, "Session not found")
-        return SessionResumeResponse(
-            session_id=session_id,
-            messages=row["messages"] or [],
-            stm_populated=False,
-            last_updated=row["updated_at"].isoformat(),
-        )
-
-    @application.delete("/sessions/{user_id}/{session_id}")
-    async def delete_session(user_id: str, session_id: str, request: Request):
-        """Delete a session row + clear its Redis STM."""
-        uid = await resolve_user_id(request, user_id)
-        pg = get_pg_client()
-        await pg.connect()
-        result = await pg.execute(
-            "DELETE FROM conversations WHERE user_id = $1::uuid AND session_id = $2::uuid",
-            uid, session_id,
-        )
-        # Clear Redis STM (best-effort)
-        try:
-            await _get_redis().delete(f"stm:{session_id}")
-        except Exception:
-            pass
-        return {"deleted": session_id, "result": result}
-
-    @application.post("/users/{user_id}/memory",
-                       response_model=UserMemoryItem)
-    async def create_user_memory(user_id: str, body: UserMemoryCreate, request: Request):
-        """Create a user fact (Tier 1 always-on memory). D14 MVP: user self-reports."""
-        uid = await resolve_user_id(request, user_id)
-        pg = get_pg_client()
-        await pg.connect()
-
-        # Ensure user row exists
-        await pg.execute(
-            "INSERT INTO users (id) VALUES ($1::uuid) ON CONFLICT (id) DO NOTHING", uid,
-        )
-
-        row = await pg.fetchrow(
-            """INSERT INTO user_memory (user_id, fact_text, category)
-               VALUES ($1::uuid, $2, $3)
-               RETURNING id, created_at""",
-            uid, body.fact_text, body.category,
-        )
-        return UserMemoryItem(
-            id=str(row["id"]),
-            fact_text=body.fact_text,
-            category=body.category,
-            valid=True,
-            created_at=row["created_at"].isoformat(),
-        )
-
-    @application.get("/users/{user_id}/memory",
-                      response_model=UserMemoryListResponse)
-    async def list_user_memory(user_id: str, request: Request):
-        """List user facts (valid=true, newest first)."""
-        uid = await resolve_user_id(request, user_id)
-        pg = get_pg_client()
-        await pg.connect()
-
-        rows = await pg.fetch(
-            """SELECT id, fact_text, category, valid, created_at
-               FROM user_memory
-               WHERE user_id = $1::uuid AND valid = true
-               ORDER BY created_at DESC
-               LIMIT 50""",
-            uid,
-        )
-        return UserMemoryListResponse(facts=[
-            UserMemoryItem(
-                id=str(r["id"]),
-                fact_text=r["fact_text"],
-                category=r["category"],
-                valid=r["valid"],
-                created_at=r["created_at"].isoformat(),
-            )
-            for r in rows
-        ])
-
-    @application.delete("/users/{user_id}/memory/{fact_id}")
-    async def delete_user_memory(user_id: str, fact_id: str, request: Request):
-        """Hard-delete a user fact. Ownership verified: fact must belong to user."""
-        uid = await resolve_user_id(request, user_id)
-        pg = get_pg_client()
-        await pg.connect()
-
-        result = await pg.execute(
-            """DELETE FROM user_memory
-               WHERE id = $1::uuid AND user_id = $2::uuid""",
-            fact_id, uid,
-        )
-        if result == "DELETE 0":
-            raise HTTPException(404, "Fact not found or not owned by this user")
-        return {"deleted": fact_id}
+    # Sessions and user memory are NOT defined here — they come from
+    # crud_router (api/routes_crud.py), mounted above, and are also what the
+    # CRUD Lambda serves. The two GDPR routes below stay put because both fire
+    # background work after responding: on Lambda the sandbox freezes the moment
+    # the response is returned, so the task would never run.
 
     @application.delete("/sessions/{session_id}/messages/{message_id}")
-    async def delete_message(session_id: str, message_id: str, request: Request, user_id: str = Query(...)):
+    async def delete_message(
+        session_id: str,
+        message_id: str,
+        uid: str = Depends(current_user_id),
+    ):
         """GDPR: delete a single message + mark-dirty summaries + fire re-summarize."""
         from langgraph_agents.db.gdpr import delete_message as gdpr_delete_message
         from langgraph_agents.db.gdpr import get_dirty_chunks
         from langgraph_agents.nodes.summarizer import rebuild_dirty_chunk, _pending_summarizer_tasks
-
-        uid = await resolve_user_id(request, user_id)
 
         # Ownership verify: message must belong to user via session
         pg = get_pg_client()
@@ -419,12 +334,15 @@ def create_app() -> FastAPI:
 
         return result
 
-    @application.delete("/users/{user_id}")
-    async def delete_user_endpoint(user_id: str, request: Request):
-        """GDPR: hard-delete user + cascade all data + clear Redis STM."""
-        from langgraph_agents.db.gdpr import delete_user as gdpr_delete_user
+    @application.delete("/me")
+    async def delete_user_endpoint(uid: str = Depends(current_user_id)):
+        """GDPR: hard-delete the calling user + cascade all data + clear Redis STM.
 
-        uid = await resolve_user_id(request, user_id)
+        Deletes whoever the token says you are — there is no path parameter,
+        because a route that takes a user id to delete is one authorization bug
+        away from deleting somebody else's account.
+        """
+        from langgraph_agents.db.gdpr import delete_user as gdpr_delete_user
 
         # Collect session_ids for Redis cleanup
         pg = get_pg_client()
@@ -511,13 +429,15 @@ async def _stream_chat(req, request_id, config, state, background_tasks, request
                     conversation_stage_started = True
                 yield encode_event("token", {"content": payload["content"]})
 
-    final_answer = final_state.get("final_answer") or "Xin lỗi, tôi không thể xử lý yêu cầu này."
+    final_answer = final_state.get("final_answer") or get_ui_string(
+        req.persona_id or "eca_default", "error_unavailable"
+    )
 
     # Eager session write
     if final_state.get("final_answer"):
         try:
             await write_session_turn(
-                user_id=resolved_user_id or req.user_id,
+                user_id=resolved_user_id,
                 session_id=req.session_id,
                 user_query=req.query,
                 assistant_answer=final_answer,

@@ -181,16 +181,16 @@ _local_pg = LocalBillingPgAdapter(_local_database_path())
 billing.get_pg_client = lambda: _local_pg
 
 
-async def _resolve_local_demo_user_id(_: Any, fallback_user_id: str | None) -> str:
-    """Return a stable UUID without importing the production auth/Redis stack."""
-    candidate = fallback_user_id or "anonymous"
-    try:
-        return str(uuid.UUID(candidate))
-    except (ValueError, AttributeError):
-        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"vva-local:{candidate}"))
+async def _resolve_local_demo_user_id() -> str:
+    """A single fixed sandbox user, without the production auth stack.
 
-
-billing.resolve_user_id = _resolve_local_demo_user_id
+    Installed below through app.dependency_overrides rather than by reassigning
+    billing.billing_user_id. The difference matters: an override belongs to the
+    app object this file builds, so it cannot leak into a process that imported
+    billing for real, whereas the module attribute it replaced was global to the
+    interpreter.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "vva-local:sandbox"))
 
 
 @asynccontextmanager
@@ -209,6 +209,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(billing.router)
+    app.dependency_overrides[billing.billing_user_id] = _resolve_local_demo_user_id
 
     @app.get("/health")
     async def health():

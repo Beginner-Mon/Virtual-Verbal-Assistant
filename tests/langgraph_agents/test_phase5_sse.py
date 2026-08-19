@@ -90,7 +90,18 @@ def _set_redis(mock_redis):
 
 @pytest.fixture
 def api_client():
-    """Fixture: mock graph + redis. Creates fresh app per test."""
+    """Fixture: mock graph + redis + a fixed authenticated user.
+
+    The identity override is what lets these tests POST /chat at all. Every
+    route now takes its user from a verified Bearer token — there is no
+    anonymous path in any environment — so without it the request is rejected
+    before the graph is ever reached and every assertion below sees an empty
+    stream.
+
+    dependency_overrides is the right seam for that: it belongs to this app
+    object, so it cannot leak out of the test process the way an environment
+    variable could. See api/auth.py.
+    """
     mock_redis = MagicMock()
     mock_redis.get = AsyncMock(return_value=None)
 
@@ -101,8 +112,14 @@ def api_client():
     _set_redis(mock_redis)
 
     from langgraph_agents.api.main import create_app
+    from langgraph_agents.api.auth import current_user_id, override_user
     from fastapi.testclient import TestClient
     app = create_app()
+    # override_user rather than a bare lambda: the override replaces everything
+    # current_user_id does, including binding the user for row-level security.
+    app.dependency_overrides[current_user_id] = override_user(
+        "00000000-0000-0000-0000-000000000001"
+    )
     client = TestClient(app)
 
     yield client, mock_redis, mock_graph
@@ -347,8 +364,9 @@ class TestSchemas:
     def test_chat_request_defaults(self):
         from langgraph_agents.api.schemas import ChatRequest
         req = ChatRequest(query="Hello")
-        assert req.user_id == "anonymous"
         assert req.output_mode == "text"
+        # No user_id: identity comes from the token, never the body.
+        assert not hasattr(req, "user_id")
 
     @pytest.mark.unit
     def test_session_list_item(self):

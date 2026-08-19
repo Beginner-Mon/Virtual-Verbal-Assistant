@@ -11,7 +11,7 @@ import {
 import type { Message } from '../components/ChatMessage'
 import { getSession, listSessions, deleteSession, streamChat, type SessionMessage } from '../lib/api'
 import { useMotion } from './MotionContext'
-import testAudio from '../asset/audio/test.wav'
+import { uiStringsFor, FALLBACK_UI_STRINGS, type UiStrings } from '../lib/characterCopy'
 
 /** Key holding the *pointer* to the conversation, never the conversation.
  *
@@ -29,16 +29,28 @@ function loadOrCreateSessionId(): string {
   return fresh
 }
 
-function buildInitialMessages(): Message[] {
-  const hour = new Date().getHours()
-  const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
+/** Id of the opening message, so the greeting can be recognised and replaced
+ *  when the user switches character before saying anything. */
+const GREETING_ID = '1'
+
+/**
+ * The character's own opening line.
+ *
+ * Previously this was a time-of-day English greeting from "ECA" with a
+ * microphone emoji, identical whichever avatar was on screen \u2014 the first thing
+ * a user read contradicted the character they had just picked.
+ *
+ * The old version also attached `testAudio`, a bundled test WAV, so the speaker
+ * button on the first message played a fixed clip that had nothing to do with
+ * the text. That was debug scaffolding and is gone.
+ */
+function buildInitialMessages(ui: UiStrings): Message[] {
   return [
     {
-      id: '1',
+      id: GREETING_ID,
       role: 'assistant',
-      content: `${greeting}! My name is ECA, your Virtual Verbal Assistant. How can I help you today? \uD83C\uDF99\uFE0F`,
+      content: ui.greeting,
       timestamp: new Date(),
-      audioUrl: testAudio,
     },
   ]
 }
@@ -59,6 +71,9 @@ export interface ChatContextType {
   isTyping: boolean
   isGenerating: boolean
   stageLabel: string | null
+  /** Chat-surface copy for the selected character (greeting, placeholder,
+   *  stage labels, error line). Always fully populated — see uiStringsFor. */
+  ui: UiStrings
   webSearch: boolean
   setWebSearch: (value: boolean) => void
   voiceReply: boolean
@@ -82,9 +97,20 @@ export interface ChatContextType {
 const ChatContext = createContext<ChatContextType | null>(null)
 
 export function ChatProvider({ children }: { children: ReactNode }) {
-  const { transitionTo, selectedVrmId } = useMotion()
+  const { transitionTo, selectedVrmId, vrmOptions } = useMotion()
 
-  const [messages, setMessages] = useState<Message[]>(() => buildInitialMessages())
+  /** Copy for whoever is on screen. Falls back to neutral strings until the
+   *  catalog resolves, so nothing renders "undefined" on a cold load. */
+  const ui = useMemo(
+    () => uiStringsFor(vrmOptions.find((o) => o.id === selectedVrmId)?.character),
+    [vrmOptions, selectedVrmId],
+  )
+  const uiRef = useRef<UiStrings>(ui)
+  uiRef.current = ui
+
+  const [messages, setMessages] = useState<Message[]>(() =>
+    buildInitialMessages(FALLBACK_UI_STRINGS),
+  )
   const [input, setInput] = useState('')
   const [isTyping, setIsTyping] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
@@ -110,6 +136,25 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [activeSessionId, setActiveSessionId] = useState<string>(() => loadOrCreateSessionId())
   const abortControllerRef = useRef<AbortController | null>(null)
   const thinkingRef = useRef(false)
+
+  /* Adopt the current character's opening line — but only while that line is
+   * still the only thing on screen.
+   *
+   * Two moments need this: the catalog resolving a beat after mount (the
+   * greeting starts as the neutral fallback), and the user trying avatars
+   * before typing anything.
+   *
+   * Once a real turn exists the greeting is left alone. Rewriting it under a
+   * live conversation would put words in a character's mouth that the user
+   * never saw them say, and would silently edit history the backend has already
+   * persisted. */
+  useEffect(() => {
+    setMessages((prev) => {
+      if (prev.length !== 1 || prev[0].id !== GREETING_ID) return prev
+      if (prev[0].content === ui.greeting) return prev
+      return [{ ...prev[0], content: ui.greeting }]
+    })
+  }, [ui])
 
   const addImage = useCallback((file: File) => {
     const url = URL.createObjectURL(file)
@@ -173,7 +218,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(SESSION_KEY, fresh)
     sessionIdRef.current = fresh
     setActiveSessionId(fresh)
-    setMessages(buildInitialMessages())
+    setMessages(buildInitialMessages(uiRef.current))
     setInput('')
     setIsTyping(false)
     setStageLabel(null)
@@ -229,7 +274,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           }))
         )
       } else {
-        setMessages(buildInitialMessages())
+        setMessages(buildInitialMessages(uiRef.current))
       }
     } catch (e) {
       console.warn('[session] switch failed:', e)
@@ -294,8 +339,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
      *  and stay correct however late they land. */
     const isCurrent = () => abortControllerRef.current === controller
 
-    const STAGE_SEARCHING = '\uD83D\uDD0D \u0110ang t\xECm ki\u1EBFm th\xF4ng tin...'
-    const STAGE_COMPOSING = '\u270D\uFE0F \u0110ang so\u1EA1n c\xE2u tr\u1EA3 l\u1EDDi...'
+    /* Captured once per send rather than read per event: switching character
+     * mid-stream must not swap the label under a reply already being written,
+     * and the error line below has to match the character who greeted the
+     * user. */
+    const copy = uiRef.current
+    const STAGE_SEARCHING = copy.stage_searching
+    const STAGE_COMPOSING = copy.stage_composing
 
     try {
       await streamChat(
@@ -383,7 +433,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         setMessages((prev) =>
           prev.map((msg) =>
             msg.id === assistantMsgId
-              ? { ...msg, content: 'Sorry, something went wrong. Please try again.' }
+              ? { ...msg, content: copy.error_stream }
               : msg
           )
         )
@@ -416,6 +466,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       isTyping,
       isGenerating,
       stageLabel,
+      ui,
       webSearch,
       setWebSearch,
       voiceReply,
@@ -435,7 +486,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       deleteSessionAction,
       markSessionsClean,
     }),
-    [messages, input, isTyping, isGenerating, stageLabel, webSearch, voiceReply, isRestoring, startNewSession, handleSend, handleStop, imageUrls, addImage, removeImage, sessionList, sessionsDirty, activeSessionId, refreshSessions, switchToSession, deleteSessionAction, markSessionsClean],
+    [messages, input, isTyping, isGenerating, stageLabel, ui, webSearch, voiceReply, isRestoring, startNewSession, handleSend, handleStop, imageUrls, addImage, removeImage, sessionList, sessionsDirty, activeSessionId, refreshSessions, switchToSession, deleteSessionAction, markSessionsClean],
   )
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>

@@ -157,21 +157,21 @@ TAG_RULES: dict[str, tuple[str, Callable[[str], bool], str]] = {
         "safety",
         _has_danger_warning,
         # Template cứng (appended when missing):
-        "⚠️ **Cảnh báo quan trọng:** Triệu chứng bạn mô tả có thể là dấu hiệu "
+        "**Cảnh báo quan trọng:** Triệu chứng bạn mô tả có thể là dấu hiệu "
         "của một tình trạng nghiêm trọng. Bạn nên NGỪNG tập luyện ngay và đi "
         "khám bác sĩ chuyên khoa để được chẩn đoán chính xác.",
     ),
     "referral_advice": (
         "safety",
         _has_referral,
-        "📋 **Lưu ý:** Với câu hỏi này, tôi khuyên bạn nên tham khảo ý kiến "
+        "**Lưu ý:** Với câu hỏi này, tôi khuyên bạn nên tham khảo ý kiến "
         "bác sĩ hoặc chuyên gia y tế. Tôi chỉ có thể cung cấp thông tin tham "
         "khảo về wellness, không thay thế chẩn đoán lâm sàng.",
     ),
     "scope_disclaimer": (
         "safety",
         _has_disclaimer,
-        "📋 *Thông tin này chỉ mang tính tham khảo về wellness và không thay "
+        "*Thông tin này chỉ mang tính tham khảo về wellness và không thay "
         "thế cho việc khám và chẩn đoán y tế chuyên nghiệp.*",
     ),
 
@@ -210,21 +210,12 @@ TAG_RULES: dict[str, tuple[str, Callable[[str], bool], str]] = {
 
 # ── Default safety templates (fallback when persona doesn't define them) ──
 
+# Derived from TAG_RULES rather than restated. These three strings used to be a
+# verbatim second copy of the safety templates above, which is a standing
+# invitation to edit one and not the other — and that is exactly what nearly
+# happened while stripping the emoji out of both.
 DEFAULT_SAFETY_TEMPLATES: dict[str, str] = {
-    "red_flag_screen": (
-        "⚠️ **Cảnh báo quan trọng:** Triệu chứng bạn mô tả có thể là dấu hiệu "
-        "của một tình trạng nghiêm trọng. Bạn nên NGỪNG tập luyện ngay và đi "
-        "khám bác sĩ chuyên khoa để được chẩn đoán chính xác."
-    ),
-    "referral_advice": (
-        "📋 **Lưu ý:** Với câu hỏi này, tôi khuyên bạn nên tham khảo ý kiến "
-        "bác sĩ hoặc chuyên gia y tế. Tôi chỉ có thể cung cấp thông tin tham "
-        "khảo về wellness, không thay thế chẩn đoán lâm sàng."
-    ),
-    "scope_disclaimer": (
-        "📋 *Thông tin này chỉ mang tính tham khảo về wellness và không thay "
-        "thế cho việc khám và chẩn đoán y tế chuyên nghiệp.*"
-    ),
+    tag: rule[2] for tag, rule in TAG_RULES.items() if rule[0] == "safety"
 }
 
 # English counterparts. These are injected VERBATIM — the grader is rule-based
@@ -232,19 +223,22 @@ DEFAULT_SAFETY_TEMPLATES: dict[str, str] = {
 # perfectly English answer with a Vietnamese safety warning stapled to it. That
 # is worst precisely where it matters most: the red-flag text is the one
 # sentence the reader must not skip.
+#
+# No emoji, matching the Vietnamese set: emphasis is carried by bold text, so a
+# terminal or screen reader that drops the glyph loses nothing.
 DEFAULT_SAFETY_TEMPLATES_EN: dict[str, str] = {
     "red_flag_screen": (
-        "⚠️ **Important warning:** the symptoms you describe may indicate a "
+        "**Important warning:** the symptoms you describe may indicate a "
         "serious condition. Please STOP exercising now and see a doctor for a "
         "proper diagnosis."
     ),
     "referral_advice": (
-        "📋 **Note:** for this question I recommend consulting a doctor or a "
+        "**Note:** for this question I recommend consulting a doctor or a "
         "qualified health professional. I can only offer general wellness "
         "information, which does not replace a clinical diagnosis."
     ),
     "scope_disclaimer": (
-        "📋 *This is general wellness information and does not replace "
+        "*This is general wellness information and does not replace "
         "professional medical examination or diagnosis.*"
     ),
 }
@@ -264,12 +258,12 @@ assert _PLANNER_TAGS == set(TAG_RULES.keys()), (
 
 # ── Warning message for pass_with_warning ─────────────────────────────────
 _UNAUTHORIZED_DISCLAIMER = (
-    "📋 *Thông tin này chưa được kiểm chứng bởi chuyên gia y tế. "
+    "*Thông tin này chưa được kiểm chứng bởi chuyên gia y tế. "
     "Vui lòng tham khảo ý kiến bác sĩ trước khi áp dụng.*"
 )
 
 _UNAUTHORIZED_DISCLAIMER_EN = (
-    "📋 *This information has not been verified by a health professional. "
+    "*This information has not been verified by a health professional. "
     "Please consult a doctor before acting on it.*"
 )
 

@@ -440,11 +440,31 @@ class TestFix3MaxTokens:
         llm_mod.get_chat_model.cache_clear()
         assert llm_mod.get_chat_model("synthesizer").max_tokens == 1024
 
-    def test_synthesize_prompt_tightened_to_350_words(self):
+    def test_output_length_is_a_persona_rule_not_a_task_rule(self):
+        """Length moved out of the task prompt and into each persona.
+
+        This test used to assert `"under 350 words" in _SYNTHESIZE_TASK`. That
+        line was overriding the characters rather than bounding them: it sat far
+        closer to the generation point than the persona block, so bronya's
+        "Dưới 200 từ" was loosened to 350 and anne's "Dưới 400 từ" was tightened
+        to it.
+
+        The latency intent is unchanged, so assert both halves of the new
+        arrangement — the task prompt names no number, and no persona ships
+        without one. `max_tokens=1024` (above) remains the hard ceiling either
+        way; the prompt line was only ever a nudge.
+        """
+        import re
         from langgraph_agents.nodes.synthesizer import _SYNTHESIZE_TASK
-        assert "under 350 words" in _SYNTHESIZE_TASK
-        assert "500 words" not in _SYNTHESIZE_TASK
+        from langgraph_agents.nodes._persona_loader import get_persona
+
+        assert not re.search(r"\bunder \d+ words\b", _SYNTHESIZE_TASK)
         assert "Do not pad or repeat safety disclaimers" in _SYNTHESIZE_TASK
+
+        for persona_id in ("eca_default", "anne", "bronya", "hatsune-miku", "miki"):
+            formatting = get_persona(persona_id)["response_formatting"]
+            assert re.search(r"\d+\s*(từ|words)", formatting), \
+                f"{persona_id} sets no output length — nothing bounds it now"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

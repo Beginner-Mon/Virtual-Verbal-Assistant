@@ -138,7 +138,13 @@ async def test_synthesizer_includes_conversation_history():
     # Prior conversation must reach the model
     assert "My name is Nguyen" in contents, "prior USER turn must be in the LLM messages"
     assert "Nice to meet you, Nguyen" in contents, "prior ASSISTANT turn must be in the LLM messages"
-    # The current query must be the last message
-    assert msgs[-1].content == "what is my name"
+    # The current query must be the last thing the USER says. It is no longer
+    # the last message overall: a short voice card is appended after it, so the
+    # closest text to the generation point describes the character instead of a
+    # tag contract. See _persona_loader.build_voice_card.
+    humans = [m for m in msgs if isinstance(m, HumanMessage)]
+    assert humans[-1].content == "what is my name"
+    assert isinstance(msgs[-1], SystemMessage)
+    assert "Who is speaking" in msgs[-1].content
     # Tool noise must NOT be forwarded as conversation
     assert "[]" not in contents, "ToolMessage content must not be forwarded as history"

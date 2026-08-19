@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Optional
 
@@ -17,6 +19,37 @@ from langgraph_agents.shared.logging import get_logger
 logger = get_logger("langgraph.db.postgres")
 
 _LOCAL_DSN = "postgresql://vva:vva_dev@localhost:5433/vva"
+
+
+# Whose rows the next statement may touch. Set once per request by
+# api/auth.py::current_user_id and read by PostgresClient._scoped.
+#
+# A ContextVar rather than a module global because concurrent requests share the
+# process: a global would give whichever request wrote last, which is the same
+# cross-user leak the row-level security exists to prevent.
+#
+# It also propagates the way this codebase needs. asyncio.create_task copies the
+# current context, so the summariser fired after a response — see
+# nodes/summarizer.py, called from the /chat stream — inherits the user it was
+# produced for, with nothing threaded through by hand.
+_request_user_id: ContextVar[Optional[str]] = ContextVar(
+    "vva_request_user_id", default=None,
+)
+
+
+def bind_request_user(user_id: str) -> None:
+    """Declare whose data the rest of this request may see.
+
+    Called from the authentication dependency, after the token has been
+    verified — never from a handler, and never with a value that came from the
+    request itself.
+    """
+    _request_user_id.set(user_id)
+
+
+def current_request_user() -> Optional[str]:
+    """The bound user, or None outside a request (scripts, migrations)."""
+    return _request_user_id.get()
 
 
 # One loader for the whole service. This module used to carry its own copy of
@@ -41,8 +74,32 @@ def _load_pg_config() -> dict:
 _DSN_ENV_VARS = ("VVA_PG_DSN", "POSTGRES_DSN")
 
 
+def _dsn_from_ssm() -> Optional[str]:
+    """Read the DSN from an SSM SecureString named by `VVA_PG_DSN_PARAM`.
+
+    For Lambda, where the alternative is a plaintext connection string sitting
+    in the CloudFormation template and visible to anyone who can read the stack.
+    Mirrors what infra/lambda/layer/shared/db.py already does for the characters
+    function, so the two deployments fetch their credential the same way.
+
+    boto3 is imported here rather than at module scope: it ships with the Lambda
+    runtime but is not a dependency of running this service anywhere else.
+    """
+    param = os.environ.get("VVA_PG_DSN_PARAM")
+    if not param:
+        return None
+
+    import boto3  # lazy — present on Lambda, not required locally
+
+    value = boto3.client("ssm").get_parameter(
+        Name=param, WithDecryption=True,
+    )["Parameter"]["Value"]
+    logger.info("dsn_loaded_from_ssm", extra={"param": param})
+    return value
+
+
 def _resolve_dsn(cfg: dict) -> str:
-    """env > langgraph.yaml > local default.
+    """env > SSM > langgraph.yaml > local default.
 
     The env var MUST win, and must be checked here as well as in
     `alembic/env.py`. Until this existed, only Alembic honoured `VVA_PG_DSN`:
@@ -51,12 +108,19 @@ def _resolve_dsn(cfg: dict) -> str:
     with no error message anywhere.
 
     It is also the only place a managed DSN can live safely: `langgraph.yaml`
-    is committed, and a hosted connection string carries its password.
+    is committed, and a hosted connection string carries its password. SSM sits
+    below the env var for the same reason — a developer exporting VVA_PG_DSN to
+    point at a scratch database should not be silently overridden by whatever
+    the deployment happens to be configured with.
     """
     for name in _DSN_ENV_VARS:
         value = os.environ.get(name)
         if value:
             return value
+
+    from_ssm = _dsn_from_ssm()
+    if from_ssm:
+        return from_ssm
 
     configured = cfg.get("dsn")
     if configured:
@@ -206,67 +270,158 @@ class PostgresClient:
             await self._pool.close()
             self._pool = None
 
+    @asynccontextmanager
+    async def _scoped(self):
+        """A connection for one statement, carrying the caller's identity.
+
+        Since migration 007, the user tables have row-level security and the
+        application connects as a role the policies apply to. Every statement
+        therefore needs `app.user_id`, and it has to be set inside the same
+        transaction — a plain `SET` survives the connection and reaches whoever
+        borrows it next (measured through Neon's pooler: 98 of 200 reads saw
+        another client's id).
+
+        Doing that here rather than at each call site is the difference between
+        one change and twenty-one. It also carries into background work for
+        free: asyncio.create_task copies the context, so the summariser fired
+        after a response still runs as the user whose turn produced it.
+
+        When no user is bound — a migration, an ingest script, the Stripe
+        webhook before it establishes whose account an event belongs to — the
+        statement runs unscoped and the policies reject it. That failure is the
+        design working; see the note on error shapes in `transaction`.
+        """
+        async with self.transaction() as conn:
+            yield conn
+
     async def execute(self, query: str, *args):
         """Execute a query (INSERT, UPDATE, DELETE)."""
-        await self.connect()
-        if not STATS_ENABLED:
-            async with self._pool.acquire() as conn:
-                return await conn.execute(query, *args)
-        started = time.perf_counter()
+        started = time.perf_counter() if STATS_ENABLED else 0.0
         try:
-            async with self._pool.acquire() as conn:
+            async with self._scoped() as conn:
                 return await conn.execute(query, *args)
         finally:
-            STATS.record("execute", time.perf_counter() - started)
+            if STATS_ENABLED:
+                STATS.record("execute", time.perf_counter() - started)
 
     async def executemany(self, query: str, args):
         """Execute a query against many arg tuples (batch INSERT)."""
-        await self.connect()
-        if not STATS_ENABLED:
-            async with self._pool.acquire() as conn:
-                return await conn.executemany(query, args)
-        started = time.perf_counter()
+        started = time.perf_counter() if STATS_ENABLED else 0.0
         try:
-            async with self._pool.acquire() as conn:
+            async with self._scoped() as conn:
                 return await conn.executemany(query, args)
         finally:
-            STATS.record("executemany", time.perf_counter() - started)
+            if STATS_ENABLED:
+                STATS.record("executemany", time.perf_counter() - started)
 
     async def fetch(self, query: str, *args) -> list:
         """Fetch multiple rows."""
-        await self.connect()
-        if not STATS_ENABLED:
-            async with self._pool.acquire() as conn:
-                return await conn.fetch(query, *args)
-        started = time.perf_counter()
+        started = time.perf_counter() if STATS_ENABLED else 0.0
         try:
-            async with self._pool.acquire() as conn:
+            async with self._scoped() as conn:
                 return await conn.fetch(query, *args)
         finally:
-            STATS.record("fetch", time.perf_counter() - started)
+            if STATS_ENABLED:
+                STATS.record("fetch", time.perf_counter() - started)
 
     async def fetchrow(self, query: str, *args):
         """Fetch single row."""
-        await self.connect()
-        if not STATS_ENABLED:
-            async with self._pool.acquire() as conn:
-                return await conn.fetchrow(query, *args)
-        started = time.perf_counter()
+        started = time.perf_counter() if STATS_ENABLED else 0.0
         try:
-            async with self._pool.acquire() as conn:
+            async with self._scoped() as conn:
                 return await conn.fetchrow(query, *args)
         finally:
-            STATS.record("fetchrow", time.perf_counter() - started)
+            if STATS_ENABLED:
+                STATS.record("fetchrow", time.perf_counter() - started)
 
     async def fetchval(self, query: str, *args):
         """Fetch single value."""
-        await self.connect()
-        if not STATS_ENABLED:
-            async with self._pool.acquire() as conn:
-                return await conn.fetchval(query, *args)
-        started = time.perf_counter()
+        started = time.perf_counter() if STATS_ENABLED else 0.0
         try:
-            async with self._pool.acquire() as conn:
+            async with self._scoped() as conn:
                 return await conn.fetchval(query, *args)
         finally:
-            STATS.record("fetchval", time.perf_counter() - started)
+            if STATS_ENABLED:
+                STATS.record("fetchval", time.perf_counter() - started)
+
+    # ── Connection-scoped work ──────────────────────────────────────────
+
+    @asynccontextmanager
+    async def _raw_transaction(self):
+        """One connection, one transaction, no identity. Building block only.
+
+        Everything else goes through `transaction`, which adds the user scope.
+        """
+        await self.connect()
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                yield conn
+
+    @asynccontextmanager
+    async def transaction(self):
+        """Hold ONE connection for the whole block, scoped to the bound user.
+
+        Two jobs in one place, because they are needed together.
+
+        *One connection*: the query methods acquire and release per call, which
+        is right for one-shot statements and wrong for anything assuming two
+        statements land on the same place. That assumption is merely fragile
+        against the direct endpoint and simply false through Neon's pooled one —
+        PgBouncer lends a backend for the duration of a transaction and takes it
+        back, so consecutive statements outside a transaction can run on
+        different servers. See create_user_memory in api/routes_crud.py.
+
+        *Scoped*: row-level security reads `app.user_id`, and this is where it
+        gets set when a request has bound one. An earlier version left that to
+        `user_scope` alone, so a handler that reached for `transaction` got a
+        block with no identity and every statement in it failed.
+
+        Without a bound user the block runs unscoped and the policies reject it,
+        in one of two shapes worth recognising:
+
+            unrecognized configuration parameter "app.user_id"
+            invalid input syntax for type uuid: ""
+
+        The second appears once any transaction on that connection has set the
+        parameter: a custom GUC set with is_local reverts to the empty string
+        rather than to unset. Both are the same mistake — a query outside
+        `user_scope` — and both are errors rather than silently empty results,
+        which is the point of the policies not passing `missing_ok`.
+        """
+        user_id = _request_user_id.get()
+        if user_id is None:
+            async with self._raw_transaction() as conn:
+                yield conn
+        else:
+            async with self.user_scope(user_id) as conn:
+                yield conn
+
+    @asynccontextmanager
+    async def user_scope(self, user_id: str):
+        """A transaction carrying `app.user_id`, for row-level security.
+
+        THE ONLY SUPPORTED WAY to set that setting. Not a style preference — a
+        plain `SET app.user_id = ...` leaks the value to other users, and this
+        was measured against this database rather than inferred:
+
+            direct endpoint : 200 reads, 0 saw another client's id
+            pooled endpoint : 200 reads, 98 saw another client's id
+
+        asyncpg resets a connection's state when returning it to its own pool,
+        which is why the direct endpoint is clean. Through PgBouncer that reset
+        is sent to whichever backend is lent next, not the one still holding the
+        state, so it misses — and the CRUD Lambda runs against the pooled
+        endpoint.
+
+        `set_config(..., true)` is the fix on both counts: the third argument
+        makes the setting local to the transaction, so it cannot outlive the
+        block, and unlike `SET LOCAL` it takes a bind parameter — `SET LOCAL`
+        only accepts a literal, which would mean splicing a user id into SQL
+        text.
+
+        Uses `_raw_transaction`, not `transaction`: the latter routes back here
+        for a bound user, which would be infinite.
+        """
+        async with self._raw_transaction() as conn:
+            await conn.execute("SELECT set_config('app.user_id', $1, true)", user_id)
+            yield conn

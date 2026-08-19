@@ -29,7 +29,9 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 from langgraph_agents.state import AgentState, ErrorSeverity
 from langgraph_agents.llm import get_chat_model, get_fallback_chat_model, extract_cache_tokens
-from langgraph_agents.nodes._persona_loader import get_persona, build_persona_prompt
+from langgraph_agents.nodes._persona_loader import (
+    get_persona, build_persona_prompt, build_voice_card,
+)
 from langgraph_agents.shared.logging import get_logger
 
 logger = get_logger("langgraph.synthesizer")
@@ -37,7 +39,7 @@ logger = get_logger("langgraph.synthesizer")
 
 # ── Language rule (shared across all modes) ──────────────────────────────
 
-_LANGUAGE_RULE = """## LANGUAGE RULE (overrides persona defaults)
+_LANGUAGE_RULE = """## LANGUAGE (which language to answer in — not how to sound)
 - Supported: ENGLISH and VIETNAMESE only.
 - Detect the user's query language:
     * Mostly Vietnamese → respond entirely in Vietnamese
@@ -53,30 +55,58 @@ _LANGUAGE_RULE = """## LANGUAGE RULE (overrides persona defaults)
 
 # ── Safety warning prefix (D32: safety = ĐẦU output, mọi persona) ─────
 
-_SAFETY_PREFIX_RULES = """
-## SAFETY RULES (applied BEFORE everything else — D32, D33)
+_SAFETY_TAG_RULES = {
+    "red_flag_screen":
+        "Your FIRST sentence must warn that the symptom could be serious and "
+        "that the user should stop exercising and get it looked at.",
+    "referral_advice":
+        "Say plainly, somewhere in the answer, that the user should see a "
+        "medical professional.",
+    "scope_disclaimer":
+        "Near the end, note that this is wellness guidance and not a clinical "
+        "diagnosis.",
+}
+_SAFETY_TAGS = frozenset(_SAFETY_TAG_RULES)
 
-IF the required_outputs contain `red_flag_screen`:
-  Your FIRST sentence MUST be a clear warning that the user's symptom
-  (chest pain, numbness, dizziness, loss of control) could be serious.
-  Example: "⚠️ Đau ngực khi tập thể dục có thể là dấu hiệu nghiêm trọng.
-  Bạn nên NGỪNG tập ngay và đi khám bác sĩ."
 
-IF the required_outputs contain `referral_advice`:
-  Your response MUST include a statement that the user should consult
-  a medical professional. Use your persona voice but keep the message clear.
-  Example: "Tôi khuyên bạn nên gặp bác sĩ chuyên khoa để được chẩn đoán chính xác."
+def _build_safety_rules(persona: dict, required_outputs: list) -> str:
+    """Safety instructions for this turn, worded in the character's own voice.
 
-IF the required_outputs contain `scope_disclaimer`:
-  Include a brief note that this is wellness advice, not a substitute for
-  clinical examination. Place it near the end (grader appends boilerplate too).
-"""
+    Every persona already ships its own phrasing for these three tags (the
+    `## Safety Templates` section of personas/*.md). The generating model never
+    saw them: grader.py:368 used them to repair an answer after the fact, while
+    the prompt showed two hard-coded Vietnamese sentences in a flat clinical
+    register instead.
+
+    Those two sentences were the most imitable text in the entire prompt — a
+    complete, well-formed example sitting next to a persona that offered only
+    adjectives — so every character delivered its safety warning in the same
+    borrowed voice. Showing the character's own line instead costs nothing and
+    removes the thing that was overriding it.
+
+    Only the tags actually required this turn are described. The old block
+    listed all three whenever any one of them fired, which spent tokens telling
+    the model about obligations it did not have.
+    """
+    tags = [t for t in _SAFETY_TAG_RULES if t in required_outputs]
+    if not tags:
+        return ""
+
+    templates = persona.get("safety_templates") or {}
+    lines = []
+    for tag in tags:
+        lines.append(f"- `{tag}`: {_SAFETY_TAG_RULES[tag]}")
+        example = templates.get(tag)
+        if example:
+            lines.append(f'  Say it your way, e.g. "{example}"')
+
+    return "## SAFETY — required this turn (D32, D33)\n" + "\n".join(lines) + "\n"
 
 
 # ── Mode-specific prompts ────────────────────────────────────────────────
 
-_SYNTHESIZE_TASK = """You are a physical therapy & wellness AI assistant.
-Stay in the persona voice defined above.
+_SYNTHESIZE_TASK = """## This turn
+Answer the user's wellness question from the evidence below.
 
 {language_rule}
 {safety_rules}
@@ -92,18 +122,18 @@ Stay in the persona voice defined above.
 
 Instructions:
 - Cover ALL required_outputs tags in your response
-- Use the persona voice (tone, formatting from persona block)
 - Base your answer on the retrieved evidence — cite sources when available
 - For exercise_protocol: include sets, reps, frequency (e.g. "3 hiệp × 10 lần, 2-3 lần/tuần")
 - For exercise_steps: provide ≥2 ordered steps
 - For contraindication: list conditions where the exercise should NOT be done
 - For motion_descriptor: describe the movement + joints involved clearly
 - For evidence_citation: mention sources (document title, web source)
-- Keep under 350 words. Do not pad or repeat safety disclaimers — state each once.
+- Do not pad or repeat safety disclaimers — state each once.
+- Length and layout are set by your own Formatting rules, not by this list.
 """
 
-_REFUSE_TASK = """You are a physical therapy & wellness AI assistant.
-Stay in the persona voice defined above.
+_REFUSE_TASK = """## This turn
+You cannot answer this one. Say so honestly and point the user somewhere useful.
 
 {language_rule}
 {safety_rules}
@@ -122,12 +152,12 @@ Instructions:
 - Be honest: explain WHY you cannot answer (out of scope / no sources)
 - If referral_advice tag is present: strongly recommend seeing a medical professional
 - If no sources were found: state this clearly, suggest the user rephrase or ask a professional
-- Keep it brief but compassionate (persona voice)
+- Keep it brief
 - Do NOT invent exercises, diagnoses, or medical advice
 """
 
-_CLARIFY_TASK = """The user's query needs clarification before you can give a useful answer.
-Stay in the persona voice defined above.
+_CLARIFY_TASK = """## This turn
+The user's query needs clarification before you can give a useful answer.
 
 {language_rule}
 
@@ -138,14 +168,14 @@ Stay in the persona voice defined above.
 {tool_results}
 
 Instructions:
-- Ask the user for the specific missing information in your persona voice
-- Be warm and professional — explain WHY you need this info
+- Ask for the specific missing information
+- Explain briefly WHY you need it
 - Keep concise (1-3 sentences)
 - If tool results contain candidates (multiple matching sessions/articles), list 2-3 briefly for the user to choose
 """
 
-_CHAT_TASK = """You are responding to a casual conversational message.
-Stay in the persona voice defined above.
+_CHAT_TASK = """## This turn
+A casual conversational message — no clinical content needed.
 
 {language_rule}
 
@@ -153,7 +183,7 @@ Stay in the persona voice defined above.
 {resolved_query}
 
 Instructions:
-- Respond naturally in your persona voice (warm, brief, friendly)
+- Respond naturally, the way you would speak
 - Keep under 50 words for greetings, under 100 for follow-up chat
 - Do NOT add clinical advice unless the user explicitly asks
 - You may offer PT/wellness help in 1 short line if natural
@@ -162,13 +192,39 @@ Instructions:
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
+_EVIDENCE_PER_MESSAGE_CAP = 1500
+_EVIDENCE_CHAR_BUDGET = 4000
+
+
 def _extract_tool_results(messages: list) -> str:
-    """Format ToolMessage content from retriever tool calls."""
-    parts = []
-    for i, m in enumerate(messages, 1):
-        if isinstance(m, ToolMessage):
-            content = str(m.content)[:1500]  # Truncate per-message for context window
-            parts.append(f"[Tool {i}: {m.name}]\n{content}")
+    """Format ToolMessage content from retriever tool calls, newest kept first.
+
+    Two caps, and the total is the new one. The per-message cap alone bounded
+    nothing that mattered: `messages` is an `add_messages` list that is never
+    pruned, so a retriever second round (MAX_RETRIEVER_ROUNDS=2) and a grader
+    retry each append more ToolMessages to the same list and the dump grew with
+    them — 3,000 to 12,000 characters in practice, against a persona block of
+    roughly 800.
+
+    Selecting newest-first means a retry keeps the evidence it just went and
+    fetched rather than the round it was told to improve on. Output stays in
+    chronological order; only the dropping is done from the far end.
+
+    At least one tool result always survives, however long it is — a single
+    oversized document should be truncated, not silently omitted.
+    """
+    tools = [m for m in messages if isinstance(m, ToolMessage)]
+
+    parts: list[str] = []
+    used = 0
+    for offset, m in enumerate(reversed(tools)):
+        content = str(m.content)[:_EVIDENCE_PER_MESSAGE_CAP]
+        if parts and used + len(content) > _EVIDENCE_CHAR_BUDGET:
+            break
+        parts.append(f"[Tool {len(tools) - offset}: {m.name}]\n{content}")
+        used += len(content)
+
+    parts.reverse()
     return "\n\n".join(parts) if parts else ""
 
 
@@ -259,12 +315,14 @@ async def synthesizer_node(state: AgentState, config: RunnableConfig) -> dict:
     })
 
     # ── Build prompts ─────────────────────────────────────────────────
+    # Persona is loaded before the task prompt, not after it: the safety block
+    # is now worded from this character's own templates.
+    persona = get_persona(persona_id)
     tool_results = _extract_tool_results(state.get("messages", []))
     tags_str = ", ".join(required_outputs) if required_outputs else "(none — free response)"
 
-    # Safety rules: only inject when safety tags present (D32, D33)
-    has_safety = bool({"red_flag_screen", "referral_advice", "scope_disclaimer"} & set(required_outputs))
-    safety_rules = _SAFETY_PREFIX_RULES if has_safety else ""
+    # Safety rules: only the tags actually required this turn (D32, D33)
+    safety_rules = _build_safety_rules(persona, required_outputs)
 
     if mode == "clarify":
         task_system = _CLARIFY_TASK.format(
@@ -294,7 +352,6 @@ async def synthesizer_node(state: AgentState, config: RunnableConfig) -> dict:
         )
 
     # Persona prompt (D30: applies to ALL modes)
-    persona = get_persona(persona_id)
     persona_system = build_persona_prompt(persona, mode)
     system = f"{persona_system}\n\n---\n\n{task_system}"
 
@@ -314,7 +371,15 @@ async def synthesizer_node(state: AgentState, config: RunnableConfig) -> dict:
         if isinstance(m, HumanMessage)
         or (isinstance(m, AIMessage) and not getattr(m, "tool_calls", None))
     ]
-    msgs = [SystemMessage(content=system), *history, HumanMessage(content=resolved_query)]
+    # The voice card goes LAST — after the evidence, after the history, after the
+    # question. Whatever sits closest to the generation point is what the model
+    # answers in the register of, and until now that was a tag contract.
+    msgs = [
+        SystemMessage(content=system),
+        *history,
+        HumanMessage(content=resolved_query),
+        SystemMessage(content=build_voice_card(persona, mode)),
+    ]
 
     ai_msg = None  # kept for prompt-cache telemetry (fix #1)
     used_fallback = False
