@@ -1,5 +1,19 @@
 # FEATURE — Auth Integration: frontend ↔ backend ↔ Cognito JWT
 
+> ⚠️ **HISTORICAL — superseded 18/08/2026. Do not implement from this document.**
+>
+> The `REQUIRE_AUTH` flag this whole design turns on was **deleted**, along with
+> the code path that answered a request without a verified token. There is no
+> longer a mode in which a client-supplied `user_id` becomes the identity, and no
+> environment variable that relaxes verification. Environments are separated by
+> **trust root** — which Cognito pool they point at — not by a flag.
+>
+> A Clerk provider branch described here was likewise removed on 19/08/2026.
+>
+> Kept as the record of how the IDOR was originally closed and why the two-mode
+> design was later judged unsafe. Current behaviour:
+> `agenticRAG/langgraph_agents/api/auth.py` and `docs/worklogs/18-08-2026.md`.
+
 > Author: K | Date: 2026-06-18 | Audience: implementer (subagent) + N review
 > Owner decision 18/06: demo runs on NEW React UI, auth can be SKIPPED for demo,
 > but wire all 3 pieces now (frontend API client + JWT + backend verify).
