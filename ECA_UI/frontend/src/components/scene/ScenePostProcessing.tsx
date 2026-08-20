@@ -67,7 +67,13 @@ function ScenePostProcessing() {
     )
   }
 
-  return <EffectComposer>{effects}</EffectComposer>
+  // SSAO reads the scene normals, and the r3f wrapper bails out with
+  // `console.error("Please enable the NormalPass…")` and an empty object when
+  // the composer has none — so until now the SSAO toggle produced a console
+  // error and nothing else. Tied to the flag rather than switched on: the normal
+  // pass is a second full pass over the scene, not worth paying for when SSAO
+  // is off.
+  return <EffectComposer enableNormalPass={gfx.ssao}>{effects}</EffectComposer>
 }
 
 /**

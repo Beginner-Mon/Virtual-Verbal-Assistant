@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { fetchAuthSession } from 'aws-amplify/auth'
 import { customOutputs } from '../config/amplify'
 import { Loader2, CheckCircle2, ArrowLeft } from 'lucide-react'
+import AuthLayout from '../layouts/AuthLayout'
+import { PasswordInput } from '../components/ui/password-input'
 
 export default function SetPasswordPage() {
   const navigate = useNavigate()
@@ -54,8 +56,7 @@ export default function SetPasswordPage() {
   }
 
   return (
-    <div className="h-screen w-screen flex items-center justify-center bg-background">
-      <div className="w-full max-w-md px-6 space-y-6">
+    <AuthLayout>
         {success ? (
           <div className="space-y-6 text-center">
             <div className="flex justify-center">
@@ -91,22 +92,18 @@ export default function SetPasswordPage() {
             <div className="space-y-4">
               <div>
                 <label className="text-xs text-muted-foreground mb-1.5 block">Password</label>
-                <input
-                  type="password"
+                <PasswordInput
                   value={password}
                   onChange={e => setPassword(e.target.value)}
                   placeholder="Min. 8 characters"
-                  className="w-full text-sm text-foreground bg-secondary/40 rounded-lg px-3 py-2.5 border border-border/30 outline-none focus:border-primary/50 transition-colors"
                 />
               </div>
               <div>
                 <label className="text-xs text-muted-foreground mb-1.5 block">Confirm password</label>
-                <input
-                  type="password"
+                <PasswordInput
                   value={confirmPassword}
                   onChange={e => setConfirmPassword(e.target.value)}
                   placeholder="Re-enter password"
-                  className="w-full text-sm text-foreground bg-secondary/40 rounded-lg px-3 py-2.5 border border-border/30 outline-none focus:border-primary/50 transition-colors"
                 />
               </div>
             </div>
@@ -121,7 +118,6 @@ export default function SetPasswordPage() {
             </button>
           </>
         )}
-      </div>
-    </div>
+    </AuthLayout>
   )
 }

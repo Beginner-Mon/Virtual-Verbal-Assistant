@@ -4,6 +4,8 @@ import { signIn, resetPassword, confirmResetPassword } from 'aws-amplify/auth'
 import { startGoogleSignIn } from '../lib/googleSignIn'
 import { useRedirectIfAuthenticated } from '../hooks/useRedirectIfAuthenticated'
 import { Loader2 } from 'lucide-react'
+import AuthLayout from '../layouts/AuthLayout'
+import { PasswordInput } from '../components/ui/password-input'
 
 export default function EnterPasswordPage() {
   const navigate = useNavigate()
@@ -74,8 +76,7 @@ export default function EnterPasswordPage() {
   }
 
   return (
-    <div className="h-screen w-screen flex items-center justify-center bg-background">
-      <div className="w-full max-w-md px-6 space-y-6">
+    <AuthLayout>
         <div>
           <h1 className="text-2xl font-semibold text-foreground">Enter your password</h1>
           <div className="text-sm text-muted-foreground mt-2 bg-secondary/40 rounded-lg px-4 py-3">
@@ -91,14 +92,12 @@ export default function EnterPasswordPage() {
           <div className="space-y-4">
             <div>
               <label className="text-xs text-muted-foreground mb-1.5 block">Password</label>
-              <input
-                type="password"
+              <PasswordInput
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handleSignIn()}
                 placeholder="Enter your password"
                 autoFocus
-                className="w-full text-sm text-foreground bg-secondary/40 rounded-lg px-3 py-2.5 border border-border/30 outline-none focus:border-primary/50 transition-colors"
               />
             </div>
 
@@ -162,12 +161,10 @@ export default function EnterPasswordPage() {
             </div>
             <div>
               <label className="text-xs text-muted-foreground mb-1.5 block">New password</label>
-              <input
-                type="password"
+              <PasswordInput
                 value={newPassword}
                 onChange={e => setNewPassword(e.target.value)}
                 placeholder="Min. 8 characters"
-                className="w-full text-sm text-foreground bg-secondary/40 rounded-lg px-3 py-2.5 border border-border/30 outline-none focus:border-primary/50 transition-colors"
               />
             </div>
             <button
@@ -192,7 +189,6 @@ export default function EnterPasswordPage() {
             </button>
           </div>
         )}
-      </div>
-    </div>
+    </AuthLayout>
   )
 }
