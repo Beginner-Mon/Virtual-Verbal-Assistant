@@ -184,8 +184,10 @@ export async function initializeAmplify(): Promise<void> {
         'in ECA_UI/frontend/.env.local'
     )
     console.warn(
-      '[Auth] Demo mode sends NO Authorization header. The backend must have ' +
-        'REQUIRE_AUTH=false or every request will be 401.'
+      '[Auth] Demo mode sends NO Authorization header, so every API call will ' +
+        'return 401. There is no backend flag that relaxes this any more — ' +
+        'REQUIRE_AUTH was removed on 18-08, and the server takes identity only ' +
+        'from a verified token in every environment. Configure a pool above.'
     )
   }
 }

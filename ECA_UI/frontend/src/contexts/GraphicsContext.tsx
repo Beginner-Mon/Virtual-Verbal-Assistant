@@ -11,7 +11,10 @@ export interface GraphicsSettings {
 }
 
 const DEFAULTS: GraphicsSettings = {
-  ssao: false, // Requires NormalPass — pre-existing bug, disabled by default
+  // The NormalPass it needs is wired up now, so the toggle finally does
+  // something. Still off by default: nobody has yet seen how it treats MToon
+  // outlines (see the note in ScenePostProcessing).
+  ssao: false,
   particles: ENV_CONFIG.particles.enabled,
   vignette: true,
   showGrid: ENV_CONFIG.debug.showGrid,

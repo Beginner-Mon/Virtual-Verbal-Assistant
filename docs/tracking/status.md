@@ -30,11 +30,18 @@
   - Rollback: xoá dòng `VVA_PG_DSN` → restart backend → về local.
   - Đo được sau khi chuyển vùng: Lambda warm **436 ms → 5 ms**.
   - ⚠️ **Redis + file motion/audio VẪN Ở LOCAL** — mới chuyển 1/3 kho.
-  - 🔴 **`.env` trên máy N VẪN TRỎ PROJECT CŨ đã bị xoá** ⇒
-    `InvalidPasswordError`. `.env` gitignored nên push của Tri không sửa được.
-    **Cần Tri gửi DSN mới.** Nghiệm thu DB (2918 rows · 384 dims ·
-    `idx_kb_emb_embedding` · 1368 has_description) **chưa chạy được**. Tiêu chí đầy
-    đủ: `docs/ops/neon-migration-us-east-1.md`. Worklog 17/08 §2.
+  - ✅ **Nghiệm thu XONG 19/08**: 2918 rows · 384 dims · `idx_kb_emb_embedding` ·
+    1368 has_description · 4 characters · alembic `007_rls`. **Không mất dữ liệu.**
+    Tiêu chí đầy đủ: `docs/ops/neon-migration-us-east-1.md`. Worklog 19/08 §1.
+  - ⚠️ DSN N nhận được là **pooled**; đã đổi sang direct trước khi ghi vào `.env`.
+    Pooled vẫn connect được nên rất dễ dùng nhầm — nó chỉ hỏng khi asyncpg cần
+    prepared statement, tức hỏng lúc chạy thật chứ không hỏng lúc test.
+  - ⚠️ **RLS (`007_rls`) đang ENABLED nhưng VÔ TÁC DỤNG — N chốt 19/08 không dùng.**
+    App vẫn kết nối bằng `neondb_owner`, mà postgres miễn trừ owner khỏi chính
+    policy của bảng. `\d+` liệt kê đầy đủ policy ⇒ **người đọc schema sẽ tưởng có
+    bảo vệ**. 3 error của `test_rls_policies.py` là báo cáo đúng, không phải test
+    hỏng — nó từ chối pass rỗng. Muốn dọn: xin password `eca_user`, hoặc
+    `alembic downgrade` 007. Worklog 19/08 phần C.
 - **Git**: HEAD `2991b4a`, đã push, working tree sạch. `agentic_rag_gemini` **đã
   xoá** — 71 file / 46 MB. CI thay entry "AgenticRAG Gemini" bằng
   **"LangGraph Service"**: trước đó CI kiểm cái đã bị thay thế, không kiểm cái
@@ -50,12 +57,23 @@
 - **`stripe` phải cài vào `firstconda`** — `api/billing.py:19` import module-level,
   thiếu là **backend không khởi động**, không chỉ test đỏ.
   `pip install -r requirements-langgraph.txt`.
-- 🆕 **Voice cloning — N chốt 17/08, CHƯA LÀM.** Bắt buộc dùng giọng clone, chọn
-  `.wav` theo **nhân vật trên UI** và theo **ngôn ngữ câu trả lời**
-  (`seele_en.wav` / `reporter_vi.wav`), fallback preset khi thiếu file. Hiện
-  `voice_path: ""` ⇒ **đang chạy 100% giọng preset**. `SpeechLLm/.gitignore:105`
-  có `*.wav` nên `voices/` không nằm trong git (Tri clone về không thấy) — phải
-  sửa rule khi làm. Spec + checklist: worklog 17/08 §4.
+- ✅ **Voice cloning — code XONG 19/08, chờ N bỏ file `.wav` vào.**
+  `voices/<slug>_<lang>.wav`, suy ra từ `persona_id`; ngôn ngữ do
+  `shared/lang.py` quyết (0.25 ms, 113 test mới, 0 regression). Kiểm file tồn
+  tại + fallback preset nằm ở **SpeechLLm**, không ở LangGraph — hai process,
+  deploy xong là hai máy. `.gitignore` đã mở `!voices/*.wav`.
+  🔴 **Còn thiếu 8 file**: `<slug>_vi.wav` + `<slug>_en.wav` cho anne, bronya,
+  hatsune-miku, miki. `reporter_vi.wav`/`seele_en.wav` không khớp slug nào.
+  Worklog 19/08 §4.
+- ✅ **Trả lời sai ngôn ngữ — sửa 19/08.** `anne` **và `hatsune-miku`** trả lời
+  tiếng Việt cho câu hỏi tiếng Anh (Tri chỉ báo Anne). Nguyên nhân là toàn bộ
+  persona prompt viết bằng tiếng Việt, **không phải** một dòng luật — bản vá nằm
+  ở `_LANGUAGE_RULE` trong `synthesizer.py`, một chỗ cho cả 4. Safety templates
+  đã có bản `.en` (grader chèn nguyên văn, không qua LLM). `eca_default` trước
+  đó cảnh báo **bằng tiếng Anh** cho user Việt — đã đảo. Worklog 19/08 §5.
+- ⚠️ **Sửa persona `.md` xong PHẢI chạy `scripts/sync_personas_to_db.py`** —
+  `get_persona()` đọc cache nạp từ `characters.persona` **trước** file, nên ở đâu
+  có DB là ở đó file markdown không có tác dụng.
 
 ### 🔴 CHẶN CỨNG — chỉ Owner gỡ được
 

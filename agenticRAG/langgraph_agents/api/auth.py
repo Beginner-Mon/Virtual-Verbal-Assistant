@@ -1,4 +1,4 @@
-"""JWT identity for Clerk or Cognito.
+"""JWT identity, from AWS Cognito.
 
 Identity comes from the verified token and from nowhere else. There is no
 environment variable, and no branch, that lets a caller name itself: a request
@@ -28,11 +28,18 @@ configuration:
 
     app.dependency_overrides[current_user_id] = lambda: "00000000-...-0001"
 
+A Clerk branch lived here until 19-08. It was removed rather than documented:
+the frontend half had already been deleted (see the note at the foot of
+components/AuthGuard.tsx), so the only reachable configuration authenticated
+against a provider the UI could no longer obtain a token from — and no
+deployment ever set it, since infra/infra/crud_api_stack.py hardcodes
+AUTH_PROVIDER=cognito. Dead code in an auth path is worse than dead code
+elsewhere: it reads as a supported option.
+
 Configuration:
-    AUTH_PROVIDER   — "clerk" | "cognito" (default "cognito")
-    cognito         — COGNITO_REGION, COGNITO_USER_POOL_ID, COGNITO_APP_CLIENT_ID
-    clerk           — CLERK_ISSUER (+ optional CLERK_JWKS_URL, CLERK_AUDIENCE,
-                      CLERK_AUTHORIZED_PARTIES)
+    AUTH_PROVIDER   — must be "cognito" (default). Kept as an explicit check so a
+                      leftover value fails at startup instead of being ignored.
+    COGNITO_REGION, COGNITO_USER_POOL_ID, COGNITO_APP_CLIENT_ID — all required.
 """
 
 from __future__ import annotations
@@ -69,7 +76,6 @@ class AuthConfig:
     issuer: str
     jwks_url: str
     audience: Optional[str]
-    authorized_parties: frozenset[str]
 
 
 @lru_cache(maxsize=1)
@@ -82,24 +88,13 @@ def get_auth_config() -> AuthConfig:
     across every request as a 401 that looks like a user problem.
     """
     provider = os.getenv("AUTH_PROVIDER", "cognito").strip().lower()
-    if provider not in {"clerk", "cognito"}:
-        raise ValueError("AUTH_PROVIDER must be 'clerk' or 'cognito'")
-
-    if provider == "clerk":
-        issuer = os.getenv("CLERK_ISSUER", "").rstrip("/")
-        if not issuer:
-            raise ValueError("AUTH_PROVIDER=clerk requires CLERK_ISSUER")
-        audience = os.getenv("CLERK_AUDIENCE", "") or None
-        return AuthConfig(
-            provider=provider,
-            issuer=issuer,
-            jwks_url=os.getenv("CLERK_JWKS_URL", "") or f"{issuer}/.well-known/jwks.json",
-            audience=audience,
-            authorized_parties=frozenset(
-                value.strip()
-                for value in os.getenv("CLERK_AUTHORIZED_PARTIES", "").split(",")
-                if value.strip()
-            ),
+    if provider != "cognito":
+        raise ValueError(
+            f"AUTH_PROVIDER must be 'cognito' (got {provider!r}). A Clerk branch "
+            "used to live here and was removed on 19-08: the frontend half had "
+            "already been deleted, so the backend could verify a Clerk token that "
+            "the UI had no way to obtain. The variable is kept only so a stale "
+            "value fails loudly instead of being ignored."
         )
 
     region = os.getenv("COGNITO_REGION", "")
@@ -116,7 +111,6 @@ def get_auth_config() -> AuthConfig:
         issuer=issuer,
         jwks_url=f"{issuer}/.well-known/jwks.json",
         audience=client_id,
-        authorized_parties=frozenset(),
     )
 
 
@@ -159,29 +153,16 @@ def _verify_token(token: str) -> Optional[dict]:
         config = get_auth_config()
         signing_key = get_jwks_client().get_signing_key_from_jwt(token)
 
-        if config.provider == "clerk":
-            decode_kwargs = {
-                "algorithms": ["RS256"],
-                "issuer": config.issuer,
-                "options": {"verify_aud": bool(config.audience)},
-            }
-            if config.audience:
-                decode_kwargs["audience"] = config.audience
-            claims = jwt.decode(token, signing_key.key, **decode_kwargs)
-            if config.authorized_parties and claims.get("azp") not in config.authorized_parties:
-                logger.debug("token_rejected", extra={"reason": "azp_not_authorized"})
-                return None
-        else:
-            claims = jwt.decode(
-                token,
-                signing_key.key,
-                algorithms=["RS256"],
-                audience=config.audience,
-                issuer=config.issuer,
-            )
-            if claims.get("token_use") != "id":
-                logger.debug("token_rejected", extra={"reason": "token_use_not_id"})
-                return None
+        claims = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=config.audience,
+            issuer=config.issuer,
+        )
+        if claims.get("token_use") != "id":
+            logger.debug("token_rejected", extra={"reason": "token_use_not_id"})
+            return None
 
         if not claims.get("sub"):
             logger.debug("token_rejected", extra={"reason": "no_sub"})

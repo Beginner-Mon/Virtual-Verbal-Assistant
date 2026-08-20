@@ -140,7 +140,14 @@ function CognitoAuthGuard() {
   )
 }
 
-// Amplify Auth and its Cognito user pool are the application's single identity
-// system. The pool, Lambda triggers, Google OAuth flow, and backend token
-// verifier all depend on the Cognito subject carried in the Amplify ID token.
+// Identity is Cognito's, and only Cognito's: the user pool, its triggers and the
+// OAuth wiring under amplify/ are all built around it.
+//
+// A second guard backed by Clerk used to sit here, selected by
+// VITE_CLERK_PUBLISHABLE_KEY. It could never run — `@clerk/react`'s hooks need a
+// <ClerkProvider> above them and none was ever added — so setting that variable
+// crashed the app on first render, and leaving it unset meant its token bridge
+// was never registered and every request went out with no Authorization header.
+// The guard, the bridge (`lib/clerkAuth.ts`), the dependency and the backend's
+// matching AUTH_PROVIDER=clerk branch were all removed on 19-08.
 export default CognitoAuthGuard

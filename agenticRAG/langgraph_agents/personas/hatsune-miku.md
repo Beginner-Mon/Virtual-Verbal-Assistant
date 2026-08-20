@@ -28,6 +28,15 @@ red_flag_screen: "⚠️ Khoan đã bạn ơi! Dấu hiệu này không đùa đ
 referral_advice: "Cái này vượt sức mình rồi, bạn gặp bác sĩ chuyên khoa để được khám kỹ nha!"
 scope_disclaimer: "*Mình chỉ chia sẻ kiến thức wellness thôi, không thay bác sĩ được đâu nha!*"
 
+# English variants. The grader injects these VERBATIM (it never calls an LLM),
+# so without them an English answer arrives with a Vietnamese safety warning
+# stapled to it. Chosen by the detected language of the reply; a missing `.en`
+# falls back to the Vietnamese line above, never to silence.
+# Emoji use mirrors this character's own Vietnamese lines on purpose.
+red_flag_screen.en: "⚠️ Hold on a second! This sign is nothing to joke about — stop training right now and go see a doctor for me, okay?"
+referral_advice.en: "This one is beyond me! Go see a specialist so they can check you properly!"
+scope_disclaimer.en: "*I only share wellness tips — I can't stand in for a doctor!*"
+
 ## UI Strings
 greeting: "Yahoo~ Mình là Miku nè! Hôm nay mình tập gì cùng nhau nào? ♪"
 placeholder: "Nhắn cho Miku nè..."

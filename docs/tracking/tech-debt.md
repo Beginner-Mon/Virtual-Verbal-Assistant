@@ -147,11 +147,12 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
       Cognito. Đã đo: 50 request đồng thời → 10× 200, 40× 429. **Phải xin nâng quota trước khi
       chuyển endpoint per-user (`/sessions`, `/users/*/memory`) sang Lambda** — những cái đó không
       cache được nên sẽ ăn thẳng vào pool.
-- [ ] 🟠 **Warm duration 436 ms, gần như toàn bộ là chặng vượt Thái Bình Dương.** Lambda ở
-      `us-east-1`, Neon ở `ap-southeast-1`: mỗi lần gọi tốn 2 round trip (liveness `SELECT 1` +
-      query) × ~215 ms. Query 4 dòng có index chỉ tốn vài ms. **Chuyển Neon sang us-east-1 sẽ đưa
-      về ~20-30 ms** — nhanh hơn ~15 lần và rẻ hơn chừng đó. Cold start 3019 ms (init 539 ms + bắt
-      tay TLS/SCRAM xuyên Thái Bình Dương + Neon scale-to-zero).
+- [x] ✅ **XONG 17/08 (`73ad2ee`) — Warm duration 436 ms, gần như toàn bộ là chặng vượt Thái Bình
+      Dương.** Lambda ở `us-east-1`, Neon khi đó ở `ap-southeast-1`: mỗi lần gọi tốn 2 round trip
+      (liveness `SELECT 1` + query) × ~215 ms. Query 4 dòng có index chỉ tốn vài ms. Đã chuyển Neon
+      sang `us-east-1`, kỳ vọng ~20-30 ms. Cold start trước đó 3019 ms (init 539 ms + bắt tay
+      TLS/SCRAM xuyên Thái Bình Dương + Neon scale-to-zero).
+      **Chưa đo lại sau khi chuyển** — con số 20-30 ms vẫn là dự đoán, không phải kết quả.
 - [ ] 🟡 **Giảm memory Lambda 256 → 128 MB.** Đang dùng tối đa **103 MB**. Lambda cấp CPU tỉ lệ
       memory, nhưng hàm này **chờ mạng chứ không tính toán** nên giảm CPU gần như không làm chậm.
       Cắt đôi GB-giây. Một dòng trong `character_stack.py`.

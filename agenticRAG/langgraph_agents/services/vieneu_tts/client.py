@@ -47,15 +47,20 @@ class VieNeuTTSClient:
     def circuit_state(self) -> str:
         return self._breaker.state
 
-    async def synthesize(self, text: str, voice_path: str = None) -> dict:
-        """POST /synthesize → return audio result dict."""
+    async def synthesize(self, text: str, voice_path: str = None,
+                         language: str = None) -> dict:
+        """POST /synthesize → return audio result dict.
+
+        `language` does not change how VieNeu synthesises — the model is
+        bilingual and reads the text as it finds it. It names the output file
+        (`vieneu_<lang>_<id>.wav`) and comes back in the response, and until now
+        nobody sent it, so every file on disk claimed to be English.
+        """
         if not self._breaker.allow():
             raise ServiceUnavailableError("vieneu_tts", "circuit breaker open")
 
         url = f"{self.base_url}{self.endpoint}"
-        payload = {"text": text}
-        if voice_path:
-            payload["voice_path"] = voice_path
+        payload = self._payload(text, voice_path, language)
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -74,15 +79,24 @@ class VieNeuTTSClient:
             reason = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
             raise ServiceUnavailableError("vieneu_tts", reason) from exc
 
-    def synthesize_sync(self, text: str, voice_path: str = None) -> dict:
+    @staticmethod
+    def _payload(text: str, voice_path: str | None, language: str | None) -> dict:
+        """One place, so the sync path cannot drift from the async one."""
+        payload = {"text": text}
+        if voice_path:
+            payload["voice_path"] = voice_path
+        if language:
+            payload["language"] = language
+        return payload
+
+    def synthesize_sync(self, text: str, voice_path: str = None,
+                        language: str = None) -> dict:
         """Synchronous wrapper for Celery tasks."""
         if not self._breaker.allow():
             raise ServiceUnavailableError("vieneu_tts", "circuit breaker open")
 
         url = f"{self.base_url}{self.endpoint}"
-        payload = {"text": text}
-        if voice_path:
-            payload["voice_path"] = voice_path
+        payload = self._payload(text, voice_path, language)
 
         try:
             resp = httpx.post(url, json=payload, timeout=self.timeout)

@@ -4,6 +4,8 @@ import { AUTH_ERROR_KEY, startGoogleSignIn } from '../lib/googleSignIn'
 import { customOutputs } from '../config/amplify'
 import { useRedirectIfAuthenticated } from '../hooks/useRedirectIfAuthenticated'
 import { Loader2 } from 'lucide-react'
+import AuthLayout from '../layouts/AuthLayout'
+import EcaLogo from '../components/EcaLogo'
 
 export default function LoginPage() {
   const navigate = useNavigate()
@@ -108,17 +110,25 @@ export default function LoginPage() {
   const lookedUpEmail = result?.email ?? ''
 
   return (
-    <div className="h-screen w-screen flex items-center justify-center bg-background">
-      <div className="w-full max-w-md px-6 space-y-6">
-        <div className="text-center">
-          <h1 className="text-3xl font-semibold text-foreground">
-            Project{' '}
-            <span className="bg-gradient-to-r from-blue-400 via-purple-500 to-pink-400 bg-clip-text text-transparent">
+    <AuthLayout>
+      <div>
+        {/* The logo reuses the exact gradient stops of the ECA wordmark, so the
+            two accents read as one system rather than two similar gradients.
+            "Project" drops to muted on purpose — it is the category, ECA is the
+            name — which is what keeps it from looking like a word left behind. */}
+        <div className="flex flex-col items-center gap-0">
+          <EcaLogo gradient className="w-32 h-32" />
+          <h1 className="text-3xl tracking-tight">
+            <span className="font-normal text-muted-foreground">Project</span>{' '}
+            <span className="font-semibold bg-gradient-to-r from-blue-400 via-purple-500 to-pink-400 bg-clip-text text-transparent">
               ECA
             </span>
           </h1>
-          <p className="text-sm text-muted-foreground mt-2">Enter your email to continue.</p>
         </div>
+        <p className="text-sm text-muted-foreground mt-3 text-center">
+          Enter your email to continue.
+        </p>
+      </div>
 
         {mismatchError && (
           <div className="text-sm text-destructive bg-destructive/10 py-2 px-3 rounded-lg">
@@ -138,7 +148,7 @@ export default function LoginPage() {
               value={email}
               onChange={e => setEmail(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleLookup()}
-              placeholder="you@example.com"
+              placeholder="you@ordinary.studio"
               autoFocus
               className="w-full text-sm text-foreground bg-secondary/40 rounded-lg px-3 py-2.5 border border-border/30 outline-none focus:border-primary/50 transition-colors"
             />
@@ -245,7 +255,6 @@ export default function LoginPage() {
             </button>
           </>
         )}
-      </div>
-    </div>
+    </AuthLayout>
   )
 }

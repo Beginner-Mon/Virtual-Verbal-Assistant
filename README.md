@@ -91,7 +91,7 @@ flowchart LR
 | **Retrieval** | PostgreSQL 16 + **pgvector** (HNSW, 384-dim), `intfloat/multilingual-e5-small` (query:/passage: prefixes), SearXNG metasearch |
 | **Memory** | Redis STM + Postgres/pgvector LTM, background summarizer, GDPR delete + re-summarize |
 | **API** | FastAPI, Server-Sent Events (token streaming), Pydantic schemas |
-| **Auth** | AWS Cognito ID-token verification (JWKS · RS256 · audience · issuer), env-gated |
+| **Auth** | AWS Cognito ID-token verification (JWKS · RS256 · audience · issuer). Mandatory in every environment — no flag relaxes it; dev and production differ only in which pool they trust |
 | **Frontend** | React 19, Vite, TypeScript, Tailwind/shadcn, three.js + `@pixiv/three-vrm` avatar with a channel-based **facial-animation** system (R3F-native), axios (REST) + fetch (SSE stream) |
 | **Infra** | Docker Compose (Postgres · Redis · SearXNG), Alembic migrations |
 

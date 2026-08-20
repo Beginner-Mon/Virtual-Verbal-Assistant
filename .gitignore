@@ -5,6 +5,29 @@ INTEGRATION_SETUP.md
 # Python cache artifacts
 __pycache__/
 *.py[cod]
+.pytest_cache/
+
+# Virtualenvs and build output, at ANY depth.
+#
+# These used to be covered only by per-directory .gitignore files that happened
+# to sit in the right place — infra/, ECA_UI/frontend/, text-to-motion/DART/.
+# agenticRAG/, the largest first-party Python package, has no .gitignore of its
+# own at all, so a venv created there was completely untracked-but-unignored and
+# one `git add -A` away from being committed.
+#
+# `.venv*` rather than `.venv`: DART needed a bespoke `.venv-mcp/` line at
+# .gitignore:186 precisely because a bare `.venv` does not match `.venv-mcp`.
+# NOT `env/`: text-to-motion/DART/control/env is source code
+# (env_reach_location_mld.py), not a virtualenv. A bare `env/` rule would make it
+# permanently un-addable, and the failure would look like "git is losing my file".
+.venv*/
+venv/
+node_modules/
+dist/
+build/
+cdk.out/
+.cdk.staging/
+*.egg-info/
 
 # Runtime logs and temp outputs
 *.log

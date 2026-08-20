@@ -4,6 +4,8 @@ import { signUp, confirmSignUp, signIn } from 'aws-amplify/auth'
 import { startGoogleSignIn } from '../lib/googleSignIn'
 import { useRedirectIfAuthenticated } from '../hooks/useRedirectIfAuthenticated'
 import { Loader2 } from 'lucide-react'
+import AuthLayout from '../layouts/AuthLayout'
+import { PasswordInput } from '../components/ui/password-input'
 
 export default function CreateAccountPage() {
   const navigate = useNavigate()
@@ -64,8 +66,7 @@ export default function CreateAccountPage() {
   }
 
   return (
-    <div className="h-screen w-screen flex items-center justify-center bg-background">
-      <div className="w-full max-w-md px-6 space-y-6">
+    <AuthLayout>
         {step === 'form' && (
           <>
             <div>
@@ -92,22 +93,18 @@ export default function CreateAccountPage() {
               </div>
               <div>
                 <label className="text-xs text-muted-foreground mb-1.5 block">Password</label>
-                <input
-                  type="password"
+                <PasswordInput
                   value={password}
                   onChange={e => setPassword(e.target.value)}
                   placeholder="Min. 8 characters"
-                  className="w-full text-sm text-foreground bg-secondary/40 rounded-lg px-3 py-2.5 border border-border/30 outline-none focus:border-primary/50 transition-colors"
                 />
               </div>
               <div>
                 <label className="text-xs text-muted-foreground mb-1.5 block">Confirm password</label>
-                <input
-                  type="password"
+                <PasswordInput
                   value={confirmPassword}
                   onChange={e => setConfirmPassword(e.target.value)}
                   placeholder="Re-enter password"
-                  className="w-full text-sm text-foreground bg-secondary/40 rounded-lg px-3 py-2.5 border border-border/30 outline-none focus:border-primary/50 transition-colors"
                 />
               </div>
 
@@ -181,7 +178,6 @@ export default function CreateAccountPage() {
             <p className="text-sm text-muted-foreground">Redirecting...</p>
           </div>
         )}
-      </div>
-    </div>
+    </AuthLayout>
   )
 }
