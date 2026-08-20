@@ -87,7 +87,7 @@ def test_importing_auth_needs_no_configuration():
         import os, sys
         sys.path.insert(0, {str(agentic_root)!r})
         for var in ("AUTH_PROVIDER", "COGNITO_REGION", "COGNITO_USER_POOL_ID",
-                    "COGNITO_APP_CLIENT_ID", "CLERK_ISSUER"):
+                    "COGNITO_APP_CLIENT_ID"):
             os.environ.pop(var, None)
         import langgraph_agents.api.auth  # must not raise
         print("IMPORT_OK")
@@ -111,11 +111,22 @@ def test_verify_auth_config_raises_when_unconfigured(auth_config, monkeypatch):
 
 
 @pytest.mark.unit
-def test_verify_auth_config_rejects_unknown_provider(auth_config, monkeypatch):
-    monkeypatch.setenv("AUTH_PROVIDER", "auth0")
+@pytest.mark.parametrize("provider", ["auth0", "clerk"])
+def test_verify_auth_config_rejects_non_cognito_provider(
+    auth_config, monkeypatch, provider,
+):
+    """Only cognito is supported, and "clerk" is the case that matters.
+
+    A Clerk branch was removed on 19-08 because its frontend half had already
+    been deleted — the backend would happily verify a token the UI had no way to
+    obtain. `clerk` is parametrized here rather than left to the generic unknown-
+    provider case so that re-adding the branch without re-adding the frontend
+    turns this test red instead of silently reopening that path.
+    """
+    monkeypatch.setenv("AUTH_PROVIDER", provider)
     auth_config.get_auth_config.cache_clear()
 
-    with pytest.raises(ValueError, match="clerk|cognito"):
+    with pytest.raises(ValueError, match="cognito"):
         auth_config.verify_auth_config()
 
 
