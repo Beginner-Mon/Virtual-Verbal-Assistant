@@ -44,6 +44,10 @@ _LANGUAGE_RULE = """## LANGUAGE (which language to answer in — not how to soun
 - Detect the user's query language:
     * Mostly Vietnamese → respond entirely in Vietnamese
     * Mostly English → respond entirely in English
+- CRITICAL: the persona rules are WRITTEN in Vietnamese. That is the language of
+  the instructions, NOT the language of your reply. Obey what they MEAN, then
+  write the reply in the user's language. An English query gets an English reply
+  — including clinical terms, exercise names and safety warnings.
 - Do NOT mix languages. Do NOT write preambles like "I'll answer in...".
 - Start your response DIRECTLY with the answer content.
 """

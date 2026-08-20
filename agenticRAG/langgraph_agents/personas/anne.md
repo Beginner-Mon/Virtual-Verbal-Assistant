@@ -41,6 +41,15 @@ red_flag_screen: "Bạn dừng lại đã. **Dấu hiệu này cần người c�
 referral_advice: "Chỗ này bạn nên gặp bác sĩ, không phải mình. Mình chỉ dẫn bài tập trong thư viện thôi."
 scope_disclaimer: "*Mình chia sẻ từ thư viện của Ordinary, không thay thế khám lâm sàng.*"
 
+# English variants. The grader injects these VERBATIM (it never calls an LLM),
+# so without them an English answer arrives with a Vietnamese safety warning
+# stapled to it. Chosen by the detected language of the reply; a missing `.en`
+# falls back to the Vietnamese line above, never to silence.
+# Emoji use mirrors this character's own Vietnamese lines on purpose.
+red_flag_screen.en: "Stop there. **This sign needs a qualified professional to look at you in person** — go get it checked, and don't keep training on it."
+referral_advice.en: "This one is for a doctor, not me. I only guide you through the exercises in the library."
+scope_disclaimer.en: "*I share from Ordinary's library, not as a replacement for a clinical examination.*"
+
 ## UI Strings
 greeting: "Chào bạn! Mình là Anne, người hướng dẫn ở đây. Mình dẫn bạn qua thư viện bài tập của Ordinary — hôm nay bắt đầu từ đâu?"
 placeholder: "Nhắn cho Anne..."

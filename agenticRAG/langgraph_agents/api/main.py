@@ -49,6 +49,7 @@ from langgraph_agents.nodes._persona_loader import (
     get_persona, get_ui_string, preload_personas_from_db,
 )
 from langgraph_agents.services.vieneu_tts.tasks import synthesize_speech_async
+from langgraph_agents.services.vieneu_tts.voice import resolve_voice
 from langgraph_agents.nodes.summarizer import maybe_summarize
 from langgraph_agents.db.session_store import (
     load_session_messages, populate_stm_from_messages, write_session_turn,
@@ -265,11 +266,18 @@ def create_app() -> FastAPI:
         """
         task_id = str(uuid.uuid4())
         persona = get_persona(body.persona_id)
-        voice_path = persona.get("voice_identity", {}).get("voice_path")
+        # No query to fall back on here — /tts is given loose text, not a turn.
+        # The character's own language is the last resort instead.
+        voice_path, language = resolve_voice(
+            body.persona_id,
+            body.text,
+            persona_lang=persona.get("voice_identity", {}).get("language", "vi"),
+        )
         task = asyncio.create_task(synthesize_speech_async(
             text=body.text,
             task_id=task_id,
             voice_path=voice_path,
+            language=language,
         ))
         # Same reason as the /chat path: without a strong reference the event
         # loop may garbage-collect a task nobody is awaiting.
@@ -451,7 +459,15 @@ async def _stream_chat(req, request_id, config, state, background_tasks, request
     if req.output_mode in ("speech", "both") and final_state.get("final_answer"):
         speech_task_id = str(uuid.uuid4())
         persona = get_persona(req.persona_id)
-        voice_path = persona.get("voice_identity", {}).get("voice_path")
+        # The query is the tie-breaker: a reply of "Có." or "OK" carries no
+        # language signal, and the synthesizer was told to answer in the
+        # query's language anyway.
+        voice_path, speech_language = resolve_voice(
+            req.persona_id,
+            final_answer,
+            query=req.query,
+            persona_lang=persona.get("voice_identity", {}).get("language", "vi"),
+        )
         # asyncio.create_task fires immediately (parallel with the polling loop
         # below). FastAPI BackgroundTasks would run only AFTER the streaming
         # response generator returns — but we're still streaming, so the task
@@ -461,6 +477,7 @@ async def _stream_chat(req, request_id, config, state, background_tasks, request
             text=final_answer,
             task_id=speech_task_id,
             voice_path=voice_path,
+            language=speech_language,
         ))
         _pending_tts_tasks.add(_tts_task)
         _tts_task.add_done_callback(_pending_tts_tasks.discard)

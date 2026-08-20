@@ -24,6 +24,7 @@ async def synthesize_speech_async(
     text: str,
     task_id: str,
     voice_path: str | None = None,
+    language: str | None = None,
 ) -> None:
     """Run VieNeu-TTS synthesize, persist result to Redis.
 
@@ -34,10 +35,13 @@ async def synthesize_speech_async(
     full audio URL via {base}/audio/{filename} for the UI to play.
     """
     client = get_vieneu_tts_client()
-    logger.info("tts_start task_id=%s text_len=%d voice_path=%s", task_id, len(text), voice_path)
+    logger.info(
+        "tts_start task_id=%s text_len=%d voice_path=%s language=%s",
+        task_id, len(text), voice_path, language,
+    )
 
     try:
-        result = await client.synthesize(text=text, voice_path=voice_path)
+        result = await client.synthesize(text=text, voice_path=voice_path, language=language)
         logger.info("tts_synthesize_done task_id=%s result_keys=%s", task_id, list(result.keys()))
         audio_file = result.get("audio_file") or result.get("audio_url", "")
         # If service already returned full URL, use as-is; else build from filename.
