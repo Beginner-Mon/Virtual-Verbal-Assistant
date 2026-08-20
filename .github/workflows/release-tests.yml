@@ -139,14 +139,22 @@ jobs:
       # The env vars are placeholders, not the deployed values. vite.config.ts
       # fails the build when a required one is missing, and that check is the
       # point of running a build here: it is what would have caught the
-      # deployment that shipped without VITE_ASSET_BASE_URL. What the values
-      # ARE does not matter to a compile — only that the gate sees them, so CI
-      # tests the gate rather than depending on secrets.
+      # deployment that shipped without VITE_ASSET_BASE_URL. What the values ARE
+      # does not matter to a compile — only that the gate sees them, so CI tests
+      # the gate rather than depending on secrets.
+      #
+      # The auth trio is here because amplify_outputs.json is gitignored and so
+      # never exists in CI. On Amplify itself the build generates that file and
+      # these three are not needed — which is exactly the distinction the gate
+      # got wrong on its first day, failing a release build that would have
+      # worked.
       - name: Build
         env:
           VITE_API_GATEWAY_URL: https://ci.invalid/v1
           VITE_ASSET_BASE_URL: https://ci.invalid
           VITE_AUTH_API_URL: https://ci.invalid/prod/
+          VITE_USER_POOL_ID: us-east-1_ciinvalid
+          VITE_USER_POOL_WEB_CLIENT_ID: ciinvalidclientid
         run: npm run build
 
       # The gate has to fail too, or it is not a gate. A build that succeeds with
@@ -155,6 +163,8 @@ jobs:
         env:
           VITE_ASSET_BASE_URL: https://ci.invalid
           VITE_AUTH_API_URL: https://ci.invalid/prod/
+          VITE_USER_POOL_ID: us-east-1_ciinvalid
+          VITE_USER_POOL_WEB_CLIENT_ID: ciinvalidclientid
         run: |
           if npm run build > /dev/null 2>&1; then
             echo "::error::vite.config.ts built successfully without VITE_API_GATEWAY_URL — the required-env check is not running"
