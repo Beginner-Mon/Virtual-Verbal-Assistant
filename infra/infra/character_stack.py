@@ -215,15 +215,10 @@ class CharacterStack(Stack):
         ))
 
         # ── Function URL ────────────────────────────────────────────────
-        # AWS_IAM, so the URL is not publicly callable. AssetStack attaches it
-        # as a CloudFront origin with OAC, which signs requests with SigV4.
-
-        self.fn_url = self.fn_characters.add_function_url(
-            auth_type=lambda_.FunctionUrlAuthType.AWS_IAM,
-        )
-
-        CfnOutput(
-            self, "CharactersFunctionUrl",
-            value=self.fn_url.url,
-            description="Direct Function URL (IAM-signed only; browsers use CloudFront)",
-        )
+        # No Function URL since 20-08. This function is reached through
+        # VvaRestApiStack, which invokes it directly — a Function URL would be a
+        # second, unauthenticated way in with nothing in front of it.
+        #
+        # Removing it also removed the CfnPermission workaround in asset_stack.py
+        # that existed only because CloudFront-to-Function-URL needs
+        # lambda:InvokeFunction on top of what OAC grants.

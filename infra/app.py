@@ -6,7 +6,8 @@ Two tracks live side by side. Only one is synthesised by default.
 TRACK 2 — cost-optimised (active)
     VvaCharacterStack ── Lambda (no VPC) → Neon over TLS
     VvaCrudApiStack   ── sessions + user memory, Lambda Web Adapter → Neon (pooled)
-    VvaAssetStack     ── private S3 + CloudFront, /characters* → the Lambda
+    VvaRestApiStack   ── REST API in front of both; the one front door for the API
+    VvaAssetStack     ── private S3 + CloudFront, .vrm files ONLY
     VvaVpcStack       ── deployed, ~$0 (no NAT, no interface endpoints)
 
 TRACK 1 — production reference (frozen, NOT synthesised)
@@ -38,6 +39,7 @@ from infra.vpc_stack import VpcStack
 from infra.asset_stack import AssetStack
 from infra.character_stack import CharacterStack
 from infra.crud_api_stack import CrudApiStack
+from infra.rest_api_stack import RestApiStack
 from infra.kimodo_ecs_stack import KimodoEcsStack
 
 app = cdk.App()
@@ -59,29 +61,35 @@ env = cdk.Environment(
 vpc_stack = VpcStack(app, "VvaVpcStack", env=env)
 
 # ── Track 2: character catalog + assets ─────────────────────────────
-# CharacterStack first — AssetStack attaches its Function URL as an origin.
 character_stack = CharacterStack(app, "VvaCharacterStack", env=env)
 
-asset_stack = AssetStack(
-    app, "VvaAssetStack",
-    characters_fn_url=character_stack.fn_url,
-    env=env,
-)
+# Independent of CharacterStack since 20-08: the catalog moved to the REST API,
+# so this distribution serves only the .vrm files from S3 and needs no Lambda.
+asset_stack = AssetStack(app, "VvaAssetStack", env=env)
 
 # ── Track 2: session + user-memory CRUD ─────────────────────────────
-# Serves api/crud_app.py under the Lambda Web Adapter. Deliberately NOT behind
-# CloudFront: per-user data is not cacheable, and OAC signs Function URL requests
-# without hashing the body, which would make every POST need the browser to send
-# x-amz-content-sha256.
+# Serves api/crud_app.py under the Lambda Web Adapter.
 #
-# Needs the production Cognito pool it should trust, and its package built first:
+# Unconditional since 20-08. It used to be gated on `-c cognito_user_pool_id`, but
+# VvaRestApiStack references this function, so a synth that skipped it would break
+# the API — and worse, a `cdk deploy` that forgot the flag would have silently
+# removed routes from a live gateway. The pool id now has a default in the stack
+# (it is a public value, already in the frontend bundle).
+#
+# Consequence: every synth now needs the package built.
 #     python infra/build_crud_api.py
-#     cdk deploy VvaCrudApiStack -c cognito_user_pool_id=... -c cognito_app_client_id=...
-#
-# Constructed only when those are supplied, so `cdk synth` of the other stacks
-# does not fail on a stack nobody asked for.
-if app.node.try_get_context("cognito_user_pool_id"):
-    crud_api_stack = CrudApiStack(app, "VvaCrudApiStack", env=env)
+crud_api_stack = CrudApiStack(app, "VvaCrudApiStack", env=env)
+
+# ── Track 2: the API gateway ────────────────────────────────────────
+# One front door for every backend call. See rest_api_stack.py for why REST API
+# rather than HTTP API, and why CloudFront does not sit in front of it.
+rest_api_stack = RestApiStack(
+    app, "VvaRestApiStack",
+    crud_fn=crud_api_stack.fn,
+    characters_fn=character_stack.fn_characters,
+    cognito_pool_id=crud_api_stack.cognito_pool_id,
+    env=env,
+)
 
 # ── Kimodo ECS (GPU MCP Server) ─────────────────────────────────────
 kimodo_ecs = KimodoEcsStack(app, "VvaKimodoEcsStack", vpc=vpc_stack.vpc, env=env)

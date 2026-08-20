@@ -1,7 +1,14 @@
-"""Asset Stack — Track 2: private S3 + CloudFront for VRM models and the catalog.
+"""Asset Stack — Track 2: private S3 + CloudFront for the VRM model files.
 
-    https://<dist>/characters*              → Lambda Function URL (CharacterStack)
-    https://<dist>/characters/{slug}/*.vrm  → S3
+    https://<dist>/models/{slug}/{hash}.vrm  → S3
+
+ONE job since 20-08: serve the four .vrm files. The character catalog used to
+live here too, on a /characters* behavior pointing at a Lambda Function URL; it
+moved to VvaRestApiStack, where the rest of the API is.
+
+That leaves this distribution as a plain CDN in front of a private bucket, which
+is what it is good at — and what nothing else can do here, since the files are
+9-17 MB and API Gateway's buffered payload limit is 10 MB.
 
 The four .vrm files are ~57 MB and were being bundled into every Vite build,
 then copied again into dist/, the Android assets directory and the iOS public
@@ -32,7 +39,6 @@ from aws_cdk import (
     Stack,
     aws_cloudfront as cloudfront,
     aws_cloudfront_origins as origins,
-    aws_lambda as lambda_,
     aws_s3 as s3,
 )
 from constructs import Construct
@@ -56,7 +62,6 @@ class AssetStack(Stack):
         self,
         scope: Construct,
         construct_id: str,
-        characters_fn_url: lambda_.IFunctionUrl,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -96,28 +101,6 @@ class AssetStack(Stack):
             ),
         )
 
-        # ── Cache policy for the catalog ────────────────────────────────
-        # Short TTL rather than CACHING_OPTIMIZED: the catalog has no hash in
-        # its URL, so a seeded change has to become visible without an
-        # invalidation. Five minutes still collapses essentially all traffic.
-        #
-        # If per-user gating is ever added to /characters, this must become
-        # cache-by-header or no-cache — a shared edge cache cannot serve
-        # responses that differ per viewer.
-
-        catalog_cache = cloudfront.CachePolicy(
-            self, "CatalogCachePolicy",
-            comment="Character catalog — short TTL, no cookies or auth headers",
-            default_ttl=Duration.minutes(5),
-            min_ttl=Duration.seconds(0),
-            max_ttl=Duration.minutes(15),
-            enable_accept_encoding_gzip=True,
-            enable_accept_encoding_brotli=True,
-            header_behavior=cloudfront.CacheHeaderBehavior.none(),
-            query_string_behavior=cloudfront.CacheQueryStringBehavior.none(),
-            cookie_behavior=cloudfront.CacheCookieBehavior.none(),
-        )
-
         # ── Distribution ────────────────────────────────────────────────
 
         self.distribution = cloudfront.Distribution(
@@ -136,48 +119,14 @@ class AssetStack(Stack):
                 response_headers_policy=cors_policy,
                 compress=True,
             ),
-            additional_behaviors={
-                # Matches /characters, /characters/bronya and
-                # /characters/bronya/avatar-profile alike.
-                "/characters*": cloudfront.BehaviorOptions(
-                    origin=origins.FunctionUrlOrigin.with_origin_access_control(
-                        characters_fn_url
-                    ),
-                    viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-                    allowed_methods=cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
-                    cache_policy=catalog_cache,
-                    response_headers_policy=cors_policy,
-                    compress=True,
-                ),
-            },
         )
 
-        # ── Lambda permission that CDK does not add ─────────────────────
-        #
-        # FunctionUrlOrigin.with_origin_access_control() grants CloudFront
-        # `lambda:InvokeFunctionUrl` and stops there. Since October 2025 a
-        # function URL also requires `lambda:InvokeFunction`, so OAC requests
-        # arrive signed and correct and Lambda rejects them anyway — 403 with
-        # the generic "Function URL authorization" message and nothing in the
-        # function's logs, because the rejection happens before invocation.
-        #
-        # Everything else looks right while this is missing, which is what makes
-        # it expensive to find: the OAC is type `lambda`, signing is `always`,
-        # the resource policy names the distribution, and a request signed by
-        # hand with an admin identity succeeds — an admin has both actions.
-        #
-        # Remove once aws-cdk-lib grants both. Tracked upstream via
-        # aws-samples/remote-swe-agents#361.
-        lambda_.CfnPermission(
-            self, "CharactersInvokeFunctionFromCloudFront",
-            action="lambda:InvokeFunction",
-            function_name=characters_fn_url.function_arn,
-            principal="cloudfront.amazonaws.com",
-            source_arn=(
-                f"arn:aws:cloudfront::{self.account}:distribution/"
-                f"{self.distribution.distribution_id}"
-            ),
-        )
+        # A CfnPermission used to sit here, granting CloudFront
+        # `lambda:InvokeFunction` on the characters function — the grant that
+        # FunctionUrlOrigin.with_origin_access_control() does not add and that
+        # Lambda has required since October 2025. It went away with the Function
+        # URL origin it existed for: the catalog is served by VvaRestApiStack now,
+        # and this distribution has no Lambda origin left.
 
         # ── Outputs ─────────────────────────────────────────────────────
 

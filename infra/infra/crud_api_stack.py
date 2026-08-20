@@ -90,9 +90,23 @@ _DEFAULT_LWA_LAYER = (
 )
 
 _DEFAULT_ORIGINS = [
+    "https://release.d32nf9wwqqt016.amplifyapp.com",
     "http://localhost:5173",
-    "http://localhost:3000",
+    "http://127.0.0.1:5173",
 ]
+
+# The production Cognito pool, as defaults rather than required context.
+#
+# These are PUBLIC identifiers — they ship inside the frontend bundle and ride on
+# every Cognito request. Nothing is protected by their obscurity.
+#
+# They are defaults, not required flags, because this stack stopped being
+# optional on 20-08: the REST API references its function, so `app.py` has to
+# construct it unconditionally. With the old `-c cognito_user_pool_id=...` gate,
+# one `cdk deploy` that forgot the flag would have silently removed routes from a
+# live API. Override per deploy when pointing at a different pool.
+_DEFAULT_COGNITO_POOL_ID = "us-east-1_6mSqgs4BA"
+_DEFAULT_COGNITO_CLIENT_ID = "1rsd1gn5i3heshuo0hf1s6cvm"
 
 
 class CrudApiStack(Stack):
@@ -109,14 +123,14 @@ class CrudApiStack(Stack):
         ] or _DEFAULT_ORIGINS
 
         cognito_region = ctx("cognito_region") or self.region
-        cognito_pool_id = ctx("cognito_user_pool_id")
-        cognito_client_id = ctx("cognito_app_client_id")
+        cognito_pool_id = ctx("cognito_user_pool_id") or _DEFAULT_COGNITO_POOL_ID
+        cognito_client_id = ctx("cognito_app_client_id") or _DEFAULT_COGNITO_CLIENT_ID
 
-        # Checked at synth rather than left to fail at runtime. api/auth.py has
-        # no mode in which missing provider config is survivable — it raises from
-        # the app's lifespan — so on Lambda the omission would surface as an INIT
-        # failure with a stack trace and no hint that a deploy-time context value
-        # was missing.
+        # Kept even though the defaults above make it unreachable in practice.
+        # api/auth.py has no mode in which missing provider config is survivable —
+        # it raises from the app's lifespan — so on Lambda the omission would
+        # surface as an INIT failure with a stack trace and no hint that the cause
+        # was a deploy-time value. Cheaper to say so at synth.
         if not cognito_pool_id or not cognito_client_id:
             raise ValueError(
                 "VvaCrudApiStack needs the Cognito pool it should trust. Pass:\n"
@@ -127,6 +141,13 @@ class CrudApiStack(Stack):
                 "is for local development, and the whole point of separating them "
                 "is that a token from one is rejected by the other."
             )
+
+        # Exposed so VvaRestApiStack can build a CognitoUserPoolsAuthorizer over
+        # the same pool this function verifies tokens against. Two places trusting
+        # two different pools is a failure that looks like "valid token rejected".
+        self.cognito_pool_id = cognito_pool_id
+        self.cognito_client_id = cognito_client_id
+        self.cognito_region = cognito_region
 
         if not _ZIP_PATH.exists():
             raise FileNotFoundError(

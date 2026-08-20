@@ -1,0 +1,186 @@
+"""REST API Gateway — the single front door for every VVA backend call.
+
+    GET    /v1/characters                        GET    /v1/sessions
+    GET    /v1/characters/{slug}                 GET    /v1/sessions/{id}
+    GET    /v1/characters/{slug}/avatar-profile  DELETE /v1/sessions/{id}
+    GET    /v1/health, /v1/health/db             GET|POST /v1/me/memory
+                                                 DELETE /v1/me/memory/{fact_id}
+
+Before this, the frontend had to know four API origins and each service carried
+its own CORS and its own auth, with no layer where a shared policy could live and
+no way to throttle anything. The gateway is that layer.
+
+**REST API, not HTTP API.** The deciding feature is response streaming, which
+REST API gained in November 2025 and HTTP API still lacks. It is what lets /chat
+join this API later — via an HTTP proxy integration with
+`responseTransferMode: STREAM`, which AWS documents for exactly this case
+("server-sent events", "time-to-first-byte for chatbots") and which also lifts
+the integration timeout to 15 minutes. Choosing HTTP API today would have been
+cheaper by $0.25/month and would have locked /chat out permanently.
+
+**The stage is the version.** `stage_name="v1"` puts /v1 in the URL for free.
+Do NOT also add an /api/v1 path prefix: a REST API's `event["path"]` excludes the
+stage, so the character handler's router sees "/characters" and works unchanged —
+but a real prefix would make it "/api/v1/characters", whose first segment is not
+"characters", and every request would 404 with nothing else looking wrong.
+
+**Not fronted by CloudFront.** An earlier design put CloudFront in front of this
+API for a single hostname. It bought one environment variable and an edge cache
+on a four-row catalog that browsers already cache for five minutes; it cost an
+extra hop and three silent failure modes, two of which were security-relevant
+(a forgotten OriginRequestPolicy 401s everything; a forgotten CACHING_DISABLED
+serves one user's sessions to another, above the layer where RLS can help).
+CloudFront keeps the job it is good at: the 9-17 MB .vrm files in S3, which
+cannot pass through API Gateway's 10 MB buffered payload limit anyway.
+"""
+
+from __future__ import annotations
+
+from aws_cdk import (
+    CfnOutput,
+    Duration,
+    Stack,
+    aws_apigateway as apigw,
+    aws_cognito as cognito,
+    aws_lambda as lambda_,
+)
+from constructs import Construct
+
+_DEFAULT_ORIGINS = [
+    "https://release.d32nf9wwqqt016.amplifyapp.com",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+# Deliberately generous for a demo, and still far below what would exhaust the
+# account's Lambda concurrency. The point is not to shape traffic — it is that a
+# runaway client cannot consume the 10 concurrent executions this account shares
+# with Amplify's Cognito triggers, which would stop new users from signing up
+# with a symptom that points nowhere near the cause.
+#
+# Note this is a stage-wide ceiling, not a per-caller one: API Gateway's stage
+# throttle is a single token bucket and does not look at identity. Per-caller
+# limits need usage plans (REST API supports them) or a WAF rate rule.
+_DEFAULT_RATE_LIMIT = 20
+_DEFAULT_BURST_LIMIT = 40
+
+
+class RestApiStack(Stack):
+
+    def __init__(
+        self,
+        scope: Construct,
+        construct_id: str,
+        crud_fn: lambda_.IFunction,
+        characters_fn: lambda_.IFunction,
+        cognito_pool_id: str,
+        **kwargs,
+    ) -> None:
+        super().__init__(scope, construct_id, **kwargs)
+
+        ctx = self.node.try_get_context
+        allowed_origins = [
+            o.strip() for o in (ctx("allowed_origins") or "").split(",") if o.strip()
+        ] or _DEFAULT_ORIGINS
+
+        # ── The API ─────────────────────────────────────────────────────
+
+        self.api = apigw.RestApi(
+            self, "VvaRestApi",
+            rest_api_name="vva-api",
+            description="Single front door for VVA backend calls",
+            # Regional rather than edge-optimized: the users are in one region and
+            # the callers that matter are browsers already talking to CloudFront
+            # for assets. An edge-optimized endpoint would add a CloudFront
+            # distribution we neither configure nor need.
+            endpoint_configuration=apigw.EndpointConfiguration(
+                types=[apigw.EndpointType.REGIONAL],
+            ),
+            deploy_options=apigw.StageOptions(
+                stage_name="v1",
+                throttling_rate_limit=ctx("api_rate_limit") or _DEFAULT_RATE_LIMIT,
+                throttling_burst_limit=ctx("api_burst_limit") or _DEFAULT_BURST_LIMIT,
+                # X-Ray is REST-API-only, and it is the thing that will answer
+                # "was that slow in the gateway, the Lambda, or Neon?" without
+                # anyone having to add timing code.
+                tracing_enabled=True,
+                metrics_enabled=True,
+            ),
+            # Answers OPTIONS for every resource below. Necessary rather than
+            # optional: infra/lambda/characters/handler.py rejects any method
+            # other than GET/HEAD with a 405, so a preflight that reached the
+            # integration would fail the CORS check.
+            #
+            # This covers the preflight ONLY. Headers on the actual response come
+            # from the function — under a proxy integration that is the function's
+            # job, and the console's "Enable CORS" does not apply. See
+            # infra/lambda/layer/shared/response.py.
+            default_cors_preflight_options=apigw.CorsOptions(
+                allow_origins=allowed_origins,
+                allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+                allow_headers=["Content-Type", "Authorization"],
+                max_age=Duration.hours(1),
+            ),
+        )
+
+        # ── Authorizer ──────────────────────────────────────────────────
+        # Built over the SAME pool the CRUD function verifies against — the id is
+        # passed in from CrudApiStack rather than read from context twice, because
+        # two places reading the same key can still end up trusting two different
+        # pools, and the symptom is "a valid token is rejected".
+        #
+        # This does not replace api/auth.py. The authorizer stops garbage at the
+        # edge so the function never starts; the function still needs the token's
+        # `sub` to bind app.user_id for row-level security. Two layers, different
+        # jobs.
+        authorizer = apigw.CognitoUserPoolsAuthorizer(
+            self, "CognitoAuthorizer",
+            cognito_user_pools=[
+                cognito.UserPool.from_user_pool_id(self, "Pool", cognito_pool_id),
+            ],
+        )
+        authed = {
+            "authorizer": authorizer,
+            "authorization_type": apigw.AuthorizationType.COGNITO,
+        }
+
+        crud = apigw.LambdaIntegration(crud_fn)
+        characters = apigw.LambdaIntegration(characters_fn)
+
+        # ── /characters — public ────────────────────────────────────────
+        # No authorizer, on purpose: the catalog is public data and the app reads
+        # it before anyone signs in. Attaching one here would make you log in
+        # before you could see which characters exist.
+        chars = self.api.root.add_resource("characters")
+        chars.add_method("GET", characters)
+        chars_slug = chars.add_resource("{slug}")
+        chars_slug.add_method("GET", characters)
+        chars_slug.add_resource("avatar-profile").add_method("GET", characters)
+
+        # ── /health — public, and it has to be ──────────────────────────
+        # The EventBridge warmer in crud_api_stack.py calls /health/db on a
+        # schedule and holds no token. An authorizer here would turn the warmer
+        # into a scheduled 401.
+        health = self.api.root.add_resource("health")
+        health.add_method("GET", crud)
+        health.add_resource("db").add_method("GET", crud)
+
+        # ── /sessions — authenticated ───────────────────────────────────
+        sessions = self.api.root.add_resource("sessions")
+        sessions.add_method("GET", crud, **authed)
+        sessions_id = sessions.add_resource("{session_id}")
+        sessions_id.add_method("GET", crud, **authed)
+        sessions_id.add_method("DELETE", crud, **authed)
+
+        # ── /me/memory — authenticated ──────────────────────────────────
+        me = self.api.root.add_resource("me")
+        memory = me.add_resource("memory")
+        memory.add_method("GET", crud, **authed)
+        memory.add_method("POST", crud, **authed)
+        memory.add_resource("{fact_id}").add_method("DELETE", crud, **authed)
+
+        CfnOutput(
+            self, "RestApiUrl",
+            value=self.api.url,
+            description="Set as VITE_API_GATEWAY_URL in the frontend build",
+        )

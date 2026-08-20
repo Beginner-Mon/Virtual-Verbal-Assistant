@@ -14,51 +14,47 @@ import { fetchAuthSession } from 'aws-amplify/auth'
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
+/**
+ * Two bases, both defined in lib/apiBase.ts. See that file for why.
+ *
+ *   API_GATEWAY  every backend call — sessions, user memory, the character
+ *                catalog, health, and later /tts and /billing.
+ *   API_BASE     /chat only, because streaming SSE needs a host API Gateway can
+ *                front but not replace, and the agent has nowhere to live yet.
+ *
+ * VITE_CRUD_API_URL was removed here on 20-08. Sessions and user memory go
+ * through the gateway with everything else, so a variable naming one service is
+ * a variable that can disagree with the others.
+ */
+import { API_GATEWAY } from './apiBase'
+
 const DEFAULT_API_BASE = 'http://localhost:8000'
 
 /**
- * Missing configuration warns; it does not throw.
+ * /chat's origin. Missing configuration warns; it does not throw.
  *
  * This used to `throw` at module load. Vite bakes env vars in at BUILD time and
- * `.env.local` is gitignored, so a CI build has none — and a throw at import
+ * `.env.local` is gitignored, so a CI build had none — and a throw at import
  * time takes down the whole app before it renders a pixel. The deployed page was
  * a blank screen whose only symptom was a message telling you to create a file
  * on a machine that is not the one serving it.
  *
- * The value is only needed when a request is actually made, so a bad one costs a
- * failed request, not a dead app. That trade is right in both directions: the UI
- * can be reviewed without a backend, and the console says exactly what is wrong.
- *
- * Note the port: 8080 is taken by another service on the dev machine — the
- * backend is on 8000. The old message named 8080 while the comment above it said
- * 8000.
+ * Warning rather than throwing keeps a bad value costing one failed request
+ * instead of the whole app. The build-time check in vite.config.ts is what
+ * catches a missing value before it ships.
  */
 const _raw = import.meta.env.VITE_API_BASE_URL as string | undefined
 if (!_raw) {
   console.warn(
     `[api] VITE_API_BASE_URL is not set — falling back to ${DEFAULT_API_BASE}. ` +
-      'Vite reads this at BUILD time: set it in .env.local for local dev, or as ' +
-      'an Amplify Console environment variable for a deployed build. Requests ' +
-      'will fail until it points at a reachable backend.'
+      'This is the /chat origin only; everything else goes through ' +
+      'VITE_API_GATEWAY_URL. Vite reads it at BUILD time.'
   )
 }
-const API_BASE: string = _raw || DEFAULT_API_BASE
+const API_BASE: string = (_raw || DEFAULT_API_BASE).replace(/\/+$/, '')
 
-/**
- * Where the session and user-memory endpoints live.
- *
- * Those moved to their own Lambda: serving a session list should not require
- * keeping the whole agent process alive, since that one imports torch at boot to
- * run a few SQL statements. /chat and /tts stay on API_BASE because they need
- * the graph.
- *
- * Defaults to API_BASE, so an unset value means "one backend, as before" rather
- * than a broken app — the same reasoning as the warning above. There is a
- * precedent for the split: VITE_ASSET_BASE_URL in lib/characters.ts already
- * points the character catalog at CloudFront.
- */
-const CRUD_BASE: string =
-  (import.meta.env.VITE_CRUD_API_URL as string | undefined) || API_BASE
+// Sessions, user memory and health — the gateway, same as the catalog.
+const CRUD_BASE: string = API_GATEWAY
 
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 

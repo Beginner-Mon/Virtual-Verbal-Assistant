@@ -22,7 +22,7 @@ import logging
 import re
 
 from shared.db import get_connection, fetch_all, fetch_one
-from shared.response import success as _success, error
+from shared.response import success as _success, error, begin_request
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -94,18 +94,49 @@ def _get_avatar_profile(cur, slug: str) -> dict:
     return success(row["avatar_profile"] or {})
 
 
+def _request_method(event) -> str:
+    """The HTTP method, from either API Gateway payload format.
+
+    Format 2.0 (Lambda Function URLs, HTTP APIs) puts it at
+    requestContext.http.method; format 1.0 (REST API proxy integrations) puts it
+    at the top level as httpMethod. Reading both means the same deployment
+    package works behind either, which is the point: this function moved from a
+    Function URL to a REST API on 20-08, and pinning it to one shape would have
+    made that a code change rather than an infrastructure one.
+    """
+    v2 = event.get("requestContext", {}).get("http", {}).get("method")
+    return (v2 or event.get("httpMethod") or "GET").upper()
+
+
+def _request_path(event) -> str:
+    """The request path WITHOUT the API Gateway stage prefix.
+
+    The stage is the trap here. A REST API is always served under one — the URL
+    is /v1/characters — and three fields carry a path:
+
+        event["rawPath"]                     format 2.0, no stage
+        event["path"]                        format 1.0, no stage      ← correct
+        event["requestContext"]["path"]      format 1.0, WITH stage    ← wrong
+
+    Reading the third one yields "/v1/characters", whose first segment is "v1"
+    rather than "characters", and the router below then 404s every single
+    request. Nothing else fails, which is what makes it worth naming.
+    """
+    raw = event.get("rawPath") or event.get("path") or "/characters"
+    # Trailing slashes are stripped so /characters and /characters/ are one route.
+    return raw.rstrip("/") or "/characters"
+
+
 def handler(event, context):
-    method = (
-        event.get("requestContext", {})
-        .get("http", {})
-        .get("method", "GET")
-        .upper()
-    )
+    # First, so that every return below — including the 405 and 404 paths —
+    # carries the right Access-Control-Allow-Origin.
+    begin_request(event)
+
+    method = _request_method(event)
     if method not in ("GET", "HEAD"):
         return error("Method not allowed", 405)
 
-    # Trailing slashes are stripped so /characters and /characters/ are one route.
-    raw_path = (event.get("rawPath") or "/characters").rstrip("/") or "/characters"
+    raw_path = _request_path(event)
     segments = [s for s in raw_path.split("/") if s]
 
     # segments is one of:

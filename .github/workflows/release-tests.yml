@@ -135,8 +135,32 @@ jobs:
       # `tsc -b && vite build`. Note tsconfig.app.json does not set "strict", so
       # this catches syntax and resolution errors but not null-safety ones —
       # a weaker gate than it looks. Turning strict on is its own change.
+      #
+      # The env vars are placeholders, not the deployed values. vite.config.ts
+      # fails the build when a required one is missing, and that check is the
+      # point of running a build here: it is what would have caught the
+      # deployment that shipped without VITE_ASSET_BASE_URL. What the values
+      # ARE does not matter to a compile — only that the gate sees them, so CI
+      # tests the gate rather than depending on secrets.
       - name: Build
+        env:
+          VITE_API_GATEWAY_URL: https://ci.invalid/v1
+          VITE_ASSET_BASE_URL: https://ci.invalid
+          VITE_AUTH_API_URL: https://ci.invalid/prod/
         run: npm run build
+
+      # The gate has to fail too, or it is not a gate. A build that succeeds with
+      # a required variable removed means the check silently stopped running.
+      - name: Build gate rejects a missing variable
+        env:
+          VITE_ASSET_BASE_URL: https://ci.invalid
+          VITE_AUTH_API_URL: https://ci.invalid/prod/
+        run: |
+          if npm run build > /dev/null 2>&1; then
+            echo "::error::vite.config.ts built successfully without VITE_API_GATEWAY_URL — the required-env check is not running"
+            exit 1
+          fi
+          echo "build correctly refused a missing VITE_API_GATEWAY_URL"
 
       - name: Unit tests
         run: npm run test

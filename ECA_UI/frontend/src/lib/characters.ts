@@ -1,24 +1,24 @@
 /**
  * Character catalog client.
  *
- * The catalog lives behind CloudFront, not behind the chat API: `/characters*`
- * is routed to a Lambda and everything else on that distribution is the VRM
- * files themselves. So it reads VITE_ASSET_BASE_URL, while streaming chat keeps
- * using VITE_API_BASE_URL in lib/api.ts. Two origins, split by what they serve
- * — SSE deliberately does not go through the CDN.
+ * Two different origins, and the split is not arbitrary:
+ *
+ *   the CATALOG (this file's fetches)  → API Gateway. It is an API call.
+ *   the MODEL FILES (`vrm_url` below)  → CloudFront. They are 9-17 MB binaries,
+ *                                        over API Gateway's 10 MB limit.
+ *
+ * Until 20-08 both went through CloudFront, on a /characters* behavior pointing
+ * at a Lambda Function URL. The catalog moved to the gateway with the rest of the
+ * API; the .vrm files stayed where a CDN is the right answer.
+ *
+ * `vrm_url` is an absolute URL stored in the database by
+ * scripts/upload_characters_to_s3.py, so it already points at CloudFront — this
+ * file does not build it.
  */
 
-const DEFAULT_ASSET_BASE = 'http://localhost:8000'
+import { API_GATEWAY, ASSET_BASE } from './apiBase'
 
-const _rawAssetBase = import.meta.env.VITE_ASSET_BASE_URL as string | undefined
-if (!_rawAssetBase) {
-  console.warn(
-    `[characters] VITE_ASSET_BASE_URL is not set — falling back to ${DEFAULT_ASSET_BASE}. ` +
-      'Set it to the AssetStack CloudFront domain (CfnOutput AssetBaseUrl). Vite reads ' +
-      'this at BUILD time: .env.local for local dev, Amplify env vars for a deployed build.'
-  )
-}
-export const ASSET_BASE: string = _rawAssetBase || DEFAULT_ASSET_BASE
+export { ASSET_BASE }
 
 /** Auto-extracted from the .vrm GLB by scripts/upload_characters_to_s3.py. */
 export interface VrmMetadata {
@@ -80,7 +80,7 @@ export function incompatibilityReason(character: Character): string | null {
 }
 
 export async function fetchCharacters(signal?: AbortSignal): Promise<Character[]> {
-  const res = await fetch(`${ASSET_BASE}/characters`, { signal })
+  const res = await fetch(`${API_GATEWAY}/characters`, { signal })
   if (!res.ok) throw new Error(`GET /characters failed: ${res.status}`)
   const data = (await res.json()) as CharacterListResponse
   return data.characters ?? []
@@ -90,7 +90,7 @@ export async function fetchAvatarProfile(
   slug: string,
   signal?: AbortSignal
 ): Promise<unknown> {
-  const res = await fetch(`${ASSET_BASE}/characters/${slug}/avatar-profile`, { signal })
+  const res = await fetch(`${API_GATEWAY}/characters/${slug}/avatar-profile`, { signal })
   if (!res.ok) throw new Error(`GET /characters/${slug}/avatar-profile failed: ${res.status}`)
   return res.json()
 }
