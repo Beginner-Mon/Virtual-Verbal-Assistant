@@ -31,6 +31,14 @@
 .PARAMETER SkipBuild
     Reuse the existing infra/build/crud_api.zip instead of rebuilding it.
 
+.PARAMETER Yes
+    Skip cdk's interactive approval for IAM and security-group changes.
+    The default is `--require-approval broadening`, which is right for a human at
+    a terminal: it prints every widening IAM statement and waits. It also aborts
+    with exit 1 in any non-interactive shell, which is what this switch is for.
+    Review the changes with -WhatIf first; this only suppresses the prompt, not
+    the diff.
+
 .PARAMETER WhatIf
     Show `cdk diff` for each stack instead of deploying.
 
@@ -40,7 +48,8 @@
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$Yes
 )
 
 # Deliberately NOT 'Stop'. Windows PowerShell 5.1 turns any stderr line from a
@@ -70,7 +79,8 @@ if (-not $SkipBuild) {
 foreach ($stack in $stacks) {
     if ($PSCmdlet.ShouldProcess($stack, 'cdk deploy')) {
         Write-Host "`n-> deploying $stack" -ForegroundColor Cyan
-        npx cdk deploy $stack --require-approval broadening
+        $approval = if ($Yes) { 'never' } else { 'broadening' }
+        npx cdk deploy $stack --require-approval $approval
         if ($LASTEXITCODE -ne 0) {
             throw "$stack failed (exit $LASTEXITCODE); later stacks not attempted"
         }

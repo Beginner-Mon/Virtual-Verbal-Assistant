@@ -10,20 +10,18 @@ isolated subnets would need either a NAT gateway (~$32/month) or interface
 endpoints (~$7/month each, per AZ) purely to reach something already on the
 internet — while adding ENI attachment to every cold start.
 
-Two things differ from the characters function, and both follow from this data
-being per-user rather than a public catalog:
+**No Function URL, and no CloudFront.** Reached only through VvaRestApiStack,
+which is the one front door: it holds the Cognito authorizer and the stage
+throttle, and a second entrance would be one URL away from bypassing both. This
+stack had a public Function URL until 20-08 — removed before it was ever
+deployed. See the note where it used to be.
 
-**No CloudFront.** Nothing here is cacheable, so the CDN would earn nothing —
-and it would cost something real: with OAC, CloudFront signs requests to a
-Function URL WITHOUT hashing the body, so every POST would need the browser to
-compute and send `x-amz-content-sha256`. That is a change to every call site in
-the frontend, in exchange for a cache that never hits.
+CloudFront would earn nothing here either: per-user data is not cacheable.
 
-**FunctionUrlAuthType.NONE.** Not "unauthenticated" — the application
-authenticates. api/auth.py verifies a Cognito ID token on every route and there
-is no anonymous path in any environment, so IAM auth on the URL would only add
-SigV4 signing that a browser cannot do. Identity is checked where identity is
-known, rather than at the edge by a mechanism that cannot see the user.
+Authentication still happens in the application. api/auth.py verifies a Cognito
+ID token on every route, and the gateway's authorizer does not replace that — the
+function needs the token's `sub` to bind app.user_id for row-level security. Two
+layers, different jobs.
 
 Prerequisite, created out of band because it is a secret:
 
@@ -53,6 +51,8 @@ from aws_cdk import (
     aws_scheduler as scheduler,
 )
 from constructs import Construct
+
+from infra.origins import resolve as resolve_origins
 
 _INFRA_ROOT = Path(__file__).resolve().parents[1]
 _ZIP_PATH = _INFRA_ROOT / "build" / "crud_api.zip"
@@ -89,11 +89,6 @@ _DEFAULT_LWA_LAYER = (
     "arn:aws:lambda:{region}:753240598075:layer:LambdaAdapterLayerX86:25"
 )
 
-_DEFAULT_ORIGINS = [
-    "https://release.d32nf9wwqqt016.amplifyapp.com",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
 
 # The production Cognito pool, as defaults rather than required context.
 #
@@ -118,9 +113,7 @@ class CrudApiStack(Stack):
         dsn_param = ctx("crud_dsn_param") or _DEFAULT_DSN_PARAM
         lwa_layer_arn = ctx("lwa_layer_arn") or _DEFAULT_LWA_LAYER.format(region=self.region)
 
-        allowed_origins = [
-            o.strip() for o in (ctx("allowed_origins") or "").split(",") if o.strip()
-        ] or _DEFAULT_ORIGINS
+        allowed_origins = resolve_origins(self.node)
 
         cognito_region = ctx("cognito_region") or self.region
         cognito_pool_id = ctx("cognito_user_pool_id") or _DEFAULT_COGNITO_POOL_ID

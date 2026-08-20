@@ -43,17 +43,7 @@ from aws_cdk import (
 )
 from constructs import Construct
 
-# The deployed frontend must be here, not only the dev origins. A CORS list that
-# covers localhost and nothing else fails exactly once — in production, after the
-# release, with the browser reporting a blocked fetch rather than anything that
-# points at this file. Override per deploy with
-# `-c allowed_origins=https://a,https://b`, but the default has to be correct on
-# its own: a context flag is lost the moment someone deploys without it.
-_DEFAULT_ALLOWED_ORIGINS = [
-    "https://release.d32nf9wwqqt016.amplifyapp.com",
-    "http://localhost:5173",
-    "http://localhost:3000",
-]
+from infra.origins import resolve as resolve_origins
 
 
 class AssetStack(Stack):
@@ -66,12 +56,7 @@ class AssetStack(Stack):
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        # Comma-separated, e.g. -c allowed_origins=https://app.example.com,http://localhost:5173
-        raw_origins = self.node.try_get_context("allowed_origins")
-        allowed_origins = (
-            [o.strip() for o in raw_origins.split(",") if o.strip()]
-            if raw_origins else list(_DEFAULT_ALLOWED_ORIGINS)
-        )
+        allowed_origins = resolve_origins(self.node)
 
         # ── Bucket ──────────────────────────────────────────────────────
 

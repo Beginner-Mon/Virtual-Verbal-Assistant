@@ -48,6 +48,8 @@ from aws_cdk import (
 )
 from constructs import Construct
 
+from infra.origins import resolve as resolve_origins
+
 _INFRA_ROOT = Path(__file__).resolve().parents[1]
 _LAMBDA_DIR = _INFRA_ROOT / "lambda"
 
@@ -129,6 +131,7 @@ class CharacterStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
+        allowed_origins = resolve_origins(self.node)
         dsn_param = self.node.try_get_context("neon_dsn_param") or _DEFAULT_DSN_PARAM
 
         # ── Layer ───────────────────────────────────────────────────────
@@ -172,6 +175,13 @@ class CharacterStack(Stack):
             environment={
                 "DB_MODE": "neon",
                 "NEON_DSN_PARAM": dsn_param,
+                # Read by shared/response.py, which echoes the caller's Origin
+                # when it appears here. Missing it is not a startup failure — the
+                # function falls back to the first localhost entry and keeps
+                # answering 200 — so the only symptom is the deployed frontend
+                # having its fetch blocked by the browser while curl works fine.
+                # That is exactly how this was found, after deploy, on 20-08.
+                "ALLOWED_ORIGINS": ",".join(allowed_origins),
             },
             # 10s: one indexed read of a four-row table. The only slow path is a
             # cold start landing on a Neon compute that has scaled to zero.

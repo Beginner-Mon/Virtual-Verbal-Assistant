@@ -46,23 +46,40 @@ from aws_cdk import (
 )
 from constructs import Construct
 
-_DEFAULT_ORIGINS = [
-    "https://release.d32nf9wwqqt016.amplifyapp.com",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
+from infra.origins import resolve as resolve_origins
 
-# Deliberately generous for a demo, and still far below what would exhaust the
-# account's Lambda concurrency. The point is not to shape traffic — it is that a
-# runaway client cannot consume the 10 concurrent executions this account shares
-# with Amplify's Cognito triggers, which would stop new users from signing up
-# with a symptom that points nowhere near the cause.
+
+# Sized against the account's Lambda concurrency quota, which is TEN — not against
+# what feels generous. The first values here were 20/40, and a 120-request burst
+# proved them wrong on 20-08:
+#
+#     Lambda Throttles  61      API Gateway 5XXError  61
+#     Lambda Errors      0      API Gateway 4XXError   1
+#
+# Only one request got a 429 from the gateway. The other sixty exhausted Lambda's
+# concurrency instead, and API Gateway reports that as a 5XX. Two things were
+# wrong with that:
+#
+#   - A 500 tells the caller "the server broke". A 429 tells it "slow down, try
+#     again" — and only one of those is true.
+#   - Those sixty throttled invocations consumed the pool this account SHARES with
+#     Amplify's Cognito triggers. That is exactly the failure the gateway exists
+#     to prevent: a burst on the catalog stopping people from signing up.
+#
+# A ceiling above what the platform can serve does not limit anything; it just
+# moves the failure somewhere less honest. Five leaves roughly half the pool for
+# sign-in, which is the thing being protected.
+#
+# RAISE THESE once the Lambda quota goes up (it is adjustable; the AWS default is
+# 1000, this account sits at 10). At that point `reserved_concurrent_executions`
+# on the functions becomes legal too, and it is the better tool — it fences the
+# concurrency itself rather than a request rate that stands in for it.
 #
 # Note this is a stage-wide ceiling, not a per-caller one: API Gateway's stage
 # throttle is a single token bucket and does not look at identity. Per-caller
 # limits need usage plans (REST API supports them) or a WAF rate rule.
-_DEFAULT_RATE_LIMIT = 20
-_DEFAULT_BURST_LIMIT = 40
+_DEFAULT_RATE_LIMIT = 5
+_DEFAULT_BURST_LIMIT = 5
 
 
 class RestApiStack(Stack):
@@ -79,9 +96,7 @@ class RestApiStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         ctx = self.node.try_get_context
-        allowed_origins = [
-            o.strip() for o in (ctx("allowed_origins") or "").split(",") if o.strip()
-        ] or _DEFAULT_ORIGINS
+        allowed_origins = resolve_origins(self.node)
 
         # ── The API ─────────────────────────────────────────────────────
 
