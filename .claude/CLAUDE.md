@@ -106,6 +106,32 @@ K chọn skill phù hợp theo tình huống — không cần N yêu cầu cụ 
 | **prototype**                     | Throwaway prototype — runnable terminal app hoặc multiple UI variations                                           |
 | **setup-matt-pocock-skills**      | One-time per-repo scaffold (issue tracker, triage labels, domain doc layout)                                      |
 
+### Plugin skills: `aws-core` (AWS, official)
+
+Installed at **project scope** (v1.1.0) — `enabledPlugins` trong
+`.claude/settings.json`, đã commit. Publisher: Amazon Web Services
+(`aws/agent-toolkit-for-aws`, marketplace `claude-plugins-official`).
+
+Khai báo trong settings **không tự fetch** plugin. Máy nào chưa có phải chạy
+một lần:
+
+```
+/plugin install aws-core@claude-plugins-official
+/reload-plugins
+```
+
+Bundles ~20 model-invoked skills — the ones that touch VVA: `aws-cdk`,
+`aws-cloudformation`, `aws-containers` (ECS for Kimodo), `aws-iam`,
+`aws-secrets-manager`, `aws-observability`, `aws-database`, `aws-deployment`,
+`aws-billing-and-cost-management`, `aws-sdk-python-usage`.
+
+Also registers the **AWS MCP Server** (`.mcp.json` → `uvx mcp-proxy-for-aws`).
+It runs `--skip-auth` against a public AWS docs/knowledge endpoint, so it needs
+`uv` on PATH but **no AWS credentials**. It answers questions about AWS; it does
+not read or mutate our account.
+
+K invokes these automatically for infra work — N does not need to ask.
+
 ## Conventions
 
 - All code changes logged in `docs/worklogs/DD-MM-YYYY.md`
