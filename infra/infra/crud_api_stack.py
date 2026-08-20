@@ -233,33 +233,27 @@ class CrudApiStack(Stack):
             conditions={"StringEquals": {"kms:ViaService": f"ssm.{self.region}.amazonaws.com"}},
         ))
 
-        # ── Function URL ────────────────────────────────────────────────
-
-        self.fn_url = self.fn.add_function_url(
-            auth_type=lambda_.FunctionUrlAuthType.NONE,
-            cors=lambda_.FunctionUrlCorsOptions(
-                allowed_origins=allowed_origins,
-                # DELETE and POST are both in use; a wildcard here would also
-                # cover verbs this API does not implement.
-                allowed_methods=[
-                    lambda_.HttpMethod.GET,
-                    lambda_.HttpMethod.POST,
-                    lambda_.HttpMethod.DELETE,
-                ],
-                allowed_headers=["Content-Type", "Authorization"],
-                max_age=Duration.hours(1),
-            ),
-        )
+        # ── No Function URL ─────────────────────────────────────────────
+        #
+        # There was one, with FunctionUrlAuthType.NONE, back when this function
+        # was reached directly by the browser. It was removed on 20-08 before the
+        # stack was ever deployed, because VvaRestApiStack now fronts this
+        # function and a public Function URL would be a second door with nothing
+        # standing at it: the gateway's throttle and its Cognito authorizer would
+        # both be one URL away from being bypassed.
+        #
+        # That matters more than it sounds. Application-level auth still applies
+        # (api/auth.py verifies the token on every route), so a bypass would not
+        # expose data — but throttling is the whole reason the gateway exists,
+        # and this account's ten concurrent executions are shared with Amplify's
+        # Cognito triggers. A bypassable rate limit protects nothing.
+        #
+        # The same reasoning removed the characters Function URL in
+        # character_stack.py. One way in.
 
         # ── Warmer ──────────────────────────────────────────────────────
 
         self._add_warmer(ctx)
-
-        CfnOutput(
-            self, "CrudApiUrl",
-            value=self.fn_url.url,
-            description="Set as VITE_CRUD_API_URL in the frontend build",
-        )
 
     def _add_warmer(self, ctx) -> None:
         """Keep the container AND Neon's compute warm during working hours.
@@ -286,9 +280,19 @@ class CrudApiStack(Stack):
 
         A separate tiny function rather than a scheduler target on the API
         itself: EventBridge invokes Lambda with a JSON event, and the Web Adapter
-        expects an HTTP request shape. Calling the Function URL over HTTPS
-        exercises the same path a browser does, which is also the path worth
-        proving still works.
+        expects an HTTP request shape. This one synthesises that shape and invokes
+        the function directly.
+
+        It used to fetch the Function URL over HTTPS, which exercised the same
+        path a browser takes. That URL is gone (see above), and going through the
+        REST API instead is not an option: the API stack already depends on this
+        one, so pointing the warmer at the API would close a dependency cycle that
+        CloudFormation cannot deploy.
+
+        Invoking directly costs one thing worth naming — it no longer proves the
+        public path works end to end, only that the function and Neon are warm,
+        which is what the warmer is actually for. Use the verification curls for
+        the public path.
         """
         warmer = lambda_.Function(
             self, "Warmer",
@@ -296,18 +300,40 @@ class CrudApiStack(Stack):
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="index.handler",
             code=lambda_.Code.from_inline(
-                "import os, urllib.request\n"
+                "import json, os, boto3\n"
+                "\n"
+                "_lambda = boto3.client('lambda')\n"
+                "\n"
+                "# Payload format 2.0, which is what the Lambda Web Adapter parses.\n"
+                "# rawPath is the route; the rest is the minimum LWA needs to build\n"
+                "# an HTTP request out of it.\n"
+                "_EVENT = {\n"
+                "    'version': '2.0',\n"
+                "    'rawPath': '/health/db',\n"
+                "    'rawQueryString': '',\n"
+                "    'headers': {'host': 'warmer.internal'},\n"
+                "    'requestContext': {\n"
+                "        'http': {'method': 'GET', 'path': '/health/db',\n"
+                "                 'protocol': 'HTTP/1.1', 'sourceIp': '127.0.0.1'},\n"
+                "    },\n"
+                "    'isBase64Encoded': False,\n"
+                "}\n"
                 "\n"
                 "def handler(event, context):\n"
-                "    url = os.environ['TARGET_URL'].rstrip('/') + '/health/db'\n"
-                "    with urllib.request.urlopen(url, timeout=20) as response:\n"
-                "        return {'status': response.status}\n"
+                "    result = _lambda.invoke(\n"
+                "        FunctionName=os.environ['TARGET_FUNCTION'],\n"
+                "        InvocationType='RequestResponse',\n"
+                "        Payload=json.dumps(_EVENT).encode(),\n"
+                "    )\n"
+                "    body = json.loads(result['Payload'].read() or b'{}')\n"
+                "    return {'statusCode': body.get('statusCode')}\n"
             ),
-            environment={"TARGET_URL": self.fn_url.url},
+            environment={"TARGET_FUNCTION": self.fn.function_name},
             memory_size=128,
             timeout=Duration.seconds(25),
-            description="Pings /health/db so the first real request is not cold",
+            description="Warms vva-crud-api and Neon's compute; invokes /health/db directly",
         )
+        self.fn.grant_invoke(warmer)
 
         schedule_expression = ctx("warmer_schedule") or "cron(*/5 8-17 ? * MON-FRI *)"
         timezone = ctx("warmer_timezone") or "Asia/Ho_Chi_Minh"

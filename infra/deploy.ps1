@@ -43,8 +43,12 @@ param(
     [switch]$SkipBuild
 )
 
-$ErrorActionPreference = 'Stop'
-$repo = Split-Path -Parent $PSScriptRoot
+# Deliberately NOT 'Stop'. Windows PowerShell 5.1 turns any stderr line from a
+# native command into a terminating NativeCommandError when it is, and `cdk`
+# writes deprecation warnings to stderr on every run — so 'Stop' aborts the
+# script on output that is not an error at all. Exit codes are checked explicitly
+# after each call instead, which is the thing that actually indicates failure.
+$ErrorActionPreference = 'Continue'
 Set-Location $PSScriptRoot
 
 # Ordered, and the order is the point. See the note above.
@@ -56,7 +60,7 @@ $stacks = @(
 )
 
 if (-not $SkipBuild) {
-    Write-Host "→ building infra/build/crud_api.zip" -ForegroundColor Cyan
+    Write-Host "-> building infra/build/crud_api.zip" -ForegroundColor Cyan
     python (Join-Path $PSScriptRoot 'build_crud_api.py')
     if ($LASTEXITCODE -ne 0) { throw "build_crud_api.py failed" }
 } elseif (-not (Test-Path (Join-Path $PSScriptRoot 'build/crud_api.zip'))) {
@@ -65,11 +69,13 @@ if (-not $SkipBuild) {
 
 foreach ($stack in $stacks) {
     if ($PSCmdlet.ShouldProcess($stack, 'cdk deploy')) {
-        Write-Host "`n→ deploying $stack" -ForegroundColor Cyan
+        Write-Host "`n-> deploying $stack" -ForegroundColor Cyan
         npx cdk deploy $stack --require-approval broadening
-        if ($LASTEXITCODE -ne 0) { throw "$stack failed; later stacks not attempted" }
+        if ($LASTEXITCODE -ne 0) {
+            throw "$stack failed (exit $LASTEXITCODE); later stacks not attempted"
+        }
     } else {
-        Write-Host "`n→ diff $stack" -ForegroundColor Cyan
+        Write-Host "`n-> diff $stack" -ForegroundColor Cyan
         npx cdk diff $stack
     }
 }
