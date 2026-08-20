@@ -23,7 +23,12 @@
  */
 
 function resolve(name: string, value: string | undefined, fallback: string): string {
-  if (!value) {
+  // trim() first, and it is not defensive programming for its own sake: pasting a
+  // URL into the Amplify Console on 20-08 left a leading space, and the resulting
+  // value was " https://…" — which fetch() rejects with a message about the URL
+  // being invalid rather than about the whitespace. Nothing upstream trims it.
+  const cleaned = value?.trim()
+  if (!cleaned) {
     console.warn(
       `[config] ${name} is not set — falling back to ${fallback}. Vite reads this ` +
         'at BUILD time: set it in .env.local for local development, or as an ' +
@@ -31,9 +36,9 @@ function resolve(name: string, value: string | undefined, fallback: string): str
     )
     return fallback
   }
-  // A trailing slash here doubles up with the leading slash on every path and
-  // yields //characters, which API Gateway routes to nothing.
-  return value.replace(/\/+$/, '')
+  // A trailing slash doubles up with the leading slash on every path and yields
+  // //characters, which API Gateway routes to nothing.
+  return cleaned.replace(/\/+$/, '')
 }
 
 /** Every backend call. Output `RestApiUrl` of VvaRestApiStack. */
