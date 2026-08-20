@@ -60,7 +60,13 @@ function requireBuildEnv(mode: string): Plugin {
       // so this sees exactly what the bundle will be built with.
       const env = loadEnv(mode, process.cwd(), 'VITE_')
 
-      const missing = [...REQUIRED_FOR_BUILD.filter(([name]) => !env[name])]
+      // Annotated, not inferred. Inference reads the initialiser and types this as
+      // the union of REQUIRED_FOR_BUILD's two literal tuples, so pushing an
+      // AUTH_ENV_FALLBACK entry below is a compile error — `as const` makes the
+      // names literal types, and "VITE_AUTH_API_URL" is not "VITE_API_GATEWAY_URL".
+      const missing: (readonly [string, string])[] = [
+        ...REQUIRED_FOR_BUILD.filter(([name]) => !env[name]),
+      ]
 
       // amplify_outputs.json is written by `ampx` during the Amplify build and is
       // gitignored, so it is present there and usually absent locally. When it
