@@ -300,33 +300,76 @@ class CrudApiStack(Stack):
                 "# Payload format 2.0, which is what the Lambda Web Adapter parses.\n"
                 "# rawPath is the route; the rest is the minimum LWA needs to build\n"
                 "# an HTTP request out of it.\n"
-                "_EVENT = {\n"
-                "    'version': '2.0',\n"
-                "    'rawPath': '/health/db',\n"
-                "    'rawQueryString': '',\n"
-                "    'headers': {'host': 'warmer.internal'},\n"
-                "    'requestContext': {\n"
-                "        'http': {'method': 'GET', 'path': '/health/db',\n"
-                "                 'protocol': 'HTTP/1.1', 'sourceIp': '127.0.0.1'},\n"
-                "    },\n"
-                "    'isBase64Encoded': False,\n"
-                "}\n"
+                "def _event(path):\n"
+                "    return {\n"
+                "        'version': '2.0',\n"
+                "        'rawPath': path,\n"
+                "        'rawQueryString': '',\n"
+                "        'headers': {'host': 'warmer.internal'},\n"
+                "        'requestContext': {\n"
+                "            'http': {'method': 'GET', 'path': path,\n"
+                "                     'protocol': 'HTTP/1.1', 'sourceIp': '127.0.0.1'},\n"
+                "        },\n"
+                "        'isBase64Encoded': False,\n"
+                "    }\n"
                 "\n"
                 "def handler(event, context):\n"
-                "    result = _lambda.invoke(\n"
-                "        FunctionName=os.environ['TARGET_FUNCTION'],\n"
-                "        InvocationType='RequestResponse',\n"
-                "        Payload=json.dumps(_EVENT).encode(),\n"
-                "    )\n"
-                "    body = json.loads(result['Payload'].read() or b'{}')\n"
-                "    return {'statusCode': body.get('statusCode')}\n"
+                "    results = {}\n"
+                "    for pair in os.environ['TARGETS'].split(','):\n"
+                "        name, path = pair.split('=', 1)\n"
+                "        try:\n"
+                "            r = _lambda.invoke(\n"
+                "                FunctionName=name,\n"
+                "                InvocationType='RequestResponse',\n"
+                "                Payload=json.dumps(_event(path)).encode(),\n"
+                "            )\n"
+                "            raw = (r['Payload'].read() or b'{}').decode('utf-8', 'replace')\n"
+                "            # raw_decode, not loads: vva-agent runs in\n"
+                "            # response_stream mode, so its payload is a prelude\n"
+                "            # JSON object followed by a NUL delimiter and the\n"
+                "            # body. json.loads chokes on the trailing bytes with\n"
+                "            # 'Extra data', which reads like a broken function\n"
+                "            # and is really a correctly streaming one. Taking\n"
+                "            # just the first value works for both modes.\n"
+                "            head, _ = json.JSONDecoder().raw_decode(raw.lstrip())\n"
+                "            results[name] = head.get('statusCode')\n"
+                "        except Exception as exc:\n"
+                "            # One cold function must not stop the others being\n"
+                "            # warmed. A warmer that dies on the first failure is\n"
+                "            # worst exactly when something is already wrong.\n"
+                "            results[name] = f'error: {exc}'\n"
+                "    print(json.dumps(results))\n"
+                "    return results\n"
             ),
-            environment={"TARGET_FUNCTION": self.fn.function_name},
+            environment={
+                # name=path pairs. Plain strings rather than function references
+                # on purpose: a cross-stack reference would create a
+                # CloudFormation Export, and this repo has already lost a deploy
+                # to "Cannot delete export ... as it is in use by" (see
+                # infra/deploy.ps1). The agent lives in VvaAgentStack; coupling
+                # the two stacks to save a hardcoded name is a bad trade.
+                #
+                # vva-crud-api hits /health/db because that wakes Neon's compute
+                # as well as the container. vva-agent hits /health, which needs
+                # no database — Neon is already awake by then, and the agent's
+                # own cold start is the expensive part (measured 21-08: init
+                # 9.8s plus a 24s first invocation, 34s billed).
+                "TARGETS": "vva-crud-api=/health/db,vva-agent=/health",
+            },
             memory_size=128,
-            timeout=Duration.seconds(25),
-            description="Warms vva-crud-api and Neon's compute; invokes /health/db directly",
+            # 25s was sized for one target. Two functions, and the agent's cold
+            # start alone can exceed 30s, so a single unlucky run would time out
+            # mid-warm and leave the second target cold.
+            timeout=Duration.seconds(90),
+            description="Warms vva-crud-api + vva-agent and Neon's compute during working hours",
         )
         self.fn.grant_invoke(warmer)
+        # Granted by ARN rather than by object, for the same export reason as
+        # above. The name is fixed by VvaAgentStack.
+        warmer.add_to_role_policy(iam.PolicyStatement(
+            actions=["lambda:InvokeFunction"],
+            resources=[f"arn:aws:lambda:{self.region}:{self.account}:function:vva-agent"],
+        ))
 
         schedule_expression = ctx("warmer_schedule") or "cron(*/5 8-17 ? * MON-FRI *)"
         timezone = ctx("warmer_timezone") or "Asia/Ho_Chi_Minh"
