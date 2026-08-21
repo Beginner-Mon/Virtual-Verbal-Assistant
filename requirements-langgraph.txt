@@ -49,11 +49,33 @@ SQLAlchemy>=2.0
 # `query: ` / `passage: ` prefixes that e5 REQUIRES, and a mismatch there
 # degrades recall silently rather than failing.
 #
+# TWO BACKENDS, chosen by EMBEDDING_BACKEND — see shared/onnx_backend.py.
+# Exactly one of the pairs below is needed at run time:
+#
+#   torch (default, local)  sentence-transformers  → pulls torch, ~2 GB
+#   onnx  (Lambda image)    onnxruntime + tokenizers → ~55 MB, no torch
+#
+# The deployed image installs the second pair and NEITHER of the first, because
+# billing is memory x wall-clock and the ~20s a turn spends waiting on DeepSeek
+# is 20s of paying for a PyTorch that does nothing. Both are declared here so a
+# developer can run and compare either one; preflight.py knows only the active
+# pair is required.
+#
 # Brings torch with it (~2 GB). On a CPU-only box install the CPU wheel first to
 # avoid pulling the CUDA build:
 #   pip install torch --index-url https://download.pytorch.org/whl/cpu
 sentence-transformers>=3.0
 numpy>=1.26
+
+# The ONNX backend. `tokenizers` is the Rust library, read straight from
+# tokenizer.json — deliberately NOT `transformers`, which would drag back most
+# of what this backend exists to leave out.
+#
+# The model itself is not a package: build it with scripts/export_e5_onnx.py
+# (needs `optimum` + `optimum-onnx`, BUILD TIME ONLY — optimum 2.x moved the
+# exporter into that second distribution).
+onnxruntime>=1.17
+tokenizers>=0.15
 
 # Config files — config/langgraph.yaml, config/mcp_servers.yaml, alembic
 PyYAML>=6.0

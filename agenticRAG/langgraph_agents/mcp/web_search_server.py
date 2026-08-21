@@ -25,6 +25,26 @@ logger = get_logger("langgraph.mcp.web_search")
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://localhost:6666")
 DEFAULT_TIMEOUT = 10.0
 
+# Set once when a search is attempted with no backend configured, so the
+# "web search is off" line appears in the log once per process instead of once
+# per query. CloudWatch ingestion is billed per GB.
+_reported_disabled = False
+
+
+def search_enabled() -> bool:
+    """Whether a SearXNG instance is configured.
+
+    SEARXNG_URL="" is the way to turn web search off, and it has to be handled
+    explicitly: os.getenv returns the empty string rather than the default, so
+    without this the code below would request "/search" from nothing, fail on
+    every query, and log a warning each time — a disabled feature that looks
+    like a broken one.
+
+    SearXNG is unhosted as of 21-08 (it runs in docker-compose locally, on
+    localhost:6666), so the deployed agent runs with this false.
+    """
+    return bool(SEARXNG_URL.strip())
+
 server = Server("web-search")
 
 
@@ -64,7 +84,22 @@ async def _search_searxng(query: str, max_results: int = 3, domain_filter: str |
 
     Output shape preserved from DDG version so retriever/synthesizer
     code stays unchanged.
+
+    Returns [] when no backend is configured. An empty result is already the
+    contract for every other failure here, so the retriever needs no new branch:
+    it treats "found nothing on the web" the same way whether the reason is a
+    poor query or a feature that is switched off.
     """
+    global _reported_disabled
+    if not search_enabled():
+        if not _reported_disabled:
+            _reported_disabled = True
+            logger.info("search_disabled", extra={
+                "reason": "SEARXNG_URL is empty",
+                "note": "logged once per process; further searches return [] silently",
+            })
+        return []
+
     full_query = f"{query} {domain_filter}" if domain_filter else query
     try:
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:

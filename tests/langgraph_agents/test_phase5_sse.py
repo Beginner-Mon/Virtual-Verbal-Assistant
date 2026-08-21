@@ -264,6 +264,10 @@ def test_sse_chat_speech_mode_emits_speech_pending(api_client, monkeypatch):
     _set_graph(mock_graph)
 
     import langgraph_agents.api.main as api_module
+    # VIENEU_TTS_URL is what switches TTS on since 21-08 — see main.tts_enabled.
+    # The deployed agent runs without it (TTS is unhosted), so this test has to
+    # say explicitly that it wants the enabled path.
+    monkeypatch.setenv("VIENEU_TTS_URL", "http://localhost:5000")
     fake_synth = AsyncMock()
     monkeypatch.setattr(api_module, "synthesize_speech_async", fake_synth)
     monkeypatch.setattr(api_module, "get_persona", lambda pid: {})
@@ -280,6 +284,49 @@ def test_sse_chat_speech_mode_emits_speech_pending(api_client, monkeypatch):
     assert "task_id" in speech_pending[0]["data"]
     speech_ready = [e for e in events if e["event"] == "speech_ready"]
     assert len(speech_ready) == 1
+
+
+@pytest.mark.unit
+def test_sse_chat_speech_mode_without_tts_configured(api_client, monkeypatch):
+    """No VIENEU_TTS_URL: say so once and finish, never promise audio.
+
+    speech_pending is a promise that speech_ready or speech_failed follows. With
+    no TTS service, nothing can follow — the UI would sit on a spinner forever.
+    Worse on Lambda, where a streaming invocation is billed for its FULL duration
+    even after the client disconnects: the old code would have spent 130 seconds
+    of memory polling for a result nothing was going to write.
+
+    The `done` assertion is the other half. The stream must still terminate
+    normally, because a caller that asked for speech and cannot have it should
+    still get its answer.
+    """
+    client, _, mock_graph = api_client
+    mock_graph.astream = _make_fake_astream_stage_only()
+    _set_graph(mock_graph)
+
+    import langgraph_agents.api.main as api_module
+    monkeypatch.delenv("VIENEU_TTS_URL", raising=False)
+    # If the disabled branch leaks, this blows up instead of silently passing.
+    monkeypatch.setattr(api_module, "synthesize_speech_async", None)
+
+    resp = client.post("/chat", json={"query": "Hãy đọc", "output_mode": "speech"})
+    events = _parse_sse_stream(resp.content)
+    kinds = [e["event"] for e in events]
+
+    assert "speech_disabled" in kinds
+    assert "speech_pending" not in kinds
+    assert kinds[-1] == "done"
+    assert [e for e in events if e["event"] == "done"][0]["data"]["speech_task_id"] is None
+
+
+@pytest.mark.unit
+def test_tts_endpoint_503_when_not_configured(api_client, monkeypatch):
+    """POST /tts must refuse rather than hand back an id nothing will fulfil."""
+    client, _, _ = api_client
+    monkeypatch.delenv("VIENEU_TTS_URL", raising=False)
+
+    resp = client.post("/tts", json={"text": "xin chào", "persona_id": "eca_default"})
+    assert resp.status_code == 503
 
 
 # ── Session persisted ──────────────────────────────────────────────

@@ -1,7 +1,7 @@
 /**
  * VVA API client — PART B auth integration spec.
  *
- * - API_BASE from VITE_API_BASE_URL env (default: http://localhost:8080)
+ * - One origin: API_GATEWAY from VITE_API_GATEWAY_URL (see lib/apiBase.ts)
  * - authHeader(): attach Cognito idToken when Amplify is configured + user signed in
  * - currentUserId(): Cognito sub when authed, else stable demo UUID from localStorage
  * - streamChat(): real SSE via ReadableStream.getReader() with fallback to text()
@@ -15,46 +15,27 @@ import { fetchAuthSession } from 'aws-amplify/auth'
 // ── Config ────────────────────────────────────────────────────────────────────
 
 /**
- * Two bases, both defined in lib/apiBase.ts. See that file for why.
+ * ONE base. See lib/apiBase.ts.
  *
- *   API_GATEWAY  every backend call — sessions, user memory, the character
- *                catalog, health, and later /tts and /billing.
- *   API_BASE     /chat only, because streaming SSE needs a host API Gateway can
- *                front but not replace, and the agent has nowhere to live yet.
+ *   API_GATEWAY  every backend call — /chat, sessions, user memory, the
+ *                character catalog, health, /tts, /billing.
  *
- * VITE_CRUD_API_URL was removed here on 20-08. Sessions and user memory go
- * through the gateway with everything else, so a variable naming one service is
- * a variable that can disagree with the others.
+ * There were four origins in this file a week ago, then two, now one.
+ * VITE_CRUD_API_URL went on 20-08; VITE_API_BASE_URL went on 21-08, when the
+ * agent finally had somewhere to live and /chat joined the gateway with
+ * ResponseTransferMode.STREAM — the feature REST API was chosen for in the first
+ * place. Each origin removed is one fewer thing a deployment can get wrong, and
+ * two of them did exactly that in one week.
+ *
+ * /tts and /billing route to the agent too, even though neither works in
+ * production yet: TTS is unhosted so POST /tts answers 503, and billing is
+ * sandbox-gated so it does the same. A 503 from the real endpoint is a correct
+ * answer, and it beats keeping a second origin alive for two switched-off
+ * features. Turning TTS on later is one environment variable on the function —
+ * nothing here changes.
  */
 import { API_GATEWAY } from './apiBase'
 
-const DEFAULT_API_BASE = 'http://localhost:8000'
-
-/**
- * /chat's origin. Missing configuration warns; it does not throw.
- *
- * This used to `throw` at module load. Vite bakes env vars in at BUILD time and
- * `.env.local` is gitignored, so a CI build had none — and a throw at import
- * time takes down the whole app before it renders a pixel. The deployed page was
- * a blank screen whose only symptom was a message telling you to create a file
- * on a machine that is not the one serving it.
- *
- * Warning rather than throwing keeps a bad value costing one failed request
- * instead of the whole app. The build-time check in vite.config.ts is what
- * catches a missing value before it ships.
- */
-const _raw = import.meta.env.VITE_API_BASE_URL as string | undefined
-if (!_raw) {
-  console.warn(
-    `[api] VITE_API_BASE_URL is not set — falling back to ${DEFAULT_API_BASE}. ` +
-      'This is the /chat origin only; everything else goes through ' +
-      'VITE_API_GATEWAY_URL. Vite reads it at BUILD time.'
-  )
-}
-const API_BASE: string = (_raw || DEFAULT_API_BASE).replace(/\/+$/, '')
-
-// Sessions, user memory and health — the gateway, same as the catalog.
-const CRUD_BASE: string = API_GATEWAY
 
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 
@@ -100,11 +81,13 @@ function makeClient(baseURL: string) {
   return client
 }
 
-// Agent: /tts and its result polling. /chat uses fetch, see streamChat.
-const http = makeClient(API_BASE)
-
-// CRUD Lambda: sessions, user memory, billing.
-const crud = makeClient(CRUD_BASE)
+// Everything non-streaming. /chat uses fetch, see streamChat — axios is XHR
+// and cannot deliver SSE tokens progressively.
+//
+// One client where there were two. They pointed at different origins until
+// 21-08 and now do not, so keeping both would only preserve the chance of
+// them diverging again.
+const http = makeClient(API_GATEWAY)
 
 /**
  * Fire-and-forget wake-up, called once when the app mounts.
@@ -116,7 +99,7 @@ const crud = makeClient(CRUD_BASE)
  * request will report anything genuinely wrong.
  */
 export function wakeCrudApi(): void {
-  void fetch(`${CRUD_BASE}/health`, { method: 'GET' }).catch(() => {})
+  void fetch(`${API_GATEWAY}/health`, { method: 'GET' }).catch(() => {})
 }
 
 /**
@@ -202,7 +185,7 @@ export async function streamChat(
 
   const extraHeaders = await authHeader()
 
-  const resp = await fetch(`${API_BASE}/chat`, {
+  const resp = await fetch(`${API_GATEWAY}/chat`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -288,17 +271,17 @@ export async function streamChat(
 // the routes no longer accept it.
 
 export async function listSessions() {
-  const { data } = await crud.get('/sessions')
+  const { data } = await http.get('/sessions')
   return data
 }
 
 export async function getSession(sessionId: string) {
-  const { data } = await crud.get(`/sessions/${encodeURIComponent(sessionId)}`)
+  const { data } = await http.get(`/sessions/${encodeURIComponent(sessionId)}`)
   return data
 }
 
 export async function deleteSession(sessionId: string) {
-  const { data } = await crud.delete(`/sessions/${encodeURIComponent(sessionId)}`)
+  const { data } = await http.delete(`/sessions/${encodeURIComponent(sessionId)}`)
   return data
 }
 
@@ -350,12 +333,12 @@ export async function speakText(
 // ── User memory CRUD ───────────────────────────────────────────────────────────
 
 export async function listUserMemory() {
-  const { data } = await crud.get('/me/memory')
+  const { data } = await http.get('/me/memory')
   return data
 }
 
 export async function createUserMemory(factText: string, category?: string) {
-  const { data } = await crud.post('/me/memory', {
+  const { data } = await http.post('/me/memory', {
     fact_text: factText,
     category,
   })
@@ -363,7 +346,7 @@ export async function createUserMemory(factText: string, category?: string) {
 }
 
 export async function deleteUserMemory(factId: string) {
-  const { data } = await crud.delete(`/me/memory/${encodeURIComponent(factId)}`)
+  const { data } = await http.delete(`/me/memory/${encodeURIComponent(factId)}`)
   return data
 }
 
@@ -389,10 +372,10 @@ export interface BillingStatus {
   has_test_customer: boolean
 }
 
-// Billing stays on API_BASE: the feature is unfinished, so it was left out of
-// the CRUD Lambda move. It has dropped its user_id parameter all the same —
-// that was the auth change, which applies to every endpoint regardless of where
-// it is served.
+// Billing goes through the gateway to the agent like everything else. The
+// feature is still unfinished and sandbox-gated, so these answer 503 in
+// production — which is a truthful answer from the real endpoint, and better
+// than the second origin it used to need.
 
 export async function getBillingConfig(): Promise<BillingConfig> {
   const { data } = await http.get('/billing/config')

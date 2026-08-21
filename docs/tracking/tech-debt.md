@@ -1,7 +1,8 @@
 # Tech Debt & Pending Tasks
 
 > Checklist các việc đã biết nhưng CHƯA làm. Cập nhật khi đóng/ mở item.
-> Last update: 2026-08-16 (K — Track 2 Lambda catalog: rate limit, concurrency, latency, migration).
+> Last update: 2026-08-21 (K — DELETE account hoãn theo quyết định Owner; xem mục "Chờ quyết định").
+> Trước đó: 2026-08-16 (K — Track 2 Lambda catalog: rate limit, concurrency, latency, migration).
 > Trước đó: 2026-08-05 (K — Neon, 7 lỗi TS, TTS VieNeu, lip sync, auth 1-user, Capacitor).
 >
 > ⚠️ **Mục "Thiếu credentials" bên dưới đã lạc hậu**: 16/08 Owner xác nhận máy **có** AWS
@@ -74,6 +75,25 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
 - [ ] **`voiceReply` mặc định bật hay tắt** — đo lại thì giọng nói chỉ thêm ~5s, không phải gấp đôi
       như K báo ban đầu.
 - [ ] **TTS: đổi sang FE poll thay vì giữ SSE 130s** — đổi luồng, cần Owner duyệt.
+
+- [ ] 🔴 **DELETE account — Owner hoãn 21/08 để bàn lại về bảo mật.** Không phải việc chưa
+      kịp làm: code xoá **đã có** (`api/main.py:337` `DELETE /me` → `db/gdpr.py:123`), cascade
+      Postgres **đã đúng** (`alembic/versions/002_m4_fresh_schema.py`, `004_demo_billing.py`).
+      Thứ thiếu là một quyết định về phạm vi, vì thứ đang có **xoá thiếu 4 kho dữ liệu**:
+      Cognito user (⇒ đăng nhập lại được, dữ liệu tự dựng lại qua `routes_crud.py:113` —
+      nên đây là *reset*, gọi là "xoá tài khoản" trong UI là nói sai), DynamoDB
+      `UserMappings` (⇒ đăng ký lại bằng email cũ bị `pre-sign-up` nối vào **danh tính cũ** —
+      lỗ nghiêm trọng nhất), `EmailLocks` (khoá 24h, không báo lý do), Stripe subscription.
+      Còn phải chốt: ai cầm `cognito-idp:AdminDeleteUser` (hay dùng Amplify `deleteUser()`
+      bằng access token của chính user), xoá ngay hay grace period 30 ngày (không rollback
+      được, không có backup theo user), và chống lạm dụng (hiện **không** rate limit, không
+      xác nhận lại mật khẩu, không email — token bị trộm là một POST xoá sạch, im lặng).
+      Phân tích đầy đủ: [`docs/plans/langgraph-agent-hosting.md`](../plans/langgraph-agent-hosting.md) §7.
+      ⚠️ **Kèm ràng buộc lên việc host agent**: Phase B/C của plan đó đưa `api/main.py` lên
+      Lambda, nên `create_app()` nguyên trạng sẽ **vô tình publish `DELETE /me`**. Phase A
+      phải gate sau `ENABLE_GDPR_ROUTES` (default `false`) trước khi build image.
+      ⚠️ `db/init_schema.sql` thiếu cascade trên `conversations.user_id` — file đó lạc hậu so
+      với alembic, đừng đọc như schema hiện hành.
 
 ---
 

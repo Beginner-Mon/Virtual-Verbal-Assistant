@@ -25,12 +25,29 @@ import wants anyway.
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 from dataclasses import dataclass
+from typing import Callable
 
 from langgraph_agents.shared.logging import get_logger
 
 logger = get_logger("langgraph.preflight")
+
+
+def _embedding_backend() -> str:
+    """Read here rather than importing shared.embedding — preflight runs before
+    anything heavy is loaded, and importing the embedding module to ask it a
+    question about configuration would defeat that."""
+    return os.getenv("EMBEDDING_BACKEND", "torch").strip().lower()
+
+
+def _using_torch_embeddings() -> bool:
+    return _embedding_backend() != "onnx"
+
+
+def _using_onnx_embeddings() -> bool:
+    return _embedding_backend() == "onnx"
 
 
 @dataclass(frozen=True)
@@ -41,6 +58,19 @@ class LazyDependency:
     breaks: str
     #: False when the service is fully usable without it.
     critical: bool
+    #: Predicate for dependencies that are critical only in one configuration.
+    #: Added 21-08 for the embedding backends: exactly ONE of
+    #: sentence_transformers / (onnxruntime + tokenizers) is required, decided by
+    #: EMBEDDING_BACKEND. Without this the ONNX Lambda image would report
+    #: "MISSING CRITICAL: sentence_transformers" on every cold start — a critical
+    #: alarm for a package it was deliberately built without, which is the kind
+    #: of false alarm that teaches people to ignore the real ones.
+    #: Evaluated at call time, not import time, so the environment is read after
+    #: the process has actually been configured.
+    required_when: Callable[[], bool] | None = None
+
+    def is_required(self) -> bool:
+        return self.required_when is None or self.required_when()
 
 
 # Every third-party module imported inside a function body. Keep in step with
@@ -52,7 +82,28 @@ LAZY_DEPENDENCIES: tuple[LazyDependency, ...] = (
     LazyDependency("redis", "short-term memory and Celery results", critical=True),
     LazyDependency("langchain_core", "the graph itself", critical=True),
     LazyDependency("httpx", "calls to TTS and SearXNG", critical=True),
-    LazyDependency("sentence_transformers", "embeddings — retrieval returns nothing", critical=True),
+    LazyDependency(
+        "sentence_transformers",
+        "embeddings — retrieval returns nothing. Only the torch backend needs "
+        "it; the Lambda image runs EMBEDDING_BACKEND=onnx and ships neither this "
+        "nor torch",
+        critical=True,
+        required_when=_using_torch_embeddings,
+    ),
+    LazyDependency(
+        "onnxruntime",
+        "embeddings on the ONNX backend — retrieval returns nothing. Unused on "
+        "the default torch path",
+        critical=True,
+        required_when=_using_onnx_embeddings,
+    ),
+    LazyDependency(
+        "tokenizers",
+        "tokenization for the ONNX backend. Read tokenizer.json directly so the "
+        "image needs neither transformers nor torch; unused on the torch path",
+        critical=True,
+        required_when=_using_onnx_embeddings,
+    ),
     LazyDependency("dotenv", "loading .env (real env vars still work)", critical=False),
     LazyDependency(
         "boto3",
@@ -87,6 +138,11 @@ def check_lazy_dependencies() -> PreflightResult:
     missing_optional: list[LazyDependency] = []
 
     for dep in LAZY_DEPENDENCIES:
+        # A dependency that this configuration does not use is not missing; it is
+        # not wanted. Reporting it would put a critical line in the log of a
+        # perfectly healthy deployment.
+        if not dep.is_required():
+            continue
         try:
             importlib.import_module(dep.module)
         except ImportError:

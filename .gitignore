@@ -105,3 +105,8 @@ text-to-motion/kimodo/kimodo-viser/
 # Kept on disk after agentic_rag_gemini was deleted so a future HumanML3D
 # ingest does not start with a download.
 data/knowledge_base/humanml3d_descriptions.jsonl
+
+# Exported ONNX model for the embedding runtime — ~465 MB, reproducible from
+# scripts/export_e5_onnx.py, and baked into the Lambda image at build time by a
+# throwaway Docker stage. Never commit it.
+models/

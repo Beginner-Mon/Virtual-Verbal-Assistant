@@ -45,10 +45,19 @@ async def kimodo_node(state: AgentState, config: RunnableConfig) -> dict:
     })
 
     try:
-        from langgraph_agents.mcp.client import get_mcp_client
+        # `get_mcp_tools()`, awaited — the same call graph.py:165,
+        # retriever_agent.py:55 and health.py:100 all make.
+        #
+        # This used to be `from ... import get_mcp_client` then
+        # `client.get_tools()`. No such function has ever existed in
+        # mcp/client.py, which exports get_mcp_tools() and close_mcp_client().
+        # So the import raised ImportError on the very first line of this try
+        # block, was caught below, and became a RECOVERABLE error — meaning this
+        # node has never once reached the Kimodo server. Nothing went red because
+        # nothing tested the node; see test_kimodo_node.py.
+        from langgraph_agents.mcp.client import get_mcp_tools
 
-        client = get_mcp_client()
-        tools = client.get_tools()
+        tools = await get_mcp_tools()
 
         # Find generate_motion tool
         motion_tool = None
@@ -74,9 +83,21 @@ async def kimodo_node(state: AgentState, config: RunnableConfig) -> dict:
                 }],
             }
 
-        # Call Kimodo — the MCP tool handles the actual motion generation
+        # Call Kimodo — the MCP tool handles the actual motion generation.
+        #
+        # The key is "prompt", not "query", and that is not a cosmetic detail:
+        # both MCP servers declare `prompt` as the required argument —
+        # mcp/kimodo_server.py's inputSchema and text-to-motion/kimodo/
+        # mcp_server.py's `def generate_motion(prompt: str)`. Sending "query"
+        # left the required field missing, so the call failed schema validation,
+        # fell into the except below and was logged as a RECOVERABLE error.
+        # Motion silently never ran.
+        #
+        # It survived because the tests exercised the mock MCP server directly
+        # and nothing exercised this node — the thing at the far end of the wire
+        # was checked, the wire was not. See test_kimodo_node.py.
         result = await motion_tool.ainvoke({
-            "query": resolved_query,
+            "prompt": resolved_query,
         })
 
         elapsed_ms = round((time.perf_counter() - t0) * 1000)

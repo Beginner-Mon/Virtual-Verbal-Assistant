@@ -158,37 +158,74 @@ class TestMemoryLoaderMocks:
             chunks = await _load_summary_chunks("test-session")
             assert chunks == []
 
+    # These three used to patch `redis.asyncio.from_url` directly. They now go
+    # through the STM store (shared/stm.py), which is both a smaller mock and a
+    # truer one: this module no longer knows what the cache is made of, and a
+    # test that patches Redis would keep passing after the deployed backend
+    # became DynamoDB. Backend outage behaviour moved with the code — see
+    # test_stm.py::test_get_returns_none_when_backend_raises.
+
     @pytest.mark.asyncio
-    async def test_load_recent_raw_redis_hit(self):
-        from langgraph_agents.nodes.memory import _load_recent_raw_redis
-        mock_redis = AsyncMock()
-        mock_redis.get.return_value = json.dumps([
+    async def test_load_recent_raw_cache_hit(self):
+        from langgraph_agents.nodes.memory import _load_recent_raw_cache
+        mock_stm = AsyncMock()
+        mock_stm.get.return_value = [
             {"role": "user", "content": "xin chào"},
             {"role": "assistant", "content": "Chào bạn!"},
-        ])
+        ]
 
-        with patch("redis.asyncio.from_url", return_value=mock_redis):
-            result = await _load_recent_raw_redis("test-session")
+        with patch("langgraph_agents.nodes.memory.get_stm", return_value=mock_stm):
+            result = await _load_recent_raw_cache("test-session")
             assert result is not None
             assert len(result) == 2
             assert result[0]["role"] == "user"
 
     @pytest.mark.asyncio
-    async def test_load_recent_raw_redis_miss(self):
-        from langgraph_agents.nodes.memory import _load_recent_raw_redis
-        mock_redis = AsyncMock()
-        mock_redis.get.return_value = None
+    async def test_load_recent_raw_cache_hit_writer_format(self):
+        """The writer stores [{q, a, ts}]; the reader wants [{role, content}].
 
-        with patch("redis.asyncio.from_url", return_value=mock_redis):
-            result = await _load_recent_raw_redis("test-session")
+        Not a duplicate of the test above: session_store._append_stm writes the
+        q/a shape, so this is what a real cache entry looks like. The test above
+        pins the role/content shape only because _normalize_redis_format accepts
+        both for forward-compatibility.
+        """
+        from langgraph_agents.nodes.memory import _load_recent_raw_cache
+        mock_stm = AsyncMock()
+        mock_stm.get.return_value = [
+            {"q": "xin chào", "a": "Chào bạn!", "ts": "2026-08-21T00:00:00"},
+        ]
+
+        with patch("langgraph_agents.nodes.memory.get_stm", return_value=mock_stm):
+            result = await _load_recent_raw_cache("test-session")
+            assert result == [
+                {"role": "user", "content": "xin chào"},
+                {"role": "assistant", "content": "Chào bạn!"},
+            ]
+
+    @pytest.mark.asyncio
+    async def test_load_recent_raw_cache_miss(self):
+        from langgraph_agents.nodes.memory import _load_recent_raw_cache
+        mock_stm = AsyncMock()
+        mock_stm.get.return_value = None
+
+        with patch("langgraph_agents.nodes.memory.get_stm", return_value=mock_stm):
+            result = await _load_recent_raw_cache("test-session")
             assert result is None
 
     @pytest.mark.asyncio
-    async def test_load_recent_raw_redis_connection_error(self):
-        from langgraph_agents.nodes.memory import _load_recent_raw_redis
-        with patch("redis.asyncio.from_url", side_effect=ConnectionError("Redis down")):
-            result = await _load_recent_raw_redis("test-session")
-            assert result is None
+    async def test_load_recent_raw_cache_empty_list_is_a_miss(self):
+        """An empty cached list must fall through to PostgreSQL, not short-circuit.
+
+        `_load_recent_raw` only falls back when this returns falsy, so returning
+        `[]` here would present an empty conversation as a successful cache read
+        and the agent would answer with no history at all.
+        """
+        from langgraph_agents.nodes.memory import _load_recent_raw_cache
+        mock_stm = AsyncMock()
+        mock_stm.get.return_value = []
+
+        with patch("langgraph_agents.nodes.memory.get_stm", return_value=mock_stm):
+            assert await _load_recent_raw_cache("test-session") is None
 
     @pytest.mark.asyncio
     async def test_load_recent_raw_db_fallback(self):
@@ -217,13 +254,30 @@ class TestMemoryLoaderMocks:
             assert result == []
 
     @pytest.mark.asyncio
-    async def test_load_recent_raw_redis_first_then_fallback(self):
+    async def test_load_recent_raw_prefers_cache_over_db(self):
         from langgraph_agents.nodes.memory import _load_recent_raw
-        with patch("langgraph_agents.nodes.memory._load_recent_raw_redis") as mock_redis:
-            mock_redis.return_value = [{"role": "user", "content": "from redis"}]
+        with patch("langgraph_agents.nodes.memory._load_recent_raw_cache") as mock_cache:
+            mock_cache.return_value = [{"role": "user", "content": "from cache"}]
             result = await _load_recent_raw("test-session")
             assert len(result) == 1
-            assert result[0]["content"] == "from redis"
+            assert result[0]["content"] == "from cache"
+
+    @pytest.mark.asyncio
+    async def test_load_recent_raw_falls_back_to_db_on_cache_miss(self):
+        """The half the old test never covered.
+
+        Patching only the cache path proved the cache wins; nothing proved the
+        database is consulted when it loses. That fallback is the entire reason
+        the agent can run with no cache at all (STM_BACKEND=none), so it is worth
+        a test of its own.
+        """
+        from langgraph_agents.nodes.memory import _load_recent_raw
+        with patch("langgraph_agents.nodes.memory._load_recent_raw_cache", return_value=None), \
+             patch("langgraph_agents.nodes.memory._load_recent_raw_db") as mock_db:
+            mock_db.return_value = [{"role": "user", "content": "from postgres"}]
+            result = await _load_recent_raw("test-session")
+            assert len(result) == 1
+            assert result[0]["content"] == "from postgres"
 
 
 @pytest.mark.unit

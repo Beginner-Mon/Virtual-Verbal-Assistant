@@ -31,6 +31,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph_agents.state import AgentState, ErrorSeverity
 from langgraph_agents.shared import get_pg_client
 from langgraph_agents.shared.logging import get_logger
+from langgraph_agents.shared.stm import get_stm
 
 logger = get_logger("langgraph.memory")
 
@@ -47,9 +48,14 @@ def _load_memory_config() -> dict:
 
 
 _MEM_CFG = _load_memory_config()
-_REDIS_URL = _MEM_CFG.get("redis_url", "redis://localhost:6379")
-_RECENT_RAW_KEY = "stm:{session_id}"
-_RECENT_RAW_MAX = 20          # max recent messages to load from Redis/DB
+# _REDIS_URL and _RECENT_RAW_KEY were here. Both moved to shared/stm.py on
+# 21-08, which owns the key format and the connection for all four call sites.
+#
+# The config value they read (`langgraph.memory.redis_url` in
+# config/langgraph.yaml) is no longer consulted: a URL in a committed YAML file
+# cannot differ per environment, which is the whole requirement once this runs
+# on Lambda. The store reads REDIS_URL from the environment instead.
+_RECENT_RAW_MAX = 20          # max recent messages to load from cache/DB
 _SUMMARY_TOKEN_THRESHOLD = 10_000   # D13: single threshold for summarize trigger
 _STM_TOKEN_BUDGET = 1500      # max tokens for recent raw in context window
 
@@ -99,25 +105,21 @@ def _token_estimate(text: str) -> int:
     return len(text) // 4
 
 
-async def _load_recent_raw_redis(session_id: str) -> Optional[list[dict]]:
-    """Load recent raw messages from Redis cache. Returns None on failure.
+async def _load_recent_raw_cache(session_id: str) -> Optional[list[dict]]:
+    """Load recent raw messages from the STM cache. None means "no cache entry".
 
     Adapts writer format [{q, a, ts}] to [{role, content}] for downstream.
+
+    Named `_load_recent_raw_redis` until 21-08, when the backend stopped being
+    Redis-specific — see shared/stm.py. Returning None for both "empty" and
+    "backend unreachable" is intentional and predates this change: the caller
+    falls back to PostgreSQL either way, and the store logs the outage once
+    rather than leaving this function to decide what an outage means.
     """
-    try:
-        import redis.asyncio as aioredis
-        r = aioredis.from_url(_REDIS_URL, decode_responses=True, socket_connect_timeout=1)
-        try:
-            raw = await r.get(_RECENT_RAW_KEY.format(session_id=session_id))
-            if raw:
-                data = json.loads(raw)
-                return _normalize_redis_format(data)
-            return None
-        finally:
-            close_fn = getattr(r, "aclose", None) or r.close
-            await close_fn()
-    except Exception:
+    data = await get_stm().get(session_id)
+    if not data:
         return None
+    return _normalize_redis_format(data)
 
 
 def _normalize_redis_format(data: list[dict]) -> list[dict]:
@@ -177,10 +179,10 @@ def _select_recent_raw(pairs: list[dict], budget: int = _STM_TOKEN_BUDGET) -> li
 
 
 async def _load_recent_raw(session_id: str) -> list[dict]:
-    """Load recent raw messages: Redis first, DB fallback. Token-budgeted."""
-    redis_data = await _load_recent_raw_redis(session_id)
-    if redis_data:
-        return _select_recent_raw(redis_data)
+    """Load recent raw messages: cache first, DB fallback. Token-budgeted."""
+    cached = await _load_recent_raw_cache(session_id)
+    if cached:
+        return _select_recent_raw(cached)
     db_data = await _load_recent_raw_db(session_id)
     return _select_recent_raw(db_data)
 

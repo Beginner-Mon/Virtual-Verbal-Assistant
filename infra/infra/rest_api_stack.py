@@ -91,6 +91,7 @@ class RestApiStack(Stack):
         crud_fn: lambda_.IFunction,
         characters_fn: lambda_.IFunction,
         cognito_pool_id: str,
+        agent_fn: lambda_.IFunction | None = None,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -193,6 +194,73 @@ class RestApiStack(Stack):
         memory.add_method("GET", crud, **authed)
         memory.add_method("POST", crud, **authed)
         memory.add_resource("{fact_id}").add_method("DELETE", crud, **authed)
+
+        # ── /chat — authenticated, and STREAMED ─────────────────────────
+        #
+        # The endpoint this API was chosen for. The module docstring above says
+        # REST API was picked over HTTP API because REST gained response
+        # streaming in 11/2025 and HTTP API still lacks it; this is that debt
+        # being collected.
+        #
+        # `response_transfer_mode=STREAM` is the whole difference from every
+        # other route here. Without it the integration is BUFFERED: API Gateway
+        # waits for the complete body, so SSE still "works" but the user sits in
+        # silence for twenty seconds and then receives the entire answer at once.
+        # It fails by looking slow, which is why the Phase 0 spike measured
+        # arrival timestamps rather than watching curl.
+        #
+        # CDK emits the right integration URI for this — verified in the
+        # synthesized template during the spike: it ends in
+        # `/response-streaming-invocations`, which is what AWS documents
+        # Lambda-proxy streaming requires.
+        #
+        # Optional so the API can be deployed before the agent exists — see the
+        # two-step bootstrap in agent_stack.py. Adding a route later is additive;
+        # the reverse (deploying without it once the frontend depends on it)
+        # would be an outage, so keep passing agent_fn once it is wired.
+        if agent_fn is not None:
+            chat = self.api.root.add_resource("chat")
+            chat.add_method(
+                "POST",
+                apigw.LambdaIntegration(
+                    agent_fn,
+                    response_transfer_mode=apigw.ResponseTransferMode.STREAM,
+                    # The default integration timeout is 29s, and a chat turn
+                    # runs 10-30s — so the default would cut off exactly the
+                    # answers worth waiting for. Raisable only for REGIONAL and
+                    # private endpoints, which this API is (see the endpoint
+                    # configuration above). Matched to the function's own 120s
+                    # ceiling: a gateway that gives up first would abandon a
+                    # request Lambda keeps billing for.
+                    timeout=Duration.seconds(120),
+                ),
+                **authed,
+            )
+
+            # ── /tts and /billing — the agent's other routes ─────────────
+            #
+            # BUFFERED, not streamed: both return a small JSON body, and STREAM
+            # mode gives up caching, VTL and WAF inspection to buy a lower
+            # time-to-first-byte that a 200-byte response does not have.
+            #
+            # Routed even though neither works in production today — TTS is
+            # unhosted so POST /tts answers 503, and billing is sandbox-gated so
+            # it does the same. That is the point: a 503 from the real endpoint
+            # is a correct answer, and it is what lets the frontend drop
+            # VITE_API_BASE_URL now instead of keeping a second origin alive for
+            # two features that are switched off. Turning TTS on later becomes
+            # one environment variable on the function, with no gateway change
+            # and no frontend change.
+            agent = apigw.LambdaIntegration(agent_fn)
+
+            tts = self.api.root.add_resource("tts")
+            tts.add_method("POST", agent, **authed)
+            tts.add_resource("{task_id}").add_resource("result").add_method(
+                "GET", agent, **authed,
+            )
+
+            billing = self.api.root.add_resource("billing")
+            billing.add_resource("{proxy+}").add_method("ANY", agent, **authed)
 
         CfnOutput(
             self, "RestApiUrl",

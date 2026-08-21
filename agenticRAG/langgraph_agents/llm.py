@@ -126,13 +126,69 @@ def _fallback_model_for_role(role: str) -> str:
     return _FALLBACK_MODEL_HEAVY if role in _HEAVY_ROLES else _FALLBACK_MODEL_FAST
 
 
+@lru_cache(maxsize=8)
+def _secret_from_ssm(param: str) -> str | None:
+    """Read an SSM SecureString. Cached for the life of the process.
+
+    Same escape hatch db/postgres.py::_dsn_from_ssm uses, and for the same
+    reason: on Lambda the alternative is an API key sitting in plaintext in the
+    CloudFormation template, readable by anyone who can describe the stack.
+    CloudFormation's `{{resolve:ssm-secure}}` dynamic reference is not an option
+    here — it is not supported for Lambda environment variables.
+
+    Cached because this is called per LLM construction, and each miss is a
+    network round trip. lru_cache rather than a module global so the two
+    different parameters do not share one slot.
+
+    boto3 is imported lazily: it is a dependency of the deployed image, not of
+    running this service on a laptop.
+    """
+    try:
+        import boto3
+
+        value = boto3.client("ssm").get_parameter(
+            Name=param, WithDecryption=True,
+        )["Parameter"]["Value"]
+        logger.info("llm_secret_loaded_from_ssm", extra={"param": param})
+        return value
+    except Exception as exc:                                    # noqa: BLE001
+        # Never raise. A missing key already has a defined meaning further up —
+        # DeepSeek unconfigured falls back to Gemini, Gemini unconfigured is
+        # simply absent — and turning a credential-fetch failure into an
+        # exception here would convert a degraded provider into a dead request.
+        logger.warning("llm_secret_ssm_failed", extra={
+            "param": param, "error": str(exc),
+        })
+        return None
+
+
 def _resolve_api_key() -> str | None:
-    return os.getenv("DEEPSEEK_API_KEY")
+    """DeepSeek key: env first, then SSM.
+
+    Env wins so a developer exporting a scratch key is not silently overridden
+    by whatever the deployment is configured with — the same precedence
+    db/postgres.py applies to the DSN.
+    """
+    direct = os.getenv("DEEPSEEK_API_KEY")
+    if direct:
+        return direct
+
+    param = os.getenv("DEEPSEEK_API_KEY_PARAM")
+    return _secret_from_ssm(param) if param else None
 
 
 def _resolve_first_gemini_key() -> str | None:
-    """Return the first key from comma-separated GEMINI_API_KEYS, or None."""
+    """Return the first key from comma-separated GEMINI_API_KEYS, or None.
+
+    Falls back to GEMINI_API_KEYS_PARAM (SSM SecureString) holding the same
+    comma-separated shape, so the deployed path stores one parameter rather than
+    one per key.
+    """
     raw = os.getenv("GEMINI_API_KEYS", "")
+    if not raw:
+        param = os.getenv("GEMINI_API_KEYS_PARAM")
+        raw = (_secret_from_ssm(param) or "") if param else ""
+
     keys = [k.strip() for k in raw.split(",") if k.strip()]
     return keys[0] if keys else None
 

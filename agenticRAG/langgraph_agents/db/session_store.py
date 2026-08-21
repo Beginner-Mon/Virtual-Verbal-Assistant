@@ -10,13 +10,13 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-import redis.asyncio as aioredis
-
 from langgraph_agents.db.postgres import PostgresClient
 from langgraph_agents.shared import get_pg_client
+from langgraph_agents.shared.stm import get_stm
 
-
-_REDIS_URL = "redis://localhost:6379/0"
+# _REDIS_URL used to live here, hardcoded to localhost, and was one of four
+# copies of the same string. shared/stm.py owns it now — see that module for why
+# the store is swappable and why DynamoDB's TTL needed an application-side check.
 _STM_MAX = 3
 
 
@@ -234,12 +234,7 @@ async def populate_stm_from_messages(session_id: str, messages: list[dict]) -> N
 
     stm = pairs[-_STM_MAX:]
 
-    r = aioredis.from_url(_REDIS_URL)
-    try:
-        await r.setex(f"stm:{session_id}", 7200, json.dumps(stm))
-    finally:
-        close_fn = getattr(r, "aclose", None) or r.close
-        await close_fn()
+    await get_stm().set(session_id, stm)
 
 
 async def write_session_turn(
@@ -280,15 +275,17 @@ async def write_session_turn(
 
 
 async def _append_stm(session_id: str, q: str, a: str, ts: str) -> None:
-    r = aioredis.from_url(_REDIS_URL)
-    try:
-        raw = await r.get(f"stm:{session_id}")
-        stm = json.loads(raw) if raw else []
-        stm.append({"q": q, "a": a, "ts": ts})
-        stm = stm[-_STM_MAX:]
-        await r.setex(f"stm:{session_id}", 7200, json.dumps(stm))
-    except Exception:
-        pass
-    finally:
-        close_fn = getattr(r, "aclose", None) or r.close
-        await close_fn()
+    """Append one turn to the cache, trimmed to the last _STM_MAX pairs.
+
+    Read-modify-write, and deliberately not atomic. Two turns of the SAME
+    session racing here could lose one — but a session is one person typing, and
+    the loser is a cache entry that PostgreSQL can rebuild. Buying atomicity
+    would mean a Redis-only primitive, which is exactly what shared/stm.py exists
+    to avoid depending on.
+
+    No try/except: every method on the store already swallows and reports its own
+    failures. Wrapping it again would only hide a bug in this function.
+    """
+    stm = await get_stm().get(session_id) or []
+    stm.append({"q": q, "a": a, "ts": ts})
+    await get_stm().set(session_id, stm[-_STM_MAX:])
