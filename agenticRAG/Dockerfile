@@ -24,15 +24,48 @@
 # ─────────────────────────────────────────────────────────────────────────────
 FROM public.ecr.aws/docker/library/python:3.12-slim AS export
 
+# `onnx` and `onnxruntime` are NOT optional here, and optimum-onnx does not pull
+# them. Without them the export runs, traces the model, and then dies at the last
+# step:
+#
+#     RuntimeError: The onnx and onnxruntime packages are necessary to fix the
+#     dynamic shapes of the exported model.
+#
+# It cost a CI build to learn, and it should not have: the local export "worked"
+# only because firstconda already had onnxruntime installed for unrelated
+# reasons. Verifying a build step against a polluted environment is the same
+# mistake as testing an image against the full requirements file — which is why
+# this line was reproduced in a clean venv before being written here.
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
- && pip install --no-cache-dir optimum optimum-onnx
+ && pip install --no-cache-dir optimum optimum-onnx onnx onnxruntime
 
+# Note: this prints
+#     The library name was inferred as `sentence_transformers`, which is not
+#     installed. Falling back to `transformers` to avoid breaking the export.
+# That is expected and benign FOR THIS MODEL AND TASK. Both paths were compared:
+# `--task feature-extraction` exports the transformer body emitting
+# last_hidden_state either way, and a parity run against the fallback export
+# scored cosine 1.00000000 — identical to the export made with
+# sentence_transformers present. sentence_transformers is deliberately NOT
+# installed here so the image's model comes from the path that was verified,
+# rather than from a different one that merely looks equivalent.
 RUN python -m optimum.exporters.onnx \
         --model intfloat/multilingual-e5-small \
         --task feature-extraction \
         /out \
  && test -f /out/model.onnx \
  && test -f /out/tokenizer.json
+
+# Load the graph and run one inference. `test -f` proves a file arrived; this
+# proves it is a model. A graph that is present but broken would otherwise
+# surface at Lambda INIT — in CloudWatch, minutes later, on a 10-minute loop.
+#
+# A script rather than `RUN python -c "..."`: a multi-line `python -c` in a
+# Dockerfile is a shell-quoting exercise where a mistake costs exactly the loop
+# this check exists to avoid, and this version can be run on a laptop against the
+# same export.
+COPY agenticRAG/verify_onnx_export.py /tmp/verify_onnx_export.py
+RUN python /tmp/verify_onnx_export.py /out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
