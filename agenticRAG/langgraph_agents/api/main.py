@@ -59,6 +59,7 @@ from langgraph_agents.shared.logging import (
 )
 from langgraph_agents.shared import get_pg_client
 from langgraph_agents.shared.env import env_source
+from langgraph_agents.shared.stm import get_stm
 from langgraph_agents.shared.preflight import run_preflight
 from langgraph_agents.api.health import run_all_checks
 
@@ -86,11 +87,39 @@ _STAGE_NODES = {
 }
 
 
+def tts_enabled() -> bool:
+    """Whether a VieNeu-TTS service is configured for this deployment.
+
+    Absence of VIENEU_TTS_URL is the switch, rather than a separate ENABLE_TTS
+    flag, because the two can disagree: a flag saying "on" with no URL to call
+    is a deployment that fails one request at a time instead of at startup.
+    One value, and it is the one the code actually needs.
+
+    TTS is unhosted as of 21-08 (Owner deferred it), so the deployed agent runs
+    with this false. Local development is unaffected — `services/vieneu_tts`
+    still defaults to localhost:5000 when the variable IS set.
+    """
+    return bool(os.getenv("VIENEU_TTS_URL", "").strip())
+
+
 def _get_redis() -> aioredis.Redis:
+    """Redis for TTS task results ONLY. Short-term memory goes through get_stm().
+
+    The two used to share this client and a hardcoded localhost URL. They are
+    separated because they have different requirements: STM is one small read
+    and one write per turn, so it tolerates any key-value store and now runs on
+    DynamoDB when deployed (shared/stm.py). `_poll_speech_result` polls every
+    250ms for up to 130 seconds — 520 reads per answer — which is a genuine
+    Redis-shaped workload and the one place where the latency argument holds.
+
+    Nothing reaches this while TTS is off (VIENEU_TTS_URL unset), and the URL is
+    read from the environment rather than hardcoded so that turning TTS back on
+    does not require finding this line.
+    """
     global _redis
     if _redis is None:
         _redis = aioredis.from_url(
-            "redis://localhost:6379/0",
+            os.getenv("REDIS_URL", "redis://localhost:6379/0"),
             socket_timeout=5,
             socket_connect_timeout=5,
         )
@@ -119,8 +148,13 @@ async def lifespan(application: FastAPI):
 
     global _graph
     _graph = await build_graph_async()
-    _get_redis()
 
+    # `_get_redis()` used to be called here. Removed 21-08: it only constructed a
+    # lazy client (redis.asyncio does not dial until first command), so it proved
+    # nothing about reachability while making every deployment look like it
+    # needed a Redis. TTS opens its own on first use; short-term memory no longer
+    # goes through Redis at all — see shared/stm.py.
+    #
     # Character personas live in the DB (characters.persona) but get_persona is
     # synchronous, so they are read once here rather than per request. Returns 0
     # and logs when the DB is unreachable; personas/*.md then serve every lookup.
@@ -228,12 +262,12 @@ def create_app() -> FastAPI:
                 user_id=uid, session_id=req.session_id, limit=6,
             )
             if recent and recent["messages"]:
-                if not await _get_redis().get(f"stm:{req.session_id}"):
+                if not await get_stm().get(req.session_id):
                     await populate_stm_from_messages(req.session_id, recent["messages"])
             else:
                 # No rows: either a brand-new session (nothing to drop) or one
                 # that was deleted while its STM survived.
-                await _get_redis().delete(f"stm:{req.session_id}")
+                await get_stm().delete(req.session_id)
         except Exception as exc:
             logger.warning("stm_warmup_failed", extra={"error": str(exc)})
 
@@ -263,7 +297,16 @@ def create_app() -> FastAPI:
         Returns immediately rather than blocking: VieNeu runs on CPU at roughly
         18ms per character, so a full clinical answer is 30-45s. The caller polls
         GET /tts/{task_id}/result, which already exists for the /chat path.
+
+        503 rather than a task id when no TTS service is configured. Handing back
+        an id would be worse than an error: the caller would poll a key that
+        nothing will ever write, and give up only on its own timeout.
         """
+        if not tts_enabled():
+            raise HTTPException(
+                503, "text-to-speech is not configured on this deployment",
+            )
+
         task_id = str(uuid.uuid4())
         persona = get_persona(body.persona_id)
         # No query to fall back on here — /tts is given loose text, not a turn.
@@ -300,6 +343,37 @@ def create_app() -> FastAPI:
     # CRUD Lambda serves. The two GDPR routes below stay put because both fire
     # background work after responding: on Lambda the sandbox freezes the moment
     # the response is returned, so the task would never run.
+    #
+    # ── Gated, and the gate is the point ─────────────────────────────────────
+    #
+    # These two routes DELETE USER DATA and default to OFF. Until 21-08 that was
+    # academic: this module ran only on a developer machine. Deploying the agent
+    # to Lambda changes it — an ungated create_app() would publish DELETE /me the
+    # same day /chat ships.
+    #
+    # Owner deferred account deletion on 21-08 specifically to reconsider its
+    # security, and the reconsideration is not cosmetic. What delete_user()
+    # actually does today is delete PostgreSQL rows and nothing else: the Cognito
+    # user survives, so the person can still sign in and routes_crud.py:113
+    # recreates their `users` row on the next write. Calling that "delete my
+    # account" in a UI would be telling users something untrue. It also leaves
+    # the DynamoDB UserMappings row, so re-registering with the same email links
+    # the new sign-up to the OLD identity.
+    #
+    # Default false rather than "remember to set it false in prod", because the
+    # failure mode of forgetting is unrecoverable — there is no per-user backup.
+    # See docs/tracking/tech-debt.md and docs/plans/langgraph-agent-hosting.md §7.
+    if os.getenv("ENABLE_GDPR_ROUTES", "false").strip().lower() != "true":
+        logger.info("gdpr_routes_disabled", extra={
+            "reason": "ENABLE_GDPR_ROUTES is not 'true'",
+            "routes": ["DELETE /me", "DELETE /sessions/{sid}/messages/{mid}"],
+        })
+        return application
+
+    logger.warning("gdpr_routes_enabled", extra={
+        "routes": ["DELETE /me", "DELETE /sessions/{sid}/messages/{mid}"],
+        "note": "these routes delete user data and cannot be undone",
+    })
 
     @application.delete("/sessions/{session_id}/messages/{message_id}")
     async def delete_message(
@@ -354,12 +428,12 @@ def create_app() -> FastAPI:
 
         result = await gdpr_delete_user(uid)
 
-        # Clear Redis STM for all user's sessions
+        # Clear cached short-term memory for all the user's sessions. The store
+        # swallows and reports its own failures, so a cache that is down cannot
+        # turn a successful deletion into a 500 — the authoritative rows are
+        # already gone by this point.
         for sid in session_ids:
-            try:
-                await _get_redis().delete(f"stm:{sid}")
-            except Exception:
-                pass
+            await get_stm().delete(sid)
 
         return result
 
@@ -457,37 +531,58 @@ async def _stream_chat(req, request_id, config, state, background_tasks, request
 
     # Fire TTS if needed
     if req.output_mode in ("speech", "both") and final_state.get("final_answer"):
-        speech_task_id = str(uuid.uuid4())
-        persona = get_persona(req.persona_id)
-        # The query is the tie-breaker: a reply of "Có." or "OK" carries no
-        # language signal, and the synthesizer was told to answer in the
-        # query's language anyway.
-        voice_path, speech_language = resolve_voice(
-            req.persona_id,
-            final_answer,
-            query=req.query,
-            persona_lang=persona.get("voice_identity", {}).get("language", "vi"),
-        )
-        # asyncio.create_task fires immediately (parallel with the polling loop
-        # below). FastAPI BackgroundTasks would run only AFTER the streaming
-        # response generator returns — but we're still streaming, so the task
-        # would never start until our 15s poll already timed out. Wrong order.
-        # Strong reference via _pending_tts_tasks prevents GC of the task.
-        _tts_task = asyncio.create_task(synthesize_speech_async(
-            text=final_answer,
-            task_id=speech_task_id,
-            voice_path=voice_path,
-            language=speech_language,
-        ))
-        _pending_tts_tasks.add(_tts_task)
-        _tts_task.add_done_callback(_pending_tts_tasks.discard)
-        yield encode_event("speech_pending", {"task_id": speech_task_id})
+        if not tts_enabled():
+            # Emit speech_disabled, and specifically NOT speech_pending.
+            #
+            # The difference matters to the client, not just to the log.
+            # speech_pending is a promise that speech_ready or speech_failed
+            # follows; the UI shows "generating audio" and waits for it. With no
+            # TTS service configured, nothing would ever follow, so the promise
+            # would be a permanent spinner.
+            #
+            # The alternative — letting the code below run anyway — is worse than
+            # a spinner. _poll_speech_result waits 130 seconds, and on Lambda a
+            # streaming invocation is billed for its FULL duration even after the
+            # client disconnects. Every voice turn would cost two minutes of
+            # memory to reach a failure that was knowable up front.
+            logger.info("speech_disabled", extra={"reason": "VIENEU_TTS_URL not set"})
+            yield encode_event("speech_disabled", {
+                "reason": "text-to-speech is not configured on this deployment",
+            })
+        else:
+            speech_task_id = str(uuid.uuid4())
+            persona = get_persona(req.persona_id)
+            # The query is the tie-breaker: a reply of "Có." or "OK" carries no
+            # language signal, and the synthesizer was told to answer in the
+            # query's language anyway.
+            voice_path, speech_language = resolve_voice(
+                req.persona_id,
+                final_answer,
+                query=req.query,
+                persona_lang=persona.get("voice_identity", {}).get("language", "vi"),
+            )
+            # asyncio.create_task fires immediately (parallel with the polling
+            # loop below). FastAPI BackgroundTasks would run only AFTER the
+            # streaming response generator returns — but we're still streaming,
+            # so the task would never start until our 15s poll already timed
+            # out. Wrong order. Strong reference via _pending_tts_tasks
+            # prevents GC of the task.
+            _tts_task = asyncio.create_task(synthesize_speech_async(
+                text=final_answer,
+                task_id=speech_task_id,
+                voice_path=voice_path,
+                language=speech_language,
+            ))
+            _pending_tts_tasks.add(_tts_task)
+            _tts_task.add_done_callback(_pending_tts_tasks.discard)
+            yield encode_event("speech_pending", {"task_id": speech_task_id})
 
-        # Must outlast the TTS client's own timeout (services.vieneu_tts.timeout,
-        # 120s). Give up sooner and we emit speech_failed while the task is still
-        # running, then it writes speech_ready to Redis that nobody reads.
-        async for sse_event in _poll_speech_result(speech_task_id, timeout=130):
-            yield sse_event
+            # Must outlast the TTS client's own timeout
+            # (services.vieneu_tts.timeout, 120s). Give up sooner and we emit
+            # speech_failed while the task is still running, then it writes
+            # speech_ready to Redis that nobody reads.
+            async for sse_event in _poll_speech_result(speech_task_id, timeout=130):
+                yield sse_event
 
     elapsed_ms = round((time.time() - t0) * 1000)
     logger.info("chat_complete", extra={

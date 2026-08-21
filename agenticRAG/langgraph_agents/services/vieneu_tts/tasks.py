@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 
 import redis.asyncio as aioredis
 
@@ -16,8 +17,24 @@ from langgraph_agents.services.vieneu_tts.client import get_vieneu_tts_client
 
 logger = logging.getLogger("langgraph.tasks.vieneu_tts")
 
-_REDIS_URL = "redis://localhost:6379/0"   # v2.4.1: DB 0 (bo DB 1 broker)
-_VIENEU_BASE = "http://localhost:5000"     # also used to build audio URL
+
+def _redis_url() -> str:
+    """Where TTS results live. DB 0 since v2.4.1 (the DB 1 broker is gone).
+
+    Read at call time rather than import time: this module is imported by
+    api/main.py at startup, and a value frozen then cannot be changed by a
+    deployment that configures the environment afterwards.
+
+    Deliberately still Redis, not the STM store — see api/main.py::_get_redis.
+    `_poll_speech_result` reads this key every 250ms for up to 130 seconds, which
+    is the one workload here with a genuine latency argument.
+    """
+    return os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+
+def _vieneu_base() -> str:
+    """The TTS service, also used to build the audio URL handed to the client."""
+    return os.getenv("VIENEU_TTS_URL", "http://localhost:5000")
 
 
 async def synthesize_speech_async(
@@ -48,7 +65,7 @@ async def synthesize_speech_async(
         if audio_file.startswith("http"):
             audio_url = audio_file
         elif audio_file:
-            audio_url = f"{_VIENEU_BASE}/audio/{audio_file}"
+            audio_url = f"{_vieneu_base()}/audio/{audio_file}"
         else:
             audio_url = ""
         payload = {
@@ -71,7 +88,7 @@ async def synthesize_speech_async(
 
 async def _persist(task_id: str, payload: dict) -> None:
     """Best-effort Redis write — never raise back to caller."""
-    r = aioredis.from_url(_REDIS_URL, socket_connect_timeout=2)
+    r = aioredis.from_url(_redis_url(), socket_connect_timeout=2)
     try:
         await r.setex(f"task_result:{task_id}", 3600, json.dumps(payload))
     except Exception:
