@@ -1,240 +1,260 @@
-# Bàn giao — Phase A, deploy LangGraph agent
+# Bàn giao — Phase A + Phase 0, deploy LangGraph agent
 
-> K · 21/08/2026 · branch **`feature/agent-deploy`** (tách khỏi
-> `feature/langgraph-rewrite` theo yêu cầu Owner)
+> K · 21/08/2026 · nhánh **`feature/agent-deploy`** · **chưa push**
 > Kế hoạch: [[langgraph-agent-hosting]] · Nhật ký: [[21-08-2026]]
-> Tests: **465 passed / 0 failed** (trước khi bắt đầu: 437)
+> 5 commit · 31 file · +3824 / −119 · Tests **481 passed / 0 failed** (đầu: 437)
 
 ---
 
-## 0. Đọc trước — hai thay đổi làm hỏng thói quen local của N
+## 0. Zip hay container? — gỡ nhầm lẫn trước
 
-Cả hai đều **cố ý** và đều theo kế hoạch, nhưng chúng đổi hành vi trên máy N chứ
-không chỉ trên cloud. Không biết trước thì sẽ tưởng là bug.
+Owner hỏi đúng: *"sao giờ lại dùng zip, không phải container à?"*
 
-| Cái gì | Trước | Sau | Cách lấy lại |
-|---|---|---|---|
-| **Giọng nói ở `/chat`** | luôn thử, mặc định `localhost:5000` | **TẮT** — phát `speech_disabled` | đặt `VIENEU_TTS_URL=http://localhost:5000` |
-| **`DELETE /me`** | có | **404** | đặt `ENABLE_GDPR_ROUTES=true` |
+**Agent vẫn là container.** Zip chỉ dùng cho spike Phase 0, và spike đó **đã bị
+xoá khỏi AWS** ngay trong cùng phiên.
 
-Cả hai đã ghi vào `agenticRAG/.env.example` kèm lý do. Ba thứ **không** đổi hành
-vi local: STM vẫn dùng Redis ở `localhost:6379/0`, web search vẫn dùng SearXNG ở
-`localhost:6666`, Postgres không đụng tới.
+| | Spike (Phase 0) | Agent thật (Phase B) |
+|---|---|---|
+| Đóng gói | **zip** 5,3 MB | **container** ~1,2 GB |
+| Nội dung | hello-world FastAPI ~40 dòng | LangGraph + ONNX + model e5 |
+| Mục đích | một câu hỏi về transport | chạy `/chat` thật |
+| Hiện trạng | **đã destroy** | **chưa build** |
+
+Vì sao zip hợp lệ cho spike: `AWS_LWA_INVOKE_MODE` là **biến môi trường**, và LWA
+là **cùng một binary** ở cả hai kiểu đóng gói. Nên câu hỏi "prelude của LWA có
+khớp thứ API Gateway đòi không" độc lập với cách đóng gói. Dùng container ở đó là
+trộn một ẩn số (streaming) với một ẩn số khác (image 1,2 GB bake model đúng chưa)
+— hỏng thì không biết cái nào hỏng.
 
 ---
 
-## 1. Đã làm — thay đổi và tác động
+## 1. Trạng thái
 
-### 1.1 Chốt bảo mật `ENABLE_GDPR_ROUTES` (mặc định **off**)
+| | |
+|---|---|
+| **Phase A** | ✅ **5/5 XONG** |
+| **Phase 0** (spike streaming) | ✅ **XONG — kết quả STREAMED** |
+| Phase B (image) | ⬜ chưa bắt đầu |
+| Phase C (CDK) | ⬜ chưa bắt đầu |
+| Phase D (CI/CD + cutover) | ⬜ chưa bắt đầu |
 
-**Đổi**: `api/main.py` chỉ đăng ký `DELETE /me` và
-`DELETE /sessions/{sid}/messages/{mid}` khi biến bằng đúng chuỗi `"true"`.
+**Trên AWS hiện có gì mới?** *Không có gì.* `list-functions` chỉ trả về
+`vva-crud-api`, `vva-crud-api-warmer`, `vva-characters` — đúng như trước khi bắt
+đầu. Spike đã destroy, `describe-stacks` và `get-function` đều xác nhận.
+
+---
+
+## 2. Phase 0 — kết quả quan trọng nhất
+
+Giả định rủi ro nhất của cả kế hoạch: prelude của LWA ở chế độ `response_stream`
+có khớp thứ API Gateway Lambda-proxy STREAM đòi không? AWS tài liệu hoá **hai
+nửa riêng biệt** và không bao giờ nói chúng khớp nhau — mọi ví dụ streaming của
+LWA đều viết cho Function URL.
+
+Deploy thật, đo thật:
+
+```
+arrived  2.812s   seq=0    server emitted_at=0.000s   ← cold start
+arrived  3.265s   seq=1    server emitted_at=0.518s
+arrived  3.765s   seq=2    server emitted_at=1.019s
+…
+11 events, spread 4.953s
+```
+
+**STREAMED.** Thời điểm *đến* bám đúng nhịp 0,5s của thời điểm *phát*. Bản
+buffered sẽ dồn cả 11 vào vài mili-giây ở cuối.
+
+⇒ **Bỏ hẳn Function URL và shared secret.** API Gateway gọi thẳng Lambda bằng
+IAM. Kiến trúc §1 của kế hoạch đứng vững.
+
+Đo bằng dấu thời gian chứ không nhìn `curl -N`, vì một response buffered mà nhanh
+và một response streamed mà chậm **trông giống hệt nhau** trên terminal — và
+"trông hơi chậm" đúng là kiểu hỏng spike này sinh ra để loại trừ.
+
+Số phụ đáng giữ: **first byte 2,812s** = cold start của zip 5,3 MB. Mốc dưới để
+so khi đo image thật ở Phase B.
+
+Mất **~40 phút**, không phải nửa ngày như ước tính.
+
+---
+
+## 3. Phase A — 5 việc, và tác động
+
+### 3.1 Cổng bảo mật `ENABLE_GDPR_ROUTES` (mặc định **off**)
+
+`api/main.py` chỉ đăng ký `DELETE /me` và `DELETE /sessions/{sid}/messages/{mid}`
+khi biến bằng **đúng** chuỗi `"true"`.
 
 **Tác động**: đây là việc **chặn Phase B**. Phase B đưa `api/main.py` lên Lambda;
 `create_app()` nguyên trạng sẽ publish endpoint xoá tài khoản cùng ngày `/chat`
-lên sóng — đúng tính năng Owner vừa hoãn vì lý do bảo mật. Không có cổng này thì
-việc hoãn của Owner chỉ tồn tại trên giấy.
+lên sóng — đúng tính năng Owner đã hoãn vì lý do bảo mật. Không có cổng này thì
+việc hoãn chỉ tồn tại trên giấy.
 
-**Vì sao mặc định off** chứ không phải "nhớ tắt khi lên prod": xoá không rollback
-được và không có backup theo user. Và thứ route đó xoá **không phải tài khoản** —
-`db/gdpr.py::delete_user` xoá row PostgreSQL, user Cognito sống tiếp nên người đó
-vẫn đăng nhập được và `routes_crud.py:113` dựng lại row ở lần ghi kế tiếp.
+Mặc định off chứ không phải "nhớ tắt khi lên prod": xoá không rollback được, và
+không có backup theo user.
 
-### 1.2 `shared/stm.py` — một interface, ba backend (**file mới, 295 dòng**)
+### 3.2 `shared/stm.py` — một interface, ba backend
 
-**Đổi**: `redis://localhost:6379` từng được viết lại **4 lần** ở `api/main.py`,
-`db/session_store.py`, `nodes/memory.py`, `services/vieneu_tts/tasks.py`. Nay tất
-cả đi qua `get_stm()`, backend chọn bằng `STM_BACKEND`.
+`redis://localhost:6379` từng được viết lại **4 lần**. Nay đi qua `get_stm()`,
+backend chọn bằng `STM_BACKEND`: `redis` / `dynamodb` / `none`.
 
-**Tác động**:
-- **Gỡ chặn quyết định Redis của Owner.** Backend `none` không phải test double
-  mà là một deployment được hỗ trợ — agent chạy đúng khi không có cache nào, chỉ
-  thêm một lượt đọc PostgreSQL mỗi turn. Nghĩa là **deploy được trước, chọn cache
-  sau khi đo**, thay vì phải chọn trước.
-- **Xoá một lớp bug đang chờ**: sửa ba chỗ quên một chỗ thì agent nửa nhớ nửa
-  quên, và triệu chứng là "mất trí nhớ ngắt quãng" chứ không phải lỗi kết nối.
-- **Giảm 4 lần connect/close mỗi turn xuống còn một client dùng chung** cho
-  đường Redis.
+**Tác động**: **gỡ chặn quyết định Redis của Owner.** Backend `none` là một
+deployment được hỗ trợ thật — agent chạy đúng khi không có cache nào, chỉ thêm
+một lượt đọc Postgres mỗi turn. Nghĩa là deploy trước, đo, rồi mới chọn cache.
 
-🔴 **Bẫy TTL của DynamoDB — đã xử lý, và đây là phần dễ bỏ sót nhất.** AWS xoá
-item hết hạn *"within a few days"*, thường trong 48 giờ, **không** đúng mốc thời
-gian. Bê nguyên `setex` sang thì STM đáng ra chết sau 2 giờ vẫn đọc được tới ~48
-giờ — agent trả lời bằng ngữ cảnh lẽ ra đã quên, **không lỗi, không log, chỉ
-sai**. Nên `expires_at` ghi như thuộc tính thường và **kiểm khi đọc**; TTL của
-DynamoDB chỉ còn dọn kho, không quyết định đúng/sai.
+🔴 **Bẫy TTL DynamoDB đã xử lý**: AWS xoá item hết hạn *"within a few days"*,
+thường 48 giờ, **không** đúng mốc. Bê nguyên `setex` sang thì STM đáng ra chết
+sau 2 giờ vẫn đọc được tới ~48 giờ — agent trả lời bằng ngữ cảnh lẽ ra đã quên,
+**không lỗi, không log, chỉ sai**. Nên ghi `expires_at` và kiểm khi đọc.
 
-**Kèm**: mọi thao tác nuốt lỗi và log **một lần mỗi op**, không phải mỗi request.
-CloudWatch tính tiền theo GB nạp vào, nên một cache chết sẽ thành một hoá đơn —
-và chôn mất dòng log duy nhất có ý nghĩa.
+### 3.3 + 3.4 Cổng TTS và web search
 
-### 1.3 Cổng TTS `VIENEU_TTS_URL`
+`VIENEU_TTS_URL` không đặt ⇒ phát `speech_disabled`, **không** phát
+`speech_pending`; `POST /tts` trả 503. `SEARXNG_URL=""` ⇒ trả `[]`, log một lần.
 
-**Đổi**: không đặt ⇒ `/chat` phát `speech_disabled` rồi kết thúc stream, **không**
-phát `speech_pending`; `POST /tts` trả **503** thay vì task id.
+**Tác động**: `main.py` chờ TTS **130 giây** trong request. Trên Lambda đó là
+130s tiền RAM chờ một service không tồn tại — và AWS tài liệu rõ **streaming tính
+tiền đủ thời gian kể cả khi user đã đóng tab**, nên `is_disconnected()` không cứu
+được.
 
-**Tác động**: `main.py` chờ TTS **130 giây** ngay trong request. Trên Lambda,
-theo docs AWS, **streaming tính tiền đủ thời gian kể cả khi user đã đóng tab** —
-nên mỗi lượt có giọng nói sẽ tốn hai phút tiền RAM để đi tới một thất bại đã biết
-trước. Về phía UI: `speech_pending` là lời hứa rằng `speech_ready`/`speech_failed`
-sẽ theo sau, nên phát nó khi không có TTS là để UI quay vòng vĩnh viễn.
+### 3.5 ONNX — parity đạt trên dữ liệu thật
 
-### 1.4 Cổng web search `SEARXNG_URL`
+```
+single (200 rows KB)      cosine min 1.00000000
+batched, mixed lengths    cosine min 1.00000000
+long input (~13.8k token) cosine min 1.00000000
+queries (20)              cosine min 1.00000000
+top-5 retrieval order     0/20 truy vấn bị đảo
+```
 
-**Đổi**: `SEARXNG_URL=""` ⇒ trả `[]`, log **một lần mỗi process**.
+**Vẫn để mặc định `torch`.** Parity đạt rồi, nhưng file ONNX là artifact 465 MB
+bị gitignore — đổi mặc định sẽ làm hỏng mọi checkout chưa chạy export. Image
+Lambda đặt `EMBEDDING_BACKEND=onnx` tường minh.
 
-**Tác động**: `os.getenv` trả chuỗi rỗng chứ không trả default, nên trước đây đặt
-rỗng sẽ khiến code gọi `"/search"` vào hư không, hỏng mỗi truy vấn và log mỗi
-lần — **một tính năng bị tắt trông như một tính năng hỏng**.
-
-### 1.5 Test chống tái phát
-
-`test_stm.py::test_no_call_site_hardcodes_a_redis_url` quét toàn package, bỏ qua
-dòng comment. **Nó đã làm đúng việc ngay lần chạy đầu**: bắt được
-`services/vieneu_tts/tasks.py` mà tôi chưa sửa.
+**Tác động**: RAM 2048 → **1024 MB**, image ~4 GB → **~1,2 GB**, cold start ~20s
+→ ~5s, và **ECR $2,00 → $0,60/tháng**. Vì tiền chờ tỉ lệ thuận với RAM, đây là
+đòn bẩy chính lên chi phí.
 
 ---
 
-## 2. File đã đụng
+## 4. Tám lỗi tìm được, không có lỗi nào tự báo
 
-**Mới**
+Không cái nào trong số này làm test đỏ hay ghi log lỗi.
 
-| File | Dòng |
-|---|---|
-| `agenticRAG/langgraph_agents/shared/stm.py` | 295 |
-| `tests/langgraph_agents/test_stm.py` | 244 (15 test) |
-| `tests/langgraph_agents/test_gdpr_route_gate.py` | 110 (9 test) |
-| `docs/plans/langgraph-agent-hosting.md` | 566 — thay bản 1 đã sai |
-| `docs/worklogs/21-08-2026.md` | 150 |
-
-**Sửa** (`+thêm / −bớt`)
-
-| File | Δ | Nội dung |
+| # | Lỗi | Vì sao im lặng |
 |---|---|---|
-| `api/main.py` | +135 / −40 | cổng GDPR, `tts_enabled()`, STM, tách Redis khỏi STM |
-| `tests/test_phase2_5_memory.py` | +76 / −22 | 4 test cũ → interface mới, +3 test |
-| `tests/test_phase5_sse.py` | +47 / −0 | 2 test mới cho nhánh TTS tắt |
-| `nodes/memory.py` | +24 / −22 | `_load_recent_raw_redis` → `_load_recent_raw_cache` |
-| `mcp/web_search_server.py` | +35 / −0 | `search_enabled()` |
-| `services/vieneu_tts/tasks.py` | +21 / −4 | URL đọc từ env, đọc lúc gọi |
-| `db/session_store.py` | +19 / −22 | `_append_stm` qua store |
-| `docs/tracking/tech-debt.md` | +21 / −1 | mục nợ DELETE account |
-| `agenticRAG/.env.example` | +50 | 5 biến mới, kèm lý do |
+| 1 | `DELETE /me` sẽ tự publish khi lên Lambda | chưa deploy nên chưa ai thấy |
+| 2 | `redis://localhost` viết lại 4 lần | deploy xong vẫn trả lời được, chỉ là đọc Postgres mỗi lần |
+| 3 | TTL DynamoDB trễ tới 48 giờ | trả về ngữ cảnh cũ, không có lỗi nào |
+| 4 | TTS chờ 130s cho service không tồn tại | trả `speech_failed` sau 2 phút |
+| 5 | `SEARXNG_URL=""` hỏng mỗi truy vấn | tính năng bị tắt trông như tính năng hỏng |
+| 6 | 🔴 **`kimodo_node` gọi `get_mcp_client()` — hàm chưa từng tồn tại** | `ImportError` rơi vào `except` → RECOVERABLE → graph đi tiếp |
+| 7 | `ainvoke({"query": …})` nhưng schema đòi `prompt` | **không chạm tới được** — chết ở lỗi 6 trước |
+| 8 | Preflight sẽ báo "MISSING CRITICAL: sentence_transformers" trên image ONNX | alarm giả cho package cố ý không có |
 
-**Đáng chú ý**: `nodes/memory.py` không đọc `langgraph.memory.redis_url` từ
-`config/langgraph.yaml` nữa. Một URL trong file commit được thì không thể khác
-nhau giữa các môi trường — mà đó chính là yêu cầu khi lên Lambda.
+**Lỗi 6 là nghiêm trọng nhất**: `mcp/client.py` chỉ export `get_mcp_tools()` và
+`close_mcp_client()`. Mọi caller khác (`graph.py`, `retriever_agent.py`,
+`health.py`) đều dùng đúng. Chỉ `kimodo.py` gọi một API **chưa từng tồn tại**,
+nên node chết ngay **dòng đầu tiên** khối try. **Motion chưa từng chạy một lần
+nào.**
+
+Lọt được vì `test_phase3_mcp_kimodo.py` chỉ test **mock server** trực tiếp —
+kiểm thứ ở đầu kia sợi dây, không kiểm sợi dây. `kimodo_node` không có test nào.
 
 ---
 
-## 3. Biến môi trường mới (5)
+## 5. Sáu chỗ tôi tự sửa chính mình
+
+Ghi lại vì chúng cho biết nên tin báo cáo của tôi tới đâu.
+
+| Tôi từng nói | Sự thật |
+|---|---|
+| "ONNX chặn vì thiếu `optimum`+`onnxruntime` và thiếu đường vào Neon" | `onnxruntime` đã có, `.env` đã có DSN, model đã cache — **chưa từng bị chặn** |
+| "Docker daemon không chạy ⇒ chặn Phase 0" | Phase 0 dùng zip, **không cần Docker** |
+| Test parity in *"long input (225 chars, > 512 tokens)"* và **PASS** | 225 ký tự ≈ 60 token — **báo đạt cho việc chưa từng chạy** |
+| Kế hoạch ghi nhánh `release` | đang trên `feature/langgraph-rewrite`; tôi lẫn "nhánh CI" với "nhánh đang làm" |
+| "Kimodo ghi `.mp4` lên S3" | nó trả **NPZ** qua route HTTP của chính nó |
+| "`optimum[exporters]` là đủ" | optimum 2.x tách exporter sang `optimum-onnx` |
+
+Hai test guard của repo (`test_requirements_complete`, `test_preflight`) bắt được
+`onnxruntime`/`tokenizers` chưa khai báo — đúng loại test tôi viết cho STM, giờ
+bắt chính tôi. Và `test_stm.py::test_no_call_site_hardcodes_a_redis_url` bắt được
+`services/vieneu_tts/tasks.py` ngay lần chạy đầu.
+
+---
+
+## 6. Biến môi trường mới (6)
 
 | Biến | Mặc định | Ghi chú |
 |---|---|---|
-| `STM_BACKEND` | `redis` | `redis` / `dynamodb` / `none`; typo ⇒ **fail lúc khởi động**, cố ý |
+| `STM_BACKEND` | `redis` | `redis`/`dynamodb`/`none`; typo ⇒ fail lúc khởi động |
 | `STM_TABLE` | `vva-stm` | chỉ dùng khi `dynamodb` |
-| `REDIS_URL` | `redis://localhost:6379/0` | STM + task result của TTS |
+| `REDIS_URL` | `redis://localhost:6379/0` | STM + task result TTS |
 | `VIENEU_TTS_URL` | *(rỗng)* | **rỗng = TTS tắt**, kể cả local |
 | `ENABLE_GDPR_ROUTES` | `false` | chỉ đúng `"true"` mới mở |
+| `EMBEDDING_BACKEND` | `torch` | `onnx` cho image Lambda |
 
-`SEARXNG_URL` đã có sẵn từ trước, nay đặt rỗng là tắt sạch thay vì hỏng ồn.
-
----
-
-## 4. Kiểm chứng đã chạy
-
-- `pytest -m unit` → **465 passed / 0 failed**, chạy bằng
-  `C:\Miniconda\envs\firstconda\python.exe`.
-- Thủ công: `STM_BACKEND=none` ghi/đọc trả miss đúng. Backend `redis` trỏ vào
-  cổng chết (6399) → `get` trả `None`, `set` không raise, lần `get` thứ hai
-  **không** log lại.
-
-**Chưa chạy**: `/chat` thật đầu-cuối. Cần DB sống + khoá LLM, và kế hoạch giao
-việc đó cho N (mục §11 Phase A của kế hoạch).
+🔴 **Hai thay đổi làm hỏng thói quen local của N**: giọng nói ở `/chat` và
+`DELETE /me` nay **tắt** trừ khi đặt biến. Đã ghi vào `agenticRAG/.env.example`
+kèm lý do.
 
 ---
 
-## 5. CHƯA LÀM
+## 7. CHƯA LÀM
 
-### 5.1 Trong Phase A — ONNX (mục duy nhất còn lại)
+### Phase B — image (chưa bắt đầu)
 
-Code viết được, **nghiệm thu thì không**, vì cần hai thứ ngoài quyền K:
+Dockerfile **multi-stage**: stage 1 có torch+optimum để xuất ONNX rồi **bị vứt
+đi**, stage 2 chỉ copy file `.onnx`. Gộp một stage thì torch nằm lại và toàn bộ
+lý lẽ tiết kiệm mất ý nghĩa.
 
-1. **Cài `optimum` + `onnxruntime` vào `firstconda`** — sửa môi trường làm việc
-   của N, không phải sửa repo. K không tự làm.
-2. **Đường truy cập KB trên Neon** — kế hoạch đòi `cosine(torch, onnx) > 0.9999`
-   trên 200 mẫu lấy từ 2918 rows, **và** top-5 `kb_search` trùng thứ tự cho 20
-   truy vấn thật. DSN nằm trong `.env` (gitignored).
-
-K **không** viết đường ONNX rồi để đó chưa đo, vì mean pooling sai là kiểu hỏng
-**im lặng**: vector vẫn ra 384 chiều, vẫn tra được, chỉ recall tụt.
-
-**Tác động của việc chưa làm**: agent vẫn cần torch ⇒ RAM 2048 MB thay vì 1024,
-image ~4 GB thay vì ~1,2 GB, cold start ~20s thay vì ~5s, và **ECR tốn ~$2,00
-thay vì ~$0,60 mỗi tháng** — tức riêng khoản lưu image đắt hơn toàn bộ chi phí
-chạy agent. Chưa có ONNX thì Phase B vẫn làm được, chỉ đắt hơn khoảng gấp đôi.
-
-### 5.2 Phase 0 — spike streaming (chưa bắt đầu)
-
-Docs AWS xác nhận LWA là đường streaming chính thức cho Python, **nhưng chỉ tài
-liệu hoá đối chiếu với Function URL**. Với Lambda-proxy STREAM, API Gateway
-*"expects a specific response format"* — một prelude chứa status code + headers.
-**Không tài liệu nào xác nhận prelude của LWA khớp với prelude API Gateway đòi.**
-
-Đây là **giả định rủi ro nhất của cả kế hoạch**. Nửa ngày spike ở đây tránh việc
-phát hiện sau khi đã dựng xong image. Sai thì lùi về HTTP proxy → Function URL và
-chịu thêm phần shared secret.
-
-Kèm: xác nhận response streaming có ở us-east-1.
-
-### 5.3 Phase B — image (chưa bắt đầu)
-
-Dockerfile, bake model vào image, đo cold start bằng RIE.
-🔴 Nhắc lại lỗi đã tìm ra khi đối chiếu aws-core: **layer không dùng được với
+🔴 Nhắc lại lỗi đã tìm khi đối chiếu aws-core: **layer không dùng được với
 container image**. `CrudApiStack` gắn LWA bằng layer; copy pattern đó sang sẽ
 hỏng ở INIT với lỗi không nói gì về nguyên nhân.
 
-### 5.4 Phase C — CDK (chưa bắt đầu)
+Build **trên CI**, không cần Docker local (Owner chốt).
 
-`agent_stack.py`, `/chat` vào `rest_api_stack.py` với
-`ResponseTransferMode.STREAM`, nâng integration timeout tường minh (mặc định
-29s), thêm agent vào warmer **có sẵn** — đừng tạo scheduler thứ hai.
+### Phase C — CDK (chưa bắt đầu)
 
-### 5.5 Phase D — CI/CD + cutover (chưa bắt đầu)
+🔴 **`DockerImageCode.from_ecr(repo, tag)`, KHÔNG phải `from_image_asset()`** —
+cái sau build image lúc synth, tức đòi Docker local. Cần tạo ECR repo
+`vva-agent`.
+
+### Phase D — CI/CD + cutover (chưa bắt đầu)
 
 `deploy-agent.yml`, thêm `lambda:UpdateFunctionCode` vào `GitHubActionsECRRole`,
 xoá `VITE_API_BASE_URL` khỏi frontend.
 
-### 5.6 Kimodo (ngoài phạm vi đợt này, theo kế hoạch)
+### Kimodo (ngoài phạm vi, nhưng đã biết)
 
-Tunnel qua Lambda trong VPC. `.claude/plans/kimodo-alb-endpoint.md` nay **lỗi
-thời** ở phần ALB nhưng **chưa được đánh dấu superseded** — phần chẩn đoán health
-check 406 và grace period 600s trong đó vẫn đúng và vẫn cần.
+NPZ đi đường nào khi tunnel cắt route `/files/` của Kimodo — qua tunnel (trần
+6 MB) hay Kimodo ghi thẳng S3. Cần **đo kích thước NPZ thật** trước khi chọn.
+`.claude/plans/kimodo-alb-endpoint.md` lỗi thời ở phần ALB, **chưa đánh dấu
+superseded**.
 
 ---
 
-## 6. Chỉ Owner/N gỡ được
+## 8. Cần Owner/N
 
-| Việc | Vì sao chặn |
+| Việc | Vì sao |
 |---|---|
-| 🔴 **Nâng quota Lambda concurrency** | Đang **10**, mặc định AWS là **1.000**. Dùng chung với Cognito trigger của Amplify. CRUD giữ container ~100ms; `/chat` giữ **10-30 giây** ⇒ ba người chat đồng thời khoá 30% pool, và thứ bị throttle là **đăng nhập**. Burst 120 request ngày 20/08 đã tạo 61 throttle. |
-| 🔴 **Cài dep ONNX + đường đo parity** | §5.1 |
-| 🟠 **Quyết backend STM cuối cùng** | Kế hoạch khuyến nghị chạy `none` một tháng, **đo CU-hours thật** rồi mới chọn. Code đã sẵn sàng cho cả ba. |
-| 🟠 **Đo token LLM** | Khoản chi lớn nhất và **không** nằm trong bảng $1,90/tháng. `total_tokens` đã được log sẵn ở `main.py::chat_complete` — chạy 20 lượt thật, lấy trung bình. Làm được **ngay hôm nay**, không cần chờ deploy. |
-| 🟡 **N kiểm frontend** | UI xử lý thế nào khi có `speech_pending` mà không bao giờ có `speech_ready`? Nay nhánh đó không còn xảy ra, nhưng chưa ai xác nhận UI đọc được `speech_disabled`. |
+| 🔴 **Nâng quota Lambda concurrency** | Đang **10**, mặc định AWS là **1.000**. Dùng chung với Cognito trigger. `/chat` giữ container 10-30 giây ⇒ ba người chat đồng thời khoá 30% pool, và thứ bị throttle là **đăng nhập** |
+| 🟠 **Chốt backend STM** | Code sẵn sàng cho cả ba. Khuyến nghị chạy `none` một tháng, đo CU-hours thật |
+| 🟠 **Đo token LLM** | Khoản chi lớn nhất, **không** nằm trong $1,90/tháng. `total_tokens` đã log sẵn ở `main.py::chat_complete` — chạy 20 lượt là có số |
+| 🟡 **N kiểm frontend** | UI đọc được `speech_disabled` chưa? |
+| 🟡 **Push nhánh** | `feature/agent-deploy` chưa có upstream |
 
 ---
 
-## 7. Rủi ro còn treo trong code vừa viết
+## 9. Rủi ro còn treo trong code vừa viết
 
-- **`_append_stm` là read-modify-write, không nguyên tử.** Hai turn cùng session
-  chạy song song có thể mất một. Chấp nhận: một session là một người đang gõ, và
-  kẻ thua là một entry cache mà PostgreSQL dựng lại được. Mua tính nguyên tử sẽ
-  phải dùng primitive riêng của Redis — đúng thứ `shared/stm.py` sinh ra để khỏi
-  phụ thuộc.
+- **`_append_stm` read-modify-write, không nguyên tử.** Hai turn cùng session
+  song song có thể mất một. Chấp nhận: một session là một người đang gõ, và kẻ
+  thua là một entry cache mà Postgres dựng lại được.
 - **`DynamoStore` chưa chạy thật lần nào.** Test dùng `MagicMock` cho boto3.
-  Chưa có bảng, chưa có IAM, chưa có một lần `put_item` thật.
-- **`RedisStore` cache client theo process.** Nhất quán với `_get_redis()` đã có
-  trong `main.py`, và đúng dưới LWA (một event loop cho cả vòng đời process).
-  Nhưng đây chính là kiểu hỏng mà `infra/lambda/crud_api/run.sh` cảnh báo với
-  Mangum — nếu sau này có ai chạy agent qua adapter tạo loop mỗi invoke, chỗ này
-  hỏng trước.
+  Chưa có bảng, chưa có IAM, chưa một lần `put_item` thật.
+- **Motion vẫn chưa chạy end-to-end.** Sửa xong lỗi 6 và 7 nhưng Kimodo cần GPU
+  box, và `mcp/kimodo_server.py` là mock trả `mock://`. Cái đổi là node nay hỏng
+  vì lý do **đúng**.
+- **ONNX chưa chạy trong image.** Parity đo trên máy N; export trong Docker là
+  một lần chạy khác. Phải đo lại bên trong image ở Phase B.
