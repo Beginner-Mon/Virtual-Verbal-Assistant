@@ -1,0 +1,213 @@
+# Build the vva-agent container image and roll it onto the Lambda.
+#
+# Modelled on deploy-production.yml, which already does OIDC -> ECR for kimodo.
+# Two things are done differently, both deliberately:
+#
+#   * IMMUTABLE TAGS ONLY. deploy-production.yml pushes `:latest` alongside the
+#     sha; the ECR repository here is created with IMMUTABLE tag mutability, so
+#     `latest` is not even possible. With a floating tag you cannot answer "which
+#     build is running?" and cannot roll back to a specific one.
+#
+#   * CDK OWNS THE SHAPE, CI OWNS THE CODE. This workflow never runs `cdk
+#     deploy`: it pushes an image and calls update-function-code, which takes
+#     seconds. A full synth would need infra/build/crud_api.zip and would let two
+#     different pipelines write the same infrastructure. Changing memory, timeout
+#     or environment is a CDK deploy a human runs.
+#
+# Docker lives here and nowhere else — no developer machine needs a daemon.
+
+name: Deploy Agent Image
+
+on:
+  push:
+    branches:
+      - release
+    paths:
+      - 'agenticRAG/**'
+      - '.github/workflows/deploy-agent.yml'
+  # The first build has to happen before VvaAgentStack can create the function
+  # (a container Lambda cannot be created without an image), so it must be
+  # runnable by hand rather than only by a push.
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ACCOUNT_ID: "244203483654"
+  ECR_REPOSITORY: vva-agent
+  FUNCTION_NAME: vva-agent
+
+concurrency:
+  # One deploy at a time. Two concurrent runs would race on
+  # update-function-code and the last writer would win regardless of order.
+  group: deploy-agent
+  cancel-in-progress: false
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # Tests first. release-tests.yml covers the same suite on this branch, but a
+  # deploy that does not depend on a green run is a deploy that can ship red
+  # code whenever the two workflows finish in the wrong order.
+  # ───────────────────────────────────────────────────────────────────────────
+  unit-tests:
+    name: "🧪 Unit tests"
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # requirements-agent-runtime.txt, not requirements-langgraph.txt: this is
+      # the set the image will actually contain. Installing the full list would
+      # pull torch and hide a missing runtime dependency behind it — the class of
+      # bug that only appears after deploy.
+      - name: Install runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r agenticRAG/requirements-agent-runtime.txt
+          pip install pytest pytest-asyncio
+
+      # Proves the image's dependency set can import the app at all. Cheaper and
+      # far clearer than discovering an ImportError at Lambda INIT, where it
+      # surfaces in CloudWatch minutes later with no obvious cause.
+      - name: Import the app with the image's dependency set
+        env:
+          EMBEDDING_BACKEND: torch    # no ONNX export on the runner
+          ENABLE_MCP: "false"
+        run: |
+          PYTHONPATH=agenticRAG python -c "
+          import sys
+          from langgraph_agents.api.main import create_app
+          create_app()
+          assert 'torch' not in sys.modules, 'torch reached the runtime set'
+          assert 'transformers' not in sys.modules, 'transformers reached the runtime set'
+          print('import OK, no torch')
+          "
+
+      - name: Run unit tests
+        run: pytest tests/langgraph_agents -m unit -q
+
+  # ───────────────────────────────────────────────────────────────────────────
+  build-and-push:
+    name: "📦 Build and push"
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      image-uri: ${{ steps.meta.outputs.image-uri }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/GitHubActionsECRRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: login-ecr
+
+      - name: Resolve image URI
+        id: meta
+        run: |
+          echo "image-uri=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      # Immutable tags make a re-push of the same commit an error. Re-running a
+      # workflow is a normal thing to do, so detect it and skip rather than fail
+      # on something that is not wrong.
+      - name: Skip build if this commit is already published
+        id: exists
+        run: |
+          if aws ecr describe-images \
+               --repository-name "${{ env.ECR_REPOSITORY }}" \
+               --image-ids imageTag="${{ github.sha }}" >/dev/null 2>&1; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ github.sha }} is already in ECR — skipping the build."
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Context is the REPOSITORY ROOT, not agenticRAG/. The Dockerfile copies
+      # both agenticRAG/ and config/, which have no common parent below the root
+      # — and the layout inside the image has to mirror the repo because several
+      # modules resolve config as Path(__file__).parents[3].
+      - name: Build and push
+        if: steps.exists.outputs.already == 'false'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: agenticRAG/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.image-uri }}
+          # The image is ~1.2 GB and most of it is unchanged between commits.
+          # Without a cache every run re-downloads torch to re-export a model
+          # that did not change.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ───────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: "🚀 Update function code"
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/GitHubActionsECRRole
+          aws-region: ${{ env.AWS_REGION }}
+
+      # The function may not exist yet: a container Lambda cannot be created
+      # before an image is pushed, so the very first run of this workflow
+      # legitimately has nothing to update. Say what to do rather than fail with
+      # ResourceNotFoundException.
+      - name: Update the function, or explain how to create it
+        run: |
+          set -euo pipefail
+
+          if ! aws lambda get-function --function-name "${{ env.FUNCTION_NAME }}" >/dev/null 2>&1; then
+            echo "::notice::${{ env.FUNCTION_NAME }} does not exist yet."
+            echo "The image is pushed. Create the function with:"
+            echo "    cdk deploy VvaAgentStack -c agent_image_tag=${{ github.sha }}"
+            exit 0
+          fi
+
+          aws lambda update-function-code \
+            --function-name "${{ env.FUNCTION_NAME }}" \
+            --image-uri "${{ needs.build-and-push.outputs.image-uri }}" \
+            --publish >/dev/null
+
+          aws lambda wait function-updated \
+            --function-name "${{ env.FUNCTION_NAME }}"
+
+          echo "::notice::${{ env.FUNCTION_NAME }} now runs ${{ github.sha }}"
+
+      # A green update-function-code only means Lambda accepted the image. It
+      # does not mean the container starts: a bad ENTRYPOINT, a missing system
+      # library or a model baked to the wrong path all fail at INIT, which
+      # happens on the first INVOCATION. Without this the workflow reports
+      # success on a function that 502s.
+      - name: Smoke the new image
+        run: |
+          set -euo pipefail
+          aws lambda invoke \
+            --function-name "${{ env.FUNCTION_NAME }}" \
+            --payload '{"version":"2.0","rawPath":"/health","rawQueryString":"","headers":{"host":"ci.internal"},"requestContext":{"http":{"method":"GET","path":"/health","protocol":"HTTP/1.1","sourceIp":"127.0.0.1"}},"isBase64Encoded":false}' \
+            --cli-binary-format raw-in-base64-out \
+            /tmp/out.json >/tmp/meta.json
+
+          cat /tmp/meta.json
+          cat /tmp/out.json
+
+          if grep -q '"FunctionError"' /tmp/meta.json; then
+            echo "::error::The new image fails at invocation. Check CloudWatch for INIT errors."
+            exit 1
+          fi

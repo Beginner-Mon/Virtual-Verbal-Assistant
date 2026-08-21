@@ -1,5 +1,6 @@
 /**
- * The two base URLs this app talks to, and the split between them.
+ * The two base URLs this app talks to, and the split between them. One for the
+ * API, one for the big binaries — down from four a week ago.
  *
  * There were four until 20-08 — VITE_API_BASE_URL, VITE_CRUD_API_URL,
  * VITE_ASSET_BASE_URL and VITE_AUTH_API_URL — each a separate chance to
@@ -7,8 +8,12 @@
  * backend call now goes through one API Gateway; the CDN keeps only the job a
  * gateway cannot do.
  *
- *   API_GATEWAY   every backend call: /characters, /sessions, /me/*, /health,
- *                 and later /tts, /billing/*, /chat
+ *   API_GATEWAY   every backend call: /chat, /characters, /sessions, /me/*,
+ *                 /health, /tts, /billing/*. The word "later" stood next to
+ *                 /chat until 21-08 and is now gone — the agent runs on Lambda
+ *                 and the route is an AWS_PROXY integration with
+ *                 ResponseTransferMode.STREAM, which is the reason this is a
+ *                 REST API and not an HTTP API.
  *   ASSET_BASE    the .vrm model files, 9-17 MB each, from S3 via CloudFront.
  *                 They cannot go through the gateway: API Gateway's buffered
  *                 payload limit is 10 MB, and its data transfer has no free tier

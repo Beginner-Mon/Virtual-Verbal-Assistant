@@ -1,0 +1,82 @@
+# Runtime dependencies for the vva-agent Lambda container image.
+#
+# A deliberate subset of requirements-langgraph.txt, and the subtraction IS the
+# point: this list has no torch, no sentence-transformers and no transformers.
+# Those three are ~2 GB, and on Lambda they are not merely large — billing is
+# memory x wall-clock, so the ~20 seconds a turn spends waiting on DeepSeek is
+# 20 seconds of paying for a PyTorch that is doing nothing. Embeddings run on
+# onnxruntime instead (EMBEDDING_BACKEND=onnx); see shared/onnx_backend.py.
+#
+# Measured, not guessed: import langgraph_agents.api.main:create_app in a clean
+# interpreter and diff sys.modules, the same technique described in
+# infra/lambda/crud_api/requirements.txt. Two findings from that run:
+#
+#   * `transformers` IS reachable — langchain_core/language_models/base.py does
+#     `from transformers import GPT2TokenizerFast` — but it is wrapped in
+#     try/except ImportError with a `_HAS_TRANSFORMERS = False` fallback. All it
+#     gates is get_token_ids()/get_num_tokens(), which this codebase never calls
+#     (0 hits across agenticRAG/); token counts come from the LLM response. So
+#     omitting it costs nothing and saves the torch chain behind it.
+#   * `mcp` and `langchain-mcp-adapters` are imported at MODULE level by
+#     mcp/client.py, so they ship even though ENABLE_MCP=false on this image.
+#     Leaving them out would fail at import, not at first use.
+#
+# Versions track requirements-langgraph.txt. When that file moves, move this
+# one: an image running a different FastAPI than local development is a bug that
+# only appears after deploy.
+
+# Web
+fastapi>=0.130,<0.140
+starlette>=1.0,<2.0
+uvicorn[standard]>=0.30,<1.0
+sse-starlette>=3.4,<4.0
+
+# Graph + LLM providers
+langgraph>=0.2.0
+langchain-core>=0.3.0
+langchain-openai>=1.0.0,<2.0.0
+langchain-google-genai>=4.2.3,<5.0.0
+
+# MCP. Shipped despite ENABLE_MCP=false — see the note above.
+langchain-mcp-adapters>=0.1.0
+mcp>=1.0.0
+
+# Data.
+asyncpg>=0.29.0
+pgvector>=0.3.0
+redis>=5.0.0,<6.0.0
+
+# boto3 IS listed here, unlike infra/lambda/crud_api/requirements.txt which
+# leaves it out because "the Lambda runtime ships it". That reasoning does not
+# carry over: this image is built on a plain python base, not on
+# public.ecr.aws/lambda/python, because the Lambda Web Adapter takes the runtime
+# interface role and the AWS base image's own runtime client would contend with
+# it. No AWS base image, no preinstalled boto3.
+#
+# Needed on two paths, both lazy and both deployed-only: db/postgres.py reads
+# the DSN from SSM when VVA_PG_DSN_PARAM is set, and shared/stm.py talks to
+# DynamoDB when STM_BACKEND=dynamodb. Lazy imports mean a missing boto3 would
+# surface at the first request, not at INIT.
+boto3>=1.34.0
+
+# Embeddings — ONNX only. The model itself is baked into the image by the
+# export stage of the Dockerfile, NOT installed from here.
+onnxruntime>=1.17
+tokenizers>=0.15
+numpy>=1.26
+
+# Auth
+PyJWT[crypto]>=2.8.0
+
+# Tools reachable from the retriever
+httpx>=0.27.0
+youtube-transcript-api>=0.6.0,<1.0
+
+# billing.py imports stripe at module level, so a missing install is a failed
+# INIT rather than a failed billing call.
+stripe>=15.4.0,<16.0.0
+
+# Config
+PyYAML>=6.0
+python-dotenv>=1.0.0
+pydantic>=2.0

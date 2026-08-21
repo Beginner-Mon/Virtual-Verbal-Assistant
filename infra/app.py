@@ -39,6 +39,7 @@ from infra.vpc_stack import VpcStack
 from infra.asset_stack import AssetStack
 from infra.character_stack import CharacterStack
 from infra.crud_api_stack import CrudApiStack
+from infra.agent_stack import AgentStack
 from infra.rest_api_stack import RestApiStack
 from infra.kimodo_ecs_stack import KimodoEcsStack
 
@@ -80,6 +81,17 @@ asset_stack = AssetStack(app, "VvaAssetStack", env=env)
 #     python infra/build_crud_api.py
 crud_api_stack = CrudApiStack(app, "VvaCrudApiStack", env=env)
 
+# ── Track 2: the LangGraph agent (container) ────────────────────────
+# Serves api/main.py — the graph and /chat. Built by CI and pulled from ECR, so
+# no Docker is needed on the machine running `cdk deploy`.
+#
+#     cdk deploy VvaAgentStack -c agent_bootstrap=1        # repository, once
+#     cdk deploy VvaAgentStack -c agent_image_tag=<sha>    # every time after
+#
+# During bootstrap `fn` is None and VvaRestApiStack simply omits /chat. Adding
+# the route later is additive; that is why it is optional rather than required.
+agent_stack = AgentStack(app, "VvaAgentStack", env=env)
+
 # ── Track 2: the API gateway ────────────────────────────────────────
 # One front door for every backend call. See rest_api_stack.py for why REST API
 # rather than HTTP API, and why CloudFront does not sit in front of it.
@@ -88,6 +100,7 @@ rest_api_stack = RestApiStack(
     crud_fn=crud_api_stack.fn,
     characters_fn=character_stack.fn_characters,
     cognito_pool_id=crud_api_stack.cognito_pool_id,
+    agent_fn=agent_stack.fn,
     env=env,
 )
 

@@ -1,0 +1,51 @@
+# Build context is the REPO ROOT (the Dockerfile COPYs both agenticRAG/ and
+# config/, which have no common parent below it). That makes the context large
+# by default — .vrm models, node_modules, the 465 MB local ONNX export — and
+# every byte of it is uploaded to the builder before the first instruction runs.
+#
+# On CI that upload is the slowest part of a build whose whole point is a fast
+# feedback loop, so this file matters more than it looks.
+
+# Version control and IDE
+.git
+.github
+.claude
+.vscode
+.idea
+
+# The ONNX export. Reproduced INSIDE the image by the export stage — shipping
+# the local copy would upload 465 MB to build a file the builder makes itself.
+models/
+
+# Frontend: nothing in the image reads it
+ECA_UI/
+text-to-motion/
+SpeechLLm/
+
+# Infrastructure and docs
+infra/
+docs/
+scripts/
+tests/
+data/
+logs/
+
+# Python artefacts
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/*.egg-info/
+**/.venv/
+**/venv/
+
+# Local state that must never reach an image
+**/.env
+**/.env.local
+*.log
+*.db
+*.sqlite3
+
+# The voices directory is TTS-only, and TTS is off on this image
+voices/
