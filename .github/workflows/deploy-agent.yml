@@ -214,20 +214,39 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       # The function may not exist yet: a container Lambda cannot be created
-      # before an image is pushed, so the very first run of this workflow
-      # legitimately has nothing to update. Say what to do rather than fail with
-      # ResourceNotFoundException.
-      - name: Update the function, or explain how to create it
+      # before an image is pushed, so the FIRST run of this workflow legitimately
+      # has nothing to update.
+      #
+      # This is a step OUTPUT rather than an `exit 0`, and the difference is a
+      # bug that already happened: the earlier version exited zero here to mean
+      # "nothing to do", but `exit 0` ends the STEP, not the JOB — so the smoke
+      # step below ran anyway and died with
+      #
+      #     ResourceNotFoundException ... Function not found: ...vva-agent:$LATEST
+      #
+      # reporting a failed deploy for a build that had succeeded. Every step
+      # after this one is now gated on the answer.
+      - name: Does the function exist yet?
+        id: fn
         run: |
-          set -euo pipefail
-
-          if ! aws lambda get-function --function-name "${{ env.FUNCTION_NAME }}" >/dev/null 2>&1; then
-            echo "::notice::${{ env.FUNCTION_NAME }} does not exist yet."
-            echo "The image is pushed. Create the function with:"
-            echo "    cdk deploy VvaAgentStack -c agent_image_tag=${{ github.sha }}"
-            exit 0
+          if aws lambda get-function --function-name "${{ env.FUNCTION_NAME }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: First run — the image is pushed, the function is not created
+        if: steps.fn.outputs.exists == 'false'
+        run: |
+          echo "::notice::${{ env.FUNCTION_NAME }} does not exist yet — this is the bootstrap run."
+          echo "The image is in ECR. Create the function with:"
+          echo "    cdk deploy VvaAgentStack -c agent_image_tag=${{ github.sha }}"
+          echo "Every run after that updates it in place."
+
+      - name: Update the function code
+        if: steps.fn.outputs.exists == 'true'
+        run: |
+          set -euo pipefail
           aws lambda update-function-code \
             --function-name "${{ env.FUNCTION_NAME }}" \
             --image-uri "${{ needs.build-and-push.outputs.image-uri }}" \
@@ -238,12 +257,13 @@ jobs:
 
           echo "::notice::${{ env.FUNCTION_NAME }} now runs ${{ github.sha }}"
 
-      # A green update-function-code only means Lambda accepted the image. It
-      # does not mean the container starts: a bad ENTRYPOINT, a missing system
-      # library or a model baked to the wrong path all fail at INIT, which
-      # happens on the first INVOCATION. Without this the workflow reports
-      # success on a function that 502s.
+      # A green update-function-code only means Lambda ACCEPTED the image. It
+      # does not mean the container starts: a bad CMD, a missing system library
+      # or a model baked to the wrong path all fail at INIT, and INIT happens on
+      # the first INVOCATION. Without this the workflow reports success on a
+      # function that 502s.
       - name: Smoke the new image
+        if: steps.fn.outputs.exists == 'true'
         run: |
           set -euo pipefail
           aws lambda invoke \
