@@ -32,15 +32,25 @@ trộn một ẩn số (streaming) với một ẩn số khác (image 1,2 GB bak
 
 | | |
 |---|---|
-| **Phase A** | ✅ **5/5 XONG** |
+| **Phase A** (gỡ localhost) | ✅ **5/5 XONG** |
 | **Phase 0** (spike streaming) | ✅ **XONG — kết quả STREAMED** |
-| Phase B (image) | ⬜ chưa bắt đầu |
-| Phase C (CDK) | ⬜ chưa bắt đầu |
-| Phase D (CI/CD + cutover) | ⬜ chưa bắt đầu |
+| **Phase B** (container image) | ✅ **XONG** — chưa build lần nào |
+| **Phase C** (CDK) | ✅ **XONG** — ECR đã tạo, function chờ image |
+| **Phase D** (CI/CD + cutover) | ✅ **XONG** — workflow chờ merge |
 
-**Trên AWS hiện có gì mới?** *Không có gì.* `list-functions` chỉ trả về
-`vva-crud-api`, `vva-crud-api-warmer`, `vva-characters` — đúng như trước khi bắt
-đầu. Spike đã destroy, `describe-stacks` và `get-function` đều xác nhận.
+### Đã đứng trên AWS
+
+| | |
+|---|---|
+| ECR `vva-agent` | ✅ tạo 21/08 — IMMUTABLE, scan-on-push, giữ 10 image |
+| SSM `/vva/llm/deepseek-api-key` | ✅ SecureString |
+| SSM `/vva/llm/gemini-api-keys` | ✅ SecureString (4 khoá, một param) |
+| IAM `GitHubActionsECRRole` | ✅ +`VvaAgentDeploy` — `UpdateFunctionCode`/`GetFunction`/`InvokeFunction`, scope **đúng một** function |
+| Lambda `vva-agent` | ⬜ chờ image đầu tiên |
+| Route `/v1/chat` | ⬜ chờ function |
+
+Spike Phase 0 đã destroy; `describe-stacks` và `get-function` đều xác nhận không
+sót gì.
 
 ---
 
@@ -234,15 +244,48 @@ superseded**.
 
 ---
 
-## 8. Cần Owner/N
+## 8. Còn lại
 
-| Việc | Vì sao |
-|---|---|
-| 🔴 **Nâng quota Lambda concurrency** | Đang **10**, mặc định AWS là **1.000**. Dùng chung với Cognito trigger. `/chat` giữ container 10-30 giây ⇒ ba người chat đồng thời khoá 30% pool, và thứ bị throttle là **đăng nhập** |
-| 🟠 **Chốt backend STM** | Code sẵn sàng cho cả ba. Khuyến nghị chạy `none` một tháng, đo CU-hours thật |
-| 🟠 **Đo token LLM** | Khoản chi lớn nhất, **không** nằm trong $1,90/tháng. `total_tokens` đã log sẵn ở `main.py::chat_complete` — chạy 20 lượt là có số |
-| 🟡 **N kiểm frontend** | UI đọc được `speech_disabled` chưa? |
-| 🟡 **Push nhánh** | `feature/agent-deploy` chưa có upstream |
+### 🔴 Quota Lambda — CHỈ Owner làm được, và không phải vì thiếu quyền
+
+Đã thử bằng API và **AWS từ chối**:
+
+> `IllegalArgumentException: You must provide a quota value greater than the
+> default quota value of 1000.0`
+
+Đọc kỹ câu đó: **mặc định của quota này LÀ 1000**, còn account đang ở **10**.
+Tức account không "chưa được nâng" mà đã bị AWS **hạ xuống dưới mặc định** —
+chuyện AWS làm với account mới. Service Quotas chỉ nhận yêu cầu **tăng trên**
+mặc định, nên không có đường đi từ 10 lên 200 hay lên 1000 qua API.
+
+Đường còn lại là Support case, và `aws support` trả:
+
+> `SubscriptionRequiredException: Amazon Web Services Premium Support
+> Subscription is required`
+
+Account đang ở gói Basic. ⇒ **Phải làm tay trong AWS Console**: Support Center →
+Create case → Service limit increase → Lambda → Concurrent executions.
+
+Vì sao đáng làm, nói gọn: giới hạn 10 **không chặn DDoS**. Nó không ngăn request
+tới, không phân biệt kẻ tấn công với người dùng, và khi cạn thì **đăng nhập chết
+trước** — pool dùng chung với Cognito trigger. Thứ chặn DDoS là Cognito
+authorizer (flood ẩn danh chết ở gateway, Lambda không chạy) và stage throttle.
+Nâng quota làm hệ thống **an toàn hơn**, vì docs AWS ghi
+`max reservable = account limit − 100`: ở mức 10 thì **không reserve được gì**,
+nên hiện tại agent và đăng nhập dùng chung một pool không chia được.
+
+Nâng quota **không làm tăng hoá đơn** — quota là trần, không phải phân bổ.
+
+### Còn lại
+
+| Việc | Ai | Ghi chú |
+|---|---|---|
+| 🔴 **Merge sang `release`** | Owner | Kích hoạt CI: build image → push ECR → tạo/roll function |
+| 🔴 `cdk deploy VvaAgentStack -c agent_image_tag=<sha>` | N | Sau khi CI push image đầu tiên |
+| 🟠 **Chốt backend STM** | Owner | Code sẵn cho cả ba. Khuyến nghị chạy `none` một tháng rồi đo CU-hours |
+| 🟠 **Đo token LLM** | N | Khoản lớn nhất, **không** nằm trong $1,90/tháng. `total_tokens` đã log sẵn ở `main.py::chat_complete` |
+| 🟡 **Kiểm frontend** | N | UI đọc được `speech_disabled` chưa? |
+| 🟡 **Push nhánh** | Owner | `feature/agent-deploy` chưa có upstream |
 
 ---
 
