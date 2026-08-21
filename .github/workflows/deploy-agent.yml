@@ -195,6 +195,25 @@ jobs:
           file: agenticRAG/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.image-uri }}
+
+          # LAMBDA CANNOT READ AN IMAGE INDEX. buildx has added provenance
+          # attestations by default since v0.10, and an attestation makes the
+          # pushed artifact an OCI image INDEX pointing at both the image and its
+          # attestation, rather than a plain manifest. The push succeeds, ECR
+          # accepts it, and the failure lands one step later at function
+          # creation:
+          #
+          #     The image manifest, config or layer media type for the source
+          #     image ... is not supported.
+          #
+          # Confirmed on the first pushed image: imageManifestMediaType was
+          # application/vnd.oci.image.index.v1+json, and the repository held
+          # three entries — the 437 MB image, a 52 KB attestation, and the index
+          # over them. Lambda takes a single manifest, Docker v2 or OCI, but not
+          # an index.
+          provenance: false
+          sbom: false
+
           # The image is ~1.2 GB and most of it is unchanged between commits.
           # Without a cache every run re-downloads torch to re-export a model
           # that did not change.
