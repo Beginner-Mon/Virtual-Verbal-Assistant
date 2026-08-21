@@ -8,50 +8,140 @@
 
 ---
 
-## 0. Việc đầu tiên: tách nhánh (Owner yêu cầu 21/08)
+## 0. Trạng thái + việc kế tiếp (cập nhật 21/08 sau khi commit)
 
-Toàn bộ Phase A đang là **thay đổi chưa commit** nằm thẳng trên
-`feature/langgraph-rewrite` (9 file sửa, 6 file mới). Không đúng ý Owner.
+✅ **Đã xong**: nhánh `feature/agent-deploy` (2 commit, `feature/langgraph-rewrite`
+khớp hệt origin, không bị đụng). Phase A 4/5. **465 passed** ở đầu nhánh,
+**454 passed** khi commit 1 đứng một mình — cả hai commit đều xanh.
 
-```bash
-# Từ chính nơi đang đứng — switch -c mang theo thay đổi chưa commit,
-# nên không cần stash và không có gì bị mất.
-git switch -c feature/agent-deploy
+### 🔴 Ba điều bản bàn giao ghi SAI — đã kiểm lại
 
-git add agenticRAG/langgraph_agents/shared/stm.py \
-        agenticRAG/langgraph_agents/api/main.py \
-        agenticRAG/langgraph_agents/db/session_store.py \
-        agenticRAG/langgraph_agents/nodes/memory.py \
-        agenticRAG/langgraph_agents/mcp/web_search_server.py \
-        agenticRAG/langgraph_agents/services/vieneu_tts/tasks.py \
-        agenticRAG/.env.example \
-        tests/langgraph_agents/test_stm.py \
-        tests/langgraph_agents/test_gdpr_route_gate.py \
-        tests/langgraph_agents/test_phase2_5_memory.py \
-        tests/langgraph_agents/test_phase5_sse.py \
-        docs/plans/langgraph-agent-hosting.md \
-        docs/tracking/agent-deploy-handoff.md \
-        docs/tracking/tech-debt.md \
-        docs/worklogs/21-08-2026.md
+| Từng ghi | Sự thật |
+|---|---|
+| "Cần cài `optimum` + `onnxruntime`" | **`onnxruntime` đã có** trong `firstconda`. Chỉ thiếu `optimum`, và nó chỉ cần lúc **build**. |
+| "Cần đường truy cập KB Neon" | `agenticRAG/.env` **đã có** `VVA_PG_DSN` (user `eca_user`) |
+| — | model e5-small **đã cache sẵn**, `model.safetensors` 470 MB |
+
+⇒ **ONNX chưa từng bị chặn.** Xếp nó vào mục "cần Owner gỡ" là lỗi đánh giá của
+K, và nó khiến Owner tưởng phải can thiệp.
+
+### Docker KHÔNG chặn gì cả — sửa lại 21/08, Owner hỏi đúng
+
+K từng ghi "Docker daemon không chạy ⇒ chặn Phase 0 và Phase B". **Sai.**
+
+| | Trạng thái |
+|---|---|
+| AWS credentials | ✅ `arn:aws:iam::244203483654:user/admin` |
+| Docker daemon | ⚪ không chạy — **và không cần** |
+| ECR có sẵn | `kimodo`, `kimodo-base`, `cdk-hnb659fds-container-assets-…` |
+
+**Phase 0 không cần container.** `AWS_LWA_INVOKE_MODE=response_stream` là **biến
+môi trường**, đặt như nhau cho cả hai kiểu đóng gói:
+
+| | zip | container |
+|---|---|---|
+| Gắn LWA | layer + `AWS_LAMBDA_EXEC_WRAPPER=/opt/bootstrap` | `COPY` → `/opt/extensions` |
+| Bật streaming | `AWS_LWA_INVOKE_MODE=response_stream` | **giống hệt** |
+
+Spike chỉ hỏi một câu — prelude của LWA có khớp thứ API Gateway `AWS_PROXY`
+STREAM đòi không — và LWA là **cùng một binary** ở cả hai đường. Nên zip trả lời
+đúng câu đó, dựng bằng `build_crud_api.py` vốn đã không cần Docker.
+
+**Phase B build trên CI** (Owner chốt 21/08). Repo đã làm đúng thế cho kimodo:
+`deploy-production.yml` → OIDC → buildx trên `ubuntu-latest` → ECR.
+
+🔴 **Hệ quả lên Phase C, dễ bỏ sót**: không có Docker local thì
+`DockerImageCode.from_image_asset()` **dùng không được** — CDK build image ngay
+lúc synth, trên máy chạy `cdk deploy`. Phải dùng `from_ecr(repository, tag)`.
+Điều đó *khớp* với ranh giới §7: **CDK sở hữu hình dạng hạ tầng, CI sở hữu mã.**
+
+Cái giá, nói thẳng: mỗi lần sửa Dockerfile là push + chờ 5-10 phút, và debug lỗi
+INIT chỉ còn đường đọc CloudWatch — mà lỗi INIT đúng là loại hay cần vài lần thử
+(bake model sai đường dẫn, LWA copy nhầm chỗ, thiếu thư viện hệ thống). Nếu
+Phase B kẹt quá hai vòng, bật Docker Desktop rẻ hơn vòng thứ ba.
+
+### Thứ tự làm
+
+**A1 → A6 → Phase 0.** ONNX trước Phase B là bắt buộc chứ không phải ưu tiên:
+Dockerfile khác hẳn giữa đường torch và đường ONNX (multi-stage, base image,
+dependency), nên làm Phase B trước là làm hai lần.
+
+---
+
+## 0b. A1 — chuyển embedding sang ONNX
+
+### Đã verify từ config của model, không phỏng đoán
+
+`modules.json` của `intfloat/multilingual-e5-small` có đúng ba tầng:
+
+```
+0  Transformer
+1  Pooling      pooling_mode_mean_tokens: true   ← mean, KHÔNG phải CLS
+2  Normalize                                     ← L2
 ```
 
-Tên `feature/agent-deploy` theo đúng quy ước đang có trong repo
-(`feature/capacitor-mobile`, `feature/character-identity`, `feature/frontend`).
+`sentence_bert_config.json`: `max_seq_length: 512`, `do_lower_case: false`.
 
-Hai commit chứ không phải một, vì chúng có lý do khác nhau và có thể cần revert
-độc lập:
+Đây chính là ba thứ đường ONNX phải tái tạo **đúng thứ tự**. Đặc biệt: `Pooling`
+lấy trung bình **có trọng số theo attention mask** — cộng token rồi chia cho số
+token thật, không chia cho độ dài đã pad. Chia nhầm mẫu số thì vector vẫn ra 384
+chiều, vẫn tra được, chỉ sai dần theo độ dài câu.
 
-1. `feat(agent): make STM, TTS and web search configurable` — `shared/stm.py` +
-   4 call site + `.env.example` + test.
-2. `fix(security): gate the account-deletion routes behind ENABLE_GDPR_ROUTES` —
-   cổng + test. Đây là commit mà một người review bảo mật sẽ muốn đọc riêng.
+### Runtime KHÔNG cần torch, cũng không cần optimum
 
-Docs đi kèm commit tương ứng, **không** gộp thành commit "docs" thứ ba: một thay
-đổi hành vi và lời giải thích cho nó mà nằm ở hai commit khác nhau thì `git log`
-của file đó không kể được câu chuyện.
+| Việc | Cần gì | Có sẵn? |
+|---|---|---|
+| Export (build) | `optimum[exporters]` + torch | cài thêm `optimum` |
+| Runtime (Lambda) | `onnxruntime`, `tokenizers`, `numpy` | ✅ tất cả |
 
-⚠️ **Đừng push `feature/langgraph-rewrite` sau khi switch.** Nhánh cũ giờ không
-còn các thay đổi này; nó vẫn ở đúng chỗ trước khi bắt đầu.
+Dùng `tokenizers` (thư viện Rust, ~3 MB) đọc thẳng `tokenizer.json`, **không** kéo
+cả `transformers`. Đây là chỗ image co từ ~4 GB xuống ~1,2 GB.
+
+### Thi hành
+
+1. **`scripts/export_e5_onnx.py`** — bọc `optimum-cli export onnx
+   -m intfloat/multilingual-e5-small --task feature-extraction`. Ghi ra thư mục
+   gitignore (470 MB, không commit).
+2. **`shared/embedding.py`** — thêm `OnnxE5Backend` sau cờ `EMBEDDING_BACKEND`
+   (`torch` mặc định / `onnx`). **Giữ nguyên đường torch** — parity cần cả hai
+   cùng chạy để so.
+   - Giữ nguyên `E5EmbeddingService` là mặt tiền: `embed_query`/`embed_passage`
+     và tiền tố `query: `/`passage: ` **không đổi**, vì chúng là hợp đồng với
+     `pgvector_tool.py` và `summarizer.py`.
+   - Chỉ `_encode`/`_encode_batch` rẽ nhánh.
+3. **`scripts/verify_onnx_parity.py`** — lấy mẫu từ `kb_embeddings` trên Neon,
+   embed lại bằng cả hai đường, so cosine; và chạy `kb_search` thật để so thứ tự
+   top-5.
+
+### Nghiệm thu — bằng số, không bằng mắt
+
+- `cosine(torch_vec, onnx_vec) > 0.9999` trên **200 mẫu** lấy từ 2918 rows.
+- Top-5 của `kb_search` **trùng thứ tự** cho 20 truy vấn thật.
+- Thêm một mẫu **dài > 512 token** vào bộ so: đó là chỗ lỗi truncation/pooling
+  lộ ra, và là chỗ 200 mẫu ngắn sẽ không bắt được.
+- `pytest -m unit` giữ **465 passed**.
+
+⚠️ Không đổi mặc định sang `onnx` cho tới khi ba tiêu chí trên xanh. KB đã embed
+sẵn 2918 vector bằng đường torch — đổi runtime mà vector lệch thì **recall tụt âm
+thầm**, không có lỗi nào để nhìn.
+
+---
+
+## 0c. A6 — sửa hai lỗi Kimodo (Owner chốt sửa luôn)
+
+Xem §5b để biết vì sao. Việc rất nhỏ, rủi ro nằm ở chỗ khác:
+
+1. `nodes/kimodo.py:79`: `ainvoke({"query": ...})` → `{"prompt": ...}`.
+2. **`tests/langgraph_agents/test_kimodo_node.py`** — file mới. Đây mới là phần
+   quan trọng: lỗi lọt được **vì `kimodo_node` không có test nào**, còn test hiện
+   có thì kiểm mock server ở đầu kia sợi dây. Test phải khẳng định:
+   - node gọi tool bằng **đúng tên tham số mà schema đòi** (đọc từ schema, đừng
+     hardcode `"prompt"` ở cả hai phía — như thế test chỉ lặp lại cái sai)
+   - tool vắng mặt ⇒ lỗi RECOVERABLE, graph không vỡ
+   - tool ném exception ⇒ RECOVERABLE, không rơi ra ngoài
+
+Commit riêng: `fix(kimodo): call generate_motion with the argument its schema
+declares`.
 
 ---
 
@@ -544,18 +634,52 @@ thay đổi IAM — cần Owner duyệt.
 
 ## 8. Các bước
 
-### Phase 0 — spike, làm trước mọi thứ (nửa ngày)
+### Phase 0 — spike ✅ XONG 21/08, mất ~40 phút chứ không phải nửa ngày
+
+**KẾT QUẢ: STREAMED.** Prelude của LWA khớp thứ API Gateway Lambda-proxy STREAM
+đòi. Bỏ hẳn Function URL và shared secret — kiến trúc §1 đứng vững.
+
+```
+arrived  2.812s   seq=0    server emitted_at=0.000s   ← cold start
+arrived  3.265s   seq=1    server emitted_at=0.518s
+arrived  3.765s   seq=2    server emitted_at=1.019s
+…
+arrived  7.765s   seq=10
+11 events, spread 4.953s
+```
+
+Thời điểm **đến** bám nhịp 0,5s của thời điểm **phát**. Bản buffered sẽ dồn cả 11
+vào vài mili-giây ở cuối — đó là lý do phải đo bằng dấu thời gian chứ không nhìn
+`curl -N`: một response buffered mà nhanh và một response streamed mà chậm trông
+giống hệt nhau trên terminal.
+
+Kèm hai số phụ đáng nhớ: template synth ra đúng
+`"ResponseTransferMode": "STREAM"` + URI `/response-streaming-invocations`; và
+**first byte 2,812s** là cold start của một zip 5,3 MB — mốc dưới để so khi đo
+image thật ở Phase B.
+
+Code ở `infra/spike/` + `infra/infra/streaming_probe_stack.py`, gate sau
+`CDK_ENABLE_SPIKE=1`. Đã deploy rồi destroy trong cùng phiên;
+`describe-stacks` và `get-function` xác nhận không sót gì. **Giữ lại làm bằng
+chứng** — ai nghi ngờ kết quả thì deploy lại và đo lại trong hai phút.
+
+<details><summary>Câu hỏi ban đầu (giữ để biết vì sao phải hỏi)</summary>
 
 Docs xác nhận LWA là đường streaming chính thức cho Python, **nhưng** chỉ tài
 liệu hoá đối chiếu với **Function URL**. Với Lambda-proxy STREAM, API Gateway
 *"expects a specific response format"* — prelude chứa status code + headers.
-**Chưa có tài liệu nào xác nhận prelude của LWA khớp với prelude API Gateway
-đòi.** Đó là giả định rủi ro nhất của cả kế hoạch.
+Không tài liệu nào nói prelude của LWA **là** prelude đó.
+</details>
 
-Deploy một Lambda hello-world: image + LWA + FastAPI trả SSE, sau API Gateway với
-`ResponseTransferMode.STREAM`. Xác nhận token đến **nhỏ giọt**. Sai thì lùi về
-HTTP proxy → Function URL (bản 1) và chịu thêm phần shared secret. Nửa ngày ở đây
-tránh việc phát hiện sau khi đã dựng xong image 1,2 GB.
+Deploy một Lambda hello-world: **zip + LWA layer** + FastAPI trả SSE, sau API
+Gateway với `ResponseTransferMode.STREAM`. Xác nhận token đến **nhỏ giọt**. Sai
+thì lùi về HTTP proxy → Function URL (bản 1) và chịu thêm phần shared secret.
+
+**Zip chứ không phải image, và điều đó là cố ý**: câu hỏi ở đây thuần tuý về
+prelude của LWA, mà LWA là cùng một binary trong cả hai kiểu đóng gói. Dùng
+container ở bước này là trộn một câu hỏi chưa có lời đáp (streaming) với một câu
+hỏi khác chưa có lời đáp (image 1,2 GB có bake model đúng không) — hỏng thì
+không biết cái nào hỏng. Zip cũng dựng được không cần Docker, xem §0.
 
 Kèm: xác nhận response streaming có ở us-east-1.
 
@@ -576,18 +700,39 @@ Kèm: xác nhận response streaming có ở us-east-1.
 
 **Phase A đứng độc lập**, có giá trị kể cả khi hoãn deploy.
 
-### Phase B — image
+### Phase B — image (cần Docker daemon chạy)
 
-6. `agenticRAG/Dockerfile` trên `public.ecr.aws/lambda/python:3.12`.
-   🔴 LWA bằng `COPY --from=…/aws-lambda-adapter /lambda-adapter
-   /opt/extensions/lambda-adapter` — **không dùng layer** (§1). Không đặt
+6. `agenticRAG/Dockerfile`, **multi-stage** — đây là điểm mấu chốt:
+
+   ```dockerfile
+   # stage 1: xuất ONNX. Có torch + optimum, và BỊ VỨT ĐI.
+   FROM python:3.12 AS export
+   RUN pip install optimum[exporters] torch --index-url .../cpu
+   RUN optimum-cli export onnx -m intfloat/multilingual-e5-small \
+       --task feature-extraction /out
+
+   # stage 2: runtime. Không torch, không optimum, không transformers.
+   FROM public.ecr.aws/lambda/python:3.12
+   COPY --from=export /out /opt/model
+   COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.9.1 \
+        /lambda-adapter /opt/extensions/lambda-adapter
+   ```
+
+   Multi-stage là cách bake model mà **không** ship công cụ đã tạo ra nó. Gộp một
+   stage thì torch nằm lại trong image và toàn bộ §3 mất ý nghĩa.
+
+   🔴 LWA bằng `COPY --from=…` — **không dùng layer** (§1). Không đặt
    `AWS_LAMBDA_EXEC_WRAPPER`.
-7. 🔴 **Bake model e5-small ONNX vào image.** `main.py:31-33` ép
-   `HF_HUB_OFFLINE=1` nên container không tải được lúc chạy; quên bake thì INIT
-   chết với lỗi nói về HuggingFace cache chứ không nói về Dockerfile.
+
+7. 🔴 **Model phải nằm sẵn trong image.** `main.py:31-33` ép `HF_HUB_OFFLINE=1`
+   nên container không tải được lúc chạy; quên bake thì INIT chết với lỗi nói về
+   HuggingFace cache chứ không nói về Dockerfile.
 8. `AWS_LWA_INVOKE_MODE=response_stream`, `AWS_LWA_ASYNC_INIT=true` (INIT chỉ có
    10s), `AWS_LWA_READINESS_CHECK_PATH=/health`, `PORT=8080`. Đo cold start bằng
    RIE tại chỗ.
+9. Chạy lại `verify_onnx_parity.py` **bên trong image** — export trong Docker và
+   export trên máy N là hai lần chạy khác nhau, và thứ được kiểm ở §0b là lần
+   chạy trên máy N.
 
 ### Phase C — CDK
 
@@ -595,6 +740,14 @@ Kèm: xác nhận response streaming có ở us-east-1.
    `DockerImageFunction`, **1024 MB**, **timeout 120s** (§1 rủi ro 1), cùng
    `_DEFAULT_DSN_PARAM` pooled, cùng env Cognito, cùng IAM SSM + KMS scoped
    `kms:ViaService`. Thêm quyền DynamoDB cho bảng STM.
+   `EMBEDDING_BACKEND=onnx` + `E5_ONNX_DIR=/opt/model` (§0b).
+
+   🔴 **`DockerImageCode.from_ecr(repo, tag)`, KHÔNG phải `from_image_asset()`.**
+   `from_image_asset` build image ngay lúc synth, trên máy chạy `cdk deploy` —
+   tức đòi Docker local, thứ Owner đã chốt là không dùng (§0). Kèm theo: ECR repo
+   `vva-agent` phải được tạo (CDK sở hữu repo, CI đẩy tag vào), và stack nhận tag
+   qua context để `cdk deploy -c agent_image_tag=<sha>` chỉ được deploy một tag
+   đã tồn tại — chứ không phải `latest`, xem §7.
 10. `rest_api_stack.py`: `/chat` bằng
     `LambdaIntegration(fn, response_transfer_mode=ResponseTransferMode.STREAM)`
     + `**authed`, và **nâng integration timeout tường minh** (mặc định 29s).
@@ -690,8 +843,10 @@ Nhưng §3 đã nói: thứ đẩy ta rời Lambda là **đồng thời**, khôn
 120 request ngày 20/08 đã tạo 61 throttle. **Xin nâng quota trước khi deploy
 `/chat`.** Nâng xong thì `reserved_concurrent_executions` mới hợp lệ.
 
-🔴 **Prelude của LWA vs API Gateway chưa được xác nhận.** Phase 0 tồn tại vì điều
-này.
+✅ ~~**Prelude của LWA vs API Gateway chưa được xác nhận.**~~ **ĐÃ GIẢI QUYẾT
+21/08** — spike deploy thật, đo được **STREAMED**: 11 sự kiện đến bám nhịp 0,5s
+của server, trải 4,95s. Bản buffered sẽ dồn cả 11 vào vài mili-giây. Bỏ hẳn
+Function URL và shared secret. Chi tiết: §8 Phase 0.
 
 🔴 **Streaming tính tiền đủ thời gian dù client ngắt** ⇒ timeout 120s là biện
 pháp kiểm soát chi phí, không phải lưới an toàn.

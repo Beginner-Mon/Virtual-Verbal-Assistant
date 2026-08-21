@@ -94,6 +94,23 @@ rest_api_stack = RestApiStack(
 # ── Kimodo ECS (GPU MCP Server) ─────────────────────────────────────
 kimodo_ecs = KimodoEcsStack(app, "VvaKimodoEcsStack", vpc=vpc_stack.vpc, env=env)
 
+# ── Phase 0 spike: THROWAWAY (opt-in) ───────────────────────────────
+# Answers one question — does LWA's response_stream prelude satisfy API
+# Gateway's Lambda-proxy STREAM mode? — and is then destroyed. Gated so it
+# cannot appear in a synth someone ran for another reason, and so that
+# forgetting to destroy it does not quietly leave a public unauthenticated
+# endpoint in the account.
+#
+#     python infra/spike/build_probe.py
+#     CDK_ENABLE_SPIKE=1 cdk deploy  VvaStreamingProbeStack
+#     CDK_ENABLE_SPIKE=1 cdk destroy VvaStreamingProbeStack
+#
+# Delete this block and infra/spike/ once Phase 0 is recorded in the worklog.
+if os.getenv("CDK_ENABLE_SPIKE") == "1":
+    from infra.streaming_probe_stack import StreamingProbeStack
+
+    StreamingProbeStack(app, "VvaStreamingProbeStack", env=env)
+
 # ── Track 1: production reference (opt-in) ──────────────────────────
 if os.getenv("CDK_ENABLE_TRACK1") == "1":
     from infra.database_stack import DatabaseStack
