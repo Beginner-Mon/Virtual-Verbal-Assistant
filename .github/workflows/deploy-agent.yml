@@ -48,10 +48,56 @@ concurrency:
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────────
-  # Tests first. release-tests.yml covers the same suite on this branch, but a
-  # deploy that does not depend on a green run is a deploy that can ship red
-  # code whenever the two workflows finish in the wrong order.
+  # TWO jobs, two environments, and the split is the point.
+  #
+  # The first version of this workflow ran the unit suite against
+  # requirements-agent-runtime.txt, reasoning that the full list would pull torch
+  # and hide a missing runtime dependency. That reasoning is right for the import
+  # check and wrong for the test suite: the tests legitimately need packages the
+  # IMAGE does not — alembic (test_rls_policies.py reads a migration) and
+  # sentence-transformers (test_preflight asserts the torch backend's dependency
+  # is importable). Ten tests failed for that reason on the first run.
+  #
+  # So: one job proves the image's dependency set is SUFFICIENT, the other proves
+  # the code is CORRECT. Sharing an environment would make each a worse test of
+  # the other.
   # ───────────────────────────────────────────────────────────────────────────
+  runtime-imports:
+    name: "📥 Image deps import the app"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # ONLY what the image will contain. A missing runtime dependency shows up
+      # here in seconds instead of at Lambda INIT, where it lands in CloudWatch
+      # minutes later with no obvious cause and a 10-minute loop to retry.
+      - name: Install the image's dependency set
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r agenticRAG/requirements-agent-runtime.txt
+
+      - name: Import the app, and prove torch is not there
+        env:
+          # torch, because the runner has no ONNX export to point at. The
+          # embedding backend is not what this job checks — the import closure is.
+          EMBEDDING_BACKEND: torch
+          ENABLE_MCP: "false"
+        run: |
+          PYTHONPATH=agenticRAG python -c "
+          import sys
+          from langgraph_agents.api.main import create_app
+          create_app()
+          for banned in ('torch', 'transformers', 'sentence_transformers'):
+              assert banned not in sys.modules, f'{banned} reached the runtime set'
+          print('import OK — none of torch/transformers/sentence_transformers')
+          "
+
   unit-tests:
     name: "🧪 Unit tests"
     runs-on: ubuntu-latest
@@ -64,40 +110,29 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      # requirements-agent-runtime.txt, not requirements-langgraph.txt: this is
-      # the set the image will actually contain. Installing the full list would
-      # pull torch and hide a missing runtime dependency behind it — the class of
-      # bug that only appears after deploy.
-      - name: Install runtime dependencies
+      # The FULL list, matching release-tests.yml. Tests that run against a
+      # different dependency set than the developer's are tests of something
+      # else — the same principle requirements-agent-runtime.txt states about
+      # the image and local development.
+      #
+      # CPU torch first so pip does not pull the CUDA build, which is ~2.5 GB of
+      # download for a runner that has no GPU.
+      - name: Install full dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r agenticRAG/requirements-agent-runtime.txt
-          pip install pytest pytest-asyncio
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements-langgraph.txt
 
-      # Proves the image's dependency set can import the app at all. Cheaper and
-      # far clearer than discovering an ImportError at Lambda INIT, where it
-      # surfaces in CloudWatch minutes later with no obvious cause.
-      - name: Import the app with the image's dependency set
-        env:
-          EMBEDDING_BACKEND: torch    # no ONNX export on the runner
-          ENABLE_MCP: "false"
-        run: |
-          PYTHONPATH=agenticRAG python -c "
-          import sys
-          from langgraph_agents.api.main import create_app
-          create_app()
-          assert 'torch' not in sys.modules, 'torch reached the runtime set'
-          assert 'transformers' not in sys.modules, 'transformers reached the runtime set'
-          print('import OK, no torch')
-          "
-
+      # No .env here, and that is a feature: two tests passed only because a
+      # developer machine had DEEPSEEK_API_KEY, and one of them was hiding a real
+      # crash in planner_node. See test_phase6_circuit_breaker.py.
       - name: Run unit tests
         run: pytest tests/langgraph_agents -m unit -q
 
   # ───────────────────────────────────────────────────────────────────────────
   build-and-push:
     name: "📦 Build and push"
-    needs: unit-tests
+    needs: [unit-tests, runtime-imports]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     outputs:

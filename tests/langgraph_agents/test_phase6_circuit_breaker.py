@@ -145,8 +145,24 @@ async def test_mcp_breaker_records_success_and_closes():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_planner_handles_breaker_open_as_recoverable():
-    """When planner LLM breaker is open, planner returns clarify + recoverable error."""
+async def test_planner_handles_breaker_open_as_recoverable(monkeypatch):
+    """When planner LLM breaker is open, planner returns clarify + recoverable error.
+
+    The fake key is what makes this a test of the breaker rather than a test of
+    the developer's .env. Without it get_chat_model finds no DeepSeek key, falls
+    through to a Gemini fallback that this test patches to None, and returns
+    None — so the assertions below were satisfied by "no provider configured"
+    rather than by "breaker open". On a laptop with a real key in .env it passed
+    for the right reason; in CI it did not, and that difference is the whole
+    problem.
+
+    No network call happens: _apply_circuit_breaker raises CircuitBreakerOpenError
+    before it ever reaches the model, which is precisely the path under test.
+    _reset_llm_breaker() below clears get_chat_model's lru_cache, so the key is
+    picked up rather than a previously built model reused.
+    """
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-not-a-real-key")
+
     breaker = _reset_llm_breaker("planner")
     # Force breaker open
     for _ in range(3):
@@ -176,3 +192,48 @@ async def test_planner_handles_breaker_open_as_recoverable():
     assert len(errors) == 1
     assert errors[0]["severity"] in ("recoverable", "RECOVERABLE")
     assert "planner" in errors[0]["node"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_planner_degrades_when_no_provider_can_be_built(monkeypatch):
+    """No DeepSeek key and no Gemini fallback must not crash the graph.
+
+    get_chat_model returns None in that case, and planner_node then called
+    `None.with_structured_output(...)` — an AttributeError that escaped the node
+    entirely, because the node's try/except begins on the line AFTER it. The
+    graph raised instead of degrading.
+
+    Reachable in production, not merely in tests: llm.py reads both credentials
+    from SSM SecureStrings and returns None rather than raising when a fetch
+    fails, specifically so a credential problem degrades one provider instead of
+    killing the request. This node turned that intent into a crash.
+
+    Found by CI, which runs without a .env — the same absence that hid the
+    problem on a developer machine for as long as the key was there.
+    """
+    from langgraph_agents.nodes.planner import planner_node
+
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY_PARAM", raising=False)
+    _reset_llm_breaker("planner")
+
+    state: AgentState = {"messages": [], "errors": [], "retry_count": 0,
+                         "total_tokens": 0}
+    config: RunnableConfig = {"configurable": {
+        "query": "Bài tập cho đau lưng",
+        "user_id": "u1",
+        "session_id": "s1",
+        "request_id": "r-test",
+        "persona_id": "eca_default",
+    }}
+
+    with patch("langgraph_agents.nodes.planner.get_fallback_chat_model", return_value=None):
+        result = await planner_node(state, config)
+
+    assert result["needs_clarification"] is True
+    assert result["resolved_query"] == "Bài tập cho đau lưng"
+    errors = result.get("errors", [])
+    assert len(errors) == 1
+    assert errors[0]["severity"] in ("recoverable", "RECOVERABLE")
+    assert errors[0]["node"] == "planner"

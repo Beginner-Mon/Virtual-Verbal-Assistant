@@ -201,6 +201,41 @@ async def planner_node(state: AgentState, config: RunnableConfig) -> dict:
     })
 
     llm = get_chat_model("planner")
+
+    # get_chat_model returns None when no provider can be built at all — no
+    # DeepSeek key AND no Gemini fallback. That is reachable in production, not
+    # just in tests: llm.py reads both credentials from SSM SecureStrings and
+    # deliberately returns None rather than raising when a fetch fails, so that a
+    # credential problem degrades one provider instead of killing the request.
+    #
+    # Without this guard the very next line does `None.with_structured_output`
+    # and the AttributeError escapes planner_node entirely — the graph raises
+    # instead of degrading, which defeats the whole point of that design three
+    # files away. The `try` below starts AFTER this line, so it cannot catch it.
+    #
+    # Returning the same shape the LLM-failure path returns: ask the user to
+    # rephrase, and report RECOVERABLE so the graph carries on.
+    if llm is None:
+        elapsed_ms = round((time.perf_counter() - t0) * 1000)
+        logger.error("node_failed", extra={
+            "node": "planner", "request_id": request_id,
+            "elapsed_ms": elapsed_ms,
+            "error": "no chat model available (no DeepSeek key and no Gemini fallback)",
+        })
+        return {
+            "required_outputs": [],
+            "resolved_query": query,
+            "needs_retrieval": False,
+            "needs_motion": False,
+            "needs_clarification": True,
+            "errors": [{
+                "node": "planner",
+                "severity": ErrorSeverity.RECOVERABLE,
+                "message": "No LLM provider is configured or reachable",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }],
+        }
+
     # include_raw=True so we can read response_metadata/usage_metadata for
     # DeepSeek prompt-cache telemetry (fix #1) alongside the parsed plan.
     structured_llm = llm.with_structured_output(PlanOutput, method="json_mode", include_raw=True)
