@@ -76,7 +76,34 @@ def _normalize_stdio_config(server_cfg: dict) -> None:
             env.setdefault(var, os.environ[var])
 
 
+def mcp_enabled() -> bool:
+    """Whether to discover MCP servers at all. Default on, so local is unchanged.
+
+    The deployed agent sets ENABLE_MCP=false, and the reason is cold-start cost
+    rather than tidiness. Discovery runs inside build_graph_async(), i.e. in the
+    FastAPI lifespan, i.e. inside Lambda's 10-second INIT budget — and both
+    configured servers use `transport: stdio`, so it spawns TWO Python
+    subprocesses there. On the first cloud deployment neither can do anything:
+    mcp/kimodo_server.py is a mock returning mock:// URLs, and
+    web_search_server.py wants SearXNG on localhost:6666. Paying seconds of every
+    cold start to start two processes that cannot work is worse than not having
+    them.
+
+    Turning Kimodo on later is this flag plus a `streamable_http` entry in
+    config/mcp_servers.yaml pointing at the tunnel — no code change here.
+    """
+    return os.getenv("ENABLE_MCP", "true").strip().lower() != "false"
+
+
 def _load_mcp_config() -> dict:
+    if not mcp_enabled():
+        # Empty config, which get_mcp_tools() already short-circuits on. Reusing
+        # that path rather than adding a second early return means the "no tools"
+        # case has one shape, and the graph keeps building with its in-process
+        # tools exactly as it does when discovery fails.
+        logger.info("mcp_disabled", extra={"reason": "ENABLE_MCP=false"})
+        return {}
+
     config_path = Path(__file__).resolve().parents[3] / "config" / "mcp_servers.yaml"
     if not config_path.exists():
         return {}

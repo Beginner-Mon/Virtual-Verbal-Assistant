@@ -145,6 +145,50 @@ declares`.
 
 ---
 
+## 0d. PHẠM VI — Owner chốt 21/08
+
+> *"Ưu tiên hàng đầu là deploy được langgraph-agent, tức thật sự dùng được cho
+> production. TTS và Kimodo hay cache có thể làm sau ở branch khác — nhưng
+> langgraph-agent deploy xong phải chuẩn bị đủ để sau này integrate vào."*
+
+**Đích của kế hoạch này**: `/chat` chạy thật trên AWS. Chat bằng chữ, có nhớ, có
+tra KB, có persona, có auth. Không giọng nói, không motion, không web search.
+
+Ba thứ kia **không phải không quan trọng** — chúng là hỗ trợ, thiếu thì hệ thống
+vẫn dùng được. Chúng đi branch khác.
+
+### Bốn seam để integrate sau — mỗi cái là một biến môi trường
+
+Đây là phần "chuẩn bị đủ" mà Owner yêu cầu. Không cái nào cần sửa code khi bật:
+
+| Bật thứ gì | Đổi gì | Xong ở |
+|---|---|---|
+| Giọng nói (TTS) | `VIENEU_TTS_URL=https://…` | ✅ Phase A |
+| Web search | `SEARXNG_URL=https://…` | ✅ Phase A |
+| Cache (Redis/DynamoDB) | `STM_BACKEND=dynamodb` + `STM_TABLE` | ✅ Phase A |
+| **Motion (Kimodo)** | `ENABLE_MCP=true` + một entry `streamable_http` trong `config/mcp_servers.yaml` | ✅ **21/08** |
+
+🔴 **Seam thứ tư suýt thiếu, và yêu cầu của Owner làm nó lộ ra.**
+`build_graph_async()` gọi `get_mcp_tools()` **vô điều kiện**, từ lifespan của
+FastAPI — tức nằm trong ngân sách **INIT 10 giây** của Lambda. Cả hai server
+trong `mcp_servers.yaml` đều `transport: stdio`, nên nó **spawn hai Python
+subprocess** ở đó. Mà ở bản cloud đầu tiên **không cái nào làm được gì**:
+`kimodo_server.py` là mock trả `mock://`, `web_search_server.py` cần SearXNG ở
+localhost. Trả vài giây mỗi cold start để khởi động hai tiến trình không thể
+chạy — tệ hơn là không có chúng.
+
+`ENABLE_MCP` mặc định **on** (local không đổi), image Lambda đặt `false`.
+
+### Bản cloud đầu tiên KHÔNG làm gì — ghi để không bị hiểu là hồi quy
+
+- Không giọng nói: `/chat` phát `speech_disabled` thay vì `speech_pending`
+- Không motion: planner vẫn đặt `needs_motion`, node `kimodo` vẫn chạy, nhưng
+  không có tool nên trả lỗi RECOVERABLE và graph đi tiếp
+- Không web search: retriever chỉ có `pgvector_search`
+- Không cache: mỗi turn đọc lịch sử từ Postgres (`STM_BACKEND=none`)
+
+---
+
 ## Context
 
 Bản 1 chọn đúng runtime nhưng mỏng ở bốn chỗ Owner chỉ ra: chi phí **chờ** của
