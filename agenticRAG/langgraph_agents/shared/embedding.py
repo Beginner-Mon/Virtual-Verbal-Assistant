@@ -34,11 +34,24 @@ class E5EmbeddingService:
     use asyncio.to_thread for non-blocking embedding in async contexts.
     """
 
-    def __init__(self, model_name: str = E5_MODEL_NAME):
+    def __init__(self, model_name: str = E5_MODEL_NAME, backend: str | None = None):
         self.model_name = model_name
         self.dim = E5_DIM
         self._model = None
+        self._onnx_backend = None
         self._load_lock = threading.Lock()
+
+        # torch by default, and it stays that way until parity is proven. The
+        # 2918 KB vectors already in pgvector were produced by the torch path;
+        # switching the runtime before the two agree does not fail, it just
+        # returns slightly different vectors and quietly costs recall.
+        # See scripts/verify_onnx_parity.py and shared/onnx_backend.py.
+        self.backend = (backend or os.getenv("EMBEDDING_BACKEND", "torch")).strip().lower()
+        if self.backend not in ("torch", "onnx"):
+            raise ValueError(
+                f"EMBEDDING_BACKEND={self.backend!r} is not a backend. Use 'torch' "
+                f"(default) or 'onnx'."
+            )
 
     @property
     def model(self):
@@ -108,13 +121,38 @@ class E5EmbeddingService:
 
     # ── Internal ────────────────────────────────────────────────────────
 
+    # The ONLY place the two backends differ. Everything above — the `query: ` /
+    # `passage: ` prefixes, the async wrappers, the public method names — is
+    # shared, so a caller cannot tell which backend is running and the two cannot
+    # drift on the part that e5 is fussy about.
+
     def _encode(self, text: str) -> list[float]:
+        if self._use_onnx():
+            return self._onnx.encode([text])[0].tolist()
         vec = self.model.encode(text, convert_to_numpy=True, show_progress_bar=False)
         return vec.tolist()
 
     def _encode_batch(self, texts: list[str]) -> list[list[float]]:
+        if self._use_onnx():
+            return self._onnx.encode(texts).tolist()
         vecs = self.model.encode(texts, convert_to_numpy=True, show_progress_bar=False, batch_size=32)
         return vecs.tolist()
+
+    # ── Backend selection ───────────────────────────────────────────────
+
+    def _use_onnx(self) -> bool:
+        return self.backend == "onnx"
+
+    @property
+    def _onnx(self):
+        """Lazy ONNX backend, same double-checked locking as `model` above."""
+        if self._onnx_backend is not None:
+            return self._onnx_backend
+        with self._load_lock:
+            if self._onnx_backend is None:
+                from langgraph_agents.shared.onnx_backend import OnnxE5Backend
+                self._onnx_backend = OnnxE5Backend()
+        return self._onnx_backend
 
     # ── Helpers ─────────────────────────────────────────────────────────
 
