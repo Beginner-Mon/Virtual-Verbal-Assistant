@@ -179,6 +179,12 @@ class CrudApiStack(Stack):
                 "COGNITO_APP_CLIENT_ID": cognito_client_id,
                 "ALLOWED_ORIGINS": ",".join(allowed_origins),
                 "LOG_LEVEL": "INFO",
+                # No cache, and no way to reach one: this function has neither a
+                # Redis nor a DynamoDB table. None of its routes touch short-term
+                # memory today, but the default is `redis` on localhost, so the
+                # day one of them does it would spend the connect timeout on
+                # every call before degrading. Saying so costs nothing.
+                "STM_BACKEND": "none",
                 # The embedding model is never loaded on this path, but the
                 # environment is set anyway: if an import ever does reach
                 # sentence-transformers, it should fail offline rather than
