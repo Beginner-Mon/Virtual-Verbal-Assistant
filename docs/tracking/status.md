@@ -36,12 +36,34 @@
   - ⚠️ DSN N nhận được là **pooled**; đã đổi sang direct trước khi ghi vào `.env`.
     Pooled vẫn connect được nên rất dễ dùng nhầm — nó chỉ hỏng khi asyncpg cần
     prepared statement, tức hỏng lúc chạy thật chứ không hỏng lúc test.
-  - ⚠️ **RLS (`007_rls`) đang ENABLED nhưng VÔ TÁC DỤNG — N chốt 19/08 không dùng.**
-    App vẫn kết nối bằng `neondb_owner`, mà postgres miễn trừ owner khỏi chính
-    policy của bảng. `\d+` liệt kê đầy đủ policy ⇒ **người đọc schema sẽ tưởng có
-    bảo vệ**. 3 error của `test_rls_policies.py` là báo cáo đúng, không phải test
-    hỏng — nó từ chối pass rỗng. Muốn dọn: xin password `eca_user`, hoặc
-    `alembic downgrade` 007. Worklog 19/08 phần C.
+  - ✅ **RLS (`007_rls`) ĐANG CÓ HIỆU LỰC THẬT — đo lại 22/08.**
+    > ~~Mục cũ ghi "ENABLED nhưng VÔ TÁC DỤNG, app vẫn kết nối bằng
+    > `neondb_owner`". **Đã lạc hậu và gây hiểu nhầm nguy hiểm** — nó nói với
+    > người đọc rằng không có bảo vệ, trong khi bảo vệ đang bật và đang chặn
+    > code cũ.~~
+
+    Đo bằng `has_table_privilege` + `pg_class.relacl`, không phải suy đoán:
+
+    | Ai kết nối | Dùng ở đâu | Quyền |
+    |---|---|---|
+    | `eca_user` | `dsn-pooler` → vva-crud-api, vva-agent | RW 6 bảng user, RO `characters`/`kb_embeddings`/`documents`, **không có gì** trên `alembic_version` |
+    | `vva_lambda_ro` | `dsn` (direct) → vva-characters | **đúng MỘT quyền**: `characters:SELECT` |
+
+    Không role nào có `superuser`, `bypassrls`, `createdb`, `createrole`.
+    `neondb_owner` chỉ là **chủ bảng**, không phải danh tính kết nối.
+
+    6 bảng dữ liệu người dùng (`users`, `conversations`, `messages`,
+    `summaries`, `user_memory`, `billing_accounts`) đều bật RLS, policy `ALL`
+    có cả `USING` lẫn `WITH CHECK` ⇒ không đọc **và** không ghi được sang
+    người khác. Policy cố ý **không** truyền `missing_ok`, nên query ngoài
+    `user_scope` báo lỗi thay vì trả rỗng — fail-closed.
+
+    ⚠️ **Bẫy chẩn đoán, mất một vòng điều tra mới ra**: trên bảng có RLS,
+    thiếu `app.user_id` raise `unrecognized configuration parameter` **trước
+    khi** vòng kiểm quyền kịp báo. Nên cùng thông báo đó có thể là *"chưa
+    scope"* **hoặc** *"role không có quyền gì trên bảng này"* — nó không phân
+    biệt được. Bảng không RLS (`kb_embeddings`) mới nói đúng `permission
+    denied`.
 - **Git**: HEAD `2991b4a`, đã push, working tree sạch. `agentic_rag_gemini` **đã
   xoá** — 71 file / 46 MB. CI thay entry "AgenticRAG Gemini" bằng
   **"LangGraph Service"**: trước đó CI kiểm cái đã bị thay thế, không kiểm cái
