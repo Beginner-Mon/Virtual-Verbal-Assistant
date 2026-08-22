@@ -139,6 +139,48 @@ class RestApiStack(Stack):
             ),
         )
 
+        # ── Gateway responses: make auth failures legible ───────────────
+        #
+        # Without these, a rejected token is reported to the user as a CORS
+        # error. That is not a metaphor — it happened on 22-08:
+        #
+        #     Access to XMLHttpRequest at '.../v1/sessions/<id>' ... has been
+        #     blocked by CORS policy: No 'Access-Control-Allow-Origin' header
+        #     is present on the requested resource.
+        #
+        # while the actual response was a perfectly ordinary
+        # 401 UnauthorizedException. API Gateway builds these responses ITSELF,
+        # before any integration runs, so FastAPI's CORS middleware never
+        # executes and the header is simply absent. The browser then blames CORS,
+        # and whoever is debugging goes looking at origins instead of at tokens.
+        #
+        # '*' rather than the caller's origin, and for a stated reason: the
+        # gateway constructs these before it has looked at the request, so there
+        # is no origin to reflect. It is safe for exactly these responses —
+        # 4XX/5XX shells carrying no user data — and this API authenticates with
+        # an Authorization header rather than cookies, so no credentialed request
+        # is widened by it. Same reasoning, same wording, as the Amplify auth API
+        # in ECA_UI/frontend/amplify/backend.ts, which solved this first.
+        #
+        # DEFAULT_4XX and DEFAULT_5XX rather than only UNAUTHORIZED: throttling
+        # (429) is built the same way, and the stage throttle here is 5 rps — so
+        # the first burst would otherwise also arrive dressed as a CORS failure.
+        _cors_headers = {
+            "Access-Control-Allow-Origin": "'*'",
+            "Access-Control-Allow-Headers": "'Content-Type,Authorization'",
+        }
+        for name, response_type in (
+            ("Unauthorized", apigw.ResponseType.UNAUTHORIZED),
+            ("AccessDenied", apigw.ResponseType.ACCESS_DENIED),
+            ("Default4xx", apigw.ResponseType.DEFAULT_4_XX),
+            ("Default5xx", apigw.ResponseType.DEFAULT_5_XX),
+        ):
+            self.api.add_gateway_response(
+                f"{name}Response",
+                type=response_type,
+                response_headers=_cors_headers,
+            )
+
         # ── Authorizer ──────────────────────────────────────────────────
         # Built over the SAME pool the CRUD function verifies against — the id is
         # passed in from CrudApiStack rather than read from context twice, because
