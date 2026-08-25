@@ -12,6 +12,7 @@ import type { Message } from '../components/ChatMessage'
 import { getSession, listSessions, deleteSession, streamChat, type SessionMessage } from '../lib/api'
 import { useMotion } from './MotionContext'
 import { uiStringsFor, FALLBACK_UI_STRINGS, type UiStrings } from '../lib/characterCopy'
+import { useAudioRecorder } from '../hooks/useAudioRecorder'
 
 /** Key holding the *pointer* to the conversation, never the conversation.
  *
@@ -92,6 +93,15 @@ export interface ChatContextType {
   switchToSession: (sessionId: string) => Promise<void>
   deleteSessionAction: (sessionId: string) => Promise<void>
   markSessionsClean: () => void
+  // Audio recording (frontend only, click toggle)
+  isRecording: boolean
+  recordingDuration: number
+  recordingError: string | null
+  previewAudioUrl: string | null
+  startRecord: () => Promise<void>
+  stopRecord: () => void
+  cancelRecord: () => void
+  sendAudio: () => void
 }
 
 const ChatContext = createContext<ChatContextType | null>(null)
@@ -126,6 +136,31 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [sessionList, setSessionList] = useState<SessionItem[]>([])
   const [sessionsDirty, setSessionsDirty] = useState(true)
   const switchingRef = useRef(false)
+
+  // Audio recording — frontend only (no backend)
+  const { isRecording, duration: recordingDuration, audioUrl: previewAudioUrl, audioBlob: previewAudioBlob, error: recordingError, start: startRecord, stop: stopRecord, cancel: cancelRecord } = useAudioRecorder()
+
+  const sendAudio = useCallback(() => {
+    if (!previewAudioBlob || !previewAudioUrl) return
+    const url = URL.createObjectURL(previewAudioBlob)
+    const msg: Message = {
+      id: crypto.randomUUID(),
+      role: 'user',
+      content: '',
+      timestamp: new Date(),
+      audioUrl: url,
+    }
+    setMessages((prev) => [...prev, msg])
+    // clear preview but keep sent message url
+    // useAudioRecorder's cancel would revoke previewUrl — do it manually
+    // we already created a new url for the message, so revoke preview
+    URL.revokeObjectURL(previewAudioUrl)
+    // reset recorder preview (call cancel without revoking again)
+    // hack: clear via internal state by calling cancel then restoring? simpler: just let hook clear on next start
+    // Instead, we manually clear by calling cancel and then set new preview to null via effect
+    // For now, just clear preview url via hook's cancel (will revoke again harmlessly if already revoked)
+    cancelRecord()
+  }, [previewAudioBlob, previewAudioUrl, cancelRecord])
 
   const inputRef = useRef(input)
   inputRef.current = input
@@ -490,8 +525,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       switchToSession,
       deleteSessionAction,
       markSessionsClean,
+      isRecording,
+      recordingDuration,
+      recordingError,
+      previewAudioUrl,
+      startRecord,
+      stopRecord,
+      cancelRecord,
+      sendAudio,
     }),
-    [messages, input, isTyping, isGenerating, stageLabel, ui, webSearch, voiceReply, isRestoring, startNewSession, handleSend, handleStop, imageUrls, addImage, removeImage, sessionList, sessionsDirty, activeSessionId, refreshSessions, switchToSession, deleteSessionAction, markSessionsClean],
+    [messages, input, isTyping, isGenerating, stageLabel, ui, webSearch, voiceReply, isRestoring, startNewSession, handleSend, handleStop, imageUrls, addImage, removeImage, sessionList, sessionsDirty, activeSessionId, refreshSessions, switchToSession, deleteSessionAction, markSessionsClean, isRecording, recordingDuration, recordingError, previewAudioUrl, startRecord, stopRecord, cancelRecord, sendAudio],
   )
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>

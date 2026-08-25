@@ -65,9 +65,16 @@ export default function ChatMessage({ message, isStreaming }: ChatMessageProps) 
   return (
     <div className="group flex px-2 md:px-4 py-0.5 md:py-1 animate-message-in flex-row-reverse w-full max-w-full">
       <div className="w-fit max-w-[80%]">
-        <div className="min-w-0 rounded-2xl px-2.5 md:px-3 py-1 md:py-2 text-[clamp(0.75rem,0.68rem+0.3vw,0.875rem)] leading-relaxed bg-primary text-primary-foreground">
-          <p className="whitespace-pre-wrap break-words">{message.content}</p>
-        </div>
+        {(message.content || !message.audioUrl) && (
+          <div className="min-w-0 rounded-2xl px-2.5 md:px-3 py-1 md:py-2 text-[clamp(0.75rem,0.68rem+0.3vw,0.875rem)] leading-relaxed bg-primary text-primary-foreground">
+            <p className="whitespace-pre-wrap break-words">{message.content}</p>
+          </div>
+        )}
+        {message.audioUrl && (
+          <div className="mt-1 rounded-xl overflow-hidden bg-secondary/40 p-1">
+            <audio controls src={message.audioUrl} className="w-full h-8" preload="metadata" />
+          </div>
+        )}
         <UserCopyAction content={message.content} />
       </div>
     </div>

@@ -26,6 +26,14 @@ export default function ChatPanel() {
     imageUrls,
     addImage,
     removeImage,
+    isRecording,
+    recordingDuration,
+    recordingError,
+    previewAudioUrl,
+    startRecord,
+    stopRecord,
+    cancelRecord,
+    sendAudio,
   } = useChat()
 
   const [showAddMenu, setShowAddMenu] = useState(false)
@@ -216,12 +224,27 @@ export default function ChatPanel() {
               </div>
             )}
 
+            {isRecording && (
+              <span className="text-xs text-destructive animate-pulse">● {String(Math.floor(recordingDuration / 60)).padStart(2, '0')}:{String(recordingDuration % 60).padStart(2, '0')}</span>
+            )}
+            {recordingError && (
+              <span className="text-xs text-destructive truncate max-w-[120px]" title={recordingError}>{recordingError}</span>
+            )}
+            {previewAudioUrl && !isRecording && (
+              <div className="flex items-center gap-1">
+                <audio controls src={previewAudioUrl} className="h-8 w-32" />
+                <button onClick={sendAudio} className="px-2 py-1 text-xs bg-primary text-primary-foreground rounded-lg">Gửi</button>
+                <button onClick={cancelRecord} className="px-2 py-1 text-xs border rounded-lg">Hủy</button>
+              </div>
+            )}
+
             <div className="flex-1" />
 
             <div className="flex items-center gap-1">
               <button
-                title="Record audio"
-                className="p-2 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                title={isRecording ? 'Dừng ghi' : 'Ghi âm'}
+                onClick={() => (isRecording ? stopRecord() : void startRecord())}
+                className={`p-2 rounded-lg transition-colors ${isRecording ? 'bg-destructive text-destructive-foreground animate-pulse' : 'text-muted-foreground hover:text-foreground hover:bg-secondary/60'}`}
                 disabled={isGenerating}
               >
                 <Mic className="w-5 h-5" />

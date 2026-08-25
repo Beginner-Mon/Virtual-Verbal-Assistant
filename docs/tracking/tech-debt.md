@@ -13,6 +13,7 @@
 > `docs/worklogs/05-08-2026.md`.
 
 Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng · 🟡 nên làm · ⚪ optional
+> **Frontend 25/08:** 6 task đã tách ra `docs/tracking/frontend-tasks.md` (gọn hơn, có priority/difficulty) — branch `feature/frontend-fixes`.
 
 ---
 
