@@ -22,6 +22,12 @@ outputs/
 logs/
 *.npz
 
+# Unitree G1 robot meshes (52 MB) — read only by kimodo/exports/mujoco.py and
+# kimodo/scripts/mujoco_load.py, both of which import `mujoco`, which is in no
+# requirements file. Production serves Kimodo-SMPLX-RP-v1. The joint definitions and
+# MuJoCo XML stay; only the meshes go.
+kimodo/assets/skeletons/g1skel34/meshes/
+
 # VS Code / IDE
 .vscode/
 .idea/

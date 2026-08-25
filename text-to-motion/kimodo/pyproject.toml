@@ -57,6 +57,16 @@ zip-safe = false
 [tool.setuptools.package-data]
 kimodo = ["assets/**/*"]
 
+# The Unitree G1 STL meshes are 52 MB and are read only by the MuJoCo exporter, whose
+# `mujoco` import is in no requirements file. Excluding them here matters because the
+# production image installs kimodo as a real wheel — without this, `assets/**/*` above
+# would pull them back in and undo the .dockerignore entry.
+[tool.setuptools.exclude-package-data]
+kimodo = [
+  "assets/skeletons/g1skel34/meshes/*",
+  "assets/skeletons/g1skel34/meshes/**/*",
+]
+
 [tool.flake8]
 max-line-length = 120
 

@@ -15,7 +15,15 @@ env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: kimodo
   AWS_ACCOUNT_ID: "244203483654"
-  BASE_TAG: v1
+  # v2 is required, not merely preferred: Dockerfile.prod now installs kimodo as a wheel
+  # and relies on the v2 base for the boto3-based entrypoint and for setuptools being
+  # present in the venv. Building against v1 produces an image that starts and then fails
+  # to find its skeleton assets.
+  #
+  # ORDER MATTERS: run build-kimodo-base.yml (workflow_dispatch, base_tag v2) and verify
+  # that image BEFORE merging anything to kimodo-release, or this job races a base that
+  # does not exist yet.
+  BASE_TAG: v2
 
 jobs:
   build-and-push:

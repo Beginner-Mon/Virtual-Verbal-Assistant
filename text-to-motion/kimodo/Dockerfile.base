@@ -20,51 +20,75 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python3.10 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-RUN pip install -U pip setuptools wheel uv
+# setuptools + wheel stay in the venv on purpose: Dockerfile.prod builds the kimodo
+# wheel with --no-build-isolation, which needs them already present.
+RUN pip install -U pip setuptools wheel
 
-# Copy requirements, metadata, and source code (needed for local package installs)
-COPY docker_requirements_prod.in setup.py pyproject.toml /workspace/
-COPY kimodo /workspace/kimodo
+# This image is deps only — kimodo itself is installed by Dockerfile.prod. Only the
+# lockfile and the C++ extension source are needed here.
+COPY docker_requirements_prod.txt /workspace/
 COPY MotionCorrection /workspace/MotionCorrection
 
-# Compile requirements using uv and install heavy 3rd-party dependencies FIRST
-RUN uv pip compile docker_requirements_prod.in -o docker_requirements_prod.txt \
-    && pip install --no-cache-dir -r docker_requirements_prod.txt --extra-index-url https://download.pytorch.org/whl/cu124
+# Third-party deps come from the committed lockfile, resolved ahead of time by
+# `python kimodo/scripts/lock_requirements.py --prod`. --no-deps makes that lockfile the
+# only authority: nothing is resolved at build time, so rebuilding a given base tag
+# reproduces that tag instead of silently drifting onto newer versions.
+RUN pip install --no-cache-dir --no-deps -r docker_requirements_prod.txt \
+      --extra-index-url https://download.pytorch.org/whl/cu124
 
-# Compile C++ MotionCorrection
-RUN SKIP_MOTION_CORRECTION_IN_SETUP=1 pip install ./MotionCorrection
+# Compile C++ MotionCorrection (pybind11 + Eigen; no CUDA involved). --no-deps matters:
+# its install_requires says `torch>=1.10.0` with no index pin, so a resolving install
+# could drag a second multi-GB torch down from plain PyPI. torch and numpy are already
+# satisfied by the lockfile above.
+RUN pip install --no-cache-dir --no-deps ./MotionCorrection
 
 # Verify MotionCorrection compiled correctly
 RUN python3.10 -c "import motion_correction; print('MotionCorrection OK')"
 
+# Drop what only a compiler needs. C++ headers and static archives are never opened at
+# runtime; every .so is left untouched.
+RUN SP=/opt/venv/lib/python3.10/site-packages \
+ && rm -rf "$SP/torch/include" "$SP/torch/test" \
+ && find /opt/venv -name '*.a' -delete
+
 # ==========================================
 # STAGE 2: RUNTIME
 # ==========================================
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+# `-base`, not `-runtime`. The torch cu124 wheels bundle their own cuBLAS / cuDNN /
+# cuFFT / cuSOLVER / cuSPARSE under site-packages/nvidia and load those via
+# torch._load_global_deps, so the copies inside the `-runtime` image were 1.37 GB
+# (compressed) of libraries nothing ever dlopen'd. The CUDA driver still comes from the
+# host through nvidia-container-runtime, and NVIDIA_VISIBLE_DEVICES /
+# NVIDIA_DRIVER_CAPABILITIES are set by this image exactly as they were by `-runtime`.
+FROM nvidia/cuda:12.4.1-base-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1
 
 WORKDIR /workspace
 
-# Install minimal runtime dependencies + AWS CLI for S3 syncing
+# python3.10 backs the venv. curl is NOT optional: the ECS container health check is
+# `curl -sS -o /dev/null http://localhost:8000/mcp` (infra/infra/kimodo_ecs_stack.py),
+# so dropping it would leave the task permanently unhealthy. S3 syncing now goes
+# through boto3 in the venv, so there is no AWS CLI here.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3.10 python3-venv curl unzip \
-    && curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" \
-    && unzip awscliv2.zip && ./aws/install && rm -rf aws awscliv2.zip \
+      python3.10 curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy pre-built Python environment and source code
+# Copy the pre-built Python environment. No source tree is copied: kimodo lands in
+# exactly one place, and that place is Dockerfile.prod.
 COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /workspace /workspace
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Quick smoke test for shared libraries
+# Smoke test for shared libraries. The torch import is what proves the `-base` image
+# still carries everything torch needs; a CUDA matmul cannot run at build time (no GPU)
+# and is checked on ECS instead.
 RUN ldd /opt/venv/lib/python3.10/site-packages/motion_correction/*.so \
-    && python3.10 -c "import torch; import kimodo; print('Runtime OK')"
+    && python3.10 -c "import torch; import motion_correction; print('Runtime OK')"
 
 # Configure entrypoint script
 COPY scripts/inference-entrypoint.sh /usr/local/bin/inference-entrypoint
+COPY scripts/s3_sync.py /usr/local/bin/s3_sync.py
 RUN chmod +x /usr/local/bin/inference-entrypoint
 
 EXPOSE 8000

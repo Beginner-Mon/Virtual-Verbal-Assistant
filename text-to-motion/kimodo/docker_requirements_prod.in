@@ -1,10 +1,22 @@
 #
-# Production inference dependencies for Kimodo MCP Server.
-# Compile: uv pip compile docker_requirements_prod.in -o docker_requirements_prod.txt
+# Production inference dependencies for Kimodo MCP Server — third-party only.
 #
-# NOTE: torch is listed here because we use a minimal CUDA runtime base image
-# instead of the NGC PyTorch image. Install with:
-#   pip install -r docker_requirements_prod.txt --extra-index-url https://download.pytorch.org/whl/cu124
+# Compile the lockfile (do NOT run `uv pip compile` by hand — the pinned versions must
+# be resolved against the PyTorch index and for linux/py3.10, not for whatever machine
+# you happen to be on):
+#   python kimodo/scripts/lock_requirements.py --prod
+#
+# That writes `docker_requirements_prod.txt`, which IS committed and IS what
+# Dockerfile.base installs (with --no-deps, so the lockfile is the only authority).
+#
+# NOTE: torch is listed here because prod uses a minimal CUDA base image instead of the
+# NGC PyTorch image, so nothing else supplies it. Its cu124 wheels bundle their own
+# cuBLAS/cuDNN/cuFFT under site-packages/nvidia — that is why the runtime stage can sit
+# on `nvidia/cuda:...-base` rather than `...-runtime`.
+#
+# Local packages (`./MotionCorrection`, `.`) are deliberately NOT listed here. They are
+# built explicitly in Dockerfile.base — MotionCorrection needs a C++ toolchain, and
+# kimodo is built as a wheel rather than installed editable.
 #
 
 # PyTorch
@@ -22,7 +34,7 @@ scipy>=1.10,<2
 transformers==5.1.0
 urllib3>=2.6.3
 boto3
-peft>=0.12
+peft>=0.18
 einops>=0.7
 
 # Misc
@@ -33,7 +45,3 @@ filelock>=3.20.3
 
 # MCP Server
 fastmcp>=3.0
-
-# Local packages
-./MotionCorrection
--e .

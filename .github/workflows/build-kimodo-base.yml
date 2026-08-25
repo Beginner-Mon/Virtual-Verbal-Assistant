@@ -5,17 +5,20 @@ on:
     branches:
       - kimodo-release
     paths:
+      # setup.py / pyproject.toml are no longer triggers: the base image is deps only.
+      # kimodo itself is built as a wheel by Dockerfile.prod, so package metadata
+      # changes belong to the production build.
       - 'text-to-motion/kimodo/docker_requirements_prod.in'
-      - 'text-to-motion/kimodo/setup.py'
-      - 'text-to-motion/kimodo/pyproject.toml'
+      - 'text-to-motion/kimodo/docker_requirements_prod.txt'
       - 'text-to-motion/kimodo/MotionCorrection/**'
+      - 'text-to-motion/kimodo/scripts/**'
       - 'text-to-motion/kimodo/Dockerfile.base'
   workflow_dispatch:
     inputs:
       base_tag:
         description: 'Base image tag (e.g. v1, v2)'
         required: false
-        default: 'v1'
+        default: 'v2'
 
 permissions:
   id-token: write
@@ -25,7 +28,7 @@ env:
   AWS_REGION: us-east-1
   ECR_REPOSITORY: kimodo-base
   AWS_ACCOUNT_ID: "244203483654"
-  BASE_TAG: ${{ github.event.inputs.base_tag || 'v1' }}
+  BASE_TAG: ${{ github.event.inputs.base_tag || 'v2' }}
 
 jobs:
   build-and-push:

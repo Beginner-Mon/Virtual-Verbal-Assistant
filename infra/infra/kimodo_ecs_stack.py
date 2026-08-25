@@ -136,10 +136,10 @@ class KimodoEcsStack(Stack):
             memory_mib="12288",
         )
 
-        task_def.add_volume(
-            name="smplx-vol",
-            host=ecs.Host(source_path="/root/kimodo/assets/skeletons/smplx22"),
-        )
+        # smplx-vol đã bỏ: kimodo giờ cài dạng wheel nên assets nằm trong site-packages,
+        # không còn ở /workspace/kimodo — mount host volume đè lên một đường dẫn bên
+        # trong package là chuyện dễ vỡ. smplx22 chỉ 12 KB và entrypoint vẫn sync từ S3
+        # mỗi lần khởi động, nên S3 là nguồn sự thật duy nhất.
         task_def.add_volume(
             name="hf-cache-vol",
             host=ecs.Host(source_path="/mnt/instance-store/huggingface"),
@@ -182,11 +182,6 @@ class KimodoEcsStack(Stack):
         )
 
         container.add_mount_points(
-            ecs.MountPoint(
-                container_path="/workspace/kimodo/assets/skeletons/smplx22",
-                source_volume="smplx-vol",
-                read_only=False,
-            ),
             ecs.MountPoint(
                 container_path="/workspace/.cache/huggingface",
                 source_volume="hf-cache-vol",

@@ -3,12 +3,33 @@ FROM 244203483654.dkr.ecr.us-east-1.amazonaws.com/kimodo-base:${BASE_TAG}
 
 ENV PYTHONUNBUFFERED=1
 
-WORKDIR /workspace
+WORKDIR /build
 
-COPY kimodo /workspace/kimodo
+# Package metadata needed to build the wheel. README.md is not optional — pyproject.toml
+# declares `readme = "README.md"`, so the build fails without it.
+COPY setup.py pyproject.toml MANIFEST.in README.md /build/
+COPY kimodo /build/kimodo
+
+# Install kimodo as a real (non-editable) wheel.
+#   SKIP_MOTION_CORRECTION_IN_SETUP=1 -> setup.py takes the pure-Python branch, so no
+#     CMake extension is built. The base runtime image has no compiler, and it does not
+#     need one: motion_correction is already installed there as a compiled wheel.
+#   --no-build-isolation -> uses the setuptools/wheel already in the venv instead of
+#     downloading a build env, which keeps this build offline and fast.
+#   --no-deps -> every dependency is already pinned and installed by the base image.
+RUN SKIP_MOTION_CORRECTION_IN_SETUP=1 \
+    pip install --no-cache-dir --no-build-isolation --no-deps . \
+ && rm -rf /build
+
+WORKDIR /workspace
 COPY mcp_server.py /workspace/mcp_server.py
 
-RUN SKIP_MOTION_CORRECTION_IN_SETUP=1 pip install -e /workspace --no-deps
+# Prove the package imports and that its assets came along in the wheel. Cheap here,
+# and it fails the build instead of failing a g5.xlarge at 3am.
+RUN python -c "\
+import kimodo; from kimodo.assets import SKELETONS_ROOT; \
+assert (SKELETONS_ROOT / 'smplx22').is_dir(), SKELETONS_ROOT; \
+print('kimodo OK:', SKELETONS_ROOT)"
 
 EXPOSE 8000
 ENTRYPOINT ["inference-entrypoint"]
