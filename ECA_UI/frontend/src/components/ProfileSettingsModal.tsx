@@ -14,12 +14,14 @@ interface ProfileSettingsModalProps {
   onBack?: () => void
 }
 
+const ROOT_VIEW = 'main' as const
+
 export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileSettingsModalProps) {
-  const [settingsView, setSettingsView] = useState<'main' | 'providers' | 'provider-detail' | 'graphics' | 'about'>('main')
+  const [settingsView, setSettingsView] = useState<'main' | 'providers' | 'provider-detail' | 'graphics' | 'about'>(ROOT_VIEW)
   const [selectedProvider, setSelectedProvider] = useState<{ id: string; name: string } | undefined>()
 
   useEffect(() => {
-    setSettingsView('main')
+    setSettingsView(ROOT_VIEW)
     setSelectedProvider(undefined)
   }, [type])
 
@@ -44,9 +46,9 @@ export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileS
       setSettingsView('providers')
       setSelectedProvider(undefined)
     } else if (type === 'settings' && settingsView === 'providers') {
-      setSettingsView('main')
+      setSettingsView(ROOT_VIEW)
     } else if (settingsView === 'graphics' || settingsView === 'about') {
-      setSettingsView('main')
+      setSettingsView(ROOT_VIEW)
     } else {
       onBack ?? onClose()
     }
@@ -87,12 +89,15 @@ export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileS
 
       <div className="relative w-full max-w-2xl md:max-w-none h-full md:w-[900px] md:h-[600px] bg-card md:rounded-2xl border border-border/50 border-b-0 md:border-b shadow-[0_-8px_40px_rgba(0,0,0,0.4)] md:shadow-[0_32px_80px_rgba(0,0,0,0.5)] animate-slide-up md:animate-panel-in flex flex-col overflow-hidden">
         <div className="flex items-center gap-2 px-4 py-3 border-b border-border/40 shrink-0">
-          <button
-            onClick={handleBack}
-            className="p-1.5 -ml-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors"
-          >
-            <ChevronLeft className="w-5 h-5" />
-          </button>
+          {type === 'settings' && settingsView !== ROOT_VIEW && (
+            <button
+              onClick={handleBack}
+              className="p-1.5 -ml-1 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors"
+              aria-label="Back"
+            >
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+          )}
           <h2 className="text-base font-semibold text-foreground flex-1">{title}</h2>
           <button
             onClick={onClose}
