@@ -155,14 +155,6 @@ export function MotionProvider({ children }: { children: ReactNode }) {
   const [currentState, setCurrentState] = useState<CharState>('idle')
   const registryRef = useRef<AnimationRegistry | null>(null)
   const avatarRef = useRef<AvatarController | null>(null)
-  // B1: session-only visited set — page refresh clears it (no localStorage)
-  const visitedRef = useRef<Set<string>>(new Set())
-  // B1 fast-switch guard: track which slug the current controller belongs to
-  const attachedIdRef = useRef<string>('')
-  const selectedVrmIdRef = useRef(selectedVrmId)
-  useEffect(() => {
-    selectedVrmIdRef.current = selectedVrmId
-  }, [selectedVrmId])
 
   // Outlives model swaps: camera framing is a property of the FSM state, not of
   // the loaded VRM.
@@ -173,8 +165,6 @@ export function MotionProvider({ children }: { children: ReactNode }) {
     (controller: AnimationController, registry: AnimationRegistry) => {
       setAnimController(controller)
       registryRef.current = registry
-      // Capture which slug this controller belongs to for fast-switch guard
-      attachedIdRef.current = selectedVrmIdRef.current
       setCurrentState(controller.currentState)
 
       const off = controller.on('stateChanged', (state) => {
@@ -186,11 +176,6 @@ export function MotionProvider({ children }: { children: ReactNode }) {
         off()
         setAnimController((prev) => (prev === controller ? null : prev))
         if (registryRef.current === registry) registryRef.current = null
-        if (attachedIdRef.current === selectedVrmIdRef.current) {
-          // Only clear if this detach is for the current slug; otherwise a newer
-          // controller has already taken over (fast switch).
-          // We keep the latest attached id so the effect can detect stale controller.
-        }
       }
     },
     [cameraController],
@@ -213,45 +198,6 @@ export function MotionProvider({ children }: { children: ReactNode }) {
     async (state: CharState) => (await animController?.transitionTo(state)) ?? false,
     [animController],
   )
-
-  // Plan B1: greeting only once per VRM selection (session only, not localStorage)
-  // - When slug selected first time → transitionTo('greeting') once
-  // - Selecting same slug again → no greeting
-  // - Refresh → greeting again (visitedRef is in-memory)
-  // Guards: only if isCompatible(character) && animController ready && not already greeting
-  // Edges: StrictMode double-mount (visited.add before await), fast switching
-  //        (registry url mismatch), null controller, incompatible models
-  useEffect(() => {
-    if (!selectedVrmId) return
-    if (!animController) return
-    if (visitedRef.current.has(selectedVrmId)) return
-    if (currentState === 'greeting') {
-      // Already greeting (e.g., boot or concurrent effect) — mark visited and skip
-      visitedRef.current.add(selectedVrmId)
-      return
-    }
-
-    const option = vrmOptions.find((o) => o.id === selectedVrmId)
-    if (!option) return
-    if (option.character && !isCompatible(option.character)) return
-
-    // Fast-switch guard: controller still belongs to previous VRM
-    // Window exists between setSelectedVrmId and new VRMCharacter mounting.
-    // attachedIdRef is set synchronously in attachControllers for the new model.
-    if (attachedIdRef.current !== selectedVrmId) return
-    if (!registryRef.current) return
-
-    // StrictMode guard: mark before async so second invoke sees visited
-    visitedRef.current.add(selectedVrmId)
-
-    void (async () => {
-      try {
-        await transitionTo('greeting')
-      } catch {
-        // transitionTo never throws; defensive
-      }
-    })()
-  }, [selectedVrmId, animController, currentState, transitionTo, vrmOptions])
 
   const playMotionFile = useCallback(
     async (url: string) => {
