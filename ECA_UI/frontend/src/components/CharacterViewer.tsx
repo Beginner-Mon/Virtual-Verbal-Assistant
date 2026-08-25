@@ -572,7 +572,7 @@ return (
 
 export default function CharacterViewer() {
   const { theme } = useTheme()
-  const { selectedVrmId, vrmOptions, vrmOptionsError, avatarRef, setClipInfo } = useMotion()
+  const { selectedVrmId, vrmOptions, vrmOptionsError, avatarRef, setClipInfo, currentState } = useMotion()
 
   const selectedVrm = vrmOptions.find((o) => o.id === selectedVrmId)
   // No local fallback any more: the models live on the CDN, so until the
@@ -621,7 +621,10 @@ export default function CharacterViewer() {
   }
 
   // Feed normalized mouse position to the avatar's eye gaze (§4.2 / EyeController).
+  // Suppressed during the greeting animation so the model performs its scripted
+  // wave without being pulled toward the cursor.
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (currentState === 'greeting') return
     const controller = avatarRef.current
     if (!controller) return
     const rect = e.currentTarget.getBoundingClientRect()

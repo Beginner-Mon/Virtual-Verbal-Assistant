@@ -39,6 +39,7 @@ from fastapi.responses import JSONResponse
 from langgraph_agents.api.auth import current_user_id, verify_auth_config
 from langgraph_agents.api.billing import router as billing_router
 from langgraph_agents.api.crud_app import add_cors
+from langgraph_agents.api.routes_characters import router as characters_router
 from langgraph_agents.api.routes_crud import router as crud_router
 from langgraph_agents.api.schemas import (
     ChatRequest, TTSRequest, TTSTaskResponse,
@@ -185,6 +186,7 @@ def create_app() -> FastAPI:
     # The session and user-memory routes, defined once in routes_crud.py and
     # served here as well as by the CRUD Lambda. Mounting the same router is
     # what keeps local development exercising the code that gets deployed.
+    application.include_router(characters_router)
     application.include_router(crud_router)
 
     @application.get("/health")

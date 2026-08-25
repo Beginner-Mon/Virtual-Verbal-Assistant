@@ -150,9 +150,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
    * persisted. */
   useEffect(() => {
     setMessages((prev) => {
-      if (prev.length !== 1 || prev[0].id !== GREETING_ID) return prev
+      if (prev.length === 0 || prev[0].id !== GREETING_ID) return prev
       if (prev[0].content === ui.greeting) return prev
-      return [{ ...prev[0], content: ui.greeting }]
+      return [{ ...prev[0], content: ui.greeting }, ...prev.slice(1)]
     })
   }, [ui])
 
@@ -185,8 +185,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         const data = await getSession(sessionIdRef.current)
         const history = (data?.messages ?? []) as SessionMessage[]
         if (cancelled || history.length === 0) return
-        setMessages(
-          history.map((m, i) => ({
+        setMessages([
+          // The greeting is always the first message — it is not persisted in
+          // the backend, so we prepend it client-side on every restore.
+          ...buildInitialMessages(uiRef.current),
+          ...history.map((m, i) => ({
             id: `restored-${i}`,
             role: m.role,
             content: m.content,
@@ -194,7 +197,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             // Audio is not persisted — the WAV lives on the TTS box under a
             // random name. The per-message speaker button can re-synthesise it.
           })),
-        )
+        ])
       } catch (e) {
         const status = (e as { response?: { status?: number } }).response?.status
         if (status !== 404) console.warn('[session] restore failed:', e)
@@ -265,14 +268,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       endThinking()
 
       if (history.length > 0) {
-        setMessages(
-          history.map((m, i) => ({
+        setMessages([
+          // Prepend the greeting — it is not stored in the backend.
+          ...buildInitialMessages(uiRef.current),
+          ...history.map((m, i) => ({
             id: `switched-${i}`,
             role: m.role,
             content: m.content,
             timestamp: new Date(m.timestamp),
-          }))
-        )
+          })),
+        ])
       } else {
         setMessages(buildInitialMessages(uiRef.current))
       }

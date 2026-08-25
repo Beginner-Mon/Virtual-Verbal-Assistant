@@ -50,7 +50,7 @@ function resolve(name: string, value: string | undefined, fallback: string): str
 export const API_GATEWAY: string = resolve(
   'VITE_API_GATEWAY_URL',
   import.meta.env.VITE_API_GATEWAY_URL as string | undefined,
-  'http://localhost:8001'
+  'http://localhost:8000'
 )
 
 /** The .vrm files only. Output `AssetBaseUrl` of VvaAssetStack. */

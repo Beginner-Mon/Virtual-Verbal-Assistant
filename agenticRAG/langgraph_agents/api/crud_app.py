@@ -26,6 +26,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from langgraph_agents.api.auth import verify_auth_config
+from langgraph_agents.api.routes_characters import router as characters_router
 from langgraph_agents.api.routes_crud import router as crud_router
 from langgraph_agents.shared import get_pg_client
 from langgraph_agents.shared.env import env_source
@@ -89,6 +90,7 @@ async def _lifespan(_: FastAPI):
 def create_crud_app() -> FastAPI:
     application = FastAPI(title="VVA CRUD API", lifespan=_lifespan)
     add_cors(application)
+    application.include_router(characters_router)
     application.include_router(crud_router)
 
     @application.get("/health")
