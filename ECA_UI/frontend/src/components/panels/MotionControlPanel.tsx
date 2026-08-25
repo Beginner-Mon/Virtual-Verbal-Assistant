@@ -1,12 +1,10 @@
-import { Play, Pause, RotateCcw, Activity, Sliders, Camera, Sparkles, Smile } from 'lucide-react'
-import { useEffect, useRef, useState, useMemo } from 'react'
+import { Activity, Sliders, Camera, Smile, Lock } from 'lucide-react'
+import { useEffect, useState, useMemo } from 'react'
 import { ScrollArea } from '../ui/scroll-area'
 import { useMotion } from '../../contexts/MotionContext'
 import type { CharState } from '../../lib/AnimationStates'
 import { CANONICAL_EMOTIONS, type CanonicalEmotion } from '../../avatar/AvatarProfile'
 import { getManifest } from '../../avatar/vrmManifest'
-import { ensureAudioContext, playSyntheticSpeech, playWavSpeech, type SyntheticSpeech } from '../../avatar/lipSyncAudio'
-import testWavUrl from '../../asset/audio/test.wav'
 import { DEFAULT_CAMERA_CONFIG } from '../../lib/CameraConfig'
 
 const PRESET_TO_CANONICAL: Record<string, CanonicalEmotion> = {
@@ -27,12 +25,6 @@ export default function MotionControlPanel() {
     stateOptions,
     playMotionFile,
     motionFileOptions,
-    isPlaying,
-    setIsPlaying,
-    speed,
-    setSpeed,
-    clipInfo,
-    handleReset,
     avatarRef,
     selectedVrmId,
     vrmOptions,
@@ -68,9 +60,14 @@ export default function MotionControlPanel() {
   const [emotionDurationMs, setEmotionDurationMs] = useState(500)
   const [lastEmotion, setLastEmotion] = useState<string>('—')
   const [avatarMode, setAvatarMode] = useState<string>('—')
-  const [speaking, setSpeaking] = useState(false)
-  const [speakingWav, setSpeakingWav] = useState(false)
-  const speechRef = useRef<SyntheticSpeech | null>(null)
+
+  // Filter motion files so Character state actions don't leak into the debug picker.
+  // Built-in clips (Standard Idle, action_greeting, random_Bored, Thinking) are the
+  // state's static sources — debug picker should only list generated motions.
+  const filteredMotionFiles = useMemo(
+    () => motionFileOptions.filter((f) => !/built-in/i.test(f.label)),
+    [motionFileOptions],
+  )
 
   useEffect(() => {
     ;(window as unknown as { __avatar?: () => unknown }).__avatar = () => avatarRef.current
@@ -89,41 +86,6 @@ export default function MotionControlPanel() {
       `${emotion} @ ${emotionIntensity.toFixed(2)} / ${emotionDurationMs}ms` +
         (controller.hasCapability ? '' : ' (no expressions)'),
     )
-  }
-
-  const speak = () => {
-    const controller = avatarRef.current
-    if (!controller || speaking) return
-    ensureAudioContext()
-    const synth = playSyntheticSpeech(3000)
-    speechRef.current = synth
-    controller.startLipSync(synth.analyser)
-    setSpeaking(true)
-    window.setTimeout(() => {
-      controller.stopLipSync()
-      synth.stop()
-      speechRef.current = null
-      setSpeaking(false)
-    }, 3000)
-  }
-
-  const speakWav = () => {
-    const controller = avatarRef.current
-    if (!controller || speakingWav) return
-    ensureAudioContext()
-    setSpeakingWav(true)
-    playWavSpeech(testWavUrl)
-      .then((synth) => {
-        controller.startLipSync(synth.analyser)
-        window.setTimeout(() => {
-          controller.stopLipSync()
-          synth.stop()
-          setSpeakingWav(false)
-        }, synth.durationMs + 500)
-      })
-      .catch(() => {
-        setSpeakingWav(false)
-      })
   }
 
   return (
@@ -172,50 +134,32 @@ export default function MotionControlPanel() {
               />
             </label>
 
-            <div className="flex flex-col gap-1 mt-1">
-              <span className="text-[10px] text-muted-foreground">Camera Offset</span>
-              
-              <label className="flex items-center gap-2 text-[10px] text-muted-foreground">
-                <span className="w-3 text-red-400 font-bold text-center">X</span>
-                <input
-                  type="range"
-                  min={-2}
-                  max={2}
-                  step={0.05}
-                  value={cameraConfig.offsetX}
-                  onChange={(e) => setCameraConfig({ ...cameraConfig, offsetX: Number(e.target.value) })}
-                  className="flex-1 h-1 accent-red-400"
-                />
-                <span className="w-8 text-right tabular-nums">{cameraConfig.offsetX.toFixed(2)}</span>
-              </label>
-
-              <label className="flex items-center gap-2 text-[10px] text-muted-foreground">
-                <span className="w-3 text-green-400 font-bold text-center">Y</span>
-                <input
-                  type="range"
-                  min={-2}
-                  max={2}
-                  step={0.05}
-                  value={cameraConfig.offsetY}
-                  onChange={(e) => setCameraConfig({ ...cameraConfig, offsetY: Number(e.target.value) })}
-                  className="flex-1 h-1 accent-green-400"
-                />
-                <span className="w-8 text-right tabular-nums">{cameraConfig.offsetY.toFixed(2)}</span>
-              </label>
-
-              <label className="flex items-center gap-2 text-[10px] text-muted-foreground">
-                <span className="w-3 text-blue-400 font-bold text-center">Z</span>
-                <input
-                  type="range"
-                  min={-5}
-                  max={5}
-                  step={0.1}
-                  value={cameraConfig.offsetZ}
-                  onChange={(e) => setCameraConfig({ ...cameraConfig, offsetZ: Number(e.target.value) })}
-                  className="flex-1 h-1 accent-blue-400"
-                />
-                <span className="w-8 text-right tabular-nums">{cameraConfig.offsetZ.toFixed(2)}</span>
-              </label>
+            <div className="flex flex-col gap-1.5 mt-2">
+              <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                <Lock className="w-3 h-3" />
+                Lock Axes (right-drag)
+              </span>
+              <div className="flex gap-1.5">
+                {(['X', 'Y', 'Z'] as const).map((axis) => {
+                  const key = `lock${axis}` as const
+                  const locked = cameraConfig[key]
+                  return (
+                    <button
+                      key={axis}
+                      onClick={() => setCameraConfig({ ...cameraConfig, [key]: !locked })}
+                      className={`flex-1 py-1.5 text-[11px] font-medium rounded-md border transition-colors cursor-pointer flex items-center justify-center gap-1 ${
+                        locked
+                          ? 'bg-primary text-primary-foreground border-primary shadow-sm'
+                          : 'bg-secondary/40 text-muted-foreground border-border/20 hover:bg-secondary/60 hover:text-foreground'
+                      }`}
+                      title={locked ? `Lock ${axis} — drag won't change ${axis}` : `Unlock ${axis}`}
+                    >
+                      <Lock className="w-3 h-3" />
+                      {axis}
+                    </button>
+                  )
+                })}
+              </div>
             </div>
 
             <select
@@ -228,104 +172,56 @@ export default function MotionControlPanel() {
             </select>
           </div>
 
-          {/* (1) FSM state selector — the primary control. Contents are derived
-              from STATES, so a new animation with a `debugLabel` shows up here
-              with no edit to this file (plan §3.0 / §11). */}
-          <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-secondary/20 border border-border/10">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-              <Activity className="w-3 h-3" />
-              Character state
-            </span>
-            <select
-              value={stateOptions.some((o) => o.id === currentState) ? currentState : ''}
-              onChange={(e) => void transitionTo(e.target.value as CharState)}
-              className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-0.5"
-            >
-              {/* Sequence/dynamic states (thinking_loop, exercise…) are not
-                  manually selectable, so show the live state as a read-only row. */}
-              {!stateOptions.some((o) => o.id === currentState) && (
-                <option value="" className="bg-card text-muted-foreground">
-                  {currentState} (auto)
-                </option>
-              )}
-              {stateOptions.map((option) => (
-                <option key={option.id} value={option.id} className="bg-card text-foreground">
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* (2) Motion FILE selector — DEBUG. Plays any BVH/FBX through the
-              `exercise` state. This is the only way to verify the Kimodo
-              NPZ→BVH retarget without a backend or GPU (plan §4.3, test #4). */}
-          <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-secondary/20 border border-border/10">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-              <Activity className="w-3 h-3" />
-              Motion file (debug)
-            </span>
-            <select
-              defaultValue=""
-              onChange={(e) => {
-                if (e.target.value) void playMotionFile(e.target.value)
-              }}
-              className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-0.5"
-            >
-              <option value="" className="bg-card text-muted-foreground">Pick a file to play…</option>
-              {motionFileOptions.map((option) => (
-                <option key={option.label} value={option.url} className="bg-card text-foreground">
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="flex items-center justify-between gap-2 p-3 rounded-xl bg-secondary/20 border border-border/10">
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setIsPlaying(!isPlaying)}
-                className="w-9 h-9 rounded-lg flex items-center justify-center bg-primary text-primary-foreground shadow-lg hover:bg-primary/95 transition-all active:scale-95"
-              >
-                {isPlaying ? (
-                  <Pause className="w-4 h-4 fill-current" />
-                ) : (
-                  <Play className="w-4 h-4 fill-current ml-0.5" />
-                )}
-              </button>
-              <button
-                onClick={handleReset}
-                title="Reset animation"
-                className="w-9 h-9 rounded-lg flex items-center justify-center border border-border/40 hover:bg-secondary/40 text-foreground transition-all active:scale-95"
-              >
-                <RotateCcw className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="flex items-center gap-1.5 bg-secondary/30 border border-border/20 px-2 py-1 rounded-lg">
-              <Sliders className="w-3 h-3 text-muted-foreground" />
+          {/* (1) FSM state selector — dev-only. Contents derived from STATES debugLabel. */}
+          {import.meta.env.DEV && (
+            <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-secondary/20 border border-border/10">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                <Activity className="w-3 h-3" />
+                Character state
+              </span>
               <select
-                value={speed}
-                onChange={(e) => setSpeed(parseFloat(e.target.value))}
-                className="bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer"
+                value={stateOptions.some((o) => o.id === currentState) ? currentState : ''}
+                onChange={(e) => void transitionTo(e.target.value as CharState)}
+                className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-0.5"
               >
-                <option value="0.5" className="bg-card text-foreground">0.5x</option>
-                <option value="1.0" className="bg-card text-foreground">1.0x</option>
-                <option value="1.5" className="bg-card text-foreground">1.5x</option>
-                <option value="2.0" className="bg-card text-foreground">2.0x</option>
+                {/* Sequence/dynamic states (thinking_loop, exercise…) are not
+                    manually selectable, so show the live state as a read-only row. */}
+                {!stateOptions.some((o) => o.id === currentState) && (
+                  <option value="" className="bg-card text-muted-foreground">
+                    {currentState} (auto)
+                  </option>
+                )}
+                {stateOptions.map((option) => (
+                  <option key={option.id} value={option.id} className="bg-card text-foreground">
+                    {option.label}
+                  </option>
+                ))}
               </select>
             </div>
-          </div>
+          )}
 
-          {clipInfo && (
-            <div className="flex flex-col gap-1 p-3 rounded-xl bg-secondary/20 border border-border/10">
+          {/* (2) Motion FILE selector — DEBUG dev-only. Filtered to exclude built-in
+              state actions; only generated motions appear. */}
+          {import.meta.env.DEV && (
+            <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-secondary/20 border border-border/10">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-                <Sparkles className="w-3 h-3 text-purple-400" />
-                Clip Info
+                <Activity className="w-3 h-3" />
+                Motion file (debug)
               </span>
-              <div className="flex justify-between text-[11px] text-muted-foreground mt-0.5">
-                <span>Bones: {clipInfo.tracks} tracks</span>
-                <span>Duration: {clipInfo.duration.toFixed(2)}s</span>
-              </div>
+              <select
+                defaultValue=""
+                onChange={(e) => {
+                  if (e.target.value) void playMotionFile(e.target.value)
+                }}
+                className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-0.5"
+              >
+                <option value="" className="bg-card text-muted-foreground">Pick a file to play…</option>
+                {filteredMotionFiles.map((option) => (
+                  <option key={option.label} value={option.url} className="bg-card text-foreground">
+                    {option.label}
+                  </option>
+                ))}
+              </select>
             </div>
           )}
 
@@ -375,30 +271,6 @@ export default function MotionControlPanel() {
                 />
                 <span className="w-10 text-right tabular-nums">{emotionDurationMs}ms</span>
               </label>
-
-              <button
-                onClick={speak}
-                disabled={speaking}
-                className={`px-2 py-1 text-[11px] rounded-md border transition-colors cursor-pointer ${
-                  speaking
-                    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400 cursor-default'
-                    : 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25'
-                }`}
-              >
-                {speaking ? 'speaking…' : 'Speak (test lip-sync)'}
-              </button>
-
-              <button
-                onClick={speakWav}
-                disabled={speakingWav}
-                className={`px-2 py-1 text-[11px] rounded-md border transition-colors cursor-pointer ${
-                  speakingWav
-                    ? 'border-cyan-500/30 bg-cyan-500/10 text-cyan-400 cursor-default'
-                    : 'border-cyan-500/40 bg-cyan-500/15 text-cyan-300 hover:bg-cyan-500/25'
-                }`}
-              >
-                {speakingWav ? 'playing test.wav…' : 'Test WAV lip-sync'}
-              </button>
 
               <div className="flex justify-between text-[10px] text-muted-foreground/60">
                 <span>mode: {avatarMode}</span>

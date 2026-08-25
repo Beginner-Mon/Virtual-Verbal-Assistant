@@ -15,6 +15,10 @@ export interface CameraConfig {
   offsetY: number
   /** Offset Z (forward/backward) from the default camera position */
   offsetZ: number
+  /** Lock per-axis: when true, right-drag/pan does not change that coordinate. */
+  lockX: boolean
+  lockY: boolean
+  lockZ: boolean
 }
 
 export const DEFAULT_CAMERA_CONFIG: CameraConfig = {
@@ -26,6 +30,9 @@ export const DEFAULT_CAMERA_CONFIG: CameraConfig = {
   offsetX: 0,
   offsetY: 0,
   offsetZ: 0,
+  lockX: false,
+  lockY: false,
+  lockZ: false,
 }
 
 export interface CameraResponsivePreset {

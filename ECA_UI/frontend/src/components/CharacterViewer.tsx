@@ -411,6 +411,12 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
   // re-attach the object on every state change.
   const axesHelper = useMemo(() => new THREE.AxesHelper(3), [])
 
+  // Lock X/Y/Z — freeze per-axis when toggled (Plan C). Stored frozen value is
+  // the last unrestricted position; right-drag delta on a locked axis is reverted.
+  const lockPrevTargetRef = useRef(new THREE.Vector3())
+  const lockPrevPosRef = useRef(new THREE.Vector3())
+  const lockInitializedRef = useRef(false)
+
   // Every frame: make the camera orbit target follow the selected bone.
   // We also shift the camera position by the same delta so the orbital
   // offset (angle + distance) is preserved while the rig moves.
@@ -501,6 +507,45 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
     // Update the controls target to the new follow point
     controlsRef.current.target.copy(targetPos)
     controlsRef.current.update()
+  })
+
+  // Second plane: enforce Lock X/Y/Z after the main follow/transition logic and
+  // after OrbitControls has applied any user drag. Registration order guarantees
+  // this runs after the preceding useFrame.
+  useFrame(() => {
+    if (!controlsRef.current) return
+    if (!cameraInitializedRef.current) return
+    if (!lockInitializedRef.current) {
+      lockPrevTargetRef.current.copy(controlsRef.current.target)
+      lockPrevPosRef.current.copy(camera.position)
+      lockInitializedRef.current = true
+      return
+    }
+    const target = controlsRef.current.target as THREE.Vector3
+    const pos = camera.position as THREE.Vector3
+    let needsUpdate = false
+    if (cameraConfig.lockX) {
+      if (target.x !== lockPrevTargetRef.current.x) { target.x = lockPrevTargetRef.current.x; needsUpdate = true }
+      if (pos.x !== lockPrevPosRef.current.x) { pos.x = lockPrevPosRef.current.x; needsUpdate = true }
+    } else {
+      lockPrevTargetRef.current.x = target.x
+      lockPrevPosRef.current.x = pos.x
+    }
+    if (cameraConfig.lockY) {
+      if (target.y !== lockPrevTargetRef.current.y) { target.y = lockPrevTargetRef.current.y; needsUpdate = true }
+      if (pos.y !== lockPrevPosRef.current.y) { pos.y = lockPrevPosRef.current.y; needsUpdate = true }
+    } else {
+      lockPrevTargetRef.current.y = target.y
+      lockPrevPosRef.current.y = pos.y
+    }
+    if (cameraConfig.lockZ) {
+      if (target.z !== lockPrevTargetRef.current.z) { target.z = lockPrevTargetRef.current.z; needsUpdate = true }
+      if (pos.z !== lockPrevPosRef.current.z) { pos.z = lockPrevPosRef.current.z; needsUpdate = true }
+    } else {
+      lockPrevTargetRef.current.z = target.z
+      lockPrevPosRef.current.z = pos.z
+    }
+    if (needsUpdate) controlsRef.current.update()
   })
 
 return (
