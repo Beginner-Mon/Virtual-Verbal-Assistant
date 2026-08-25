@@ -22,20 +22,16 @@ import type { AnimationRegistry } from '../lib/AnimationRegistry'
 import { STATES, type CharState } from '../lib/AnimationStates'
 
 /**
- * Boot sequence: greet once, then fall through to idle when the greeting clip
- * finishes (plan §2.5).
+ * Boot sequence: ensure the model has a pose (idle) immediately after load.
  *
- * Two non-obvious requirements, both load-bearing:
+ * Greeting is now handled per-VRM in MotionContext (Plan B1 visitedRef) — boot
+ * no longer greets globally. The previous global `hasGreeted` latch made the
+ * first VRM greet via boot while subsequent VRMs greeted via MotionContext,
+ * splitting the source. Now boot's only job is to guarantee a pose and warm
+ * clips; per-VRM greeting is owned by MotionContext's visited guard.
  *
- *  1. **The idle fallback is mandatory.** `transitionTo` returns false if the
- *     greeting asset is missing, and a controller with no action renders the
- *     bind pose — the exact T-pose the readiness gate exists to prevent.
- *  2. **Greet only once per session.** The controller is recreated whenever the
- *     VRM changes, and React 19 StrictMode double-mounts in dev; without the
- *     module-scoped latch the avatar would wave again on every model swap.
+ * The idle fallback is still mandatory: if idle fails, model stays in bind pose.
  */
-let hasGreeted = false
-
 export function useFsmBoot(
   controller: AnimationController | null,
   registry: AnimationRegistry | null,
@@ -45,15 +41,11 @@ export function useFsmBoot(
     let cancelled = false
 
     const boot = async () => {
-      const first: CharState = hasGreeted ? 'idle' : 'greeting'
-      hasGreeted = true
-      const ok = await controller.transitionTo(first)
+      const ok = await controller.transitionTo('idle')
       if (cancelled) return
-      // Greeting unavailable — must still end up posed.
-      if (!ok && first !== 'idle') await controller.transitionTo('idle')
+      if (!ok) console.warn('[useFsmBoot] idle transition failed — model may be in bind pose')
       if (cancelled) return
-      // Only once the character is on screen: warm the remaining clips during
-      // idle time so the first chat doesn't pay a ~200ms retarget stall.
+      // Warm remaining clips during idle time so first chat doesn't pay retarget stall.
       registry?.prefetchStatic()
     }
 
