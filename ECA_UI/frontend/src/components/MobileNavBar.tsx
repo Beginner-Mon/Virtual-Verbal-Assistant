@@ -63,6 +63,29 @@ export default function MobileNavBar({
     return { minY: 80, maxY: chatTop - btnSize - 8 }
   }, [])
 
+  // Plan A1 (mobile companion): keep hamburger inside viewport after window resize
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const handleResize = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        const newX = Math.max(8, Math.min(menuXRef.current, window.innerWidth - btnSize - 8))
+        const { minY, maxY } = getMenuYBounds()
+        const newY = Math.max(minY, Math.min(menuYRef.current, maxY))
+        menuXRef.current = newX
+        menuYRef.current = newY
+        if (mobileMenuRef.current) {
+          mobileMenuRef.current.style.transform = `translate(${newX}px, ${newY}px)`
+        }
+      }, 100)
+    }
+    window.addEventListener('resize', handleResize)
+    return () => {
+      window.removeEventListener('resize', handleResize)
+      if (timer) clearTimeout(timer)
+    }
+  }, [getMenuYBounds])
+
   const handleMenuPointerDown = useCallback((e: React.PointerEvent) => {
     const el = e.currentTarget as HTMLElement
     el.setPointerCapture(e.pointerId)

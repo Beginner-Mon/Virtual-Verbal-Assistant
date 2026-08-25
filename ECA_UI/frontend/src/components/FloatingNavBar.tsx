@@ -296,6 +296,77 @@ export default function FloatingNavBar() {
     }
   }, [])
 
+  // Plan A1: keep position after viewport resize — re-measure bar, clamp position, keep floating ref fresh
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const handleResize = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        // Mobile uses MobileNavBar; nothing to re-measure here
+        if (isMobile) return
+        const el = barRef.current?.querySelector('.floating-nav-bar') as HTMLElement | null
+        if (el) {
+          refs.setReference(el)
+          const rect = el.getBoundingClientRect()
+          const newSize = { width: rect.width, height: rect.height }
+          setBarSize((prev) => (prev.width === newSize.width && prev.height === newSize.height ? prev : newSize))
+          const padding = 16
+          setPosition((prev) => ({
+            x: Math.max(padding, Math.min(prev.x, window.innerWidth - newSize.width - padding)),
+            y: Math.max(padding, Math.min(prev.y, window.innerHeight - newSize.height - padding)),
+          }))
+        } else {
+          // Fallback: clamp with last known barSize if DOM not yet painted
+          const padding = 16
+          setPosition((prev) => ({
+            x: Math.max(padding, Math.min(prev.x, window.innerWidth - barSize.width - padding)),
+            y: Math.max(padding, Math.min(prev.y, window.innerHeight - barSize.height - padding)),
+          }))
+        }
+      }, 100)
+    }
+    window.addEventListener('resize', handleResize)
+    return () => {
+      window.removeEventListener('resize', handleResize)
+      if (timer) clearTimeout(timer)
+    }
+  }, [isMobile, refs, barSize.width, barSize.height])
+
+  // Plan A1: when breakpoint flips (mobile ↔ desktop) re-anchor floating-ui and re-measure
+  useEffect(() => {
+    if (isMobile) return
+    const raf = requestAnimationFrame(() => {
+      const el = barRef.current?.querySelector('.floating-nav-bar') as HTMLElement | null
+      if (!el) {
+        // DOM may not be painted yet — retry next frame
+        requestAnimationFrame(() => {
+          const retry = barRef.current?.querySelector('.floating-nav-bar') as HTMLElement | null
+          if (!retry) return
+          refs.setReference(retry)
+          const rect = retry.getBoundingClientRect()
+          const newSize = { width: rect.width, height: rect.height }
+          setBarSize((prev) => (prev.width === newSize.width && prev.height === newSize.height ? prev : newSize))
+          const padding = 16
+          setPosition((prev) => ({
+            x: Math.max(padding, Math.min(prev.x, window.innerWidth - newSize.width - padding)),
+            y: Math.max(padding, Math.min(prev.y, window.innerHeight - newSize.height - padding)),
+          }))
+        })
+        return
+      }
+      refs.setReference(el)
+      const rect = el.getBoundingClientRect()
+      const newSize = { width: rect.width, height: rect.height }
+      setBarSize((prev) => (prev.width === newSize.width && prev.height === newSize.height ? prev : newSize))
+      const padding = 16
+      setPosition((prev) => ({
+        x: Math.max(padding, Math.min(prev.x, window.innerWidth - newSize.width - padding)),
+        y: Math.max(padding, Math.min(prev.y, window.innerHeight - newSize.height - padding)),
+      }))
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [isMobile, refs])
+
   // DnD sensors — increase activation distance so clicks don't trigger drag
   const sensors = useSensors(
     useSensor(PointerSensor, {
