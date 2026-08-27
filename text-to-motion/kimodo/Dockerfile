@@ -41,8 +41,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install "fastmcp>=3.0"
 
-# Copy MCP server script
+# Copy MCP server script + the modules it imports at module load time (model
+# loading/generation lives in motion_engine.py; NPZ->BVH conversion in npz_to_bvh.py).
 COPY mcp_server.py /workspace/mcp_server.py
+COPY motion_engine.py /workspace/motion_engine.py
+COPY npz_to_bvh.py /workspace/npz_to_bvh.py
 
 # Expose MCP server port
 EXPOSE 8000
