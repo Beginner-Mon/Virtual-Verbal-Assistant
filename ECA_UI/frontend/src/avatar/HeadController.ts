@@ -19,6 +19,15 @@ import type { EyeController } from './EyeController'
  * order three-vrm's own lookAt uses). We compose `rest * offset` so a non-identity
  * rest is preserved and there is no per-frame drift.
  *
+ * Where `rest` comes from matters (see HeadController.test.ts). It is read from
+ * the model's declared rest pose, NEVER from the bone's live rotation: this class
+ * is constructed after `await loadProfileAsync(...)`, a network round-trip, by
+ * which point the greeting/idle clip has already posed Neck/Head — and
+ * `VRMHumanoidRig.update()` writes normalized → raw without ever resetting the
+ * normalized bone, so the mixer's value is still sitting there. Sampling it made
+ * `rest` a random animation frame, freezing the head at a wrong angle for the
+ * whole session, with fetch latency deciding whether a given refresh was affected.
+ *
  * Pitch (review gap #3): EyeController.currentPitch is already in three-vrm
  * convention (negative = up). PITCH_SIGN maps that to the bone's local X axis.
  *
@@ -58,8 +67,8 @@ export class HeadController {
     this.eye = eye
     this.neck = vrm.humanoid?.getNormalizedBoneNode(VRMHumanBoneName.Neck) ?? null
     this.head = vrm.humanoid?.getNormalizedBoneNode(VRMHumanBoneName.Head) ?? null
-    if (this.neck) this.restNeck.copy(this.neck.quaternion)
-    if (this.head) this.restHead.copy(this.head.quaternion)
+    if (this.neck) readRest(vrm, VRMHumanBoneName.Neck, this.neck, this.restNeck)
+    if (this.head) readRest(vrm, VRMHumanBoneName.Head, this.head, this.restHead)
     if (!this.head && !this.neck) {
       console.warn('[avatar] model has no Neck/Head bone — head follow disabled')
     }
@@ -113,4 +122,39 @@ export class HeadController {
     if (this.neck) this.neck.quaternion.copy(this.restNeck)
     if (this.head) this.head.quaternion.copy(this.restHead)
   }
+}
+
+/**
+ * Fill `out` with the bone's declared rest rotation, most authoritative source
+ * first. The live `bone.quaternion` is the last resort precisely because it is
+ * the one that can be contaminated by a clip already in flight.
+ *
+ * 1. `humanoid.normalizedRestPose` — three-vrm's own record of the rig's rest
+ *    state, built when the rig is constructed and never written to afterwards.
+ * 2. `vrm.scene.userData.restPoses` — snapshotted in the body of VRMCharacter
+ *    (CharacterViewer.tsx:92-106), which runs on first render, ahead of every
+ *    effect and every frame, so it also predates the mixer.
+ * 3. The live bone, for a model that somehow offers neither.
+ */
+function readRest(
+  vrm: VRM,
+  boneName: VRMHumanBoneName,
+  bone: THREE.Object3D,
+  out: THREE.Quaternion,
+): void {
+  const declared = vrm.humanoid?.normalizedRestPose?.[boneName]?.rotation
+  if (declared) {
+    out.set(declared[0], declared[1], declared[2], declared[3])
+    return
+  }
+
+  const captured = (
+    vrm.scene?.userData?.restPoses as Map<string, { quaternion: THREE.Quaternion }> | undefined
+  )?.get(boneName)
+  if (captured) {
+    out.copy(captured.quaternion)
+    return
+  }
+
+  out.copy(bone.quaternion)
 }

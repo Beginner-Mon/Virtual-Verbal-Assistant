@@ -10,10 +10,17 @@
  *   | One-shot ends            | `AnimationController.handleFinished`       |
  *   | Debug dropdown / file    | `MotionControlPanel` via context          |
  *   | Chat start / answer      | `ChatPanel` SSE callback                  |
+ *   | User activity (→ gesture)| `ActivityDispatcher` via `dispatchActivity`|
  *
- * External-event triggers (the last two) stay explicit at their call site: each
- * arrives from a different source with different payloads, and encoding them as
- * config would mean inventing a condition mini-DSL for a couple of call sites.
+ * Chat and the debug panel stay explicit at their call site: each arrives from a
+ * different source with a different payload, and encoding them as config would
+ * mean inventing a condition mini-DSL for a couple of call sites.
+ *
+ * User activity is the one that IS config, and deliberately so. A body-part
+ * click carries a single uniform payload, the set of triggers is open-ended, and
+ * what each one produces differs PER CHARACTER — so the binding lives in the
+ * avatar profile (`reactions`), where a character can bring its own from the
+ * database. The call site reports what the user did and names no animation.
  */
 
 import { useEffect, useRef } from 'react'

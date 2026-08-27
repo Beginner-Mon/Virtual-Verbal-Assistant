@@ -31,6 +31,35 @@ export type EmotionRecipe = Record<string, number>
 /** Canonical vowel keys used by the (future) lip-sync viseme mapping. */
 export type Viseme = 'A' | 'I' | 'U' | 'E' | 'O'
 
+/**
+ * One animation a character owns, addressed by an id its reactions refer to.
+ *
+ * The two source shapes mirror how this project already splits its assets: the
+ * catalog travels over the API while the binaries travel over CloudFront
+ * (characters.ts:4-12). `builtIn` matches a bundled motion file by source path;
+ * `url` is an absolute address for a clip a character brings with it, which is
+ * what makes "each character has its own animations" possible without a deploy.
+ */
+export interface GestureDef {
+  source: { builtIn: string } | { url: string; loader: 'fbx' | 'bvh' }
+  /** Cross-fade seconds when leaving this gesture. Defaults to the state's. */
+  crossfade?: number
+}
+
+/**
+ * What one user activity produces on this character.
+ *
+ * Animation and emotion live in the SAME record on purpose. They are not two
+ * parallel systems with two registration paths — one reaction can drive a
+ * gesture, an emotion, or both, and all of it arrives through the one profile
+ * pipeline that already resolves per model with a bundled fallback.
+ */
+export interface Reaction {
+  /** Key into {@link AvatarProfile.gestures}. */
+  gesture?: string
+  emotion?: { name: CanonicalEmotion; intensity?: number; durationMs?: number }
+}
+
 export interface AvatarProfile {
   version: 1
   modelId: string
@@ -58,6 +87,11 @@ export interface AvatarProfile {
   binaryEmotions?: CanonicalEmotion[]
   /** Which emotion to trigger at the midpoint of the greeting animation. Defaults to 'happy'. */
   greetingEmotion?: CanonicalEmotion
+  /** Animations this character owns, by id. Added to the built-in FSM states,
+   *  never a replacement for them. */
+  gestures?: Record<string, GestureDef>
+  /** `activityKey(...)` -> what that activity does on this character. */
+  reactions?: Record<string, Reaction>
 }
 
 export function isCanonicalEmotion(name: string): name is CanonicalEmotion {
@@ -104,6 +138,34 @@ function isUsableProfile(value: unknown): value is AvatarProfile {
 }
 
 /**
+ * Layer a remote profile over the bundled one, field by field.
+ *
+ * NOT a plain spread. `{ ...raw }` replaces the whole record, which is fine only
+ * while the database row carries every field — the moment the bundled profile
+ * owns something the row does not (gestures, morphRepairMap, binaryEmotions), a
+ * spread deletes it silently. A character seeded before the gesture work would
+ * lose its animations instead of inheriting the defaults, and nothing would say
+ * so. Overriding per field means a row can carry as little as it likes.
+ *
+ * Shallow on purpose: every field is replaced whole. A row that supplies
+ * `gestures` owns the gesture set outright rather than getting a confusing
+ * half-merge with the defaults.
+ */
+export function mergeProfile(
+  bundled: AvatarProfile,
+  remote: Partial<AvatarProfile>,
+  modelId: string,
+): AvatarProfile {
+  const merged = { ...bundled } as AvatarProfile & Record<string, unknown>
+  for (const [key, value] of Object.entries(remote)) {
+    if (value !== undefined) merged[key] = value
+  }
+  // The row carries its own slug; the caller's id is what the avatar stack keys on.
+  merged.modelId = modelId
+  return merged
+}
+
+/**
  * Resolve a profile for a model, preferring the one stored alongside the
  * character in the database so a new character needs no frontend deploy.
  *
@@ -123,7 +185,7 @@ export async function loadProfileAsync(
     const { fetchAvatarProfile } = await import('../lib/characters')
     const raw = await fetchAvatarProfile(key, signal)
     if (isUsableProfile(raw)) {
-      const profile = { ...raw, modelId: key }
+      const profile = mergeProfile(loadProfile(key), raw, key)
       remoteProfileCache.set(key, profile)
       return profile
     }

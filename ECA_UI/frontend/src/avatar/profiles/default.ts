@@ -24,4 +24,16 @@ export const defaultProfile: AvatarProfile = {
   visemes: { A: 'aa', I: 'ih', U: 'ou', E: 'ee', O: 'oh' },
   blinkChannel: 'blink',
   greetingEmotion: 'happy',
+  // Bundled gestures every model gets. A character that brings its own set from
+  // the database overrides this; one that brings none keeps it. These are ADDED
+  // to the built-in FSM states (idle / greeting / bored / thinking / exercise),
+  // which are untouched.
+  gestures: {
+    kiss: { source: { builtIn: 'kiss' }, crossfade: 0.5 },
+  },
+  reactions: {
+    // Animation and emotion together in one binding — the click plays the clip
+    // and lifts the expression, from a single per-model record.
+    'bodyPartClick:mouth': { gesture: 'kiss', emotion: { name: 'happy', durationMs: 600 } },
+  },
 }

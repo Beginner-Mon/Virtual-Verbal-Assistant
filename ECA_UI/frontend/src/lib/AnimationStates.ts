@@ -26,6 +26,7 @@ export type CharState =
   | 'thinking_intro' //  Sequence: → freeze at last frame, wait for outro
   | 'thinking_outro' //  Sequence: → idle
   | 'exercise' //        One-shot generated motion → idle (wide camera + cooldown)
+  | 'gesture' //         One-shot per-character animation → idle (clip at runtime)
 
 export type CameraMode = 'head' | 'hips'
 
@@ -155,6 +156,35 @@ export const STATES: Record<CharState, StateDef> = {
     camera: 'hips',
     facial: { wander: false, hold: 'neutral' },
     crossfade: 0.8,
+  },
+  /**
+   * Every per-character animation, sharing one state.
+   *
+   * Deliberately ONE entry rather than one state per animation. Characters bring
+   * their own animation sets from the database (AvatarProfile.gestures), so the
+   * set cannot be a compile-time union without making every new character a
+   * frontend deploy. Keeping `CharState` closed is what preserves the two
+   * type-level guarantees at the top of this file; the animations stay open by
+   * riding `source: 'dynamic'`, the mechanism `exercise` already proves.
+   *
+   * Which clip plays is decided by ActivityDispatcher, which registers it with
+   * the AnimationRegistry immediately before the transition.
+   *
+   * `reach: 'from-idle'` does double duty: it keeps a click on the avatar from
+   * cutting off the thinking pose or a generated exercise, and it makes
+   * gesture → gesture illegal, so the clip cannot be spam-restarted.
+   *
+   * No `debugLabel`: the dropdown would have nothing to play, since the clip is
+   * meaningless without a gesture id to go with it.
+   */
+  gesture: {
+    source: 'dynamic',
+    loop: 'once',
+    onFinished: 'idle',
+    reach: 'from-idle',
+    camera: 'head',
+    facial: { wander: false, hold: 'happy' },
+    crossfade: 0.5,
   },
 }
 

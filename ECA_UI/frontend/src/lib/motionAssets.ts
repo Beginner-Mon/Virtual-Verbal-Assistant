@@ -43,3 +43,14 @@ export const MOTION_FILES: MotionFile[] = Object.entries({ ...BVH_MODULES, ...FB
 export function resolveMotionUrl(match: RegExp): string | null {
   return MOTION_FILES.find((f) => match.test(f.label))?.url ?? null
 }
+
+/**
+ * Same lookup by plain case-insensitive substring, for callers whose match
+ * string is DATA rather than code — a character's gesture set, which can arrive
+ * from the database. Compiling a RegExp out of that would hand a config row
+ * control over the pattern language; a substring cannot misbehave.
+ */
+export function resolveMotionByName(name: string): string | null {
+  const needle = name.toLowerCase()
+  return MOTION_FILES.find((f) => f.label.toLowerCase().includes(needle))?.url ?? null
+}

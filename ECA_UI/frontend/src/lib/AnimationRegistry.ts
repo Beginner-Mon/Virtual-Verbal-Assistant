@@ -15,7 +15,28 @@ import { loadAndRetargetBVH, SMPLX_RETARGET_OPTIONS, STANDARD_RETARGET_OPTIONS }
 import { loadMixamoAnimation } from './loadMixamoAnimation'
 import { getAnimationClip } from './animationCache'
 import { resolveMotionUrl } from './motionAssets'
-import { CHAR_STATES, staticSourceOf, type CharState, type StaticSource, type SubclipRange } from './AnimationStates'
+import { CHAR_STATES, staticSourceOf, type CharState, type SubclipRange } from './AnimationStates'
+
+/**
+ * A clip handed to a `'dynamic'` state at runtime: a resolved URL plus how to
+ * read it. Generated Kimodo motion is SMPL-X BVH; a character's own gesture is
+ * usually a bundled Mixamo FBX — the loader has to travel with the URL.
+ */
+export interface DynamicClip {
+  url: string
+  loader: 'fbx' | 'bvh'
+  /** BVH only. Defaults to `smplx`, which is what Kimodo emits. */
+  retarget?: 'smplx' | 'standard'
+}
+
+/**
+ * Infer the loader from a URL. Vite keeps the original extension on hashed
+ * asset names, and generated motion is always `motion_<uuid>.bvh`, so the
+ * extension is a reliable signal for both origins.
+ */
+export function loaderForUrl(url: string): 'fbx' | 'bvh' {
+  return /\.fbx(\?|$)/i.test(url) ? 'fbx' : 'bvh'
+}
 
 export class AnimationRegistry {
   /**
@@ -26,8 +47,15 @@ export class AnimationRegistry {
    */
   private clips = new Map<CharState, Promise<THREE.AnimationClip | null>>()
 
-  /** URLs injected at runtime (generated motion). Only `exercise` uses this. */
-  private dynamicUrls = new Map<CharState, string>()
+  /**
+   * Clips injected at runtime, for states whose source is `'dynamic'`.
+   *
+   * Carries the loader, not just the URL. It used to be a bare URL because the
+   * only consumer was `exercise`, whose clips are always SMPL-X BVH from Kimodo,
+   * and `build()` hard-coded that. Per-character gestures broke the assumption —
+   * a bundled `.fbx` loaded as BVH does not fail loudly, it produces nothing.
+   */
+  private dynamicClips = new Map<CharState, DynamicClip>()
 
   private readonly vrm: VRM
   /** Cache-key namespace: the same motion retargets differently per model. */
@@ -54,13 +82,46 @@ export class AnimationRegistry {
   }
 
   /**
-   * Point `state` at a runtime URL (SSE motion, or a file picked in the debug
-   * selector) and drop any clip cached for it. Generated motion is always
-   * SMPL-X BVH — the output of `scripts/kimodo_npz_to_bvh.py`.
+   * Point `state` at a runtime clip (SSE motion, a file picked in the debug
+   * selector, or a character's gesture) and drop any clip cached for it.
+   *
+   * Dropping the cache entry is cheap even when the same gesture is replayed:
+   * `build()` goes back through `getAnimationClip`, which is keyed by
+   * `vrmUrl|animUrl` and hands back the SAME clip object — so the retarget does
+   * not repeat and `mixer.clipAction()` still resolves to the same action.
    */
-  update(state: CharState, url: string): void {
-    this.dynamicUrls.set(state, url)
+  update(state: CharState, clip: DynamicClip): void {
+    this.dynamicClips.set(state, clip)
     this.clips.delete(state)
+  }
+
+  /**
+   * Warm a character's gestures during idle time.
+   *
+   * Same reasoning as `prefetchStatic`, and the same measurements apply: the
+   * first load of a clip is a fetch plus a synchronous retarget, 111 ms for
+   * Thinking.fbx and 214 ms for random_Bored.fbx. Without this, the first click
+   * on a body part pays that stall.
+   *
+   * This is only possible because gestures are DECLARED per character rather
+   * than passed ad-hoc at the moment of the click — knowing the set up front is
+   * what makes it warmable.
+   */
+  prefetchGestures(clips: readonly DynamicClip[]): void {
+    const pending = [...clips]
+
+    const step = () => {
+      const next = pending.shift()
+      if (next === undefined) return
+      void this.load({ loader: next.loader, retarget: next.retarget }, next.url)
+        .catch(() => null)
+        .finally(() => schedule())
+    }
+    const schedule = () => {
+      if (typeof requestIdleCallback === 'function') requestIdleCallback(step, { timeout: 2000 })
+      else setTimeout(step, 200)
+    }
+    schedule()
   }
 
   /** Drop every cached clip. Required when the VRM changes in place. */
@@ -97,9 +158,9 @@ export class AnimationRegistry {
   }
 
   private async build(state: CharState): Promise<THREE.AnimationClip | null> {
-    const dynamicUrl = this.dynamicUrls.get(state)
-    if (dynamicUrl) {
-      return this.load({ loader: 'bvh', match: /^$/, retarget: 'smplx' }, dynamicUrl)
+    const dynamic = this.dynamicClips.get(state)
+    if (dynamic) {
+      return this.load({ loader: dynamic.loader, retarget: dynamic.retarget }, dynamic.url)
     }
 
     const source = staticSourceOf(state)
@@ -117,7 +178,16 @@ export class AnimationRegistry {
     return this.load(source, url)
   }
 
-  private async load(source: StaticSource, url: string): Promise<THREE.AnimationClip | null> {
+  /**
+   * Structural parameter rather than `StaticSource`: the dynamic path has a URL
+   * already and no `match` to give, and inventing a throwaway RegExp to satisfy
+   * the type is how the hard-coded `{ loader: 'bvh', retarget: 'smplx' }` slipped
+   * in and made every dynamic clip a Kimodo clip.
+   */
+  private async load(
+    source: { loader: 'fbx' | 'bvh'; retarget?: 'smplx' | 'standard'; subclip?: SubclipRange },
+    url: string,
+  ): Promise<THREE.AnimationClip | null> {
     // The shared cache dedupes concurrent loads and is keyed per model, so the
     // fetch + retarget pass happens once per (model, file) pair.
     const base = await getAnimationClip(`${this.vrmUrl}|${url}`, () =>

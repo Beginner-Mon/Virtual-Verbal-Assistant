@@ -16,6 +16,8 @@ import { cameraModeOf, loopModeOf } from '../lib/AnimationStates'
 import { useFsmBoot } from '../hooks/useFsmTriggers'
 import { useMotion } from '../contexts/MotionContext'
 import { AvatarController } from '../avatar/AvatarController'
+import { BodyPartPicker } from '../avatar/BodyPartPicker'
+import { bodyPartClick } from '../avatar/userActivity'
 import { loadProfileAsync } from '../avatar/AvatarProfile'
 import LoadingOverlay from './ui/LoadingOverlay'
 import { disposeVRM } from '../lib/vrmDispose'
@@ -79,7 +81,7 @@ interface VRMCharacterProps {
 }
 
 function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharacterProps) {
-  const { attachControllers, setClipInfo } = useMotion()
+  const { attachControllers, setClipInfo, prefetchGestures } = useMotion()
 
   const gltf = useLoader(GLTFLoader, vrmUrl, (loader) => {
     loader.register((parser) => new VRMLoaderPlugin(parser))
@@ -139,11 +141,29 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
   const modelGroupRef = useRef<THREE.Group>(null)
   const groundClampRef = useRef<GroundClamp | null>(null)
   const rootMotionRef = useRef<RootMotionAccumulator | null>(null)
-  const revealedRef = useRef(false)
+  const posedRef = useRef(false)
   const emotionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // Drives <primitive visible={...}>: false until the first pose is applied.
-  // Per-instance state — key={vrmUrl} remounts reset it on model switch.
-  const [revealed, setRevealed] = useState(false)
+  // Per-instance state — key={vrmUrl} remounts resets these on model switch.
+  // `posed`: the first animation pose has reached the bones.
+  const [posed, setPosed] = useState(false)
+  // `avatarAttached`: AvatarController exists, so eye/head follow is driving.
+  const [avatarAttached, setAvatarAttached] = useState(false)
+
+  /**
+   * Reveal needs BOTH conditions, not just a pose.
+   *
+   * AvatarController is built behind `await loadProfileAsync(...)`, a network
+   * request, while the greeting clip starts as soon as it is retargeted. Showing
+   * the model on the pose alone exposed that gap: for its duration nothing holds
+   * Neck/Head, so the greeting clip's own head track shows through — the head
+   * leans down — and then snaps straight the moment HeadController attaches.
+   * A warm HTTP cache shrinks the gap to nothing, which is why a second refresh
+   * "fixed" it and why HMR (VRM served instantly from the useLoader cache, profile
+   * still refetched) made it easiest to reproduce. Waiting costs one small request
+   * that already falls back rather than failing, behind a spinner that is up
+   * anyway for the 10-18 MB model download.
+   */
+  const revealed = posed && avatarAttached
   // Also kept in state so the boot effect re-runs when the controller is swapped.
   const [animController, setAnimController] = useState<AnimationController | null>(null)
   const [registry, setRegistry] = useState<AnimationRegistry | null>(null)
@@ -159,6 +179,14 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
     setClipInfoRef.current = setClipInfo
   }, [onReady, setClipInfo])
 
+  // Single source of truth for the loading overlay: it hides exactly when the
+  // model becomes visible. Previously readiness was pushed from three different
+  // places (clip callback, effect body, effect cleanup), which is how it could
+  // drift from what <primitive visible> was actually doing.
+  useEffect(() => {
+    onReadyRef.current(revealed)
+  }, [revealed])
+
   // Facial-animation controller lifecycle: attach on VRM load, detach on
   // model change / unmount. Kept out of React state — this ref IS the handle
   // (facial-animation-plan.md §8 rules 2-4).
@@ -170,30 +198,49 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
     if (!vrm) return
     const abort = new AbortController()
     let controller: AvatarController | null = null
+    let prefetchIdle: { cancel: () => void } | null = null
 
     void (async () => {
       let profile
       try {
         profile = await loadProfileAsync(modelId, abort.signal)
-      } catch {
-        return // aborted — the model changed or the component unmounted
+      } catch (err) {
+        // loadProfileAsync rethrows ONLY AbortError — every other failure falls
+        // back to the bundled registry (AvatarProfile.ts:131-136). That used to
+        // be a detail; now that reveal waits on this effect it is load-bearing,
+        // so an unexpected throw must release the gate rather than strand the
+        // model behind the loading overlay forever.
+        if (!abort.signal.aborted) {
+          console.error('[avatar] profile load failed — revealing without facial controller', err)
+          setAvatarAttached(true)
+        }
+        return
       }
       if (abort.signal.aborted) return
 
       controller = new AvatarController(vrm, profile)
       avatarControllerRef.current = controller
       avatarRef.current = controller
+      setAvatarAttached(true)
+      // The profile is what declares this character's gestures, so this is the
+      // first moment the set is known. Warming them on idle keeps the first
+      // click off the fetch-and-retarget path (111-214 ms, measured in
+      // AnimationRegistry) — the whole reason gestures are declared rather than
+      // named ad-hoc at the moment of the click.
+      prefetchIdle = scheduleIdle(prefetchGestures)
     })()
 
     return () => {
       abort.abort()
+      prefetchIdle?.cancel()
+      setAvatarAttached(false)
       if (controller) {
         controller.detach()
         if (avatarRef.current === controller) avatarRef.current = null
         avatarControllerRef.current = null
       }
     }
-  }, [vrm, modelId, avatarRef])
+  }, [vrm, modelId, avatarRef, prefetchGestures])
 
   // Animation FSM lifecycle. The registry is per-VRM because clips are
   // retargeted against a specific skeleton (plan lỗi #6); a new instance per
@@ -205,12 +252,11 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
     const controller = new AnimationController(vrm, registry, {
       onClipApplied: (info) => {
         setClipInfoRef.current({ tracks: info.tracks, duration: info.duration })
-        // Reveal only once an actual pose has reached the bones. Event-driven
-        // readiness — never a timed wait.
-        if (!revealedRef.current) {
-          revealedRef.current = true
-          setRevealed(true)
-          onReadyRef.current(true)
+        // Record that a real pose has reached the bones. Event-driven — never a
+        // timed wait. Reveal itself is derived from this plus the avatar attach.
+        if (!posedRef.current) {
+          posedRef.current = true
+          setPosed(true)
         }
         // Schedule emotion at midpoint of greeting clip (plan greeting-midpoint-emotion).
         if (info.state === 'greeting') {
@@ -241,7 +287,6 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
     setAnimController(controller)
     setRegistry(registry)
     const detach = attachControllers(controller, registry)
-    onReadyRef.current(false)
 
     return () => {
       if (emotionTimerRef.current) clearTimeout(emotionTimerRef.current)
@@ -250,9 +295,8 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
       animControllerRef.current = null
       setAnimController(null)
       setRegistry(null)
-      revealedRef.current = false
-      setRevealed(false)
-      onReadyRef.current(false)
+      posedRef.current = false
+      setPosed(false)
     }
   }, [vrm, vrmUrl, attachControllers])
 
@@ -609,8 +653,135 @@ return (
         maxDistance={cameraConfig.maxDistance}
         target={[0, 0, 0]}
       />
+      <BodyPartClickLogger vrmRef={vrmRef} />
     </>
   )
+}
+
+/* ────────────────────────── Body-part picking ────────────────────── */
+
+/** Pointer travel, in CSS px, still counted as a click rather than a drag. */
+const DRAG_SLOP_PX = 5
+
+/**
+ * Turns a click on the avatar into a `UserActivity`.
+ *
+ * This component knows which body part was hit and nothing else — not which
+ * animation plays, not which expression follows. It reports the interaction and
+ * `dispatchActivity` asks the character's own profile what that means, so a
+ * model can bring different reactions from the database without this file
+ * changing.
+ *
+ * The picking itself lives in BodyPartPicker (a GPU pick, not a raycast — see
+ * that file). What stays here is plumbing: rebuild the picker when the VRM is
+ * swapped, keep its one-off vertex pass off the frame that swapped the model in,
+ * and tell a click apart from a camera drag.
+ */
+function BodyPartClickLogger({ vrmRef }: { vrmRef: React.MutableRefObject<VRM | null> }) {
+  const { camera, gl } = useThree()
+  const { dispatchActivity } = useMotion()
+  const pickerRef = useRef<BodyPartPicker | null>(null)
+  const builtForRef = useRef<VRM | null>(null)
+  const idleRef = useRef<{ cancel: () => void } | null>(null)
+
+  // The VRM arrives — and is replaced on a model switch — through a ref, so
+  // there is no render to hang an effect on. One identity compare per frame is
+  // cheaper than routing the model through context just for this.
+  useFrame(() => {
+    const vrm = vrmRef.current
+    if (vrm === builtForRef.current) return
+    builtForRef.current = vrm
+
+    idleRef.current?.cancel()
+    idleRef.current = null
+    pickerRef.current?.dispose()
+    pickerRef.current = null
+    if (!vrm) return
+
+    const picker = new BodyPartPicker(vrm, gl)
+    pickerRef.current = picker
+    // Tagging every vertex is a single pass over the whole model. Same reasoning
+    // as the clip warm-up in AnimationRegistry: do it while nothing is waiting.
+    idleRef.current = scheduleIdle(() => {
+      idleRef.current = null
+      if (pickerRef.current !== picker) return
+      picker.build()
+      picker.warm(camera)
+    })
+  })
+
+  useEffect(() => {
+    const el = gl.domElement
+    // Where the gesture that is currently down began. A pointerup further than
+    // DRAG_SLOP_PX away was a camera orbit, not a click on the character.
+    let down: { id: number; x: number; y: number } | null = null
+
+    const onDown = (e: PointerEvent) => {
+      down = { id: e.pointerId, x: e.clientX, y: e.clientY }
+    }
+
+    const onUp = (e: PointerEvent) => {
+      const start = down
+      down = null
+      if (!start || start.id !== e.pointerId) return
+      if (Math.abs(e.clientX - start.x) > DRAG_SLOP_PX) return
+      if (Math.abs(e.clientY - start.y) > DRAG_SLOP_PX) return
+
+      const picker = pickerRef.current
+      if (!picker?.isReady) return
+      const rect = el.getBoundingClientRect()
+
+      void picker.pickAsync(e.clientX - rect.left, e.clientY - rect.top, camera).then((part) => {
+        // `blocking` is what the click costs the main thread; `latency` includes
+        // the GPU fence wait, which happens off-thread. See BodyPartPicker.timings.
+        const { render, blocking, latency } = picker.timings
+        console.log(
+          '[bodyPart]',
+          part ?? 'miss',
+          `blocking ${blocking.toFixed(2)}ms (render ${render.toFixed(2)}) · answer in ${latency.toFixed(2)}ms`,
+        )
+        if (part) void dispatchActivity(bodyPartClick(part))
+      })
+    }
+
+    const onCancel = () => {
+      down = null
+    }
+
+    // Capture phase, like the click ripple: OrbitControls calls
+    // setPointerCapture on pointerdown, and this sidesteps any question of what
+    // it does with the event on the way back up.
+    el.addEventListener('pointerdown', onDown, { capture: true })
+    el.addEventListener('pointerup', onUp, { capture: true })
+    el.addEventListener('pointercancel', onCancel, { capture: true })
+    return () => {
+      el.removeEventListener('pointerdown', onDown, { capture: true })
+      el.removeEventListener('pointerup', onUp, { capture: true })
+      el.removeEventListener('pointercancel', onCancel, { capture: true })
+    }
+  }, [camera, gl, dispatchActivity])
+
+  useEffect(
+    () => () => {
+      idleRef.current?.cancel()
+      idleRef.current = null
+      pickerRef.current?.dispose()
+      pickerRef.current = null
+    },
+    [],
+  )
+
+  return null
+}
+
+/** requestIdleCallback with a setTimeout fallback, cancellable either way. */
+function scheduleIdle(task: () => void): { cancel: () => void } {
+  if (typeof requestIdleCallback === 'function') {
+    const handle = requestIdleCallback(task, { timeout: 2000 })
+    return { cancel: () => cancelIdleCallback(handle) }
+  }
+  const handle = setTimeout(task, 200)
+  return { cancel: () => clearTimeout(handle) }
 }
 
 /* ───────────────────────── Exported Component ────────────────────── */

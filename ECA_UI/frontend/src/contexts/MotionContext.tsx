@@ -10,10 +10,13 @@ import {
 } from 'react'
 import type { AvatarController } from '../avatar/AvatarController'
 import type { AnimationController } from '../lib/AnimationController'
+import { loaderForUrl } from '../lib/AnimationRegistry'
 import type { AnimationRegistry } from '../lib/AnimationRegistry'
+import { ActivityDispatcher } from '../avatar/ActivityDispatcher'
+import type { UserActivity } from '../avatar/userActivity'
 import { CameraController } from '../lib/CameraController'
 import { STATE_OPTIONS, type CameraMode, type CharState } from '../lib/AnimationStates'
-import { MOTION_FILES, type MotionFile } from '../lib/motionAssets'
+import { MOTION_FILES, resolveMotionByName, type MotionFile } from '../lib/motionAssets'
 import { fetchCharacters, isCompatible, type Character } from '../lib/characters'
 import { useAutoAfterTrigger } from '../hooks/useFsmTriggers'
 import instrumentalUrl from '../asset/audio/instrumental-ver.mp3'
@@ -71,6 +74,21 @@ interface MotionContextType {
   setCameraMode: (mode: CameraMode) => void
   cameraConfig: CameraConfig
   setCameraConfig: (config: CameraConfig) => void
+
+  /**
+   * Report something the user did and let the CHARACTER decide what it means.
+   *
+   * The caller names an interaction, never an animation or an emotion: the
+   * binding lives in the character's profile, so a model can bring its own
+   * reactions from the database without any call site changing. Resolves true
+   * when the character actually reacted.
+   */
+  dispatchActivity: (activity: UserActivity) => Promise<boolean>
+  /**
+   * Warm this character's gestures during idle time. Call once the avatar has
+   * attached — that is when its gesture set becomes known.
+   */
+  prefetchGestures: () => void
 
   /**
    * Wiring hook for the component that owns the VRM: it creates the controller
@@ -155,6 +173,33 @@ export function MotionProvider({ children }: { children: ReactNode }) {
   const [currentState, setCurrentState] = useState<CharState>('idle')
   const registryRef = useRef<AnimationRegistry | null>(null)
   const avatarRef = useRef<AvatarController | null>(null)
+  // Mirrors `animController` for consumers that must read it outside a render —
+  // the dispatcher below is built once and would otherwise close over the first
+  // (null) value forever.
+  const animControllerRef = useRef<AnimationController | null>(null)
+
+  /**
+   * User activity -> what this character does about it (ActivityDispatcher).
+   *
+   * Built here because this is where all three handles converge: the avatar
+   * controller carries the profile with the bindings, the animation controller
+   * runs the clip, and the registry resolves it. Reading each through a getter
+   * keeps a click from driving a model that has since been swapped out.
+   */
+  const dispatcherRef = useRef<ActivityDispatcher | null>(null)
+  // Built on first use rather than in a useMemo or an effect. A useMemo factory
+  // that closes over refs reads as a render-time ref access; an effect would not
+  // have run yet when a child's effect calls prefetchGestures, since effects
+  // fire child-first. Lazy init depends on neither.
+  const getDispatcher = useCallback(() => {
+    dispatcherRef.current ??= new ActivityDispatcher({
+      getAvatar: () => avatarRef.current,
+      getAnim: () => animControllerRef.current,
+      getRegistry: () => registryRef.current,
+      resolveBuiltIn: resolveMotionByName,
+    })
+    return dispatcherRef.current
+  }, [])
 
   // Outlives model swaps: camera framing is a property of the FSM state, not of
   // the loaded VRM.
@@ -164,6 +209,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
   const attachControllers = useCallback(
     (controller: AnimationController, registry: AnimationRegistry) => {
       setAnimController(controller)
+      animControllerRef.current = controller
       registryRef.current = registry
       setCurrentState(controller.currentState)
 
@@ -175,6 +221,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
       return () => {
         off()
         setAnimController((prev) => (prev === controller ? null : prev))
+        if (animControllerRef.current === controller) animControllerRef.current = null
         if (registryRef.current === registry) registryRef.current = null
       }
     },
@@ -205,11 +252,21 @@ export function MotionProvider({ children }: { children: ReactNode }) {
       if (!registry || !animController || !url) return false
       // Registry first: `transitionTo('exercise')` resolves the clip through it,
       // so updating afterwards would play the previous motion.
-      registry.update('exercise', url)
+      // The loader is inferred rather than assumed: the debug selector lists the
+      // .fbx files alongside the .bvh ones, and every dynamic clip used to be
+      // loaded as SMPL-X BVH regardless.
+      registry.update('exercise', { url, loader: loaderForUrl(url), retarget: 'smplx' })
       return animController.transitionTo('exercise')
     },
     [animController],
   )
+
+  const dispatchActivity = useCallback(
+    (activity: UserActivity) => getDispatcher().dispatch(activity),
+    [getDispatcher],
+  )
+
+  const prefetchGestures = useCallback(() => getDispatcher().prefetch(), [getDispatcher])
 
   const setCameraMode = useCallback(
     (mode: CameraMode) => cameraController.setMode(mode),
@@ -288,6 +345,8 @@ export function MotionProvider({ children }: { children: ReactNode }) {
       setCameraMode,
       cameraConfig,
       setCameraConfig,
+      dispatchActivity,
+      prefetchGestures,
       attachControllers,
       isPlaying,
       setIsPlaying,
@@ -312,6 +371,8 @@ export function MotionProvider({ children }: { children: ReactNode }) {
       setCameraMode,
       cameraConfig,
       setCameraConfig,
+      dispatchActivity,
+      prefetchGestures,
       attachControllers,
       isPlaying,
       speed,
