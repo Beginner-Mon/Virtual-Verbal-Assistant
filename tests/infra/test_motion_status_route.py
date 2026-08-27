@@ -45,7 +45,11 @@ def agent_template():
     app = cdk.App(context={
         "motion_public_key_pem": _DUMMY_PEM,
         "agent_image_tag": "deadbeef",
-        "motion_hash_secret": "test-hmac-secret",
+        # R24: no raw secret context flags — motion_hash_secret_param and
+        # motion_signing_key_param both fall back to their module defaults,
+        # exactly as a real deploy that only overrides motion_key_pair_id
+        # would. That is the point of this fixture: prove the stack needs no
+        # secret value at synth time at all.
         "motion_key_pair_id": "K2EXAMPLE",
     })
     asset_stack = AssetStack(app, "Assets", env=_ENV)
@@ -140,7 +144,7 @@ def test_agent_lambda_env_carries_motion_config(agent_template):
     agent_template.has_resource_properties("AWS::Lambda::Function", Match.object_like({
         "Environment": {"Variables": Match.object_like({
             "MOTION_TABLE": "vva-motion-jobs",
-            "MOTION_HASH_SECRET": "test-hmac-secret",
+            "MOTION_HASH_SECRET_PARAM": "/vva/motion/hash-secret",
             "MOTION_SIGNING_KEY_PARAM": "/vva/motion/signing-key-pem",
             "MOTION_KEY_PAIR_ID": "K2EXAMPLE",
             # A CDK token (Fn::Join over the distribution's domain name), not
@@ -162,3 +166,22 @@ def test_signing_key_param_never_holds_the_key_itself(agent_template):
     serialized = str(body)
     assert "BEGIN RSA PRIVATE KEY" not in serialized
     assert "BEGIN PRIVATE KEY" not in serialized
+
+
+@pytest.mark.unit
+def test_hash_secret_never_lands_in_template_plaintext(agent_template):
+    """Ruling R24: MOTION_HASH_SECRET (a raw value) must never be a Lambda
+    env var — only MOTION_HASH_SECRET_PARAM (the SSM parameter NAME) is.
+    Mirrors test_signing_key_param_never_holds_the_key_itself's negative
+    assertion, for the second of the brief's three "sensitive, from SSM"
+    values. An earlier version of this stack put the raw secret behind a
+    `motion_hash_secret` CDK context flag, which this test would have caught:
+    that flag is gone entirely now, not just unused by this fixture."""
+    body = agent_template.to_json()
+    fn = next(
+        r for r in body["Resources"].values()
+        if r["Type"] == "AWS::Lambda::Function"
+    )
+    env_vars = fn["Properties"]["Environment"]["Variables"]
+    assert "MOTION_HASH_SECRET" not in env_vars
+    assert env_vars["MOTION_HASH_SECRET_PARAM"] == "/vva/motion/hash-secret"

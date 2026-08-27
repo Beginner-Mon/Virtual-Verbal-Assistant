@@ -28,6 +28,7 @@ import asyncio
 import json
 import os
 import time
+from functools import lru_cache
 
 import boto3
 from langchain_core.messages import ToolMessage
@@ -62,6 +63,54 @@ def _table():
     if _TABLE is None:
         _TABLE = boto3.resource("dynamodb").Table(os.environ["MOTION_TABLE"])
     return _TABLE
+
+
+def _hash_secret_from_ssm(param: str) -> str | None:
+    """Read an SSM SecureString. Cached per parameter name — same shape as
+    llm.py's `_secret_from_ssm`, duplicated locally rather than imported:
+    llm.py pulls in `langchain_openai` at module scope, and this module has no
+    other reason to carry that weight.
+
+    Not called at all in production's common case if MOTION_HASH_SECRET (the
+    raw value) is set directly — see `_resolve_hash_secret` below. Reachable
+    only when a real deployment sets MOTION_HASH_SECRET_PARAM instead
+    (ruling R24: agent_stack.py never bakes this secret into the Lambda's
+    environment / the CloudFormation template — only the SSM parameter NAME
+    does).
+    """
+    try:
+        value = boto3.client("ssm").get_parameter(
+            Name=param, WithDecryption=True,
+        )["Parameter"]["Value"]
+        logger.info("kimodo_hash_secret_loaded_from_ssm", extra={"param": param})
+        return value
+    except Exception as exc:                                    # noqa: BLE001
+        logger.warning("kimodo_hash_secret_ssm_failed", extra={
+            "param": param, "error": str(exc),
+        })
+        return None
+
+
+_hash_secret_from_ssm_cached = lru_cache(maxsize=1)(_hash_secret_from_ssm)
+
+
+def _resolve_hash_secret() -> str | None:
+    """MOTION_HASH_SECRET (the raw value) wins when set — the same
+    env-wins-over-SSM precedence llm.py's `_resolve_api_key` uses, so a
+    developer or a test can set it directly with no AWS involved. This is
+    NOT cached: it must see monkeypatch.setenv() changes across test runs,
+    unlike the SSM branch below (a real network call, cached since the
+    secret cannot rotate mid-invocation anyway).
+
+    Production sets only MOTION_HASH_SECRET_PARAM (ruling R24) — the raw
+    value never appears in this Lambda's environment or the CloudFormation
+    template, only the SSM parameter name does.
+    """
+    direct = os.environ.get("MOTION_HASH_SECRET")
+    if direct:
+        return direct
+    param = os.environ.get("MOTION_HASH_SECRET_PARAM")
+    return _hash_secret_from_ssm_cached(param) if param else None
 
 
 def _msg(payload: dict) -> dict:
@@ -103,8 +152,19 @@ async def kimodo_node(state: AgentState, config: RunnableConfig) -> dict:
         logger.warning("kimodo_worker_unavailable", extra={"request_id": request_id})
         return _msg({"state": "unavailable"})
 
+    # asyncio.to_thread: on a cold Lambda this may be a real SSM network call
+    # (_hash_secret_from_ssm_cached), not just an env read — see
+    # _resolve_hash_secret's docstring.
+    hash_secret = await asyncio.to_thread(_resolve_hash_secret)
+    if not hash_secret:
+        # Misconfigured deployment (neither MOTION_HASH_SECRET nor a working
+        # MOTION_HASH_SECRET_PARAM) — degrade the same way a dead worker does
+        # rather than raise. Motion is a non-critical feature of the turn.
+        logger.error("kimodo_hash_secret_unavailable", extra={"request_id": request_id})
+        return _msg({"state": "unavailable"})
+
     job_id = compute_job_id(
-        os.environ["MOTION_HASH_SECRET"], resolved_query,
+        hash_secret, resolved_query,
         DEFAULT_DURATION, DEFAULT_STEPS, MODEL,
     )
 

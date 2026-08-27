@@ -79,6 +79,17 @@ _MOTION_TABLE_NAME = "vva-motion-jobs"
 # template.
 _DEFAULT_MOTION_SIGNING_KEY_PARAM = "/vva/motion/signing-key-pem"
 
+# Ruling R24: same treatment as the signing key above, and for the same reason
+# — the brief that introduced this stack's motion wiring named it explicitly
+# as one of three secrets to come "from SSM", and an earlier version of this
+# file baked the raw value into a CDK context flag instead, which lands it in
+# the Lambda's Environment.Variables as a literal in the CloudFormation
+# template. This env var carries the SSM SecureString parameter NAME;
+# nodes/kimodo.py resolves it at call time (`_resolve_hash_secret` /
+# `_hash_secret_from_ssm_cached`), env-first-then-SSM, the same precedence
+# llm.py's `_resolve_api_key` uses.
+_DEFAULT_MOTION_HASH_SECRET_PARAM = "/vva/motion/hash-secret"
+
 # The POOLED Neon endpoint, same as the CRUD function and for the same measured
 # reason — see the long note in crud_api_stack.py. A Lambda scales out to N
 # ephemeral containers each opening its own connections, which is exactly the
@@ -187,20 +198,18 @@ class AgentStack(Stack):
         motion_signing_key_param = (
             ctx("motion_signing_key_param") or _DEFAULT_MOTION_SIGNING_KEY_PARAM
         )
-        # Deploy-time context, NOT an SSM param name. Two different reasons:
-        #   - motion_hash_secret: kimodo_node (nodes/kimodo.py, Task 8) already
-        #     reads os.environ["MOTION_HASH_SECRET"] directly — the actual
-        #     value, not a param name — so this stack has to supply it as one.
-        #     Low blast radius if it ever leaked via the template: it only
-        #     lets someone compute a valid job_id for a guessable prompt,
-        #     which gates nothing more than the dedupe cache.
-        #   - motion_key_pair_id: not a secret at all, it names which trusted
-        #     public key CloudFront should verify against — the public half
-        #     asset_stack.py registers. It only exists after VvaAssetStack has
-        #     been deployed once (CloudFront assigns it), so it is supplied
-        #     the same way motion_public_key_pem is: a `-c` flag at deploy
-        #     time, not a construct reference.
-        motion_hash_secret = ctx("motion_hash_secret") or ""
+        # R24: same *_PARAM shape as motion_signing_key_param above — the raw
+        # secret never becomes a CDK context value or a template literal, only
+        # its SSM parameter name does. nodes/kimodo.py resolves it at call time.
+        motion_hash_secret_param = (
+            ctx("motion_hash_secret_param") or _DEFAULT_MOTION_HASH_SECRET_PARAM
+        )
+        # motion_key_pair_id is NOT a secret — it names which trusted public
+        # key CloudFront should verify against, the public half asset_stack.py
+        # registers. It only exists after VvaAssetStack has been deployed once
+        # (CloudFront assigns it), so it is supplied the same way
+        # motion_public_key_pem is: a `-c` flag at deploy time, not a construct
+        # reference.
         motion_key_pair_id = ctx("motion_key_pair_id") or ""
 
         self.cognito_pool_id = ctx("cognito_user_pool_id") or _DEFAULT_COGNITO_POOL_ID
@@ -239,15 +248,14 @@ class AgentStack(Stack):
                 # settings are baked into the image: they describe what the
                 # image IS, not where it is deployed. See agenticRAG/Dockerfile.
                 #
-                # ── Motion (Task 9) ────────────────────────────────────
+                # ── Motion (Task 9, R24) ────────────────────────────────
                 # Fixed name, not a construct reference — see _MOTION_TABLE_NAME.
                 "MOTION_TABLE": _MOTION_TABLE_NAME,
-                # HMAC secret nodes/kimodo.py uses to compute job ids. Raw
-                # value, not a *_PARAM name — see the comment above this
-                # block for why this one differs from MOTION_SIGNING_KEY.
-                "MOTION_HASH_SECRET": motion_hash_secret,
-                # SSM parameter NAME, resolved by motion_status.py at call
-                # time. The private key itself never appears here.
+                # SSM parameter NAMES only, for both secrets — nodes/kimodo.py
+                # and motion_status.py resolve them at call time. Neither raw
+                # value ever appears in this Lambda's environment or the
+                # CloudFormation template (ruling R24).
+                "MOTION_HASH_SECRET_PARAM": motion_hash_secret_param,
                 "MOTION_SIGNING_KEY_PARAM": motion_signing_key_param,
                 "MOTION_KEY_PAIR_ID": motion_key_pair_id,
                 "ASSET_BASE_URL": asset_base_url or "",
@@ -286,7 +294,10 @@ class AgentStack(Stack):
             actions=["ssm:GetParameter"],
             resources=[
                 f"arn:aws:ssm:{self.region}:{self.account}:parameter{param}"
-                for param in (dsn_param, deepseek_param, gemini_param, motion_signing_key_param)
+                for param in (
+                    dsn_param, deepseek_param, gemini_param,
+                    motion_signing_key_param, motion_hash_secret_param,
+                )
             ],
         ))
         # Scoped by kms:ViaService so this grant cannot be turned on anything

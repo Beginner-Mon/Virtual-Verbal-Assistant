@@ -99,15 +99,17 @@ crud_api_stack = CrudApiStack(app, "VvaCrudApiStack", env=env)
 # the route later is additive; that is why it is optional rather than required.
 #
 # asset_base_url comes from AssetStack (constructed above, R6): motion_status.py
-# signs CloudFront URLs against this origin. The two other motion-related
-# secrets (the CloudFront private signing key's SSM parameter name, and the
-# HMAC job-id secret) are CDK context flags rather than constructor params —
-# see agent_stack.py's docstring for why:
+# signs CloudFront URLs against this origin. Everything motion-related that is
+# actually a secret (the CloudFront private signing key, the HMAC job-id
+# secret) is stored in SSM as a SecureString and reaches the Lambda only as a
+# *_PARAM name (ruling R24) — never a CDK context flag, never a template
+# literal. motion_key_pair_id is the one non-secret exception (it just names
+# which trusted public key to verify against) and IS a context flag:
 #
 #     cdk deploy VvaAgentStack -c agent_image_tag=<sha> \
-#         -c motion_hash_secret="$(...)" \
 #         -c motion_key_pair_id="$(...)" \
-#         -c motion_signing_key_param=/vva/motion/signing-key-pem
+#         -c motion_signing_key_param=/vva/motion/signing-key-pem \
+#         -c motion_hash_secret_param=/vva/motion/hash-secret
 agent_stack = AgentStack(
     app, "VvaAgentStack",
     asset_base_url=f"https://{asset_stack.distribution.distribution_domain_name}",
