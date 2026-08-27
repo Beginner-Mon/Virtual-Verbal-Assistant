@@ -28,6 +28,33 @@ Two things worth knowing before editing:
 
 The bucket blocks all public access; CloudFront reaches it through Origin
 Access Control. Requesting the S3 URL directly returns 403 by design.
+
+MOTION FILES (Task 7) are the first user-derived artifacts on this bucket —
+everything above is a static app asset uploaded by a script, not produced at
+request time by a stranger's job. That distinction is why they get two things
+the VRM files do not:
+
+1. **A lifecycle rule expiring `motions/` after 1 day.** The GPU worker writes
+   `motions/<job_id>.bvh` / `.npz` per job; nothing deletes them otherwise, and
+   unlike VRM keys they are not content-hashed and reused, so they would
+   accumulate forever. `motions-pinned/` deliberately gets NO rule: a future
+   "user keeps this motion" feature is meant to be a `CopyObject` into that
+   prefix, not an edit to a lifecycle rule that is already running against
+   live data.
+
+2. **A dedicated `motions/*` cache behavior requiring a CloudFront signed
+   URL** (trusted key group), because these files are per-job and not meant
+   to be publicly guessable/fetchable the way a shared VRM model is. The
+   behavior also disables 404 caching (`error_caching_min_ttl=0`): a frontend
+   that polls and fetches before the worker's upload lands would otherwise
+   get its 404 cached by CloudFront, poisoning that key even after the file
+   shows up in S3.
+
+The public key used to verify signed URLs is passed as CDK context
+(`motion_public_key_pem`), not read from SSM inside this stack — see the
+`raise ValueError` below and crud_api_stack.py's Cognito-id check for the
+pattern this follows: a required deploy-time input that is missing must fail
+at synth, not deploy something silently wrong.
 """
 
 from __future__ import annotations
@@ -56,6 +83,24 @@ class AssetStack(Stack):
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
+        ctx = self.node.try_get_context
+        motion_public_key_pem = ctx("motion_public_key_pem")
+
+        # No fallback default (unlike the Cognito ids in crud_api_stack.py):
+        # those are public, checked-in-anyway values; a signing key is not.
+        # Deploying with the wrong one silently, or omitting it and letting
+        # CDK invent something, both fail worse than refusing to synth.
+        if not motion_public_key_pem:
+            raise ValueError(
+                "VvaAssetStack needs the CloudFront signing public key for "
+                "motions/*. Pass:\n"
+                "  cdk deploy VvaAssetStack -c motion_public_key_pem=\"$(cat "
+                "motion_signing_key.pub)\"\n"
+                "This verifies signed URLs the agent hands out for GPU-rendered "
+                "motion files; without it those files would need to be public, "
+                "which they are not meant to be."
+            )
+
         allowed_origins = resolve_origins(self.node)
 
         # ── Bucket ──────────────────────────────────────────────────────
@@ -68,6 +113,17 @@ class AssetStack(Stack):
             versioned=False,   # keys are content-hashed; versioning adds nothing
             removal_policy=RemovalPolicy.RETAIN,
             auto_delete_objects=False,
+        )
+
+        # Ephemeral motion renders expire after 1 day. Scoped to the `motions/`
+        # prefix only — everything else in this bucket is a VRM model asset that
+        # must never expire. `motions-pinned/` intentionally has no rule; see the
+        # module docstring for why.
+        self.bucket.add_lifecycle_rule(
+            id="ExpireEphemeralMotions",
+            prefix="motions/",
+            expiration=Duration.days(1),
+            enabled=True,
         )
 
         # ── Response headers (CORS) ─────────────────────────────────────
@@ -84,6 +140,21 @@ class AssetStack(Stack):
                 access_control_max_age=Duration.hours(1),
                 origin_override=True,
             ),
+        )
+
+        # ── Signed-URL key group (motions/* only) ───────────────────────
+        #
+        # Registers the public key CloudFront verifies signed URLs against.
+        # The agent signs URLs with the matching private key (kept outside CDK
+        # entirely — it never appears here) when it hands a rendered motion
+        # back to a caller.
+        motion_public_key = cloudfront.PublicKey(
+            self, "MotionSigningKey",
+            encoded_key=motion_public_key_pem,
+        )
+        self.motion_key_group = cloudfront.KeyGroup(
+            self, "MotionKeyGroup",
+            items=[motion_public_key],
         )
 
         # ── Distribution ────────────────────────────────────────────────
@@ -104,6 +175,29 @@ class AssetStack(Stack):
                 response_headers_policy=cors_policy,
                 compress=True,
             ),
+            # motions/* is its own behavior, not folded into the default one,
+            # because it is the only path that needs a trusted key group — a
+            # signed-URL requirement on the VRM paths would break every
+            # existing caller of the unsigned model URLs.
+            additional_behaviors={
+                "motions/*": cloudfront.BehaviorOptions(
+                    origin=origins.S3BucketOrigin.with_origin_access_control(self.bucket),
+                    viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                    allowed_methods=cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
+                    cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+                    response_headers_policy=cors_policy,
+                    compress=True,   # .bvh is plain text and compresses well
+                    trusted_key_groups=[self.motion_key_group],
+                ),
+            },
+            error_responses=[
+                # Without this, a frontend that polls and fetches a motion URL
+                # before the GPU worker's upload lands gets a 404 that
+                # CACHING_OPTIMIZED would otherwise cache for its default TTL —
+                # poisoning that key at the edge even after the file shows up
+                # in S3 moments later.
+                cloudfront.ErrorResponse(http_status=404, ttl=Duration.seconds(0)),
+            ],
         )
 
         # A CfnPermission used to sit here, granting CloudFront

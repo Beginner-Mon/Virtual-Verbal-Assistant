@@ -66,6 +66,13 @@ character_stack = CharacterStack(app, "VvaCharacterStack", env=env)
 
 # Independent of CharacterStack since 20-08: the catalog moved to the REST API,
 # so this distribution serves only the .vrm files from S3 and needs no Lambda.
+#
+# Since Task 7 it also serves motions/* (GPU-rendered clips), which are reachable
+# only via CloudFront signed URLs — needs the public half of the signing keypair:
+#
+#     cdk deploy VvaAssetStack -c motion_public_key_pem="$(cat motion_signing_key.pub)"
+#
+# Missing the flag raises at synth; see asset_stack.py's docstring for why.
 asset_stack = AssetStack(app, "VvaAssetStack", env=env)
 
 # ── Track 2: session + user-memory CRUD ─────────────────────────────
