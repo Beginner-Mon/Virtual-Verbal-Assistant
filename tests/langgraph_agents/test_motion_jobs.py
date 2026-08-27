@@ -1,7 +1,9 @@
 import pytest
+import time as _time
 
 from vva_motion.jobs import (
     canonical_request, compute_job_id, enqueue,
+    MAX_QUEUE_DEPTH, queue_depth, read_status, worker_alive, write_heartbeat,
 )
 
 SECRET = "test-secret"
@@ -39,3 +41,44 @@ def test_enqueue_dedupes(table):
     assert enqueue(table, jid, prompt="nâng hai tay", session_id="s1") == "created"
     assert enqueue(table, jid, prompt="nâng hai tay", session_id="s2") == "exists"
     assert table.scan()["Count"] == 1
+
+
+@pytest.mark.unit
+def test_lease_expired_reads_as_failed(table):
+    """Cùng một trạng thái row, chạy hai lần: heartbeat tươi (worker treo) và
+    heartbeat cũ (worker chết). CẢ HAI phải ra failed — luật lease đứng độc lập
+    với heartbeat."""
+    table.put_item(Item={
+        "job_id": "j1", "status": "processing", "created_at": 0,
+        "lease_until": int(_time.time()) - 1, "retry_count": 0,
+    })
+    write_heartbeat(table)                       # heartbeat TƯƠI
+    assert read_status(table, "j1")["status"] == "failed"
+
+    table.delete_item(Key={"job_id": "worker#heartbeat"})   # heartbeat CŨ
+    assert read_status(table, "j1")["status"] == "failed"
+
+
+@pytest.mark.unit
+def test_lease_still_valid_reads_as_processing(table):
+    table.put_item(Item={
+        "job_id": "j2", "status": "processing", "created_at": 0,
+        "lease_until": int(_time.time()) + 60, "retry_count": 0,
+    })
+    assert read_status(table, "j2")["status"] == "processing"
+
+
+@pytest.mark.unit
+def test_worker_alive_reflects_heartbeat(table):
+    assert worker_alive(table) is False
+    write_heartbeat(table)
+    assert worker_alive(table) is True
+
+
+@pytest.mark.unit
+def test_queue_depth_counts_only_queued(table):
+    for i in range(3):
+        enqueue(table, f"q{i}", prompt="p")
+    table.put_item(Item={"job_id": "done1", "status": "done", "created_at": 0})
+    assert queue_depth(table) == 3
+    assert queue_depth(table) < MAX_QUEUE_DEPTH
