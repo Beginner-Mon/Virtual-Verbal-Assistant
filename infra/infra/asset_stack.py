@@ -51,15 +51,32 @@ the VRM files do not:
    shows up in S3.
 
 The public key used to verify signed URLs is passed as CDK context
-(`motion_public_key_pem`), not read from SSM inside this stack — see the
-`raise ValueError` below and crud_api_stack.py's Cognito-id check for the
-pattern this follows: a required deploy-time input that is missing must fail
-at synth, not deploy something silently wrong.
+(`motion_public_key_pem`), not read from SSM inside this stack. When it is
+absent this stack reports a **stack-scoped** synth error via
+`Annotations.of(self).add_error(...)`, not a Python `raise`. `app.py` builds
+every stack unconditionally on every `cdk` invocation (`cdk.json`'s `app`
+entry is `python app.py`, run for `cdk list`, `cdk diff`, `cdk deploy
+VvaVpcStack` — anything), so a `raise` here would crash commands that have
+nothing to do with this stack. `Annotations.add_error` is the mechanism CDK
+built for exactly this: the CLI fails `cdk synth`/`cdk deploy` for the stack
+that has the error, and leaves every other stack's commands working. See
+app.py's comment above `CrudApiStack(...)` for the same "unconditional
+construction" constraint solved a different way (a public default value)
+that doesn't apply here because there is no safe default for a signing key.
+
+An annotation alone doesn't stop Python from continuing to run this
+constructor, and `cloudfront.PublicKey` cannot accept a missing key. So when
+`motion_public_key_pem` is absent, the key group and the `motions/*` behavior
+are skipped entirely (see the `if motion_public_key_pem:` guard below) rather
+than built from a fabricated placeholder — this stack has no fake key
+material anywhere in it, and still produces a valid (VRM-only) template so
+the rest of the app keeps synthesizing.
 """
 
 from __future__ import annotations
 
 from aws_cdk import (
+    Annotations,
     CfnOutput,
     Duration,
     RemovalPolicy,
@@ -90,8 +107,15 @@ class AssetStack(Stack):
         # those are public, checked-in-anyway values; a signing key is not.
         # Deploying with the wrong one silently, or omitting it and letting
         # CDK invent something, both fail worse than refusing to synth.
+        #
+        # Annotations.add_error, NOT raise: app.py constructs this stack
+        # unconditionally on every `cdk` invocation, so raising here would
+        # break `cdk list`, `cdk diff`, `cdk deploy VvaVpcStack` — commands
+        # with nothing to do with motions. add_error fails cdk synth/deploy
+        # for THIS stack only; the CLI checks each target stack's own
+        # annotations. See the module docstring for the full reasoning.
         if not motion_public_key_pem:
-            raise ValueError(
+            Annotations.of(self).add_error(
                 "VvaAssetStack needs the CloudFront signing public key for "
                 "motions/*. Pass:\n"
                 "  cdk deploy VvaAssetStack -c motion_public_key_pem=\"$(cat "
@@ -148,16 +172,41 @@ class AssetStack(Stack):
         # The agent signs URLs with the matching private key (kept outside CDK
         # entirely — it never appears here) when it hands a rendered motion
         # back to a caller.
-        motion_public_key = cloudfront.PublicKey(
-            self, "MotionSigningKey",
-            encoded_key=motion_public_key_pem,
-        )
-        self.motion_key_group = cloudfront.KeyGroup(
-            self, "MotionKeyGroup",
-            items=[motion_public_key],
-        )
+        #
+        # Guarded on the key being present: with it absent, the Annotations
+        # error above already blocks `cdk deploy`/`cdk synth` for this stack,
+        # so there is nothing to gain from inventing a placeholder key here —
+        # and every alternative to skipping is either a jsii TypeError (None)
+        # or fabricated key material that shouldn't exist in this file at all.
+        self.motion_key_group = None
+        if motion_public_key_pem:
+            motion_public_key = cloudfront.PublicKey(
+                self, "MotionSigningKey",
+                encoded_key=motion_public_key_pem,
+            )
+            self.motion_key_group = cloudfront.KeyGroup(
+                self, "MotionKeyGroup",
+                items=[motion_public_key],
+            )
 
         # ── Distribution ────────────────────────────────────────────────
+
+        # motions/* is its own behavior, not folded into the default one,
+        # because it is the only path that needs a trusted key group — a
+        # signed-URL requirement on the VRM paths would break every existing
+        # caller of the unsigned model URLs. Only added when the key group
+        # exists; see the guard above.
+        additional_behaviors = {}
+        if self.motion_key_group is not None:
+            additional_behaviors["motions/*"] = cloudfront.BehaviorOptions(
+                origin=origins.S3BucketOrigin.with_origin_access_control(self.bucket),
+                viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                allowed_methods=cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
+                cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
+                response_headers_policy=cors_policy,
+                compress=True,   # .bvh is plain text and compresses well
+                trusted_key_groups=[self.motion_key_group],
+            )
 
         self.distribution = cloudfront.Distribution(
             self, "AssetDistribution",
@@ -175,27 +224,22 @@ class AssetStack(Stack):
                 response_headers_policy=cors_policy,
                 compress=True,
             ),
-            # motions/* is its own behavior, not folded into the default one,
-            # because it is the only path that needs a trusted key group — a
-            # signed-URL requirement on the VRM paths would break every
-            # existing caller of the unsigned model URLs.
-            additional_behaviors={
-                "motions/*": cloudfront.BehaviorOptions(
-                    origin=origins.S3BucketOrigin.with_origin_access_control(self.bucket),
-                    viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-                    allowed_methods=cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
-                    cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,
-                    response_headers_policy=cors_policy,
-                    compress=True,   # .bvh is plain text and compresses well
-                    trusted_key_groups=[self.motion_key_group],
-                ),
-            },
+            additional_behaviors=additional_behaviors,
             error_responses=[
-                # Without this, a frontend that polls and fetches a motion URL
-                # before the GPU worker's upload lands gets a 404 that
-                # CACHING_OPTIMIZED would otherwise cache for its default TTL —
-                # poisoning that key at the edge even after the file shows up
-                # in S3 moments later.
+                # Motivated by motions/*: a frontend that polls and fetches a
+                # motion URL before the GPU worker's upload lands gets a 404
+                # that CACHING_OPTIMIZED would otherwise cache for its default
+                # TTL, poisoning that key at the edge even after the file
+                # shows up in S3 moments later.
+                #
+                # CloudFront has no per-behavior error-response setting —
+                # error_responses is DISTRIBUTION-WIDE, so this also disables
+                # 404 caching on the default (VRM) behavior. That's accepted:
+                # VRM keys are content-hashed and requested only after the
+                # upload script has already put the object in S3, so a VRM
+                # 404 recovering instantly rather than staying cached is
+                # harmless — there's no legitimate case where a VRM 404 is
+                # expected to resolve into a 200 without a new key/deploy.
                 cloudfront.ErrorResponse(http_status=404, ttl=Duration.seconds(0)),
             ],
         )
