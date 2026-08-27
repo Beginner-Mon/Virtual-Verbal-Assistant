@@ -20,21 +20,18 @@ class MotionEngine:
     def __init__(self, model_name: str = DEFAULT_MODEL_NAME):
         self.model_name = model_name
         self.model = None
-        self.converter = None
         self.resolved_model_name = None
         self.device = None
 
     def load(self) -> None:
         import torch
         from kimodo import load_model
-        from kimodo.exports.smplx import AMASSConverter
 
         self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
         self.model, self.resolved_model_name = load_model(
             self.model_name, device=self.device,
             default_family="Kimodo", return_resolved_name=True,
         )
-        self.converter = AMASSConverter(skeleton=self.model.skeleton, fps=self.model.fps)
 
     def generate(self, prompt: str, duration: float, steps: int) -> dict:
         texts = [t.strip() + "." for t in prompt.split(".") if t.strip()]
