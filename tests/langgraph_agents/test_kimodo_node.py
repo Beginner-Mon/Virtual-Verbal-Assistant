@@ -10,8 +10,10 @@ import json
 
 import pytest
 
-from langgraph_agents.nodes.kimodo import kimodo_node
-from vva_motion.jobs import MAX_QUEUE_DEPTH, enqueue, write_heartbeat
+from langgraph_agents.nodes.kimodo import DEFAULT_DURATION, DEFAULT_STEPS, MODEL, kimodo_node
+from vva_motion.jobs import MAX_QUEUE_DEPTH, compute_job_id, enqueue, write_heartbeat
+
+HASH_SECRET = "test-secret"
 
 CONFIG = {"configurable": {"request_id": "r1", "query": "nâng hai tay qua đầu",
                            "session_id": "s1"}}
@@ -25,7 +27,7 @@ def _content(result):
 def _hash_secret(monkeypatch):
     # Read lazily inside kimodo_node (not module scope), so this only needs to
     # be present by the time the node runs, not by import time.
-    monkeypatch.setenv("MOTION_HASH_SECRET", "test-secret")
+    monkeypatch.setenv("MOTION_HASH_SECRET", HASH_SECRET)
 
 
 @pytest.mark.unit
@@ -46,13 +48,35 @@ async def test_queued_with_position_and_eta(table, monkeypatch):
 
 
 @pytest.mark.unit
-async def test_second_identical_request_is_cache_hit_not_new_job(table, monkeypatch):
+async def test_second_identical_request_while_queued_reuses_same_job(table, monkeypatch):
+    """Second call sees the first job still `status="queued"` — this exercises
+    the queued-dedup branch, NOT cache_hit. (`existing["status"] in ("queued",
+    "processing")` in the node.) Renamed from a name that claimed cache_hit;
+    see test_cache_hit_when_job_already_done below for the real thing."""
     monkeypatch.setattr("langgraph_agents.nodes.kimodo._table", lambda: table)
     write_heartbeat(table)
     first = _content(await kimodo_node({"resolved_query": "nâng hai tay"}, CONFIG))
     second = _content(await kimodo_node({"resolved_query": "NÂNG HAI TAY"}, CONFIG))
+    assert first["state"] == "queued" and second["state"] == "queued"
     assert second["job_id"] == first["job_id"]
     assert table.scan()["Count"] == 2          # 1 job + 1 heartbeat, KHÔNG phải 2 job
+
+
+@pytest.mark.unit
+async def test_cache_hit_when_job_already_done(table, monkeypatch):
+    """The whole point of cache_hit: a row already marked `done` (GPU already
+    rendered this exact request, same prompt/duration/steps/model) skips a
+    redundant render entirely — the node must not enqueue anything new."""
+    monkeypatch.setattr("langgraph_agents.nodes.kimodo._table", lambda: table)
+    write_heartbeat(table)
+    job_id = compute_job_id(HASH_SECRET, "nâng hai tay", DEFAULT_DURATION, DEFAULT_STEPS, MODEL)
+    table.put_item(Item={
+        "job_id": job_id, "status": "done", "s3_key": "motions/abc.npz", "created_at": 0,
+    })
+    out = _content(await kimodo_node({"resolved_query": "nâng hai tay"}, CONFIG))
+    assert out["state"] == "cache_hit"
+    assert out["job_id"] == job_id
+    assert table.scan()["Count"] == 2          # heartbeat + the pre-seeded row, KHÔNG job mới
 
 
 @pytest.mark.unit

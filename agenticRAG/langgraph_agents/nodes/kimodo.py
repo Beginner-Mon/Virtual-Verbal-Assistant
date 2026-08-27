@@ -24,6 +24,7 @@ Job states returned: cache_hit, queued, busy, unavailable.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -92,7 +93,13 @@ async def kimodo_node(state: AgentState, config: RunnableConfig) -> dict:
     })
 
     # Đọc heartbeat TRƯỚC khi enqueue: worker tắt thì đừng hứa thứ không ai nhặt.
-    if not worker_alive(table):
+    #
+    # worker_alive/read_status/queue_depth/enqueue are plain sync boto3 calls
+    # (vva_motion/jobs.py is shared with the GPU worker's synchronous poll
+    # loop, so it stays sync — see the module's own docstring). Each is a
+    # blocking network round-trip; run it off the event loop via
+    # asyncio.to_thread, same pattern as shared/stm.py:200-203's DynamoStore.
+    if not await asyncio.to_thread(worker_alive, table):
         logger.warning("kimodo_worker_unavailable", extra={"request_id": request_id})
         return _msg({"state": "unavailable"})
 
@@ -101,20 +108,22 @@ async def kimodo_node(state: AgentState, config: RunnableConfig) -> dict:
         DEFAULT_DURATION, DEFAULT_STEPS, MODEL,
     )
 
-    existing = read_status(table, job_id)
+    existing = await asyncio.to_thread(read_status, table, job_id)
     if existing and existing["status"] == "done":
         return _msg({"state": "cache_hit", "job_id": job_id})   # GPU không chạy
     if existing and existing["status"] in ("queued", "processing"):
         return _msg({"state": "queued", "job_id": job_id,
                      "queue_position": 1, "eta_seconds": SECONDS_PER_JOB})
 
-    depth = queue_depth(table)
+    depth = await asyncio.to_thread(queue_depth, table)
     if depth >= MAX_QUEUE_DEPTH:
         # Nhận job của người xếp thứ 200 tệ hơn từ chối: đã hứa một thứ họ sẽ không đợi.
         return _msg({"state": "busy", "retry_after_seconds": depth * SECONDS_PER_JOB})
 
-    enqueue(table, job_id, prompt=resolved_query, duration=DEFAULT_DURATION,
-            steps=DEFAULT_STEPS, session_id=config["configurable"].get("session_id"))
+    await asyncio.to_thread(
+        enqueue, table, job_id, prompt=resolved_query, duration=DEFAULT_DURATION,
+        steps=DEFAULT_STEPS, session_id=config["configurable"].get("session_id"),
+    )
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000)
     logger.info("node_complete", extra={
