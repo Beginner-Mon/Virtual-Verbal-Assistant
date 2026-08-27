@@ -23,6 +23,7 @@ RUN SKIP_MOTION_CORRECTION_IN_SETUP=1 \
 
 WORKDIR /workspace
 COPY mcp_server.py /workspace/mcp_server.py
+COPY vva_motion /workspace/vva_motion
 
 # Prove the package imports and that its assets came along in the wheel. Cheap here,
 # and it fails the build instead of failing a g5.xlarge at 3am.

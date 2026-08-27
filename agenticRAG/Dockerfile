@@ -107,6 +107,10 @@ COPY config ./config
 COPY agenticRAG/run.sh ./run.sh
 RUN chmod 755 ./run.sh
 
+# Context là gốc repo nên với sang text-to-motion được. Đặt ở /var/task để `import
+# vva_motion` giống hệt phía Kimodo.
+COPY text-to-motion/kimodo/vva_motion ./vva_motion
+
 # One ENV per concern rather than a single continued instruction, so each can
 # carry the comment that explains it. Comments inside a `\`-continued ENV are a
 # coin toss across builder versions, and this is not the place to find out —
