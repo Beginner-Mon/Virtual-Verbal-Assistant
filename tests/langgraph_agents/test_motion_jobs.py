@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import pytest
 import time as _time
 
@@ -42,6 +44,24 @@ def test_enqueue_dedupes(table):
     assert enqueue(table, jid, prompt="nâng hai tay", session_id="s1") == "created"
     assert enqueue(table, jid, prompt="nâng hai tay", session_id="s2") == "exists"
     assert table.scan()["Count"] == 1
+
+
+@pytest.mark.unit
+def test_enqueue_coerces_float_fields_to_decimal(table):
+    """RULING R16 — boto3's DynamoDB serializer rejects Python `float` with
+    'Float types are not supported. Use Decimal types instead.'
+
+    kimodo_node passes DEFAULT_DURATION = 3.0 (a plain float) straight into
+    enqueue(). Task 6's test worked around this AT THE CALL SITE with
+    Decimal("3.0") — fine for that test, but the next caller (kimodo_node, in
+    production) would hit the raw boto3 exception on the first real request.
+    The fix belongs in enqueue() itself, not in every caller.
+    """
+    jid = compute_job_id(SECRET, "nâng hai tay", 3.0, 100, "m")
+    enqueue(table, jid, prompt="nâng hai tay", duration=3.0, steps=100)
+    row = table.get_item(Key={"job_id": jid})["Item"]
+    assert row["duration"] == Decimal("3.0")
+    assert isinstance(row["duration"], Decimal)
 
 
 @pytest.mark.unit

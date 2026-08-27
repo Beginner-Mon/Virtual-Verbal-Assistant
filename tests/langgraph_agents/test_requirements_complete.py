@@ -40,6 +40,13 @@ IMPORT_TO_DISTRIBUTION = {
 IGNORED = {
     # First-party.
     "langgraph_agents",
+    # Also first-party: text-to-motion/kimodo/vva_motion — the DynamoDB job
+    # queue shared between kimodo_node (here) and the GPU worker. Reached via
+    # the `pythonpath` entry in pytest.ini, not pip-installed, so it has no
+    # distribution name to declare. Deliberately dependency-light (boto3 +
+    # stdlib only, per its own module docstring) so it can be COPY'd into a
+    # GPU worker image that has no langgraph_agents.
+    "vva_motion",
     # The legacy package. Any import of it is a coupling bug, and
     # test_no_legacy_imports below is what fails then — not this test, which
     # would report the confusing "add agentic_rag_gemini to requirements".

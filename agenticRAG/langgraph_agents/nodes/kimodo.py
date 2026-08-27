@@ -1,135 +1,127 @@
-"""Kimodo node — standalone motion generation (D26).
+"""Kimodo node — writes a queue row instead of calling MCP (D26 + Task 8).
 
 Decisions encoded:
   D3:   needs_motion = HARD GATE (edge cứng, not LLM tool-choice)
   D26:  Motion = node riêng, parallel to retriever, NOT in retriever bind_tools
-        MCP = transport, edge = control (2 independent layers)
-  D26 revised: synthesizer does NOT receive motion flag.
-        Coherence via tag motion_descriptor + UI combines text+video.
+  Task 8: MCP dropped for this path entirely. D26's "MCP = transport, edge =
+          control" reasoning assumed MCP's tool-discovery bought something
+          here — it never did, because needs_motion is a hard edge and the
+          LLM never chooses the motion tool. MCP stays for web search, where
+          the LLM does choose.
 
-The Kimodo node:
+The Kimodo node now:
   - Only runs when needs_motion=true (hard edge from planner)
-  - Calls Kimodo MCP server's generate_motion tool
-  - Runs in parallel with retriever (not dependent on retrieval results)
-  - Output: ToolMessage with motion result → UI consumes directly
+  - Checks the worker heartbeat FIRST. A stale heartbeat means the worker is
+    off, and the node returns `unavailable` WITHOUT writing a row — the
+    queue must never be loaded with work nobody will pick up.
+  - Writes a job row to DynamoDB (via vva_motion.jobs.enqueue) and returns
+    immediately. It does not wait for the GPU worker.
+  - A GPU worker (text-to-motion/kimodo/worker.py) picks the row up
+    independently; this node never talks to it directly.
+
+Job states returned: cache_hit, queued, busy, unavailable.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import time
 
+import boto3
+from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 
-from langgraph_agents.state import AgentState, ErrorSeverity
+from langgraph_agents.state import AgentState
 from langgraph_agents.shared.logging import get_logger
+from vva_motion.jobs import (
+    MAX_QUEUE_DEPTH,
+    SECONDS_PER_JOB,
+    compute_job_id,
+    enqueue,
+    queue_depth,
+    read_status,
+    worker_alive,
+)
 
 logger = get_logger("langgraph.kimodo")
 
+DEFAULT_DURATION = 3.0
+DEFAULT_STEPS = 100
+MODEL = "Kimodo-SMPLX-RP-v1"
+
+_TABLE = None
+
+
+def _table():
+    """Lazily-initialised DynamoDB table handle — see shared/stm.py:199 for
+    the same pattern. Built on first use rather than at import time, so
+    importing this module never requires AWS credentials or MOTION_TABLE."""
+    global _TABLE
+    if _TABLE is None:
+        _TABLE = boto3.resource("dynamodb").Table(os.environ["MOTION_TABLE"])
+    return _TABLE
+
+
+def _msg(payload: dict) -> dict:
+    return {
+        "messages": [ToolMessage(
+            content=json.dumps(payload),
+            tool_call_id="kimodo_motion",
+            name="generate_motion",
+        )],
+    }
+
 
 async def kimodo_node(state: AgentState, config: RunnableConfig) -> dict:
-    """Kimodo motion generation node.
+    """Kimodo motion job enqueue node.
 
-    Called via hard edge when planner sets needs_motion=true.
-    Runs in parallel with retriever — not dependent on retrieval results.
-
-    Input: resolved_query (for motion description)
-    Output: ToolMessage with motion generation result
+    Called via hard edge when planner sets needs_motion=true. Never calls the
+    GPU directly: it checks the worker is alive, computes the job id, checks
+    for an existing row, checks the queue depth, and writes the row. A GPU
+    worker polls the table independently and picks the job up.
     """
     t0 = time.perf_counter()
     request_id = config["configurable"].get("request_id", "-")
     resolved_query = state.get("resolved_query") or config["configurable"]["query"]
+    table = _table()
 
     logger.info("node_start", extra={
         "node": "kimodo", "request_id": request_id,
         "query_preview": resolved_query[:80],
     })
 
-    try:
-        # `get_mcp_tools()`, awaited — the same call graph.py:165,
-        # retriever_agent.py:55 and health.py:100 all make.
-        #
-        # This used to be `from ... import get_mcp_client` then
-        # `client.get_tools()`. No such function has ever existed in
-        # mcp/client.py, which exports get_mcp_tools() and close_mcp_client().
-        # So the import raised ImportError on the very first line of this try
-        # block, was caught below, and became a RECOVERABLE error — meaning this
-        # node has never once reached the Kimodo server. Nothing went red because
-        # nothing tested the node; see test_kimodo_node.py.
-        from langgraph_agents.mcp.client import get_mcp_tools
+    # Đọc heartbeat TRƯỚC khi enqueue: worker tắt thì đừng hứa thứ không ai nhặt.
+    if not worker_alive(table):
+        logger.warning("kimodo_worker_unavailable", extra={"request_id": request_id})
+        return _msg({"state": "unavailable"})
 
-        tools = await get_mcp_tools()
+    job_id = compute_job_id(
+        os.environ["MOTION_HASH_SECRET"], resolved_query,
+        DEFAULT_DURATION, DEFAULT_STEPS, MODEL,
+    )
 
-        # Find generate_motion tool
-        motion_tool = None
-        for t in tools:
-            if t.name == "generate_motion":
-                motion_tool = t
-                break
+    existing = read_status(table, job_id)
+    if existing and existing["status"] == "done":
+        return _msg({"state": "cache_hit", "job_id": job_id})   # GPU không chạy
+    if existing and existing["status"] in ("queued", "processing"):
+        return _msg({"state": "queued", "job_id": job_id,
+                     "queue_position": 1, "eta_seconds": SECONDS_PER_JOB})
 
-        if motion_tool is None:
-            logger.warning("kimodo_tool_not_found", extra={
-                "request_id": request_id,
-                "available_tools": [t.name for t in tools],
-            })
-            elapsed_ms = round((time.perf_counter() - t0) * 1000)
-            return {
-                "errors": [{
-                    "node": "kimodo",
-                    "severity": ErrorSeverity.RECOVERABLE,
-                    "message": "generate_motion tool not available (Kimodo MCP server may be down)",
-                    "timestamp": __import__("datetime").datetime.now(
-                        __import__("datetime").timezone.utc
-                    ).isoformat(),
-                }],
-            }
+    depth = queue_depth(table)
+    if depth >= MAX_QUEUE_DEPTH:
+        # Nhận job của người xếp thứ 200 tệ hơn từ chối: đã hứa một thứ họ sẽ không đợi.
+        return _msg({"state": "busy", "retry_after_seconds": depth * SECONDS_PER_JOB})
 
-        # Call Kimodo — the MCP tool handles the actual motion generation.
-        #
-        # The key is "prompt", not "query", and that is not a cosmetic detail:
-        # both MCP servers declare `prompt` as the required argument —
-        # mcp/kimodo_server.py's inputSchema and text-to-motion/kimodo/
-        # mcp_server.py's `def generate_motion(prompt: str)`. Sending "query"
-        # left the required field missing, so the call failed schema validation,
-        # fell into the except below and was logged as a RECOVERABLE error.
-        # Motion silently never ran.
-        #
-        # It survived because the tests exercised the mock MCP server directly
-        # and nothing exercised this node — the thing at the far end of the wire
-        # was checked, the wire was not. See test_kimodo_node.py.
-        result = await motion_tool.ainvoke({
-            "prompt": resolved_query,
-        })
+    enqueue(table, job_id, prompt=resolved_query, duration=DEFAULT_DURATION,
+            steps=DEFAULT_STEPS, session_id=config["configurable"].get("session_id"))
 
-        elapsed_ms = round((time.perf_counter() - t0) * 1000)
-        logger.info("node_complete", extra={
-            "node": "kimodo", "request_id": request_id,
-            "elapsed_ms": elapsed_ms,
-            "has_result": bool(result),
-        })
+    elapsed_ms = round((time.perf_counter() - t0) * 1000)
+    logger.info("node_complete", extra={
+        "node": "kimodo", "request_id": request_id,
+        "elapsed_ms": elapsed_ms, "job_id": job_id, "queue_position": depth + 1,
+    })
 
-        # Return as a ToolMessage so LangGraph can route it
-        from langchain_core.messages import ToolMessage
-        return {
-            "messages": [ToolMessage(
-                content=str(result),
-                tool_call_id="kimodo_motion",
-                name="generate_motion",
-            )],
-        }
-
-    except Exception as exc:
-        elapsed_ms = round((time.perf_counter() - t0) * 1000)
-        logger.error("node_failed", extra={
-            "node": "kimodo", "request_id": request_id,
-            "elapsed_ms": elapsed_ms, "error": str(exc),
-        }, exc_info=True)
-        return {
-            "errors": [{
-                "node": "kimodo",
-                "severity": ErrorSeverity.RECOVERABLE,
-                "message": f"Kimodo motion generation failed: {exc}",
-                "timestamp": __import__("datetime").datetime.now(
-                    __import__("datetime").timezone.utc
-                ).isoformat(),
-            }],
-        }
+    return _msg({"state": "queued", "job_id": job_id,
+                 "queue_position": depth + 1,
+                 "eta_seconds": (depth + 1) * SECONDS_PER_JOB})

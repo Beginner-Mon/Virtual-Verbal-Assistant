@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import time
 import unicodedata
+from decimal import Decimal
 
 from botocore.exceptions import ClientError
 from boto3.dynamodb.conditions import Key
@@ -40,6 +41,20 @@ def compute_job_id(secret: str, prompt: str, duration: float, steps: int, model:
     return hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()[:32]
 
 
+def _to_dynamo_number(value):
+    """boto3's DynamoDB serializer raises TypeError on a raw Python `float`
+    ("Float types are not supported. Use Decimal types instead."). Coerce here,
+    at the one place every field passes through, rather than trusting each
+    caller to remember — the next caller is production (kimodo_node), not a
+    test that can be written around the bug.
+
+    Via str(value) rather than Decimal(value) directly: Decimal(3.0) keeps
+    float's binary imprecision (Decimal('3.000000000000000177...')); going
+    through the repr string gives the clean Decimal('3.0') a human meant.
+    """
+    return Decimal(str(value)) if isinstance(value, float) else value
+
+
 def enqueue(table, job_id: str, **fields) -> str:
     """PutItem có điều kiện. Trả 'created' hoặc 'exists' — dedupe là tính chất cấu trúc."""
     now = int(time.time())
@@ -49,7 +64,7 @@ def enqueue(table, job_id: str, **fields) -> str:
         "created_at": now,
         "retry_count": 0,
         "expires_at": now + TTL_SECONDS,
-        **fields,
+        **{k: _to_dynamo_number(v) for k, v in fields.items()},
     }
     try:
         table.put_item(Item=item, ConditionExpression="attribute_not_exists(job_id)")
