@@ -34,6 +34,8 @@ from starlette.responses import Response
 from starlette.requests import Request
 from fastmcp import FastMCP
 
+from motion_engine import MotionEngine, build_base_name
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -48,7 +50,6 @@ DEFAULT_MODEL_NAME = "Kimodo-SMPLX-RP-v1"
 # Generation defaults
 DEFAULT_DURATION = 3.0
 DEFAULT_DIFFUSION_STEPS = 100
-DEFAULT_NUM_SAMPLES = 1
 MAX_DURATION = 5.0
 
 # ---------------------------------------------------------------------------
@@ -65,46 +66,11 @@ logger = logging.getLogger("kimodo-mcp")
 # Global state
 # ---------------------------------------------------------------------------
 
-_model = None
-_resolved_model_name = None
-_model_fps = None
-_skeleton = None
-_device = None
+# Model loading, generation and output saving live in MotionEngine (motion_engine.py) so
+# worker.py (job-queue path) does not duplicate them. This is the only engine instance for
+# the local MCP path's process lifetime.
+_engine = None
 _startup_time = None
-_amass_converter = None
-
-
-def _load_model():
-    """Load the Kimodo model into GPU memory."""
-    global _model, _resolved_model_name, _model_fps, _skeleton, _device, _startup_time, _amass_converter
-
-    _device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    logger.info(f"Loading model {DEFAULT_MODEL_NAME} on device {_device}...")
-
-    from kimodo import load_model
-    from kimodo.model.registry import get_model_info
-
-    _model, _resolved_model_name = load_model(
-        DEFAULT_MODEL_NAME,
-        device=_device,
-        default_family="Kimodo",
-        return_resolved_name=True,
-    )
-    _model_fps = _model.fps
-    _skeleton = _model.skeleton
-
-    info = get_model_info(_resolved_model_name)
-    display = info.display_name if info else _resolved_model_name
-    logger.info(f"Model loaded: {display} ({_resolved_model_name}) at {_model_fps} FPS")
-
-    # Pre-build the AMASS converter for SMPL-X output
-    from kimodo.exports.smplx import AMASSConverter
-
-    _amass_converter = AMASSConverter(skeleton=_skeleton, fps=_model_fps)
-    logger.info("AMASS converter initialized")
-
-    _startup_time = time.time()
-    logger.info("Model ready for inference")
 
 
 # ---------------------------------------------------------------------------
@@ -191,26 +157,26 @@ def generate_motion(prompt: str) -> str:
         JSON string containing file paths, metadata, and expiration time for
         the generated motion files.
     """
-    if _model is None:
+    if _engine is None or _engine.model is None:
         return json.dumps({"error": "Model not loaded yet. Server is still starting up."})
 
     duration = DEFAULT_DURATION
     diffusion_steps = DEFAULT_DIFFUSION_STEPS
-    num_samples = DEFAULT_NUM_SAMPLES
     seed = None
 
     # Clamp duration
     if duration > MAX_DURATION:
         duration = MAX_DURATION
 
-    # Parse multi-prompt (split on periods)
+    # Parse multi-prompt (split on periods) — mirrors MotionEngine.generate's own parsing,
+    # done here too so we can validate and log before calling into the engine.
     texts = [text.strip() for text in prompt.split(".")]
     texts = [text + "." for text in texts if text]
 
     if not texts:
         return json.dumps({"error": "Empty prompt provided."})
 
-    num_frames = [int(duration * _model_fps)] * len(texts)
+    num_frames = [int(duration * _engine.model.fps)] * len(texts)
 
     # Set seed if provided
     if seed is not None:
@@ -224,17 +190,7 @@ def generate_motion(prompt: str) -> str:
     gen_start = time.time()
 
     try:
-        output = _model(
-            texts,
-            num_frames,
-            constraint_lst=[],
-            num_denoising_steps=diffusion_steps,
-            num_samples=num_samples,
-            multi_prompt=True,
-            num_transition_frames=5,
-            post_processing=True,
-            return_numpy=True,
-        )
+        output = _engine.generate(prompt, duration, diffusion_steps)
     except Exception as e:
         logger.error(f"Generation failed: {e}", exc_info=True)
         return json.dumps({"error": f"Generation failed: {str(e)}"})
@@ -242,61 +198,16 @@ def generate_motion(prompt: str) -> str:
     gen_elapsed = time.time() - gen_start
     logger.info(f"Generation completed in {gen_elapsed:.2f}s")
 
-    # Save outputs
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    file_id = uuid.uuid4().hex[:12]
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    base_name = f"motion_{timestamp}_{file_id}"
+    # Save outputs. The filename is the job id (not a timestamp+random suffix) so the
+    # output URL is knowable before generation even starts and repeat requests can hit a
+    # content cache — see motion_engine.build_base_name.
+    job_id = uuid.uuid4().hex[:12]
+    base_name = build_base_name(job_id)
+    npz_path, bvh_path = _engine.save_outputs(output, OUTPUT_DIR, base_name)
+    _register_file(npz_path)
+    _register_file(bvh_path)
 
     n_samples = int(output["posed_joints"].shape[0])
-
-    from kimodo.exports.motion_io import save_kimodo_npz
-
-    result_files = []
-
-    if n_samples == 1:
-        # Save Kimodo NPZ
-        npz_path = os.path.join(OUTPUT_DIR, f"{base_name}.npz")
-        single = {
-            k: (v[0] if hasattr(v, "shape") and len(v.shape) > 0 and v.shape[0] == n_samples else v)
-            for k, v in output.items()
-        }
-        save_kimodo_npz(npz_path, single)
-        _register_file(npz_path)
-
-        # Save AMASS NPZ (SMPL-X compatible)
-        amass_path = os.path.join(OUTPUT_DIR, f"{base_name}_amass.npz")
-        _amass_converter.convert_save_npz(output, amass_path)
-        _register_file(amass_path)
-
-        result_files.append({
-            "kimodo_npz": npz_path,
-            "amass_npz": amass_path,
-        })
-    else:
-        sample_dir = os.path.join(OUTPUT_DIR, base_name)
-        os.makedirs(sample_dir, exist_ok=True)
-        for i in range(n_samples):
-            single = {
-                k: (v[i] if hasattr(v, "shape") and len(v.shape) > 0 and v.shape[0] == n_samples else v)
-                for k, v in output.items()
-            }
-            npz_path = os.path.join(sample_dir, f"{base_name}_{i:02d}.npz")
-            save_kimodo_npz(npz_path, single)
-            _register_file(npz_path)
-
-            amass_path = os.path.join(sample_dir, f"{base_name}_{i:02d}_amass.npz")
-            _amass_converter.convert_save_npz(
-                {k: (v[i:i+1] if hasattr(v, "shape") and len(v.shape) > 0 and v.shape[0] == n_samples else v)
-                 for k, v in output.items()},
-                amass_path,
-            )
-            _register_file(amass_path)
-
-            result_files.append({
-                "kimodo_npz": npz_path,
-                "amass_npz": amass_path,
-            })
 
     expires_at = datetime.fromtimestamp(
         time.time() + TTL_SECONDS, tz=timezone.utc
@@ -306,14 +217,17 @@ def generate_motion(prompt: str) -> str:
 
     return json.dumps({
         "status": "success",
-        "files": result_files,
+        "files": {
+            "npz": npz_path,
+            "bvh": bvh_path,
+        },
         "metadata": {
             "prompt": prompt,
             "texts": texts,
-            "model": _resolved_model_name,
+            "model": _engine.resolved_model_name,
             "duration_seconds": duration,
             "total_frames": total_frames,
-            "fps": _model_fps,
+            "fps": _engine.model.fps,
             "num_samples": n_samples,
             "diffusion_steps": diffusion_steps,
             "seed": seed,
@@ -350,7 +264,7 @@ def list_models() -> str:
 
     return json.dumps({
         "available_models": models,
-        "loaded_model": _resolved_model_name,
+        "loaded_model": _engine.resolved_model_name if _engine else None,
         "default_model": DEFAULT_MODEL_NAME,
     })
 
@@ -362,11 +276,12 @@ def health_check() -> str:
     Returns:
         JSON string with server status, model info, GPU stats, and uptime.
     """
+    model_loaded = _engine is not None and _engine.model is not None
     status = {
-        "status": "healthy" if _model is not None else "loading",
-        "model_loaded": _model is not None,
-        "loaded_model": _resolved_model_name,
-        "device": str(_device) if _device else None,
+        "status": "healthy" if model_loaded else "loading",
+        "model_loaded": model_loaded,
+        "loaded_model": _engine.resolved_model_name if _engine else None,
+        "device": str(_engine.device) if _engine and _engine.device else None,
         "uptime_seconds": round(time.time() - _startup_time, 1) if _startup_time else None,
     }
 
@@ -401,7 +316,14 @@ if __name__ == "__main__":
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # Load model before starting the server
-    _load_model()
+    logger.info(f"Loading model {DEFAULT_MODEL_NAME}...")
+    _engine = MotionEngine(DEFAULT_MODEL_NAME)
+    _engine.load()
+    _startup_time = time.time()
+    logger.info(
+        f"Model loaded: {_engine.resolved_model_name} on device {_engine.device} "
+        f"at {_engine.model.fps} FPS"
+    )
 
     # Start TTL cleanup thread
     cleanup_thread = threading.Thread(target=_ttl_cleanup_loop, daemon=True)
