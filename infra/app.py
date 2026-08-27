@@ -104,8 +104,15 @@ rest_api_stack = RestApiStack(
     env=env,
 )
 
-# ── Kimodo ECS (GPU MCP Server) ─────────────────────────────────────
-kimodo_ecs = KimodoEcsStack(app, "VvaKimodoEcsStack", vpc=vpc_stack.vpc, env=env)
+# ── Kimodo ECS (GPU motion worker) ───────────────────────────────────
+# assets_bucket_name comes from AssetStack (constructed above) — the worker
+# writes rendered clips to motions/* of that same bucket.
+kimodo_ecs = KimodoEcsStack(
+    app, "VvaKimodoEcsStack",
+    vpc=vpc_stack.vpc,
+    assets_bucket_name=asset_stack.bucket.bucket_name,
+    env=env,
+)
 
 # ── Phase 0 spike: THROWAWAY (opt-in) ───────────────────────────────
 # Answers one question — does LWA's response_stream prelude satisfy API
