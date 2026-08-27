@@ -16,6 +16,7 @@ from boto3.dynamodb.conditions import Key
 
 TTL_SECONDS = 24 * 3600
 LEASE_SECONDS = 120
+MAX_RETRIES = 3
 
 HEARTBEAT_KEY = "worker#heartbeat"
 HEARTBEAT_SECONDS = 30
@@ -92,3 +93,80 @@ def queue_depth(table) -> int:
         KeyConditionExpression=Key("status").eq("queued"),
         Select="COUNT",
     )["Count"]
+
+
+def claim_next_job(table) -> dict | None:
+    """Lấy job 'queued' cũ nhất và đặt lease. ConditionExpression giữ bất biến
+    'processing nghĩa là có người đang sở hữu' — và là khoá loại trừ sẵn sàng cho
+    ngày chạy nhiều hơn một GPU."""
+    rows = table.query(
+        IndexName="status-created_at-index",
+        KeyConditionExpression=Key("status").eq("queued"),
+        Limit=5,
+    )["Items"]
+    for row in rows:
+        try:
+            res = table.update_item(
+                Key={"job_id": row["job_id"]},
+                UpdateExpression="SET #s = :p, lease_until = :l",
+                ConditionExpression="#s = :q",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={
+                    ":p": "processing", ":q": "queued",
+                    ":l": int(time.time()) + LEASE_SECONDS,
+                },
+                ReturnValues="ALL_NEW",
+            )
+            return dict(res["Attributes"])
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+    return None
+
+
+def complete_job(table, job_id: str, s3_key: str) -> None:
+    table.update_item(
+        Key={"job_id": job_id},
+        UpdateExpression="SET #s = :d, s3_key = :k",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":d": "done", ":k": s3_key},
+    )
+
+
+def fail_job(table, job_id: str, reason: str) -> None:
+    table.update_item(
+        Key={"job_id": job_id},
+        UpdateExpression="SET #s = :f, reason = :r",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":f": "failed", ":r": reason},
+    )
+
+
+def recover_abandoned_jobs(table) -> int:
+    """Chạy MỘT LẦN lúc worker khởi động. Dọn row mà worker đời trước bỏ lại khi chết.
+
+    Không phải để báo lỗi — read_status() đã lo phần user nhìn thấy. Hàm này tồn tại để
+    job ĐƯỢC LÀM LẠI: nếu row kẹt 'processing' mãi thì PutItem có điều kiện sẽ luôn fail
+    và động tác đó không bao giờ sinh được cho tới khi TTL 24h dọn đi.
+    """
+    now = int(time.time())
+    rows = table.query(
+        IndexName="status-created_at-index",
+        KeyConditionExpression=Key("status").eq("processing"),
+    )["Items"]
+    recovered = 0
+    for row in rows:
+        if int(row.get("lease_until", 0)) >= now:
+            continue                                  # còn hạn: có người đang giữ
+        tries = int(row.get("retry_count", 0)) + 1
+        if tries > MAX_RETRIES:
+            fail_job(table, row["job_id"], "too many retries")
+        else:
+            table.update_item(
+                Key={"job_id": row["job_id"]},
+                UpdateExpression="SET #s = :q, retry_count = :n REMOVE lease_until",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":q": "queued", ":n": tries},
+            )
+        recovered += 1
+    return recovered

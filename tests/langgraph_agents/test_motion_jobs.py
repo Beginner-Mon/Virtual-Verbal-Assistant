@@ -4,6 +4,7 @@ import time as _time
 from vva_motion.jobs import (
     canonical_request, compute_job_id, enqueue,
     MAX_QUEUE_DEPTH, queue_depth, read_status, worker_alive, write_heartbeat,
+    claim_next_job, complete_job, fail_job, recover_abandoned_jobs,
 )
 
 SECRET = "test-secret"
@@ -82,3 +83,49 @@ def test_queue_depth_counts_only_queued(table):
     table.put_item(Item={"job_id": "done1", "status": "done", "created_at": 0})
     assert queue_depth(table) == 3
     assert queue_depth(table) < MAX_QUEUE_DEPTH
+
+
+@pytest.mark.unit
+def test_claim_moves_queued_to_processing_with_lease(table):
+    enqueue(table, "c1", prompt="p")
+    job = claim_next_job(table)
+    assert job["job_id"] == "c1"
+    row = table.get_item(Key={"job_id": "c1"})["Item"]
+    assert row["status"] == "processing"
+    assert int(row["lease_until"]) > int(_time.time())
+
+
+@pytest.mark.unit
+def test_claim_never_touches_processing_or_done(table):
+    """Vòng poll chỉ biết 'queued'. Job sập KHÔNG được nhặt trực tiếp —
+    nó phải đi qua recover_abandoned_jobs() để về queued trước."""
+    table.put_item(Item={"job_id": "p1", "status": "processing",
+                         "created_at": 0, "lease_until": 0})
+    table.put_item(Item={"job_id": "d1", "status": "done", "created_at": 0})
+    assert claim_next_job(table) is None
+
+
+@pytest.mark.unit
+def test_recover_resets_expired_lease_and_gives_up_after_3(table):
+    table.put_item(Item={"job_id": "r1", "status": "processing", "created_at": 0,
+                         "lease_until": int(_time.time()) - 1, "retry_count": 0})
+    assert recover_abandoned_jobs(table) == 1
+    row = table.get_item(Key={"job_id": "r1"})["Item"]
+    assert row["status"] == "queued" and int(row["retry_count"]) == 1
+
+    for _ in range(3):
+        table.update_item(Key={"job_id": "r1"},
+                          UpdateExpression="SET #s=:p, lease_until=:l",
+                          ExpressionAttributeNames={"#s": "status"},
+                          ExpressionAttributeValues={":p": "processing",
+                                                     ":l": int(_time.time()) - 1})
+        recover_abandoned_jobs(table)
+    assert table.get_item(Key={"job_id": "r1"})["Item"]["status"] == "failed"
+
+
+@pytest.mark.unit
+def test_recover_leaves_valid_lease_alone(table):
+    table.put_item(Item={"job_id": "r2", "status": "processing", "created_at": 0,
+                         "lease_until": int(_time.time()) + 60, "retry_count": 0})
+    assert recover_abandoned_jobs(table) == 0
+    assert table.get_item(Key={"job_id": "r2"})["Item"]["status"] == "processing"
