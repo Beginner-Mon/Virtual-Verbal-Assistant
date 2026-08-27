@@ -97,7 +97,22 @@ crud_api_stack = CrudApiStack(app, "VvaCrudApiStack", env=env)
 #
 # During bootstrap `fn` is None and VvaRestApiStack simply omits /chat. Adding
 # the route later is additive; that is why it is optional rather than required.
-agent_stack = AgentStack(app, "VvaAgentStack", env=env)
+#
+# asset_base_url comes from AssetStack (constructed above, R6): motion_status.py
+# signs CloudFront URLs against this origin. The two other motion-related
+# secrets (the CloudFront private signing key's SSM parameter name, and the
+# HMAC job-id secret) are CDK context flags rather than constructor params —
+# see agent_stack.py's docstring for why:
+#
+#     cdk deploy VvaAgentStack -c agent_image_tag=<sha> \
+#         -c motion_hash_secret="$(...)" \
+#         -c motion_key_pair_id="$(...)" \
+#         -c motion_signing_key_param=/vva/motion/signing-key-pem
+agent_stack = AgentStack(
+    app, "VvaAgentStack",
+    asset_base_url=f"https://{asset_stack.distribution.distribution_domain_name}",
+    env=env,
+)
 
 # ── Track 2: the API gateway ────────────────────────────────────────
 # One front door for every backend call. See rest_api_stack.py for why REST API

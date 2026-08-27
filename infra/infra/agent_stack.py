@@ -59,6 +59,26 @@ from infra.origins import resolve as resolve_origins
 
 _REPOSITORY_NAME = "vva-agent"
 
+# Fixed table name rather than a construct reference. KimodoEcsStack (which owns
+# the real `dynamodb.Table` construct) is built AFTER this stack in app.py — see
+# app.py's stack order — so a `motion_table.grant_read_write_data(fn)` call here
+# is structurally impossible without reordering the stacks. Both sides agree on
+# the name instead: kimodo_ecs_stack.py hardcodes the identical string. Cost if
+# they drift: an IAM grant that points at a table that does not exist, caught
+# immediately by the first `read_status`/`enqueue` call failing with
+# AccessDenied rather than silently.
+_MOTION_TABLE_NAME = "vva-motion-jobs"
+
+# The CloudFront PRIVATE signing key, one degree more sensitive than the public
+# key asset_stack.py registers: asset_stack.py's docstring calls the private
+# half "kept outside CDK entirely — it never appears here", and that holds here
+# too. This env var carries the SSM parameter NAME, not the key — motion_status.py
+# resolves it at call time via ssm:GetParameter(WithDecryption=True), the same
+# shape llm.py's _secret_from_ssm already uses for the LLM API keys. The key
+# material itself never touches a CDK context value or the CloudFormation
+# template.
+_DEFAULT_MOTION_SIGNING_KEY_PARAM = "/vva/motion/signing-key-pem"
+
 # The POOLED Neon endpoint, same as the CRUD function and for the same measured
 # reason — see the long note in crud_api_stack.py. A Lambda scales out to N
 # ephemeral containers each opening its own connections, which is exactly the
@@ -82,7 +102,24 @@ _DEFAULT_COGNITO_CLIENT_ID = "1rsd1gn5i3heshuo0hf1s6cvm"
 
 class AgentStack(Stack):
 
-    def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
+    def __init__(
+        self,
+        scope: Construct,
+        construct_id: str,
+        asset_base_url: str | None = None,
+        **kwargs,
+    ) -> None:
+        """
+        asset_base_url: the motions CDN's public origin, e.g.
+            f"https://{distribution.distribution_domain_name}". Passed in from
+            AssetStack (built before this stack in app.py — see the ordering
+            comment there), the same way RestApiStack receives crud_fn/
+            characters_fn. Optional because AgentStack must still synthesize
+            during the two-step bootstrap and on machines that only care about
+            /chat; motion_status() would fail loudly at call time (KeyError on
+            ASSET_BASE_URL) rather than at synth, which is acceptable — nothing
+            calls it before the frontend does.
+        """
         super().__init__(scope, construct_id, **kwargs)
 
         ctx = self.node.try_get_context
@@ -147,6 +184,24 @@ class AgentStack(Stack):
         dsn_param = ctx("crud_dsn_param") or _DEFAULT_DSN_PARAM
         deepseek_param = ctx("deepseek_param") or _DEFAULT_DEEPSEEK_PARAM
         gemini_param = ctx("gemini_param") or _DEFAULT_GEMINI_PARAM
+        motion_signing_key_param = (
+            ctx("motion_signing_key_param") or _DEFAULT_MOTION_SIGNING_KEY_PARAM
+        )
+        # Deploy-time context, NOT an SSM param name. Two different reasons:
+        #   - motion_hash_secret: kimodo_node (nodes/kimodo.py, Task 8) already
+        #     reads os.environ["MOTION_HASH_SECRET"] directly — the actual
+        #     value, not a param name — so this stack has to supply it as one.
+        #     Low blast radius if it ever leaked via the template: it only
+        #     lets someone compute a valid job_id for a guessable prompt,
+        #     which gates nothing more than the dedupe cache.
+        #   - motion_key_pair_id: not a secret at all, it names which trusted
+        #     public key CloudFront should verify against — the public half
+        #     asset_stack.py registers. It only exists after VvaAssetStack has
+        #     been deployed once (CloudFront assigns it), so it is supplied
+        #     the same way motion_public_key_pem is: a `-c` flag at deploy
+        #     time, not a construct reference.
+        motion_hash_secret = ctx("motion_hash_secret") or ""
+        motion_key_pair_id = ctx("motion_key_pair_id") or ""
 
         self.cognito_pool_id = ctx("cognito_user_pool_id") or _DEFAULT_COGNITO_POOL_ID
         cognito_client_id = ctx("cognito_app_client_id") or _DEFAULT_COGNITO_CLIENT_ID
@@ -183,6 +238,19 @@ class AgentStack(Stack):
                 # ENABLE_MCP, EMBEDDING_BACKEND, E5_ONNX_DIR and the LWA
                 # settings are baked into the image: they describe what the
                 # image IS, not where it is deployed. See agenticRAG/Dockerfile.
+                #
+                # ── Motion (Task 9) ────────────────────────────────────
+                # Fixed name, not a construct reference — see _MOTION_TABLE_NAME.
+                "MOTION_TABLE": _MOTION_TABLE_NAME,
+                # HMAC secret nodes/kimodo.py uses to compute job ids. Raw
+                # value, not a *_PARAM name — see the comment above this
+                # block for why this one differs from MOTION_SIGNING_KEY.
+                "MOTION_HASH_SECRET": motion_hash_secret,
+                # SSM parameter NAME, resolved by motion_status.py at call
+                # time. The private key itself never appears here.
+                "MOTION_SIGNING_KEY_PARAM": motion_signing_key_param,
+                "MOTION_KEY_PAIR_ID": motion_key_pair_id,
+                "ASSET_BASE_URL": asset_base_url or "",
             },
             # 1024 MB, and lower than it looks like it should be. CPU scales
             # with memory (1 vCPU at 1769 MB), so this buys ~0.58 vCPU and makes
@@ -218,7 +286,7 @@ class AgentStack(Stack):
             actions=["ssm:GetParameter"],
             resources=[
                 f"arn:aws:ssm:{self.region}:{self.account}:parameter{param}"
-                for param in (dsn_param, deepseek_param, gemini_param)
+                for param in (dsn_param, deepseek_param, gemini_param, motion_signing_key_param)
             ],
         ))
         # Scoped by kms:ViaService so this grant cannot be turned on anything
@@ -227,6 +295,27 @@ class AgentStack(Stack):
             actions=["kms:Decrypt"],
             resources=[f"arn:aws:kms:{self.region}:{self.account}:key/*"],
             conditions={"StringEquals": {"kms:ViaService": f"ssm.{self.region}.amazonaws.com"}},
+        ))
+
+        # ── IAM: motion job table (Task 9, ruling R3) ───────────────────
+        #
+        # Built from a fixed ARN rather than `motion_table.grant_read_write_data(fn)`
+        # because the construct does not exist in this stack: app.py builds
+        # KimodoEcsStack (which owns it) AFTER this stack, so there is no
+        # `motion_table` object here to grant from. See _MOTION_TABLE_NAME.
+        #
+        # Scoped to what this Lambda actually calls (nodes/kimodo.py +
+        # api/motion_status.py): GetItem (read_status/worker_alive), PutItem
+        # (enqueue), Query (queue_depth, over the status-created_at-index —
+        # hence the second resource ARN). UpdateItem/DeleteItem are
+        # deliberately excluded: only the GPU worker (kimodo_ecs_stack.py's
+        # task role) claims, completes or recovers jobs.
+        motion_table_arn = (
+            f"arn:aws:dynamodb:{self.region}:{self.account}:table/{_MOTION_TABLE_NAME}"
+        )
+        self.fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"],
+            resources=[motion_table_arn, f"{motion_table_arn}/index/*"],
         ))
 
         CfnOutput(self, "AgentFunctionName", value=self.fn.function_name)

@@ -112,6 +112,17 @@ youtube-transcript-api>=0.6.0,<1.0
 # JWT verification — Cognito RS256 (PART A auth integration)
 PyJWT[crypto]>=2.8.0
 
+# CloudFront signed URLs for motion/* (Task 9). Already an install-time
+# dependency via PyJWT[crypto]'s extra, but api/motion_status.py imports it
+# directly (RSA-SHA1 signing for CloudFrontSigner), so it needs its own
+# declared line — the completeness check below matches on the importED name,
+# not on what pulled a transitive wheel in.
+cryptography>=42.0.0
+# Same reason: motion_status.py imports botocore.signers.CloudFrontSigner
+# directly. It ships with boto3 either way; declared for the same completeness
+# reason as cryptography above.
+botocore>=1.34.0
+
 # Direct billing integration. Runtime code hard-rejects live-mode API keys and
 # live webhook events. Pin the current major so SDK/API changes are deliberate.
 stripe>=15.4.0,<16.0.0

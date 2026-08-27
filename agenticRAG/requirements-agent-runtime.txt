@@ -68,6 +68,11 @@ numpy>=1.26
 # Auth
 PyJWT[crypto]>=2.8.0
 
+# CloudFront signed URLs for motion/* (Task 9) — api/motion_status.py imports
+# it directly. Versions track requirements-langgraph.txt.
+cryptography>=42.0.0
+botocore>=1.34.0
+
 # Tools reachable from the retriever
 httpx>=0.27.0
 youtube-transcript-api>=0.6.0,<1.0
