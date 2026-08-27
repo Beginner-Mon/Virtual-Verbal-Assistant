@@ -182,7 +182,7 @@ async def load_session_messages(
     # transcript would read.
     if before:
         rows = await pg.fetch(
-            """SELECT role, content, token_count, created_at
+            """SELECT role, content, token_count, motion_job_id, created_at
                FROM messages
                WHERE session_id = $1::uuid AND created_at < $2::timestamptz
                ORDER BY created_at DESC, seq_id DESC LIMIT $3""",
@@ -191,7 +191,7 @@ async def load_session_messages(
         rows = list(reversed(rows))
     else:
         rows = await pg.fetch(
-            """SELECT role, content, token_count, created_at
+            """SELECT role, content, token_count, motion_job_id, created_at
                FROM messages
                WHERE session_id = $1::uuid
                ORDER BY created_at DESC, seq_id DESC LIMIT $2""",
@@ -201,10 +201,11 @@ async def load_session_messages(
 
     messages = [
         {
-            "role":       r["role"],
-            "content":    r["content"],
-            "tokens":     r["token_count"],
-            "timestamp":  r["created_at"].isoformat(),
+            "role":          r["role"],
+            "content":       r["content"],
+            "tokens":        r["token_count"],
+            "motion_job_id": r["motion_job_id"],
+            "timestamp":     r["created_at"].isoformat(),
         }
         for r in rows
     ]

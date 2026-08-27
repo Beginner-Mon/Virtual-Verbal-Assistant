@@ -1,0 +1,11 @@
+-- Migration 002: carry the Kimodo motion job id on the message row.
+--
+-- Motion generation is asynchronous (agent writes a DynamoDB job row and
+-- answers immediately; a GPU worker renders and uploads to S3; the browser
+-- polls GET /motion/{job_id}). If the user refreshes mid-render, the restored
+-- session needs a way to resume polling for that job — so the id rides the
+-- existing "Postgres stays the source of truth" history restore instead of a
+-- new client-side job registry.
+--
+-- Nullable: most messages have no motion.
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS motion_job_id TEXT;

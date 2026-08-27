@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS messages (
     intent         TEXT,          -- assistant only, NULL for user rows
     tokens         INT,           -- assistant only
     grader_result  TEXT,          -- assistant only: 'pass' | 'pass_with_warning' | 'retry'
+    motion_job_id  TEXT,          -- assistant only: Kimodo job id, so refresh can resume polling
     created_at     TIMESTAMPTZ DEFAULT now()
 );
 
