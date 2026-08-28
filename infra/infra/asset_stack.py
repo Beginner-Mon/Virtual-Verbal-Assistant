@@ -71,6 +71,42 @@ are skipped entirely (see the `if motion_public_key_pem:` guard below) rather
 than built from a fabricated placeholder — this stack has no fake key
 material anywhere in it, and still produces a valid (VRM-only) template so
 the rest of the app keeps synthesizing.
+
+## Getting the public key back
+
+The key file is not in this repository and does not need to be: it is
+derivable, and both sources are authoritative. Nobody should ever be blocked
+on "where did that .pub go", and nobody should generate a NEW keypair to get
+unblocked — that silently invalidates every signed URL already issued.
+
+From the private half in SSM (what the Lambda signs with):
+
+    aws ssm get-parameter --name /vva/motion/signing-key-pem \
+        --with-decryption --query Parameter.Value --output text > key.pem
+    openssl rsa -in key.pem -pubout -out motion_signing_key.pub
+    rm key.pem
+
+Or straight from CloudFront, which already holds the public half:
+
+    aws cloudfront get-public-key --id KGUIRRSF1V55H \
+        --query PublicKey.PublicKeyConfig.EncodedKey --output text \
+        > motion_signing_key.pub
+
+Both routes were checked against the deployed key, not just written down. The
+CloudFront one comes back with one extra trailing newline, so a byte-for-byte
+`diff` against a saved copy reports a difference that is not one —
+`_resolve_public_key` strips it, and synthesising from the recovered file
+produces a byte-identical EncodedKey.
+
+Then deploy with the PATH, never the bytes — a multi-line -c value does not
+survive argv on Windows and arrives as just the BEGIN line:
+
+    cdk deploy VvaAssetStack -c motion_public_key_file=motion_signing_key.pub
+
+Deploying WITHOUT it is the quiet failure this whole comment exists for: the
+guard below skips the key group and the `motions/*` behavior, CloudFormation
+reports success, and every rendered motion becomes readable by anyone holding
+the URL.
 """
 
 from __future__ import annotations
