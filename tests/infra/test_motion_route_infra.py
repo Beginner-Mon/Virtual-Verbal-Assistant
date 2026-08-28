@@ -6,6 +6,15 @@ static app asset, uploaded by a script rather than produced by a stranger's
 job. That is why this route needs the SAME Cognito authorizer every other
 data route in rest_api_stack.py already carries, and why AgentStack needs a
 scoped IAM grant on the motion job table it does not construct (ruling R3).
+
+FILENAME, deliberately not test_motion_status_route.py: there is no __init__.py
+under tests/, so pytest derives a module name from the basename alone and two
+files sharing one basename collide. This file and
+tests/langgraph_agents/test_motion_status_route.py used to do exactly that —
+pytest raised `import file mismatch` and DROPPED one of them, whichever came
+second. Both passed when run alone, so nothing looked wrong; what silently
+stopped running in the combined suite were the two negative assertions below,
+the ones proving neither secret reaches the CloudFormation template.
 """
 
 import aws_cdk as cdk
