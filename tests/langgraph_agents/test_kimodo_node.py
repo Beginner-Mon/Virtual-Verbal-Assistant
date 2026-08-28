@@ -98,6 +98,17 @@ async def test_expired_done_row_re_renders_instead_of_claiming_a_cache_hit(
 
     Note the row is REPLACED, not added to: same HMAC job_id, so the count stays
     at heartbeat + one job.
+
+    RULING R29 — this test used to pass while none of that worked. Its three
+    assertions were all true for the wrong reasons: `!= "cache_hit"` held
+    because the node answered `queued`; `job_id` held because it is computed
+    from the HMAC whether or not any row is written; and `Count == 2` held
+    precisely BECAUSE the write was rejected. The one thing it never checked is
+    the only thing that matters — what the row in the table actually says. It
+    still said `done`, and claim_next_job() only ever queries `queued`.
+
+    So: read the row back. A test of an enqueue that asserts nothing about the
+    row is a test of the return value's spelling.
     """
     monkeypatch.setattr("langgraph_agents.nodes.kimodo._table", lambda: table)
     write_heartbeat(table)
@@ -107,8 +118,13 @@ async def test_expired_done_row_re_renders_instead_of_claiming_a_cache_hit(
         "created_at": 0, "expires_at": int(_time.time()) - 1,
     })
     out = _content(await kimodo_node({"resolved_query": "nâng hai tay"}, CONFIG))
-    assert out["state"] != "cache_hit"
+    assert out["state"] == "queued"
     assert out["job_id"] == job_id
+
+    row = table.get_item(Key={"job_id": job_id})["Item"]
+    assert row["status"] == "queued", "the row a worker must be able to claim"
+    assert "s3_key" not in row, "the stale key would outlive the file it names"
+    assert int(row["expires_at"]) > int(_time.time())
     assert table.scan()["Count"] == 2
 
 

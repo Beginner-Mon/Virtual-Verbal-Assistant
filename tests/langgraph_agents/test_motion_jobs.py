@@ -5,8 +5,8 @@ import time as _time
 
 from vva_motion.jobs import (
     canonical_request, compute_job_id, enqueue,
-    MAX_QUEUE_DEPTH, queue_depth, read_status, worker_alive, write_heartbeat,
-    claim_next_job, complete_job, fail_job, recover_abandoned_jobs,
+    HEARTBEAT_KEY, MAX_QUEUE_DEPTH, queue_depth, read_status, worker_alive,
+    write_heartbeat, claim_next_job, complete_job, fail_job, recover_abandoned_jobs,
 )
 
 SECRET = "test-secret"
@@ -67,6 +67,108 @@ def test_enqueue_coerces_float_fields_to_decimal(table):
     row = table.get_item(Key={"job_id": jid})["Item"]
     assert row["duration"] == Decimal("3.0")
     assert isinstance(row["duration"], Decimal)
+
+
+@pytest.mark.unit
+def test_enqueue_replaces_an_expired_row(table):
+    """RULING R27 — the write half of the two-clocks problem.
+
+    read_status() refuses to return an expired row, so kimodo_node walks past
+    its cache_hit branch and calls enqueue(). With a bare
+    `attribute_not_exists(job_id)` the row is still physically there, the write
+    is rejected, and the node answers `queued` carrying a job id whose row
+    still says `done`. claim_next_job() queries status=queued, so it never sees
+    it: that prompt is permanently un-renderable until DynamoDB's TTL sweeper
+    gets to it, which AWS only promises "within a few days". Nothing errors.
+
+    The rule that closes it: enqueue() must be able to replace exactly the rows
+    read_status() refuses to return.
+    """
+    jid = compute_job_id(SECRET, "nâng hai tay", 3.0, 100, "m")
+    table.put_item(Item={
+        "job_id": jid, "status": "done", "created_at": 0,
+        "expires_at": int(_time.time()) - 1, "s3_key": "motions/gone.bvh",
+    })
+    assert enqueue(table, jid, prompt="nâng hai tay") == "created"
+
+    row = table.get_item(Key={"job_id": jid})["Item"]
+    assert row["status"] == "queued"
+    assert "s3_key" not in row              # PutItem thay cả item, không merge
+    assert int(row["expires_at"]) > int(_time.time())
+    assert table.scan()["Count"] == 1       # thay thế, không phải thêm row mới
+
+
+@pytest.mark.unit
+def test_enqueue_replaces_a_row_that_has_no_expires_at(table):
+    """read_status() counts a missing expires_at as expired: everything
+    enqueue() writes has one, so its absence means the row did not come from
+    this module. The two rules must agree, or such a row is unreadable and
+    unwritable at the same time — the exact state that strands a prompt."""
+    table.put_item(Item={"job_id": "stray", "status": "done", "created_at": 0})
+    assert enqueue(table, "stray", prompt="p") == "created"
+    assert table.get_item(Key={"job_id": "stray"})["Item"]["status"] == "queued"
+
+
+@pytest.mark.unit
+def test_enqueue_still_refuses_a_live_row(table):
+    """The dedupe the whole design rests on. Widening the condition for expired
+    rows must not widen it for rows that are still good — a `done` row inside
+    its TTL is a cache hit worth real GPU seconds."""
+    jid = compute_job_id(SECRET, "nâng hai tay", 3.0, 100, "m")
+    table.put_item(Item={
+        "job_id": jid, "status": "done", "created_at": 0,
+        "expires_at": FRESH, "s3_key": "motions/live.bvh",
+    })
+    assert enqueue(table, jid, prompt="nâng hai tay") == "exists"
+    row = table.get_item(Key={"job_id": jid})["Item"]
+    assert row["status"] == "done" and row["s3_key"] == "motions/live.bvh"
+
+
+@pytest.mark.unit
+def test_enqueue_never_overwrites_the_heartbeat(table):
+    """read_status() has a THIRD way of returning None — a row with no
+    `status` — and the condition deliberately does NOT cover it.
+
+    The only row that hits it is the heartbeat, which is not expired and whose
+    loss makes every kimodo_node call answer `unavailable` until the worker's
+    next beat. Symmetry with read_status() is worth less than never writing
+    over that row. A real job_id is 32 hex chars and can never collide with
+    `worker#heartbeat`, so nothing legitimate is turned away by stopping here.
+    """
+    write_heartbeat(table)
+    assert enqueue(table, HEARTBEAT_KEY, prompt="p") == "exists"
+    assert worker_alive(table) is True
+
+
+@pytest.mark.unit
+def test_queue_depth_ignores_expired_rows(table):
+    """A worker that was off for a day leaves expired `queued` rows behind.
+    Counting them turns MAX_QUEUE_DEPTH into a lock: the node answers `busy` to
+    everyone while nothing is actually waiting."""
+    for i in range(3):
+        enqueue(table, f"q{i}", prompt="p")
+    table.put_item(Item={"job_id": "stale", "status": "queued", "created_at": 0,
+                         "expires_at": int(_time.time()) - 1})
+    assert queue_depth(table) == 3
+
+
+@pytest.mark.unit
+def test_claim_skips_expired_queued_rows_and_takes_the_live_one(table):
+    """Rendering a day-old request costs GPU seconds for an answer nobody is
+    still waiting for. The stale row sorts FIRST on the GSI (created_at=0), so
+    a claim loop that does not check expiry picks it every time."""
+    table.put_item(Item={"job_id": "stale", "status": "queued", "created_at": 0,
+                         "expires_at": int(_time.time()) - 1})
+    enqueue(table, "live", prompt="p")
+    job = claim_next_job(table)
+    assert job is not None and job["job_id"] == "live"
+
+
+@pytest.mark.unit
+def test_claim_returns_none_when_only_expired_rows_wait(table):
+    table.put_item(Item={"job_id": "stale", "status": "queued", "created_at": 0,
+                         "expires_at": int(_time.time()) - 1})
+    assert claim_next_job(table) is None
 
 
 @pytest.mark.unit

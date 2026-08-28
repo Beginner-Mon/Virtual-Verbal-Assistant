@@ -13,7 +13,7 @@ import unicodedata
 from decimal import Decimal
 
 from botocore.exceptions import ClientError
-from boto3.dynamodb.conditions import Key
+from boto3.dynamodb.conditions import Attr, Key
 
 TTL_SECONDS = 24 * 3600
 LEASE_SECONDS = 120
@@ -56,7 +56,27 @@ def _to_dynamo_number(value):
 
 
 def enqueue(table, job_id: str, **fields) -> str:
-    """PutItem có điều kiện. Trả 'created' hoặc 'exists' — dedupe là tính chất cấu trúc."""
+    """PutItem có điều kiện. Trả 'created' hoặc 'exists' — dedupe là tính chất cấu trúc.
+
+    The condition is the mirror of ``read_status``: **enqueue must be able to
+    replace exactly the rows read_status refuses to return.** When it could
+    not, an expired row was unreadable and unwritable at the same time — the
+    node skipped its cache_hit branch, the PutItem was rejected, and it
+    answered `queued` with a job id whose row still said `done`. Nothing
+    queries `done`, so no worker ever picked it up and that prompt stayed
+    un-renderable until the TTL sweeper arrived, which AWS only promises
+    "within a few days". No error anywhere (ruling R27).
+
+    One asymmetry on purpose: read_status also returns None for a row with no
+    ``status``, and that case is NOT here. The only row it describes is the
+    heartbeat — unexpired, and the row whose loss makes every kimodo_node call
+    answer `unavailable`. A real job_id is 32 hex chars and cannot collide with
+    ``worker#heartbeat``, so covering it would buy symmetry and risk the one
+    row that must never be written over.
+
+    A replacement reports 'created', not a third value: the caller's question
+    is "is there a fresh queued row for me now", and the answer is yes.
+    """
     now = int(time.time())
     item = {
         "job_id": job_id,
@@ -67,7 +87,15 @@ def enqueue(table, job_id: str, **fields) -> str:
         **{k: _to_dynamo_number(v) for k, v in fields.items()},
     }
     try:
-        table.put_item(Item=item, ConditionExpression="attribute_not_exists(job_id)")
+        table.put_item(
+            Item=item,
+            ConditionExpression=(
+                "attribute_not_exists(job_id)"
+                " OR attribute_not_exists(expires_at)"
+                " OR expires_at < :now"
+            ),
+            ExpressionAttributeValues={":now": now},
+        )
         return "created"
     except ClientError as exc:
         if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
@@ -134,9 +162,15 @@ def worker_alive(table) -> bool:
 
 
 def queue_depth(table) -> int:
+    """Expired rows are not depth. A worker that was off for a day leaves
+    `queued` rows the TTL sweeper has not collected; counting them turns
+    MAX_QUEUE_DEPTH into a lock, where the node answers `busy` to everyone
+    while nothing is actually waiting. DynamoDB applies the filter before it
+    counts, so this is a true post-filter count."""
     return table.query(
         IndexName="status-created_at-index",
         KeyConditionExpression=Key("status").eq("queued"),
+        FilterExpression=Attr("expires_at").gt(int(time.time())),
         Select="COUNT",
     )["Count"]
 
@@ -144,13 +178,27 @@ def queue_depth(table) -> int:
 def claim_next_job(table) -> dict | None:
     """Lấy job 'queued' cũ nhất và đặt lease. ConditionExpression giữ bất biến
     'processing nghĩa là có người đang sở hữu' — và là khoá loại trừ sẵn sàng cho
-    ngày chạy nhiều hơn một GPU."""
+    ngày chạy nhiều hơn một GPU.
+
+    Expired rows are skipped: rendering a day-old request costs GPU seconds for
+    an answer nobody is still waiting for, and a stale row sorts FIRST on this
+    index (oldest created_at), so an unchecked loop picks it every single time.
+
+    The skip is done here rather than as a FilterExpression because DynamoDB
+    applies Limit BEFORE the filter — with a filtered query, 5 stale rows would
+    return an empty page and hide a live job sitting behind them. Filtering the
+    page in Python has the same blind spot past 5 rows, but at least the page
+    is 5 real candidates.
+    """
+    now = int(time.time())
     rows = table.query(
         IndexName="status-created_at-index",
         KeyConditionExpression=Key("status").eq("queued"),
         Limit=5,
     )["Items"]
     for row in rows:
+        if int(row.get("expires_at", 0)) < now:
+            continue
         try:
             res = table.update_item(
                 Key={"job_id": row["job_id"]},
