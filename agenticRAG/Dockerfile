@@ -137,10 +137,14 @@ ENV EMBEDDING_BACKEND=onnx
 ENV E5_ONNX_DIR=/opt/model
 
 # MCP discovery off. It runs in the FastAPI lifespan, i.e. inside the INIT
-# budget, and both configured servers are stdio — so it would spawn two Python
-# subprocesses that cannot work here: kimodo_server is a mock and
-# web_search_server wants SearXNG on localhost. Turning Kimodo on later is this
-# flag plus a streamable_http entry, no code change.
+# budget, and the one configured server (web_search) is stdio — so it would
+# spawn a Python subprocess that cannot work here: web_search_server wants
+# SearXNG on localhost, which is not deployed.
+#
+# Still needed, despite motion no longer being an MCP server at all: this note
+# used to cite mcp/kimodo_server.py, which is deleted. Motion reaches the GPU
+# through the DynamoDB job queue (nodes/kimodo.py) with no MCP on either side.
+# web_search is what the flag is about now.
 ENV ENABLE_MCP=false
 
 # Nothing may reach out to HuggingFace at run time. If an import ever does find

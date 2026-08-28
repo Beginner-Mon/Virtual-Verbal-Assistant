@@ -50,6 +50,23 @@ logger = get_logger("langgraph.kimodo")
 
 DEFAULT_DURATION = 3.0
 DEFAULT_STEPS = 100
+
+# THIRD copy of this string, after text-to-motion/kimodo/motion_engine.py and
+# .../mcp_server.py (both `DEFAULT_MODEL_NAME`). This one is different from the
+# other two: it feeds compute_job_id(), so it is part of the HMAC that IS the
+# DynamoDB key.
+#
+# If it ever drifts from what the worker renders with, nothing breaks loudly.
+# Every cache lookup misses, every request re-renders on the GPU, and the only
+# symptom is a bill. DEFAULT_DURATION and DEFAULT_STEPS are in the same hash and
+# carry the same hazard.
+#
+# It cannot simply be imported from motion_engine.py: that module lives in the
+# GPU image and pulls torch, which the Lambda image deliberately does not have
+# (vva_motion/ is the only thing COPY'd across, and it is boto3+stdlib only).
+# Making it a shared constant would mean moving it into vva_motion/jobs.py —
+# worth doing, but it changes what the worker image ships, so it is its own
+# change. Until then: change one, change all three.
 MODEL = "Kimodo-SMPLX-RP-v1"
 
 _TABLE = None

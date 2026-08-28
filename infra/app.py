@@ -72,7 +72,13 @@ character_stack = CharacterStack(app, "VvaCharacterStack", env=env)
 #
 #     cdk deploy VvaAssetStack -c motion_public_key_pem="$(cat motion_signing_key.pub)"
 #
-# Missing the flag raises at synth; see asset_stack.py's docstring for why.
+# Missing the flag fails synth via Annotations.add_error — NOT a Python raise,
+# which was tried and reversed: this file constructs every stack on every `cdk`
+# invocation, so raising here broke `cdk list`, `cdk diff` and
+# `cdk deploy VvaVpcStack`, commands with nothing to do with motions.
+# add_error fails only the stack that carries it. See asset_stack.py's
+# docstring; VvaAgentStack below now uses the same mechanism for
+# motion_key_pair_id and asset_base_url.
 asset_stack = AssetStack(app, "VvaAssetStack", env=env)
 
 # ── Track 2: session + user-memory CRUD ─────────────────────────────
