@@ -52,7 +52,17 @@ def run_once(table, engine, bucket: str, s3, out_dir: str = DEFAULT_OUT_DIR) -> 
         logger.info("job done: %s", job_id)
     except Exception as exc:                      # noqa: BLE001 - a broken job must not kill the worker
         logger.exception("job failed: %s", job_id)
-        fail_job(table, job_id, str(exc))
+        try:
+            fail_job(table, job_id, str(exc))
+        except Exception:                         # noqa: BLE001
+            # fail_job is itself an UpdateItem and can throw — a throttle, a
+            # transient 5xx, expired credentials. Unguarded it would propagate
+            # out of the handler that exists to stop exceptions propagating,
+            # killing the process from inside the recovery path. The row is not
+            # lost: it stays `processing`, its lease expires in LEASE_SECONDS,
+            # and read_status reports it failed while recover_abandoned_jobs
+            # requeues it on the next worker start.
+            logger.exception("could not mark job failed: %s", job_id)
     return True
 
 
@@ -63,6 +73,32 @@ def heartbeat_loop(table) -> None:
         except Exception:                          # noqa: BLE001
             logger.exception("heartbeat write failed")
         time.sleep(HEARTBEAT_SECONDS)
+
+
+def poll_forever(table, engine, bucket: str, s3, out_dir: str = DEFAULT_OUT_DIR) -> None:
+    """The loop, split out from main() so it can be tested without a GPU.
+
+    main() is untestable by construction — MotionEngine().load() wants ~38s and
+    a CUDA device — and this is the part whose failure mode is expensive.
+    """
+    while True:
+        # The guard has to be HERE, not only inside run_once: claim_next_job()
+        # runs before run_once's try, so a DynamoDB throttle, a transient 5xx or
+        # an expired credential would come straight out of the loop and end the
+        # process. There is deliberately no ECS Service behind this task (see
+        # kimodo_ecs_stack.py), so nothing restarts it — the result is a
+        # g5.xlarge billing at full rate with nobody polling the queue, and no
+        # crash-loop signal to notice it by.
+        #
+        # Sleeping IDLE_SLEEP rather than retrying immediately: every error this
+        # catches is one a tight loop would make worse, and a throttle answered
+        # with a hot retry is how a throttle becomes an outage.
+        try:
+            if not run_once(table, engine, bucket, s3, out_dir):
+                time.sleep(IDLE_SLEEP)             # sleep ONLY when the queue is empty
+        except Exception:                          # noqa: BLE001
+            logger.exception("poll loop error; continuing")
+            time.sleep(IDLE_SLEEP)
 
 
 def main() -> None:
@@ -84,9 +120,7 @@ def main() -> None:
     # to take work', not 'container started'. ECS reports RUNNING well before this.
     threading.Thread(target=heartbeat_loop, args=(table,), daemon=True).start()
 
-    while True:
-        if not run_once(table, engine, bucket, s3, out_dir):
-            time.sleep(IDLE_SLEEP)                 # sleep ONLY when the queue is empty
+    poll_forever(table, engine, bucket, s3, out_dir)
 
 
 if __name__ == "__main__":
