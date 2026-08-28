@@ -4,6 +4,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.messages import ToolMessage
 
 
 def _parse_sse_stream(raw: bytes) -> list[dict]:
@@ -368,6 +369,130 @@ def test_sse_chat_persist_failure_does_not_block(api_client, monkeypatch):
     monkeypatch.setattr(api_module, "write_session_turn", fake_write_fail)
 
     resp = client.post("/chat", json={"query": "Xin chào"})
+    events = _parse_sse_stream(resp.content)
+    assert events[-1]["event"] == "done"
+
+
+# ── Kimodo job id capture (R26) ─────────────────────────────────────
+#
+# kimodo runs as its own graph step before synthesizer and is deliberately
+# NOT in _STAGE_NODES, so it must never produce a "stage" SSE event — but its
+# job_id (for queued/cache_hit) must still reach write_session_turn. These
+# tests exercise main.py's dedicated capture branch that makes that true
+# without touching the wire contract.
+
+
+def _kimodo_tool_message(payload: dict) -> ToolMessage:
+    return ToolMessage(
+        content=json.dumps(payload),
+        tool_call_id="kimodo_motion",
+        name="generate_motion",
+    )
+
+
+def _make_fake_astream_with_kimodo(kimodo_payload: dict):
+    async def fake_stream(state, config, stream_mode=None):
+        yield ("updates", {"memory": {}})
+        yield ("updates", {"planner": {}})
+        yield ("updates", {"kimodo": {"messages": [_kimodo_tool_message(kimodo_payload)]}})
+        yield ("updates", {"synthesizer": {
+            "final_answer": "Here's a stretch for you.",
+            "intent": "exercise_recommendation",
+            "total_tokens": 10,
+        }})
+
+    return fake_stream
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("state", ["queued", "cache_hit"])
+def test_kimodo_job_id_reaches_write_session_turn(api_client, monkeypatch, state):
+    """queued/cache_hit job ids must be captured and passed through to persistence."""
+    client, _, mock_graph = api_client
+    mock_graph.astream = _make_fake_astream_with_kimodo({"state": state, "job_id": "job-abc-123"})
+    _set_graph(mock_graph)
+
+    import langgraph_agents.api.main as api_module
+    captured = {}
+
+    async def fake_write(*args, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(api_module, "write_session_turn", fake_write)
+
+    resp = client.post("/chat", json={"query": "show me a stretch"})
+    assert resp.status_code == 200
+    events = _parse_sse_stream(resp.content)
+    assert events[-1]["event"] == "done"
+    assert captured.get("motion_job_id") == "job-abc-123"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("state", ["busy", "unavailable"])
+def test_kimodo_no_job_id_for_busy_or_unavailable(api_client, monkeypatch, state):
+    """busy/unavailable carry no job_id — motion_job_id must stay None, not crash."""
+    client, _, mock_graph = api_client
+    payload = {"state": state}
+    if state == "busy":
+        payload["retry_after_seconds"] = 30
+    mock_graph.astream = _make_fake_astream_with_kimodo(payload)
+    _set_graph(mock_graph)
+
+    import langgraph_agents.api.main as api_module
+    captured = {}
+
+    async def fake_write(*args, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(api_module, "write_session_turn", fake_write)
+
+    resp = client.post("/chat", json={"query": "show me a stretch"})
+    assert resp.status_code == 200
+    events = _parse_sse_stream(resp.content)
+    assert events[-1]["event"] == "done"
+    assert captured.get("motion_job_id") is None
+
+
+@pytest.mark.unit
+def test_kimodo_never_emits_a_stage_event(api_client, monkeypatch):
+    """kimodo is deliberately absent from _STAGE_NODES (R26) — persisting the
+    job id must not put a new event on the wire that no client listens for."""
+    client, _, mock_graph = api_client
+    mock_graph.astream = _make_fake_astream_with_kimodo({"state": "queued", "job_id": "job-xyz"})
+    _set_graph(mock_graph)
+
+    resp = client.post("/chat", json={"query": "show me a stretch"})
+    events = _parse_sse_stream(resp.content)
+    stage_nodes = {e["data"]["node"] for e in events if e["event"] == "stage"}
+    assert "kimodo" not in stage_nodes
+    # sanity: the nodes that ARE stage nodes still show up as before
+    assert "memory" in stage_nodes
+    assert "planner" in stage_nodes
+    assert "synthesizer" in stage_nodes
+
+
+@pytest.mark.unit
+def test_kimodo_malformed_content_does_not_break_the_stream(api_client, monkeypatch):
+    """A ToolMessage with non-JSON content must be swallowed, not raised —
+    a missing motion id is a far smaller failure than a broken chat turn."""
+    client, _, mock_graph = api_client
+
+    async def fake_stream(state, config, stream_mode=None):
+        yield ("updates", {"memory": {}})
+        yield ("updates", {"kimodo": {"messages": [
+            ToolMessage(content="not json at all", tool_call_id="x", name="generate_motion"),
+        ]}})
+        yield ("updates", {"synthesizer": {
+            "final_answer": "Still works.",
+            "intent": "conversation",
+            "total_tokens": 3,
+        }})
+
+    mock_graph.astream = fake_stream
+    _set_graph(mock_graph)
+
+    resp = client.post("/chat", json={"query": "Xin chào"})
+    assert resp.status_code == 200
     events = _parse_sse_stream(resp.content)
     assert events[-1]["event"] == "done"
 

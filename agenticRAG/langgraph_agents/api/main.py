@@ -495,6 +495,34 @@ async def _stream_chat(req, request_id, config, state, background_tasks, request
             if not isinstance(payload, dict):
                 continue
             for node_name, node_output in payload.items():
+                if node_name == "kimodo" and isinstance(node_output, dict):
+                    # Capture only — kimodo is deliberately absent from
+                    # _STAGE_NODES (R26): persisting motion_job_id to the DB
+                    # must not change what goes out over SSE, so this branch
+                    # emits no event and runs ahead of the _STAGE_NODES gate
+                    # below. Do not "fix" the asymmetry by adding kimodo to
+                    # _STAGE_NODES — that was considered and rejected because
+                    # it would ship a client-visible stage event with no
+                    # consumer (the frontend task that would use it is
+                    # deferred out of this run).
+                    #
+                    # Defensive: a malformed/unexpected ToolMessage must not
+                    # raise inside the streaming loop and kill the response —
+                    # a missing motion id is a far smaller failure than a
+                    # broken chat turn.
+                    try:
+                        for msg in node_output.get("messages", []):
+                            content = getattr(msg, "content", None)
+                            if not isinstance(content, str):
+                                continue
+                            job_payload = json.loads(content)
+                            if job_payload.get("state") in ("queued", "cache_hit"):
+                                job_id = job_payload.get("job_id")
+                                if job_id:
+                                    final_state["motion_job_id"] = job_id
+                    except Exception as exc:
+                        logger.warning("kimodo_job_id_capture_failed", extra={"error": str(exc)})
+
                 if node_name not in _STAGE_NODES:
                     continue
 
@@ -544,6 +572,7 @@ async def _stream_chat(req, request_id, config, state, background_tasks, request
                 assistant_answer=final_answer,
                 total_tokens=final_state.get("total_tokens", 0),
                 grader_result=final_state.get("grader_result", "pass"),
+                motion_job_id=final_state.get("motion_job_id"),
             )
             yield encode_event("session_persisted", {"session_id": req.session_id})
         except Exception as exc:
