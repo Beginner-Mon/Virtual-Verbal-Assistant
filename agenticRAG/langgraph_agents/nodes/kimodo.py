@@ -197,9 +197,15 @@ async def kimodo_node(state: AgentState, config: RunnableConfig) -> dict:
         # Nhận job của người xếp thứ 200 tệ hơn từ chối: đã hứa một thứ họ sẽ không đợi.
         return _msg({"state": "busy", "retry_after_seconds": depth * SECONDS_PER_JOB})
 
+    # user_id and session_id are attributes, never part of job_id: the key is
+    # content-only so two users asking for the same exercise share one render.
+    # That is the whole cost saving, and it is also why provenance has to be
+    # recorded here — the key cannot carry it.
     await asyncio.to_thread(
         enqueue, table, job_id, prompt=resolved_query, duration=DEFAULT_DURATION,
-        steps=DEFAULT_STEPS, session_id=config["configurable"].get("session_id"),
+        steps=DEFAULT_STEPS,
+        session_id=config["configurable"].get("session_id"),
+        user_id=config["configurable"].get("user_id"),
     )
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000)

@@ -17,7 +17,7 @@ from vva_motion.jobs import MAX_QUEUE_DEPTH, compute_job_id, enqueue, write_hear
 HASH_SECRET = "test-secret"
 
 CONFIG = {"configurable": {"request_id": "r1", "query": "nâng hai tay qua đầu",
-                           "session_id": "s1"}}
+                           "session_id": "s1", "user_id": "u1"}}
 
 
 def _content(result):
@@ -126,6 +126,24 @@ async def test_expired_done_row_re_renders_instead_of_claiming_a_cache_hit(
     assert "s3_key" not in row, "the stale key would outlive the file it names"
     assert int(row["expires_at"]) > int(_time.time())
     assert table.scan()["Count"] == 2
+
+
+@pytest.mark.unit
+async def test_enqueued_row_records_who_asked(table, monkeypatch):
+    """job_id is content-only on purpose: two users asking for the same exercise
+    must share one render, so the key cannot carry a user. Provenance therefore
+    has to live in the row's attributes or it is not recorded anywhere.
+
+    session_id alone does not answer "who": a session is one conversation, and
+    the same person has many. The design table in the plan lists user_id for
+    exactly this and the code was only writing session_id.
+    """
+    monkeypatch.setattr("langgraph_agents.nodes.kimodo._table", lambda: table)
+    write_heartbeat(table)
+    out = _content(await kimodo_node({"resolved_query": "nâng hai tay"}, CONFIG))
+    row = table.get_item(Key={"job_id": out["job_id"]})["Item"]
+    assert row["user_id"] == "u1"
+    assert row["session_id"] == "s1"
 
 
 @pytest.mark.unit
