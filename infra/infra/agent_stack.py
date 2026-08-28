@@ -45,6 +45,7 @@ end by the Phase 0 spike, see infra/infra/streaming_probe_stack.py.
 from __future__ import annotations
 
 from aws_cdk import (
+    Annotations,
     CfnOutput,
     Duration,
     RemovalPolicy,
@@ -125,11 +126,23 @@ class AgentStack(Stack):
             f"https://{distribution.distribution_domain_name}". Passed in from
             AssetStack (built before this stack in app.py — see the ordering
             comment there), the same way RestApiStack receives crud_fn/
-            characters_fn. Optional because AgentStack must still synthesize
-            during the two-step bootstrap and on machines that only care about
-            /chat; motion_status() would fail loudly at call time (KeyError on
-            ASSET_BASE_URL) rather than at synth, which is acceptable — nothing
-            calls it before the frontend does.
+            characters_fn.
+
+            Optional in the SIGNATURE so the two-step bootstrap can construct
+            this stack before there is a function at all — but required by the
+            time one is created, and enforced below with
+            Annotations.add_error.
+
+            An earlier version of this docstring claimed motion_status() "would
+            fail loudly at call time (KeyError on ASSET_BASE_URL)". It could
+            not: the environment variable is set unconditionally, just to "".
+            The real failure was silent and downstream — sign_url() would build
+            "/motions/x.bvh" with no origin, and the browser would fetch a URL
+            that goes nowhere. Same class of problem for motion_key_pair_id: an
+            empty key pair id signs a URL CloudFront answers with 403. Both
+            failures surface as a broken avatar in production, hours after a
+            deploy that CloudFormation called a success. Hence a synth-time
+            error instead.
         """
         super().__init__(scope, construct_id, **kwargs)
 
@@ -211,6 +224,48 @@ class AgentStack(Stack):
         # motion_public_key_pem is: a `-c` flag at deploy time, not a construct
         # reference.
         motion_key_pair_id = ctx("motion_key_pair_id") or ""
+
+        # ── Deploy readiness, loudly ────────────────────────────────────
+        # Both of these used to default to "" and synthesize cleanly, deploy
+        # cleanly, and then break motion in production: an empty key pair id
+        # produces a signed URL CloudFront answers with 403, and an empty origin
+        # produces a URL with no host at all. Neither raises anywhere — the
+        # environment variable is present, merely empty — so the first signal is
+        # a broken avatar, hours after a green deployment.
+        #
+        # Annotations.add_error, NOT raise, and for the reason asset_stack.py
+        # spells out for its own public-key check: app.py constructs this stack
+        # on every `cdk` invocation, so raising would break `cdk list`,
+        # `cdk diff` and `cdk deploy VvaVpcStack` — commands with nothing to do
+        # with motion. add_error fails synth/deploy for THIS stack only.
+        #
+        # Reached only past the `bootstrap` early-return and the image_tag
+        # check above, so step 1 of the two-step bootstrap is unaffected: there
+        # is no function then, and nothing to configure wrongly.
+        if not motion_key_pair_id:
+            Annotations.of(self).add_error(
+                "VvaAgentStack needs the CloudFront key pair id that verifies "
+                "the motion signed URLs it hands out. Pass:\n"
+                "  cdk deploy VvaAgentStack -c agent_image_tag=<sha> "
+                '-c motion_key_pair_id="K2EXAMPLE..."\n'
+                "The id is assigned by CloudFront and only exists after "
+                "VvaAssetStack has been deployed once with "
+                "-c motion_public_key_pem. Read it back with:\n"
+                "  aws cloudfront list-public-keys "
+                "--query 'PublicKeyList.Items[].{Id:Id,Name:Name}'\n"
+                "Without it every GET /motion/{job_id} returns a URL "
+                "CloudFront answers with 403."
+            )
+
+        if not asset_base_url:
+            Annotations.of(self).add_error(
+                "VvaAgentStack needs asset_base_url — the motions CDN origin "
+                "that signed URLs are built on. app.py passes it from "
+                "VvaAssetStack's distribution domain name; a direct "
+                "construction must do the same.\n"
+                "Without it motion_status() returns URLs with no host, and "
+                "nothing raises: ASSET_BASE_URL is set, just empty."
+            )
 
         self.cognito_pool_id = ctx("cognito_user_pool_id") or _DEFAULT_COGNITO_POOL_ID
         cognito_client_id = ctx("cognito_app_client_id") or _DEFAULT_COGNITO_CLIENT_ID

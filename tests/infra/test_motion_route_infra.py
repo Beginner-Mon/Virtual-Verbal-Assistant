@@ -194,3 +194,100 @@ def test_hash_secret_never_lands_in_template_plaintext(agent_template):
     env_vars = fn["Properties"]["Environment"]["Variables"]
     assert "MOTION_HASH_SECRET" not in env_vars
     assert env_vars["MOTION_HASH_SECRET_PARAM"] == "/vva/motion/hash-secret"
+
+
+# ── I5: the two inputs that used to fail silently ───────────────────────────
+#
+# motion_key_pair_id and asset_base_url both defaulted to "". A deploy that
+# forgot either synthesized cleanly, deployed cleanly, and then produced signed
+# URLs CloudFront answers with 403 (empty key pair id) or URLs with no origin at
+# all (empty base url). Nothing raised — the environment variable was present,
+# merely empty — so the first signal was a broken avatar in production.
+
+
+def _errors(stack) -> str:
+    """Every error annotation on ONE stack, as text.
+
+    Annotations are metadata on the construct tree, not exceptions, so they are
+    read rather than caught. Synthesizing with validate_on_synthesis=False is
+    what lets a stack carrying an error be inspected at all.
+    """
+    app = stack.node.root
+    assembly = app.synth(force=True, validate_on_synthesis=False)
+    return " ".join(
+        str(msg.entry.data)
+        for msg in assembly.get_stack_by_name(stack.stack_name).messages
+        if msg.level == cdk.cx_api.SynthesisMessageLevel.ERROR
+    )
+
+
+def _agent(app, **kwargs) -> AgentStack:
+    asset_stack = AssetStack(app, "Assets", env=_ENV)
+    kwargs.setdefault(
+        "asset_base_url",
+        f"https://{asset_stack.distribution.distribution_domain_name}",
+    )
+    return AgentStack(app, "Agent", env=_ENV, **kwargs)
+
+
+@pytest.mark.unit
+def test_missing_key_pair_id_fails_synth():
+    app = cdk.App(context={
+        "motion_public_key_pem": _DUMMY_PEM,
+        "agent_image_tag": "deadbeef",
+        # motion_key_pair_id deliberately absent — the deploy that forgets it.
+    })
+    assert "motion_key_pair_id" in _errors(_agent(app))
+
+
+@pytest.mark.unit
+def test_missing_asset_base_url_fails_synth():
+    app = cdk.App(context={
+        "motion_public_key_pem": _DUMMY_PEM,
+        "agent_image_tag": "deadbeef",
+        "motion_key_pair_id": "K2EXAMPLE",
+    })
+    assert "asset_base_url" in _errors(_agent(app, asset_base_url=""))
+
+
+@pytest.mark.unit
+def test_a_complete_deploy_has_no_errors():
+    """The gate has to pass too, or it is not a gate — it is a broken build."""
+    app = cdk.App(context={
+        "motion_public_key_pem": _DUMMY_PEM,
+        "agent_image_tag": "deadbeef",
+        "motion_key_pair_id": "K2EXAMPLE",
+    })
+    assert _errors(_agent(app)) == ""
+
+
+@pytest.mark.unit
+def test_the_bootstrap_step_is_still_allowed_to_synth():
+    """Step 1 of the two-step bootstrap creates the ECR repository and no
+    function at all, so there is nothing to configure wrongly. Erroring there
+    would make the documented bootstrap impossible to run."""
+    app = cdk.App(context={
+        "motion_public_key_pem": _DUMMY_PEM,
+        "agent_bootstrap": "1",
+    })
+    stack = AgentStack(app, "Agent", env=_ENV)
+    assert stack.fn is None
+    assert _errors(stack) == ""
+
+
+@pytest.mark.unit
+def test_the_errors_are_scoped_to_this_stack():
+    """asset_stack.py's docstring makes the same point about its own check:
+    app.py builds every stack on every `cdk` invocation, so an error here must
+    not break `cdk diff` or `cdk deploy` for a stack with nothing to do with
+    motion."""
+    app = cdk.App(context={
+        "motion_public_key_pem": _DUMMY_PEM,
+        "agent_image_tag": "deadbeef",
+    })
+    agent = _agent(app)                      # no motion_key_pair_id -> errors
+    unrelated = cdk.Stack(app, "Unrelated", env=_ENV)
+    _dummy_fn(unrelated, "Something")
+
+    assert _errors(agent) != ""
+    assert _errors(unrelated) == ""
