@@ -124,32 +124,38 @@ def test_every_import_is_declared():
 
 
 @pytest.mark.unit
-def test_the_root_conftest_only_imports_declared_packages():
-    """tests/conftest.py is a hard dependency of EVERY suite under tests/.
+def test_the_root_conftest_imports_nothing_third_party_at_module_scope():
+    """tests/conftest.py is loaded before collection for EVERY suite in the repo.
 
-    pytest loads the root conftest before collecting anything, so a third-party
-    import there that is not in requirements-langgraph.txt does not fail one
-    test — it fails the entire run at collection, with an error that names the
-    conftest and not the missing package's purpose.
+    Not just this one. tests/SpeechLLm is installed from
+    SpeechLLm/requirements.txt, tests/infra from infra/requirements-dev.txt —
+    different dependency sets entirely. A module-scope import here is therefore
+    a dependency imposed on all of them at once, and when it is missing the job
+    does not fail a test, it fails to start:
 
-    That is exactly what happened: the `table` fixture was moved to the root
-    conftest with `from moto import mock_aws` at module scope, and moto was
-    declared only in infra/requirements-dev.txt. The LangGraph CI job installs
-    requirements-langgraph.txt alone and went from green to a total failure,
-    while every developer machine stayed green because moto was already
-    installed there for the infra suite.
+        ImportError while loading conftest '.../tests/conftest.py'
+        tests/conftest.py:1: in <module>
+            import boto3
+        E   ModuleNotFoundError: No module named 'boto3'
+        Process completed with exit code 4
 
-    test_every_import_is_declared cannot see this: it scans PACKAGE_ROOT
-    (agenticRAG/langgraph_agents), and the conftest is not in it. Only the root
-    conftest is checked here, deliberately — a per-suite conftest or a single
-    test module may reasonably need a package that only its own job installs.
+    That is what the `table` fixture did when it was moved here with `import
+    boto3` and `from moto import mock_aws` at the top. Adding those packages to
+    one requirements file only moves the failure to the next job with a
+    different one, which is why this test checks the SHAPE of the file rather
+    than cross-referencing a package list. Imports go inside the fixture, where
+    only the tests that request it pay for them.
+
+    Deliberately only the ROOT conftest: a per-suite conftest is scoped to a
+    suite whose job installs its dependencies, and may import whatever it needs.
     """
     stdlib = set(sys.stdlib_module_names)
-    declared = _declared_distributions()
+    allowed = {"pytest"}
     conftest = REPO_ROOT / "tests" / "conftest.py"
+    tree = ast.parse(conftest.read_text(encoding="utf-8-sig"))
 
-    missing: list[str] = []
-    for node in ast.walk(ast.parse(conftest.read_text(encoding="utf-8-sig"))):
+    offenders: list[str] = []
+    for node in ast.iter_child_nodes(tree):     # module scope ONLY, not ast.walk
         if isinstance(node, ast.Import):
             names = [a.name for a in node.names]
         elif isinstance(node, ast.ImportFrom):
@@ -158,18 +164,16 @@ def test_the_root_conftest_only_imports_declared_packages():
             continue
         for name in names:
             root = name.split(".")[0]
-            if root in stdlib or root in IGNORED:
-                continue
-            distribution = IMPORT_TO_DISTRIBUTION.get(root, root)
-            if _normalise(distribution) not in declared:
-                missing.append(root)
+            if root not in stdlib and root not in allowed:
+                offenders.append(root)
 
-    assert not missing, (
+    assert not offenders, (
         "tests/conftest.py imports "
-        + ", ".join(sorted(set(missing)))
-        + " but requirements-langgraph.txt does not declare it. The root "
-        "conftest loads for every suite, so this fails the whole run at "
-        "collection, not just the tests that use the fixture."
+        + ", ".join(sorted(set(offenders)))
+        + " at module scope. Every suite in the repo loads this file before "
+        "collecting, including ones installed from a different requirements "
+        "file — so this makes them all fail to start. Move the import inside "
+        "the fixture that needs it."
     )
 
 
