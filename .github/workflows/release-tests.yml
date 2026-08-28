@@ -52,6 +52,30 @@ jobs:
             artifact_name: "speechllm-test-results"
             timeout: 30
 
+          # The motion queue: the CDK stacks that define the DynamoDB table, its
+          # GSI and the free gateway endpoint, plus the worker loop and the
+          # shared job module. Every guard here ran only on a developer's
+          # machine until this entry existed — someone deleting the gateway
+          # endpoint (an interface endpoint bills per hour whether or not the
+          # GPU is on) or the queue's expiry rules would have seen nothing red.
+          #
+          # Runs without AWS credentials: moto fakes DynamoDB and S3, and CDK
+          # synthesises templates offline. No GPU either — the worker tests
+          # drive run_once() with a fake engine, because Kimodo cannot be
+          # tested locally.
+          #
+          # tests/text-to-motion/DART is excluded: DART is the legacy backup of
+          # this path, its suite needs model weights, and its api_server.py /
+          # mcp_server.py shadow live modules of the same name (see pytest.ini).
+          - module_name: "Motion Queue + Infra"
+            requirements: "infra/requirements-dev.txt"
+            test_dir: "tests/infra tests/text-to-motion"
+            pytest_args: "-m unit --ignore=tests/text-to-motion/DART"
+            python_version: "3.12"
+            extra_pythonpath: "infra"
+            artifact_name: "motion-infra-test-results"
+            timeout: 15
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
