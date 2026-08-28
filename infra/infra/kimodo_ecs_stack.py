@@ -79,6 +79,25 @@ class KimodoEcsStack(Stack):
             # settings together would make every future description edit
             # un-deployable. Nothing outside this stack referenced the name;
             # `aws ecs run-task` takes the id, published as a stack output.
+            #
+            # BUT REPLACING THIS GROUP BREAKS THE ASG, and nothing in CDK will
+            # tell you. kimodo-asg is manual infrastructure (see the module
+            # docstring's "Imports (pre-existing, created manually)") and its
+            # launch template `kimodo-mcp-template` pins the group by ID. When
+            # the replacement deleted sg-0dfc71f3914a3bc7b, every launch failed
+            # with "The security group ... does not exist in VPC", visible only
+            # in describe-scaling-activities — the ASG reports desired=1 and
+            # zero instances, and CloudFormation is perfectly happy.
+            #
+            # So: after any deploy that replaces this group, publish a new
+            # launch template version with the new id, which the ASG picks up
+            # because it tracks $Latest:
+            #   aws ec2 create-launch-template-version \
+            #     --launch-template-id lt-0136cab703766c902 --source-version N \
+            #     --launch-template-data '{"SecurityGroupIds":["<new sg>"]}'
+            # The real fix is to bring the ASG into CDK so the reference is a
+            # construct instead of a copied id; until then this comment is the
+            # only thing linking the two.
             description="Kimodo motion worker - outbound only, no inbound listener",
             allow_all_outbound=True,
         )
