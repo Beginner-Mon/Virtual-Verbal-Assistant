@@ -124,6 +124,56 @@ def test_every_import_is_declared():
 
 
 @pytest.mark.unit
+def test_the_root_conftest_only_imports_declared_packages():
+    """tests/conftest.py is a hard dependency of EVERY suite under tests/.
+
+    pytest loads the root conftest before collecting anything, so a third-party
+    import there that is not in requirements-langgraph.txt does not fail one
+    test — it fails the entire run at collection, with an error that names the
+    conftest and not the missing package's purpose.
+
+    That is exactly what happened: the `table` fixture was moved to the root
+    conftest with `from moto import mock_aws` at module scope, and moto was
+    declared only in infra/requirements-dev.txt. The LangGraph CI job installs
+    requirements-langgraph.txt alone and went from green to a total failure,
+    while every developer machine stayed green because moto was already
+    installed there for the infra suite.
+
+    test_every_import_is_declared cannot see this: it scans PACKAGE_ROOT
+    (agenticRAG/langgraph_agents), and the conftest is not in it. Only the root
+    conftest is checked here, deliberately — a per-suite conftest or a single
+    test module may reasonably need a package that only its own job installs.
+    """
+    stdlib = set(sys.stdlib_module_names)
+    declared = _declared_distributions()
+    conftest = REPO_ROOT / "tests" / "conftest.py"
+
+    missing: list[str] = []
+    for node in ast.walk(ast.parse(conftest.read_text(encoding="utf-8-sig"))):
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            names = [node.module] if node.level == 0 and node.module else []
+        else:
+            continue
+        for name in names:
+            root = name.split(".")[0]
+            if root in stdlib or root in IGNORED:
+                continue
+            distribution = IMPORT_TO_DISTRIBUTION.get(root, root)
+            if _normalise(distribution) not in declared:
+                missing.append(root)
+
+    assert not missing, (
+        "tests/conftest.py imports "
+        + ", ".join(sorted(set(missing)))
+        + " but requirements-langgraph.txt does not declare it. The root "
+        "conftest loads for every suite, so this fails the whole run at "
+        "collection, not just the tests that use the fixture."
+    )
+
+
+@pytest.mark.unit
 def test_no_legacy_imports():
     """langgraph_agents must not import the package it replaced.
 
