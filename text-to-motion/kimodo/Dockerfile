@@ -47,6 +47,16 @@ COPY mcp_server.py /workspace/mcp_server.py
 COPY motion_engine.py /workspace/motion_engine.py
 COPY npz_to_bvh.py /workspace/npz_to_bvh.py
 
+# Parity with Dockerfile.prod, which runs this file as its deployed entrypoint.
+# Kept here so `docker compose run` can exercise the same queue worker locally
+# against a DynamoDB table instead of only the MCP server.
+COPY worker.py /workspace/worker.py
+COPY vva_motion /workspace/vva_motion
+
+# Same guard as Dockerfile.prod: a missing entrypoint file fails the build, not
+# a container that has already been paid for.
+RUN test -f /workspace/worker.py && echo "worker.py OK"
+
 # Expose MCP server port
 EXPOSE 8000
 
