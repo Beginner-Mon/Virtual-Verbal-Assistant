@@ -8,7 +8,10 @@ pytest==8.4.2
 # pytest.ini sets asyncio_mode = auto under --strict-config, which is an
 # unknown ini option (and a hard error) unless pytest-asyncio is installed.
 pytest-asyncio==1.4.0
-moto[dynamodb]==5.0.28
+# Keep in lockstep with requirements-langgraph.txt — both mock DynamoDB with the
+# same `table` fixture, and moto must match whatever botocore version the
+# floating boto3 pin resolves to. See the note there for what 5.0.28 did.
+moto[dynamodb]==5.2.3
 # test_messages_motion_column.py imports the 008 migration to check it chains
 # off 007_rls and that upgrade/downgrade really add and drop the column.
 # Same floor as requirements-langgraph.txt, which is what runs the migration.
