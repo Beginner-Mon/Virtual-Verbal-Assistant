@@ -11,6 +11,11 @@ from vva_motion.jobs import (
 
 SECRET = "test-secret"
 
+# Hand-written rows must carry expires_at, because read_status now enforces it:
+# a row past its time reads as absent no matter what its status says. enqueue()
+# always writes one, so a fixture without it is not a row this system produces.
+FRESH = int(_time.time()) + 3600
+
 
 @pytest.mark.unit
 def test_canonical_ignores_case_and_padding():
@@ -70,7 +75,7 @@ def test_lease_expired_reads_as_failed(table):
     heartbeat cũ (worker chết). CẢ HAI phải ra failed — luật lease đứng độc lập
     với heartbeat."""
     table.put_item(Item={
-        "job_id": "j1", "status": "processing", "created_at": 0,
+        "job_id": "j1", "status": "processing", "created_at": 0, "expires_at": FRESH,
         "lease_until": int(_time.time()) - 1, "retry_count": 0,
     })
     write_heartbeat(table)                       # heartbeat TƯƠI
@@ -83,10 +88,51 @@ def test_lease_expired_reads_as_failed(table):
 @pytest.mark.unit
 def test_lease_still_valid_reads_as_processing(table):
     table.put_item(Item={
-        "job_id": "j2", "status": "processing", "created_at": 0,
+        "job_id": "j2", "status": "processing", "created_at": 0, "expires_at": FRESH,
         "lease_until": int(_time.time()) + 60, "retry_count": 0,
     })
     assert read_status(table, "j2")["status"] == "processing"
+
+
+@pytest.mark.unit
+def test_expired_row_reads_as_absent(table):
+    """THE test for the two clocks disagreeing.
+
+    asset_stack.py's S3 lifecycle rule deletes motions/* reliably at 24h.
+    DynamoDB TTL is a background sweeper AWS documents as running "within a few
+    days", typically 48h. In that window the row still says `done` while the
+    .bvh is already gone — and nothing errors. kimodo_node would report a
+    cache_hit and enqueue nothing, so that exact prompt becomes permanently
+    un-renderable, while motion_status hands out a signed URL to a 404.
+
+    Same rule shared/stm.py already enforces on its own reads
+    (test_stm.py::test_dynamo_hides_an_expired_item_the_sweeper_has_not_collected).
+    """
+    table.put_item(Item={
+        "job_id": "old", "status": "done", "created_at": 0,
+        "expires_at": int(_time.time()) - 1, "s3_key": "motions/old.bvh",
+    })
+    assert read_status(table, "old") is None
+
+
+@pytest.mark.unit
+def test_row_without_expires_at_reads_as_absent(table):
+    """Every row enqueue() writes has one. Its absence means the row did not
+    come from this module, and guessing that it is still valid is the failure
+    mode this check exists to prevent."""
+    table.put_item(Item={"job_id": "stray", "status": "done", "created_at": 0})
+    assert read_status(table, "stray") is None
+
+
+@pytest.mark.unit
+def test_heartbeat_row_is_not_a_job(table):
+    """The heartbeat shares this table under a reserved key and carries only
+    last_seen. read_status used to do item["status"] on it and raise KeyError —
+    reachable from an authed public route as GET /motion/worker%23heartbeat,
+    i.e. a 500 any signed-in user could trigger."""
+    write_heartbeat(table)
+    assert read_status(table, "worker#heartbeat") is None
+    assert worker_alive(table) is True        # ...and worker_alive still reads it
 
 
 @pytest.mark.unit

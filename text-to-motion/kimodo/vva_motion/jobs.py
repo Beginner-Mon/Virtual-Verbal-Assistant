@@ -77,11 +77,42 @@ def enqueue(table, job_id: str, **fields) -> str:
 
 def read_status(table, job_id: str) -> dict | None:
     """Đường ĐỌC, không ghi gì. Lease quá hạn được diễn giải thành failed ngay tại đây —
-    không phụ thuộc heartbeat, vì worker treo thì heartbeat vẫn tươi."""
+    không phụ thuộc heartbeat, vì worker treo thì heartbeat vẫn tươi.
+
+    THREE ways this returns None, and each is a row that exists but must not be
+    treated as a job:
+
+    1. No item at all.
+
+    2. Past ``expires_at``. The row existing is NOT proof it is valid, and the two
+       clocks do not agree: asset_stack.py's S3 lifecycle rule deletes motions/*
+       reliably at 24h, while DynamoDB TTL is a background sweeper AWS documents as
+       running "within a few days", typically 48h. In that window the row still
+       says `done` and the .bvh is already gone — kimodo_node would report a
+       cache_hit and enqueue nothing, making that prompt permanently
+       un-renderable, and motion_status would hand the browser a signed URL to a
+       404. Checking here is the same rule shared/stm.py already enforces on its
+       own reads; GetItem takes no filter expression, so it has to be application
+       code. A row with no ``expires_at`` at all counts as expired: everything
+       enqueue() writes has one, so its absence means the row was not written by
+       this module.
+
+    3. No ``status``. The heartbeat lives in this same table under the reserved
+       key ``worker#heartbeat`` and carries only last_seen — it is not a job.
+       That row is reachable from an authed public route
+       (GET /motion/worker%23heartbeat), so reading it must be a plain
+       not_found rather than a 500.
+    """
     item = table.get_item(Key={"job_id": job_id}).get("Item")
     if item is None:
         return None
-    if item["status"] == "processing" and int(item.get("lease_until", 0)) < int(time.time()):
+    now = int(time.time())
+    if int(item.get("expires_at", 0)) < now:
+        return None
+    status = item.get("status")
+    if not status:
+        return None
+    if status == "processing" and int(item.get("lease_until", 0)) < now:
         return {**item, "status": "failed", "reason": "lease expired"}
     return dict(item)
 

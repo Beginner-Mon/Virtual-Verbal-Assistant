@@ -91,9 +91,19 @@ def motion_status(job_id: str) -> dict:
     row = read_status(_table(), job_id)
     if row is None:
         return {"status": "not_found"}
-    if row["status"] == "done":
-        return {"status": "done", "url": sign_url(row["s3_key"])}
-    out = {"status": row["status"]}
+    status = row["status"]
+    if status == "done":
+        # `done` without an s3_key should be impossible — complete_job writes
+        # both in one UpdateExpression. But this is a public authed route and
+        # the alternative to a guard is an unhandled KeyError, i.e. a 500 for a
+        # condition the caller can do nothing about. A row can also be hand-
+        # edited, or written by a future code path that forgets the key.
+        # Report it as a failure the browser can stop polling on.
+        s3_key = row.get("s3_key")
+        if not s3_key:
+            return {"status": "failed", "reason": "render finished without an output key"}
+        return {"status": "done", "url": sign_url(s3_key)}
+    out = {"status": status}
     if row.get("reason"):
         out["reason"] = row["reason"]
     return out

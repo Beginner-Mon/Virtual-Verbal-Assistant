@@ -7,6 +7,7 @@ ignore. Import trong hàm test sẽ làm mọi assertion đỏ vì lý do không
 from __future__ import annotations
 
 import json
+import time as _time
 
 import pytest
 
@@ -72,11 +73,43 @@ async def test_cache_hit_when_job_already_done(table, monkeypatch):
     job_id = compute_job_id(HASH_SECRET, "nâng hai tay", DEFAULT_DURATION, DEFAULT_STEPS, MODEL)
     table.put_item(Item={
         "job_id": job_id, "status": "done", "s3_key": "motions/abc.npz", "created_at": 0,
+        # read_status enforces expires_at now, so a hand-written row needs one.
+        # enqueue() always writes it; a fixture without it is not a real row.
+        "expires_at": int(_time.time()) + 3600,
     })
     out = _content(await kimodo_node({"resolved_query": "nâng hai tay"}, CONFIG))
     assert out["state"] == "cache_hit"
     assert out["job_id"] == job_id
     assert table.scan()["Count"] == 2          # heartbeat + the pre-seeded row, KHÔNG job mới
+
+
+@pytest.mark.unit
+async def test_expired_done_row_re_renders_instead_of_claiming_a_cache_hit(
+    table, monkeypatch,
+):
+    """The other half of the two-clocks problem.
+
+    S3 deletes motions/* reliably at 24h; DynamoDB TTL is best-effort within
+    48h. If an expired `done` row still counted as a cache hit, this node would
+    enqueue nothing and answer with a job id whose file no longer exists — and
+    it would do that for every future request with the same prompt, because the
+    row that causes it is the row that never gets replaced. That prompt becomes
+    permanently un-renderable, with no error anywhere.
+
+    Note the row is REPLACED, not added to: same HMAC job_id, so the count stays
+    at heartbeat + one job.
+    """
+    monkeypatch.setattr("langgraph_agents.nodes.kimodo._table", lambda: table)
+    write_heartbeat(table)
+    job_id = compute_job_id(HASH_SECRET, "nâng hai tay", DEFAULT_DURATION, DEFAULT_STEPS, MODEL)
+    table.put_item(Item={
+        "job_id": job_id, "status": "done", "s3_key": "motions/gone.npz",
+        "created_at": 0, "expires_at": int(_time.time()) - 1,
+    })
+    out = _content(await kimodo_node({"resolved_query": "nâng hai tay"}, CONFIG))
+    assert out["state"] != "cache_hit"
+    assert out["job_id"] == job_id
+    assert table.scan()["Count"] == 2
 
 
 @pytest.mark.unit
