@@ -86,6 +86,14 @@ jobs:
       # pytest ADDS to rather than replacing. If a future matrix entry genuinely
       # needs different roots, change pytest.ini or add to PYTHONPATH — do not
       # bring --override-ini back.
+      #
+      # Removing the override had a second-order cost that had to be paid in
+      # pytest.ini, not here: the override was also the only thing keeping
+      # text-to-motion/DART from shadowing SpeechLLm's api_server.py, so this
+      # job went 44 passed -> 21 passed / 17 failed / 13 errors. DART is the
+      # legacy backup of the Kimodo path and is now off pytest.ini's pythonpath
+      # entirely; see the comment there. Both roots on one path could never have
+      # worked anyway — one top-level name, one sys.modules slot.
       - name: Run unit tests
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
