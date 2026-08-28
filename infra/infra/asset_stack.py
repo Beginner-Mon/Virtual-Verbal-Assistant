@@ -75,6 +75,8 @@ the rest of the app keeps synthesizing.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from aws_cdk import (
     Annotations,
     CfnOutput,
@@ -90,6 +92,79 @@ from constructs import Construct
 from infra.origins import resolve as resolve_origins
 
 
+def _resolve_public_key(stack: Stack, ctx) -> str | None:
+    """Return the signing public key PEM, or None if it is missing or unusable.
+
+    Two ways in, because one of them does not work everywhere:
+
+    - ``-c motion_public_key_file=<path>`` — the reliable one. A PEM is
+      multi-line, and on Windows a multi-line value does not survive argv: the
+      CLI received only ``-----BEGIN PUBLIC KEY-----`` and CDK synthesised a
+      26-character key. Synth passed (nothing here looked at the shape) and
+      CloudFront rejected it mid-deploy with "empty/invalid/out of limits RSA
+      Encoded Key", rolling the stack back.
+    - ``-c motion_public_key_pem=<pem>`` — kept because it is what a POSIX
+      shell can do in one line, and what the tests inject.
+
+    Line endings are normalised to LF. openssl on Windows writes CRLF, and the
+    encoded key must not carry it.
+
+    The shape check is deliberately shallow — a BEGIN line, an END line, and a
+    body between them. It is not validating cryptography; it is catching
+    truncation, which is the failure that actually happened. A wrong-but-
+    well-formed key still fails, but it fails at deploy where CloudFront can
+    say so precisely.
+    """
+    pem = ctx("motion_public_key_pem")
+    key_file = ctx("motion_public_key_file")
+
+    if key_file and not pem:
+        path = Path(key_file)
+        if not path.is_file():
+            Annotations.of(stack).add_error(
+                f"motion_public_key_file points at {key_file!r}, which is not a "
+                "file. Pass the path to the PEM written by:\n"
+                "  openssl rsa -in motion_signing_key.pem -pubout "
+                "-out motion_signing_key.pub"
+            )
+            return None
+        pem = path.read_text(encoding="utf-8")
+
+    if not pem:
+        return None
+
+    pem = pem.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    if "\n" not in pem:
+        Annotations.of(stack).add_error(
+            "motion_public_key_pem arrived as a single line, so it is a "
+            "truncated PEM, not a key. A multi-line -c value does not survive "
+            "argv on Windows — the shell hands over only the first line and "
+            "CloudFront rejects it mid-deploy with 'empty/invalid/out of "
+            "limits RSA Encoded Key', after the stack has started updating.\n"
+            "Pass the path instead:\n"
+            "  cdk deploy VvaAssetStack -c motion_public_key_file=path/to/"
+            "motion_signing_key.pub"
+        )
+        return None
+
+    if not (pem.startswith("-----BEGIN PUBLIC KEY-----")
+            and pem.endswith("-----END PUBLIC KEY-----")):
+        Annotations.of(stack).add_error(
+            "motion_public_key_pem is not an SPKI public key PEM: it must "
+            "start with '-----BEGIN PUBLIC KEY-----' and end with "
+            "'-----END PUBLIC KEY-----'. A private key, an SSH-format key "
+            "(ssh-rsa AAAA...) or a certificate will all be rejected by "
+            "CloudFront at deploy time.\n"
+            "Produce the right one with:\n"
+            "  openssl rsa -in motion_signing_key.pem -pubout "
+            "-out motion_signing_key.pub"
+        )
+        return None
+
+    return pem + "\n"
+
+
 class AssetStack(Stack):
 
     def __init__(
@@ -101,7 +176,7 @@ class AssetStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         ctx = self.node.try_get_context
-        motion_public_key_pem = ctx("motion_public_key_pem")
+        motion_public_key_pem = _resolve_public_key(self, ctx)
 
         # No fallback default (unlike the Cognito ids in crud_api_stack.py):
         # those are public, checked-in-anyway values; a signing key is not.
@@ -117,9 +192,10 @@ class AssetStack(Stack):
         if not motion_public_key_pem:
             Annotations.of(self).add_error(
                 "VvaAssetStack needs the CloudFront signing public key for "
-                "motions/*. Pass:\n"
-                "  cdk deploy VvaAssetStack -c motion_public_key_pem=\"$(cat "
-                "motion_signing_key.pub)\"\n"
+                "motions/*. Pass the PATH, not the bytes — a multi-line -c "
+                "value does not survive argv on Windows:\n"
+                "  cdk deploy VvaAssetStack -c motion_public_key_file="
+                "motion_signing_key.pub\n"
                 "This verifies signed URLs the agent hands out for GPU-rendered "
                 "motion files; without it those files would need to be public, "
                 "which they are not meant to be."

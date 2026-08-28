@@ -30,6 +30,49 @@ def template():
 
 
 @pytest.mark.unit
+def test_a_truncated_pem_fails_synth_instead_of_the_deploy():
+    """The real failure this guard exists for, paid for once already.
+
+    `-c motion_public_key_pem="$(cat key.pub)"` on Windows delivers only the
+    first line: a multi-line value does not survive argv. Synth was happy —
+    every test here injects the PEM as a Python dict, where newlines are never
+    at risk — and CloudFront rejected it mid-deploy with "empty/invalid/out of
+    limits RSA Encoded Key", taking the stack through UPDATE_ROLLBACK.
+
+    A one-line PEM is not a key. Refuse it where it is cheap to refuse.
+    """
+    app = cdk.App(context={"motion_public_key_pem": "-----BEGIN PUBLIC KEY-----"})
+    stack = AssetStack(app, "Assets",
+                       env=cdk.Environment(account="244203483654", region="us-east-1"))
+    Annotations.from_stack(stack).has_error(
+        "*", Match.string_like_regexp(".*single line.*"),
+    )
+    Template.from_stack(stack).resource_count_is("AWS::CloudFront::PublicKey", 0)
+
+
+@pytest.mark.unit
+def test_the_key_can_come_from_a_file(tmp_path):
+    """The way round the argv limit: pass a path, not the bytes. Also the only
+    form that survives CRLF, which is what a Windows openssl writes."""
+    key_file = tmp_path / "motion_signing_key.pub"
+    key_file.write_bytes(_DUMMY_PEM.replace("\n", "\r\n").encode())
+
+    app = cdk.App(context={"motion_public_key_file": str(key_file)})
+    stack = AssetStack(app, "Assets",
+                       env=cdk.Environment(account="244203483654", region="us-east-1"))
+    template = Template.from_stack(stack)
+    template.resource_count_is("AWS::CloudFront::PublicKey", 1)
+
+    encoded = [
+        r["Properties"]["PublicKeyConfig"]["EncodedKey"]
+        for r in template.to_json()["Resources"].values()
+        if r["Type"] == "AWS::CloudFront::PublicKey"
+    ][0]
+    assert "\r" not in encoded, "CloudFront rejects CRLF in the encoded key"
+    assert encoded.strip().endswith("-----END PUBLIC KEY-----")
+
+
+@pytest.mark.unit
 def test_motions_prefix_expires_in_one_day(template):
     template.has_resource_properties("AWS::S3::Bucket", Match.object_like({
         "LifecycleConfiguration": {"Rules": Match.array_with([
