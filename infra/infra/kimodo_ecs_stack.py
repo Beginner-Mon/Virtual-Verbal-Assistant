@@ -69,7 +69,16 @@ class KimodoEcsStack(Stack):
         sg_ecs = ec2.SecurityGroup(
             self, "SgKimodoEcs",
             vpc=vpc,
-            security_group_name="kimodo-sg-ecs",
+            # Deliberately unnamed. A security group's Description is immutable
+            # in CloudFormation, so editing it — as this branch did, dropping
+            # "inbound 8000" for the queue worker — REPLACES the group. A fixed
+            # security_group_name makes that replacement impossible, because
+            # the new group is created before the old one is deleted:
+            #   "Security Group with kimodo-sg-ecs already exists"
+            # which is a rolled-back deploy, already paid for once. The two
+            # settings together would make every future description edit
+            # un-deployable. Nothing outside this stack referenced the name;
+            # `aws ecs run-task` takes the id, published as a stack output.
             description="Kimodo motion worker - outbound only, no inbound listener",
             allow_all_outbound=True,
         )
@@ -208,5 +217,14 @@ class KimodoEcsStack(Stack):
         ))
 
         # ── Outputs ────────────────────────────────────────────────
+        #
+        # There is no ECS Service, so nothing starts the worker on its own:
+        # scaling kimodo-asg to 1 supplies an instance and nothing more. The
+        # operator runs the task, and `aws ecs run-task --network-configuration`
+        # needs both of these by id (network_mode is awsvpc). They are outputs
+        # rather than names to retype — the group is deliberately unnamed, see
+        # SgKimodoEcs above.
         CfnOutput(self, "ClusterName", value=cluster.cluster_name)
         CfnOutput(self, "LogGroup", value=log_group.log_group_name)
+        CfnOutput(self, "TaskSecurityGroupId", value=sg_ecs.security_group_id)
+        CfnOutput(self, "TaskDefinitionFamily", value=task_def.family)
