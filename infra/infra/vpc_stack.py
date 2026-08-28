@@ -96,6 +96,25 @@ class VpcStack(Stack):
             subnets=[ec2.SubnetSelection(subnet_group_name="EcsPublic")],
         )
 
+        # ── Exports kept alive across the Kimodo queue migration ────────
+        #
+        # VvaKimodoEcsStack used to run an ALB, a target group and an ECS
+        # Service, all of which needed subnets and the VPC CIDR. The queue
+        # design has none of them, so CDK stopped emitting these exports —
+        # correct for the new template, and un-deployable from where the
+        # account is: CloudFormation will not delete an export while another
+        # stack imports it, and the DEPLOYED Kimodo stack still does. `cdk
+        # deploy VvaVpcStack VvaKimodoEcsStack` does the VPC first, so the
+        # removal fails and the VPC rolls back before Kimodo is ever reached.
+        #
+        # export_value pins them so this deploy can land. They come out in a
+        # LATER deploy, once the new Kimodo stack is live and nothing imports
+        # them — delete these lines then, together with
+        # tests/infra/test_vpc_export_retention.py.
+        self.export_value(self.vpc.vpc_cidr_block)
+        for subnet in (*self.vpc.public_subnets, *self.vpc.isolated_subnets):
+            self.export_value(subnet.subnet_id)
+
         # ── Tags ─────────────────────────────────────────────────────────
         Tags.of(self).add("Project", "ECA")
 
