@@ -192,8 +192,9 @@ class AssetStack(Stack):
         if not motion_public_key_pem:
             Annotations.of(self).add_error(
                 "VvaAssetStack needs the CloudFront signing public key for "
-                "motions/*. Pass the PATH, not the bytes — a multi-line -c "
-                "value does not survive argv on Windows:\n"
+                "motions/*. Pass the PATH, not the bytes — a multi-line "
+                "-c motion_public_key_pem value does not survive argv on "
+                "Windows and arrives truncated:\n"
                 "  cdk deploy VvaAssetStack -c motion_public_key_file="
                 "motion_signing_key.pub\n"
                 "This verifies signed URLs the agent hands out for GPU-rendered "
