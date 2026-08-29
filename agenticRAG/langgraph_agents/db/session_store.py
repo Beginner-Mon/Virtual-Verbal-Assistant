@@ -14,6 +14,59 @@ from langgraph_agents.db.postgres import PostgresClient
 from langgraph_agents.shared import get_pg_client
 from langgraph_agents.shared.stm import get_stm
 
+# Second copy of vva_motion.jobs.TTL_SECONDS, and it cannot be an import.
+#
+# This module is served by TWO deployments. The agent is a container image that
+# COPYs vva_motion in (agenticRAG/Dockerfile:112), but the CRUD Lambda is a zip
+# built from agenticRAG/langgraph_agents alone (infra/build_crud_api.py:44) —
+# `from vva_motion.jobs import ...` at module scope there is a
+# ModuleNotFoundError at cold start, which takes /sessions and /me/memory down
+# with it. A lazy import only moves the crash to request time, on the very
+# endpoint that needs the value.
+#
+# Same shape as MODEL in nodes/kimodo.py, which is copied for the same reason:
+# the other definition lives on the far side of an image boundary. Unlike that
+# one, this pair is pinned by a test —
+# tests/langgraph_agents/test_motion_expiry_flag.py asserts the two are equal,
+# so drift fails CI instead of quietly mislabelling every restored motion.
+MOTION_TTL_SECONDS = 24 * 3600
+
+
+def motion_expired(created_at: Optional[datetime]) -> bool:
+    """Has this turn's rendered motion aged out of storage?
+
+    `messages.motion_job_id` outlives what it points at. The job row has a 24h
+    DynamoDB TTL and the .bvh has a one-day S3 lifecycle rule, so a day after
+    the turn every stored id is a dead pointer.
+
+    `GET /motion/{job_id}` cannot report that. A swept row, an expired row and
+    an id that never existed all answer 404 the same way — once the evidence is
+    deleted there is nothing left to distinguish them. The age of the message
+    is the only signal, and Postgres is the only place that has it.
+
+    Deciding it here rather than in the browser keeps one clock: TTL_SECONDS is
+    imported from the module the worker and the queue already share, instead of
+    a 24 copied into the frontend that nobody updates when the rule changes.
+
+    The S3 lifecycle is the binding deadline, not the DynamoDB TTL. The file is
+    what the browser actually fetches, lifecycle deletes it on schedule, and
+    AWS only promises to get around to a TTL sweep "within a few days" — so the
+    row can outlive the file it describes, never the other way round.
+
+    Unknown age counts as expired. The two mistakes are not equal: calling a
+    live motion expired costs a replay the user can ask for again, while
+    calling a dead one live costs a pointless poll and ends in a message that
+    says the render failed when it merely got old.
+    """
+    if created_at is None:
+        return True
+    # asyncpg returns tz-aware timestamps; a hand-built row or another driver
+    # may not. A naive value read as local time shifts by the machine's offset
+    # and silently reclassifies everything near the boundary.
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - created_at).total_seconds() >= MOTION_TTL_SECONDS
+
 # _REDIS_URL used to live here, hardcoded to localhost, and was one of four
 # copies of the same string. shared/stm.py owns it now — see that module for why
 # the store is swappable and why DynamoDB's TTL needed an application-side check.
@@ -205,6 +258,11 @@ async def load_session_messages(
             "content":       r["content"],
             "tokens":        r["token_count"],
             "motion_job_id": r["motion_job_id"],
+            # Whether that id still points at anything. Computed here because
+            # this is the only layer that knows the message's age — see
+            # motion_expired(). Always present, so a client never has to
+            # reimplement the TTL to find out.
+            "motion_expired": motion_expired(r["created_at"]),
             "timestamp":     r["created_at"].isoformat(),
         }
         for r in rows
