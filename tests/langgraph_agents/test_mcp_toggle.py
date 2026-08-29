@@ -7,10 +7,14 @@ was the one seam that had no switch.
 
 The cost it removes is not hypothetical. `build_graph_async()` calls
 `get_mcp_tools()` unconditionally, from the FastAPI lifespan — which on Lambda is
-inside a 10-second INIT budget. Both configured servers are `transport: stdio`,
-so discovery spawns TWO Python subprocesses there, and on the first cloud deploy
-neither can do anything: kimodo_server is a mock returning mock:// URLs and
+inside a 10-second INIT budget. The configured server is `transport: stdio`, so
+discovery spawns a Python subprocess there, and in the cloud it can do nothing:
 web_search_server wants SearXNG on localhost.
+
+This note used to say "both configured servers" and name kimodo_server, a mock
+returning mock:// URLs. That file is deleted — motion now reaches the GPU
+through the DynamoDB job queue with no MCP server on either side. The flag is
+still needed; web_search is what it controls.
 
 Default is ON so local development is unchanged; the Lambda image sets it off.
 """
@@ -76,4 +80,8 @@ def test_enabled_still_reads_the_real_servers(monkeypatch):
     monkeypatch.setenv("ENABLE_MCP", "true")
     cfg = mcp_client._load_mcp_config()
     assert cfg, "config/mcp_servers.yaml produced no servers with MCP enabled"
-    assert "kimodo_motion" in cfg
+    # kimodo_motion was removed from config/mcp_servers.yaml in Task 8 — the
+    # LLM never chooses the motion tool (D26: needs_motion is a hard edge),
+    # so MCP's tool-discovery bought nothing on that path. web_search is the
+    # entry that survives: the LLM does choose that one.
+    assert "web_search" in cfg

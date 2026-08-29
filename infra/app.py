@@ -66,6 +66,19 @@ character_stack = CharacterStack(app, "VvaCharacterStack", env=env)
 
 # Independent of CharacterStack since 20-08: the catalog moved to the REST API,
 # so this distribution serves only the .vrm files from S3 and needs no Lambda.
+#
+# Since Task 7 it also serves motions/* (GPU-rendered clips), which are reachable
+# only via CloudFront signed URLs — needs the public half of the signing keypair:
+#
+#     cdk deploy VvaAssetStack -c motion_public_key_pem="$(cat motion_signing_key.pub)"
+#
+# Missing the flag fails synth via Annotations.add_error — NOT a Python raise,
+# which was tried and reversed: this file constructs every stack on every `cdk`
+# invocation, so raising here broke `cdk list`, `cdk diff` and
+# `cdk deploy VvaVpcStack`, commands with nothing to do with motions.
+# add_error fails only the stack that carries it. See asset_stack.py's
+# docstring; VvaAgentStack below now uses the same mechanism for
+# motion_key_pair_id and asset_base_url.
 asset_stack = AssetStack(app, "VvaAssetStack", env=env)
 
 # ── Track 2: session + user-memory CRUD ─────────────────────────────
@@ -90,7 +103,24 @@ crud_api_stack = CrudApiStack(app, "VvaCrudApiStack", env=env)
 #
 # During bootstrap `fn` is None and VvaRestApiStack simply omits /chat. Adding
 # the route later is additive; that is why it is optional rather than required.
-agent_stack = AgentStack(app, "VvaAgentStack", env=env)
+#
+# asset_base_url comes from AssetStack (constructed above, R6): motion_status.py
+# signs CloudFront URLs against this origin. Everything motion-related that is
+# actually a secret (the CloudFront private signing key, the HMAC job-id
+# secret) is stored in SSM as a SecureString and reaches the Lambda only as a
+# *_PARAM name (ruling R24) — never a CDK context flag, never a template
+# literal. motion_key_pair_id is the one non-secret exception (it just names
+# which trusted public key to verify against) and IS a context flag:
+#
+#     cdk deploy VvaAgentStack -c agent_image_tag=<sha> \
+#         -c motion_key_pair_id="$(...)" \
+#         -c motion_signing_key_param=/vva/motion/signing-key-pem \
+#         -c motion_hash_secret_param=/vva/motion/hash-secret
+agent_stack = AgentStack(
+    app, "VvaAgentStack",
+    asset_base_url=f"https://{asset_stack.distribution.distribution_domain_name}",
+    env=env,
+)
 
 # ── Track 2: the API gateway ────────────────────────────────────────
 # One front door for every backend call. See rest_api_stack.py for why REST API
@@ -104,8 +134,15 @@ rest_api_stack = RestApiStack(
     env=env,
 )
 
-# ── Kimodo ECS (GPU MCP Server) ─────────────────────────────────────
-kimodo_ecs = KimodoEcsStack(app, "VvaKimodoEcsStack", vpc=vpc_stack.vpc, env=env)
+# ── Kimodo ECS (GPU motion worker) ───────────────────────────────────
+# assets_bucket_name comes from AssetStack (constructed above) — the worker
+# writes rendered clips to motions/* of that same bucket.
+kimodo_ecs = KimodoEcsStack(
+    app, "VvaKimodoEcsStack",
+    vpc=vpc_stack.vpc,
+    assets_bucket_name=asset_stack.bucket.bucket_name,
+    env=env,
+)
 
 # ── Phase 0 spike: THROWAWAY (opt-in) ───────────────────────────────
 # Answers one question — does LWA's response_stream prelude satisfy API

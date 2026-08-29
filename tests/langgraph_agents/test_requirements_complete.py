@@ -40,6 +40,13 @@ IMPORT_TO_DISTRIBUTION = {
 IGNORED = {
     # First-party.
     "langgraph_agents",
+    # Also first-party: text-to-motion/kimodo/vva_motion — the DynamoDB job
+    # queue shared between kimodo_node (here) and the GPU worker. Reached via
+    # the `pythonpath` entry in pytest.ini, not pip-installed, so it has no
+    # distribution name to declare. Deliberately dependency-light (boto3 +
+    # stdlib only, per its own module docstring) so it can be COPY'd into a
+    # GPU worker image that has no langgraph_agents.
+    "vva_motion",
     # The legacy package. Any import of it is a coupling bug, and
     # test_no_legacy_imports below is what fails then — not this test, which
     # would report the confusing "add agentic_rag_gemini to requirements".
@@ -113,6 +120,60 @@ def test_every_import_is_declared():
         + "\n".join(missing)
         + "\n\nAdd them, or add an entry to IMPORT_TO_DISTRIBUTION if the "
         "distribution is named differently from the module."
+    )
+
+
+@pytest.mark.unit
+def test_the_root_conftest_imports_nothing_third_party_at_module_scope():
+    """tests/conftest.py is loaded before collection for EVERY suite in the repo.
+
+    Not just this one. tests/SpeechLLm is installed from
+    SpeechLLm/requirements.txt, tests/infra from infra/requirements-dev.txt —
+    different dependency sets entirely. A module-scope import here is therefore
+    a dependency imposed on all of them at once, and when it is missing the job
+    does not fail a test, it fails to start:
+
+        ImportError while loading conftest '.../tests/conftest.py'
+        tests/conftest.py:1: in <module>
+            import boto3
+        E   ModuleNotFoundError: No module named 'boto3'
+        Process completed with exit code 4
+
+    That is what the `table` fixture did when it was moved here with `import
+    boto3` and `from moto import mock_aws` at the top. Adding those packages to
+    one requirements file only moves the failure to the next job with a
+    different one, which is why this test checks the SHAPE of the file rather
+    than cross-referencing a package list. Imports go inside the fixture, where
+    only the tests that request it pay for them.
+
+    Deliberately only the ROOT conftest: a per-suite conftest is scoped to a
+    suite whose job installs its dependencies, and may import whatever it needs.
+    """
+    stdlib = set(sys.stdlib_module_names)
+    allowed = {"pytest"}
+    conftest = REPO_ROOT / "tests" / "conftest.py"
+    tree = ast.parse(conftest.read_text(encoding="utf-8-sig"))
+
+    offenders: list[str] = []
+    for node in ast.iter_child_nodes(tree):     # module scope ONLY, not ast.walk
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            names = [node.module] if node.level == 0 and node.module else []
+        else:
+            continue
+        for name in names:
+            root = name.split(".")[0]
+            if root not in stdlib and root not in allowed:
+                offenders.append(root)
+
+    assert not offenders, (
+        "tests/conftest.py imports "
+        + ", ".join(sorted(set(offenders)))
+        + " at module scope. Every suite in the repo loads this file before "
+        "collecting, including ones installed from a different requirements "
+        "file — so this makes them all fail to start. Move the import inside "
+        "the fixture that needs it."
     )
 
 

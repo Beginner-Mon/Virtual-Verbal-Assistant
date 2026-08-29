@@ -81,16 +81,20 @@ def mcp_enabled() -> bool:
 
     The deployed agent sets ENABLE_MCP=false, and the reason is cold-start cost
     rather than tidiness. Discovery runs inside build_graph_async(), i.e. in the
-    FastAPI lifespan, i.e. inside Lambda's 10-second INIT budget — and both
-    configured servers use `transport: stdio`, so it spawns TWO Python
-    subprocesses there. On the first cloud deployment neither can do anything:
-    mcp/kimodo_server.py is a mock returning mock:// URLs, and
-    web_search_server.py wants SearXNG on localhost:6666. Paying seconds of every
-    cold start to start two processes that cannot work is worse than not having
-    them.
+    FastAPI lifespan, i.e. inside Lambda's 10-second INIT budget — and the
+    configured server uses `transport: stdio`, so it spawns a Python subprocess
+    there. In the cloud that subprocess can do nothing: web_search_server.py
+    wants SearXNG on localhost:6666, which is not deployed. Paying seconds of
+    every cold start to start a process that cannot work is worse than not
+    having it.
 
-    Turning Kimodo on later is this flag plus a `streamable_http` entry in
-    config/mcp_servers.yaml pointing at the tunnel — no code change here.
+    THE FLAG IS STILL NEEDED. This note used to say "both configured servers"
+    and cite mcp/kimodo_server.py — a mock returning mock:// URLs. That file is
+    gone: motion moved to the DynamoDB job queue and reaches the GPU with no MCP
+    server on either side (nodes/kimodo.py, vva_motion/jobs.py). Only
+    web_search remains in config/mcp_servers.yaml, and it is still stdio and
+    still unreachable from Lambda, so turning this flag on would still pay for
+    a subprocess that cannot work.
     """
     return os.getenv("ENABLE_MCP", "true").strip().lower() != "false"
 

@@ -182,7 +182,7 @@ async def load_session_messages(
     # transcript would read.
     if before:
         rows = await pg.fetch(
-            """SELECT role, content, token_count, created_at
+            """SELECT role, content, token_count, motion_job_id, created_at
                FROM messages
                WHERE session_id = $1::uuid AND created_at < $2::timestamptz
                ORDER BY created_at DESC, seq_id DESC LIMIT $3""",
@@ -191,7 +191,7 @@ async def load_session_messages(
         rows = list(reversed(rows))
     else:
         rows = await pg.fetch(
-            """SELECT role, content, token_count, created_at
+            """SELECT role, content, token_count, motion_job_id, created_at
                FROM messages
                WHERE session_id = $1::uuid
                ORDER BY created_at DESC, seq_id DESC LIMIT $2""",
@@ -201,10 +201,11 @@ async def load_session_messages(
 
     messages = [
         {
-            "role":       r["role"],
-            "content":    r["content"],
-            "tokens":     r["token_count"],
-            "timestamp":  r["created_at"].isoformat(),
+            "role":          r["role"],
+            "content":       r["content"],
+            "tokens":        r["token_count"],
+            "motion_job_id": r["motion_job_id"],
+            "timestamp":     r["created_at"].isoformat(),
         }
         for r in rows
     ]
@@ -244,7 +245,12 @@ async def write_session_turn(
     assistant_answer: str,
     total_tokens: int = 0,
     grader_result: str = "pass",
+    motion_job_id: str | None = None,
 ) -> None:
+    """`motion_job_id` (R25): the Kimodo job id for this turn, if any. Only
+    the `queued`/`cache_hit` states carry one — `busy`/`unavailable` pass
+    None, same as a turn with no motion at all. Written on the assistant row
+    only; the user row's motion_job_id is always NULL."""
     user_id = _to_uuid(user_id)
     pg = get_pg_client()
     await pg.connect()
@@ -264,11 +270,11 @@ async def write_session_turn(
     # by seq_id (BIGSERIAL, insert order), not created_at. Passing an ISO string
     # for a timestamptz param fails under executemany() binary binding.
     await pg.executemany(
-        """INSERT INTO messages (session_id, role, content, token_count)
-           VALUES ($1::uuid, $2, $3, $4)""",
+        """INSERT INTO messages (session_id, role, content, token_count, motion_job_id)
+           VALUES ($1::uuid, $2, $3, $4, $5)""",
         [
-            (session_id, "user",      user_query,       None),
-            (session_id, "assistant", assistant_answer, total_tokens),
+            (session_id, "user",      user_query,       None,         None),
+            (session_id, "assistant", assistant_answer, total_tokens, motion_job_id),
         ],
     )
     await _append_stm(session_id, user_query, assistant_answer, ts)

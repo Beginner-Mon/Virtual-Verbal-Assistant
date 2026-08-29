@@ -22,6 +22,22 @@ ECA_UI/
 text-to-motion/
 SpeechLLm/
 
+# ...except the shared motion job module. agenticRAG/Dockerfile COPYs
+# text-to-motion/kimodo/vva_motion into the image, because the Lambda and the
+# GPU worker must agree byte-for-byte on the job id and the table schema, and
+# the Kimodo image's build context (text-to-motion/kimodo) cannot reach up to a
+# shared location. The exclusion above hid it and the build died with
+#
+#   failed to compute cache key: "/text-to-motion/kimodo/vva_motion": not found
+#
+# after both test gates had passed — the last place this could still break.
+# Both lines are needed: the first re-admits the directory entry, the second its
+# contents. Everything else under text-to-motion/ stays excluded, which is the
+# point: DART alone once filled a runner's disk.
+# Guarded by tests/infra/test_dockerignore_allows_copied_paths.py.
+!text-to-motion/kimodo/vva_motion
+!text-to-motion/kimodo/vva_motion/**
+
 # Infrastructure and docs
 infra/
 docs/

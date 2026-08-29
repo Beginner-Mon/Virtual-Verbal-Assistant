@@ -45,6 +45,7 @@ end by the Phase 0 spike, see infra/infra/streaming_probe_stack.py.
 from __future__ import annotations
 
 from aws_cdk import (
+    Annotations,
     CfnOutput,
     Duration,
     RemovalPolicy,
@@ -58,6 +59,37 @@ from constructs import Construct
 from infra.origins import resolve as resolve_origins
 
 _REPOSITORY_NAME = "vva-agent"
+
+# Fixed table name rather than a construct reference. KimodoEcsStack (which owns
+# the real `dynamodb.Table` construct) is built AFTER this stack in app.py — see
+# app.py's stack order — so a `motion_table.grant_read_write_data(fn)` call here
+# is structurally impossible without reordering the stacks. Both sides agree on
+# the name instead: kimodo_ecs_stack.py hardcodes the identical string. Cost if
+# they drift: an IAM grant that points at a table that does not exist, caught
+# immediately by the first `read_status`/`enqueue` call failing with
+# AccessDenied rather than silently.
+_MOTION_TABLE_NAME = "vva-motion-jobs"
+
+# The CloudFront PRIVATE signing key, one degree more sensitive than the public
+# key asset_stack.py registers: asset_stack.py's docstring calls the private
+# half "kept outside CDK entirely — it never appears here", and that holds here
+# too. This env var carries the SSM parameter NAME, not the key — motion_status.py
+# resolves it at call time via ssm:GetParameter(WithDecryption=True), the same
+# shape llm.py's _secret_from_ssm already uses for the LLM API keys. The key
+# material itself never touches a CDK context value or the CloudFormation
+# template.
+_DEFAULT_MOTION_SIGNING_KEY_PARAM = "/vva/motion/signing-key-pem"
+
+# Ruling R24: same treatment as the signing key above, and for the same reason
+# — the brief that introduced this stack's motion wiring named it explicitly
+# as one of three secrets to come "from SSM", and an earlier version of this
+# file baked the raw value into a CDK context flag instead, which lands it in
+# the Lambda's Environment.Variables as a literal in the CloudFormation
+# template. This env var carries the SSM SecureString parameter NAME;
+# nodes/kimodo.py resolves it at call time (`_resolve_hash_secret` /
+# `_hash_secret_from_ssm_cached`), env-first-then-SSM, the same precedence
+# llm.py's `_resolve_api_key` uses.
+_DEFAULT_MOTION_HASH_SECRET_PARAM = "/vva/motion/hash-secret"
 
 # The POOLED Neon endpoint, same as the CRUD function and for the same measured
 # reason — see the long note in crud_api_stack.py. A Lambda scales out to N
@@ -82,7 +114,36 @@ _DEFAULT_COGNITO_CLIENT_ID = "1rsd1gn5i3heshuo0hf1s6cvm"
 
 class AgentStack(Stack):
 
-    def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
+    def __init__(
+        self,
+        scope: Construct,
+        construct_id: str,
+        asset_base_url: str | None = None,
+        **kwargs,
+    ) -> None:
+        """
+        asset_base_url: the motions CDN's public origin, e.g.
+            f"https://{distribution.distribution_domain_name}". Passed in from
+            AssetStack (built before this stack in app.py — see the ordering
+            comment there), the same way RestApiStack receives crud_fn/
+            characters_fn.
+
+            Optional in the SIGNATURE so the two-step bootstrap can construct
+            this stack before there is a function at all — but required by the
+            time one is created, and enforced below with
+            Annotations.add_error.
+
+            An earlier version of this docstring claimed motion_status() "would
+            fail loudly at call time (KeyError on ASSET_BASE_URL)". It could
+            not: the environment variable is set unconditionally, just to "".
+            The real failure was silent and downstream — sign_url() would build
+            "/motions/x.bvh" with no origin, and the browser would fetch a URL
+            that goes nowhere. Same class of problem for motion_key_pair_id: an
+            empty key pair id signs a URL CloudFront answers with 403. Both
+            failures surface as a broken avatar in production, hours after a
+            deploy that CloudFormation called a success. Hence a synth-time
+            error instead.
+        """
         super().__init__(scope, construct_id, **kwargs)
 
         ctx = self.node.try_get_context
@@ -147,6 +208,64 @@ class AgentStack(Stack):
         dsn_param = ctx("crud_dsn_param") or _DEFAULT_DSN_PARAM
         deepseek_param = ctx("deepseek_param") or _DEFAULT_DEEPSEEK_PARAM
         gemini_param = ctx("gemini_param") or _DEFAULT_GEMINI_PARAM
+        motion_signing_key_param = (
+            ctx("motion_signing_key_param") or _DEFAULT_MOTION_SIGNING_KEY_PARAM
+        )
+        # R24: same *_PARAM shape as motion_signing_key_param above — the raw
+        # secret never becomes a CDK context value or a template literal, only
+        # its SSM parameter name does. nodes/kimodo.py resolves it at call time.
+        motion_hash_secret_param = (
+            ctx("motion_hash_secret_param") or _DEFAULT_MOTION_HASH_SECRET_PARAM
+        )
+        # motion_key_pair_id is NOT a secret — it names which trusted public
+        # key CloudFront should verify against, the public half asset_stack.py
+        # registers. It only exists after VvaAssetStack has been deployed once
+        # (CloudFront assigns it), so it is supplied the same way
+        # motion_public_key_pem is: a `-c` flag at deploy time, not a construct
+        # reference.
+        motion_key_pair_id = ctx("motion_key_pair_id") or ""
+
+        # ── Deploy readiness, loudly ────────────────────────────────────
+        # Both of these used to default to "" and synthesize cleanly, deploy
+        # cleanly, and then break motion in production: an empty key pair id
+        # produces a signed URL CloudFront answers with 403, and an empty origin
+        # produces a URL with no host at all. Neither raises anywhere — the
+        # environment variable is present, merely empty — so the first signal is
+        # a broken avatar, hours after a green deployment.
+        #
+        # Annotations.add_error, NOT raise, and for the reason asset_stack.py
+        # spells out for its own public-key check: app.py constructs this stack
+        # on every `cdk` invocation, so raising would break `cdk list`,
+        # `cdk diff` and `cdk deploy VvaVpcStack` — commands with nothing to do
+        # with motion. add_error fails synth/deploy for THIS stack only.
+        #
+        # Reached only past the `bootstrap` early-return and the image_tag
+        # check above, so step 1 of the two-step bootstrap is unaffected: there
+        # is no function then, and nothing to configure wrongly.
+        if not motion_key_pair_id:
+            Annotations.of(self).add_error(
+                "VvaAgentStack needs the CloudFront key pair id that verifies "
+                "the motion signed URLs it hands out. Pass:\n"
+                "  cdk deploy VvaAgentStack -c agent_image_tag=<sha> "
+                '-c motion_key_pair_id="K2EXAMPLE..."\n'
+                "The id is assigned by CloudFront and only exists after "
+                "VvaAssetStack has been deployed once with "
+                "-c motion_public_key_pem. Read it back with:\n"
+                "  aws cloudfront list-public-keys "
+                "--query 'PublicKeyList.Items[].{Id:Id,Name:Name}'\n"
+                "Without it every GET /motion/{job_id} returns a URL "
+                "CloudFront answers with 403."
+            )
+
+        if not asset_base_url:
+            Annotations.of(self).add_error(
+                "VvaAgentStack needs asset_base_url — the motions CDN origin "
+                "that signed URLs are built on. app.py passes it from "
+                "VvaAssetStack's distribution domain name; a direct "
+                "construction must do the same.\n"
+                "Without it motion_status() returns URLs with no host, and "
+                "nothing raises: ASSET_BASE_URL is set, just empty."
+            )
 
         self.cognito_pool_id = ctx("cognito_user_pool_id") or _DEFAULT_COGNITO_POOL_ID
         cognito_client_id = ctx("cognito_app_client_id") or _DEFAULT_COGNITO_CLIENT_ID
@@ -183,6 +302,18 @@ class AgentStack(Stack):
                 # ENABLE_MCP, EMBEDDING_BACKEND, E5_ONNX_DIR and the LWA
                 # settings are baked into the image: they describe what the
                 # image IS, not where it is deployed. See agenticRAG/Dockerfile.
+                #
+                # ── Motion (Task 9, R24) ────────────────────────────────
+                # Fixed name, not a construct reference — see _MOTION_TABLE_NAME.
+                "MOTION_TABLE": _MOTION_TABLE_NAME,
+                # SSM parameter NAMES only, for both secrets — nodes/kimodo.py
+                # and motion_status.py resolve them at call time. Neither raw
+                # value ever appears in this Lambda's environment or the
+                # CloudFormation template (ruling R24).
+                "MOTION_HASH_SECRET_PARAM": motion_hash_secret_param,
+                "MOTION_SIGNING_KEY_PARAM": motion_signing_key_param,
+                "MOTION_KEY_PAIR_ID": motion_key_pair_id,
+                "ASSET_BASE_URL": asset_base_url or "",
             },
             # 1024 MB, and lower than it looks like it should be. CPU scales
             # with memory (1 vCPU at 1769 MB), so this buys ~0.58 vCPU and makes
@@ -218,7 +349,10 @@ class AgentStack(Stack):
             actions=["ssm:GetParameter"],
             resources=[
                 f"arn:aws:ssm:{self.region}:{self.account}:parameter{param}"
-                for param in (dsn_param, deepseek_param, gemini_param)
+                for param in (
+                    dsn_param, deepseek_param, gemini_param,
+                    motion_signing_key_param, motion_hash_secret_param,
+                )
             ],
         ))
         # Scoped by kms:ViaService so this grant cannot be turned on anything
@@ -227,6 +361,27 @@ class AgentStack(Stack):
             actions=["kms:Decrypt"],
             resources=[f"arn:aws:kms:{self.region}:{self.account}:key/*"],
             conditions={"StringEquals": {"kms:ViaService": f"ssm.{self.region}.amazonaws.com"}},
+        ))
+
+        # ── IAM: motion job table (Task 9, ruling R3) ───────────────────
+        #
+        # Built from a fixed ARN rather than `motion_table.grant_read_write_data(fn)`
+        # because the construct does not exist in this stack: app.py builds
+        # KimodoEcsStack (which owns it) AFTER this stack, so there is no
+        # `motion_table` object here to grant from. See _MOTION_TABLE_NAME.
+        #
+        # Scoped to what this Lambda actually calls (nodes/kimodo.py +
+        # api/motion_status.py): GetItem (read_status/worker_alive), PutItem
+        # (enqueue), Query (queue_depth, over the status-created_at-index —
+        # hence the second resource ARN). UpdateItem/DeleteItem are
+        # deliberately excluded: only the GPU worker (kimodo_ecs_stack.py's
+        # task role) claims, completes or recovers jobs.
+        motion_table_arn = (
+            f"arn:aws:dynamodb:{self.region}:{self.account}:table/{_MOTION_TABLE_NAME}"
+        )
+        self.fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"],
+            resources=[motion_table_arn, f"{motion_table_arn}/index/*"],
         ))
 
         CfnOutput(self, "AgentFunctionName", value=self.fn.function_name)

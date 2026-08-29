@@ -102,7 +102,13 @@ jobs:
           EMBEDDING_BACKEND: torch
           ENABLE_MCP: "false"
         run: |
-          PYTHONPATH=agenticRAG python -c "
+          # text-to-motion/kimodo is on the path because `vva_motion` lives
+          # there and api/motion_status.py imports it. In the image that COPY
+          # lands it at /var/task/vva_motion (agenticRAG/Dockerfile:112), so
+          # the import name is identical; here the repo layout has to be
+          # spelled out. Without it this guard dies with
+          # "ModuleNotFoundError: No module named 'vva_motion'" — which it did.
+          PYTHONPATH=agenticRAG:text-to-motion/kimodo python -c "
           import sys
           from langgraph_agents.api.main import create_app
           create_app()

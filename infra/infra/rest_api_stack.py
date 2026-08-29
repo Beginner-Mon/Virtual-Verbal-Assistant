@@ -301,6 +301,22 @@ class RestApiStack(Stack):
                 "GET", agent, **authed,
             )
 
+            # ── /motion/{job_id} — authenticated ─────────────────────────
+            #
+            # Motion files are the first user-derived artifacts on the CDN
+            # (see asset_stack.py's module docstring) — everything served
+            # from it before this was a static app asset, so this is the
+            # first route that needs the same Cognito authorizer every other
+            # data route already carries. Reuses `authorizer`/`authed` built
+            # above; no second authorizer.
+            #
+            # BUFFERED, not streamed: the response is a small JSON status (+
+            # a signed URL string), the same shape as /tts's routes. The file
+            # itself never passes through this Lambda — the client fetches it
+            # straight from CloudFront with the URL this returns.
+            motion = self.api.root.add_resource("motion")
+            motion.add_resource("{job_id}").add_method("GET", agent, **authed)
+
             billing = self.api.root.add_resource("billing")
             billing.add_resource("{proxy+}").add_method("ANY", agent, **authed)
 
