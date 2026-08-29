@@ -472,6 +472,80 @@ def test_kimodo_never_emits_a_stage_event(api_client, monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("state", ["queued", "cache_hit"])
+def test_motion_event_carries_the_job_id_to_the_browser(api_client, state):
+    """The frontend cannot poll for a render it has no id for.
+
+    Before this event existed the id was captured into final_state and written
+    to Postgres, and the only way a client could learn it was to re-fetch the
+    session after the turn ended — a round trip added to a render that already
+    takes seconds. R26 deferred the event because nothing consumed it; the
+    frontend motion handler consumes it now.
+    """
+    client, _, mock_graph = api_client
+    mock_graph.astream = _make_fake_astream_with_kimodo({"state": state, "job_id": "job-abc-123"})
+    _set_graph(mock_graph)
+
+    resp = client.post("/chat", json={"query": "show me a stretch"})
+    events = _parse_sse_stream(resp.content)
+    motion = [e for e in events if e["event"] == "motion"]
+    assert len(motion) == 1, "exactly one motion event per turn"
+    assert motion[0]["data"]["state"] == state
+    assert motion[0]["data"]["job_id"] == "job-abc-123"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("state", ["busy", "unavailable"])
+def test_motion_event_is_emitted_for_busy_and_unavailable_too(api_client, state):
+    """These two were dropped entirely: the capture branch only looked at
+    queued/cache_hit, and they carry no job_id to persist, so "the GPU worker is
+    off" and "this turn had no motion in it" were indistinguishable to the UI.
+
+    They are exactly the states a user needs told — the worker is scaled to zero
+    by default, so `unavailable` is the common path, not the rare one.
+    """
+    client, _, mock_graph = api_client
+    payload = {"state": state}
+    if state == "busy":
+        payload["retry_after_seconds"] = 30
+    mock_graph.astream = _make_fake_astream_with_kimodo(payload)
+    _set_graph(mock_graph)
+
+    resp = client.post("/chat", json={"query": "show me a stretch"})
+    events = _parse_sse_stream(resp.content)
+    motion = [e for e in events if e["event"] == "motion"]
+    assert len(motion) == 1
+    assert motion[0]["data"]["state"] == state
+    assert "job_id" not in motion[0]["data"]
+    if state == "busy":
+        assert motion[0]["data"]["retry_after_seconds"] == 30
+
+
+@pytest.mark.unit
+def test_kimodo_malformed_content_emits_no_motion_event(api_client):
+    """Malformed content is swallowed for the same reason it always was — but
+    now that swallowing must also mean no half-formed motion event goes out."""
+    client, _, mock_graph = api_client
+
+    async def fake_stream(state, config, stream_mode=None):
+        yield ("updates", {"memory": {}})
+        yield ("updates", {"kimodo": {"messages": [
+            ToolMessage(content="not json at all", tool_call_id="x", name="generate_motion"),
+        ]}})
+        yield ("updates", {"synthesizer": {
+            "final_answer": "Still works.", "intent": "conversation", "total_tokens": 3,
+        }})
+
+    mock_graph.astream = fake_stream
+    _set_graph(mock_graph)
+
+    resp = client.post("/chat", json={"query": "Xin chào"})
+    events = _parse_sse_stream(resp.content)
+    assert events[-1]["event"] == "done"
+    assert not [e for e in events if e["event"] == "motion"]
+
+
+@pytest.mark.unit
 def test_kimodo_malformed_content_does_not_break_the_stream(api_client, monkeypatch):
     """A ToolMessage with non-JSON content must be swallowed, not raised —
     a missing motion id is a far smaller failure than a broken chat turn."""

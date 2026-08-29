@@ -496,26 +496,45 @@ async def _stream_chat(req, request_id, config, state, background_tasks, request
                 continue
             for node_name, node_output in payload.items():
                 if node_name == "kimodo" and isinstance(node_output, dict):
-                    # Capture only — kimodo is deliberately absent from
-                    # _STAGE_NODES (R26): persisting motion_job_id to the DB
-                    # must not change what goes out over SSE, so this branch
-                    # emits no event and runs ahead of the _STAGE_NODES gate
-                    # below. Do not "fix" the asymmetry by adding kimodo to
-                    # _STAGE_NODES — that was considered and rejected because
-                    # it would ship a client-visible stage event with no
-                    # consumer (the frontend task that would use it is
-                    # deferred out of this run).
+                    # kimodo stays out of _STAGE_NODES (R26) and this branch
+                    # still runs ahead of that gate. `stage` reports node
+                    # progress; `motion` carries a job the client has to act on.
+                    # They are different kinds of event — do not "fix" the
+                    # asymmetry by adding kimodo to _STAGE_NODES.
+                    #
+                    # R26 deferred emitting anything because no client listened.
+                    # ChatContext's motion handler listens now, and without the
+                    # event the browser has no way to learn the job id during
+                    # the turn: it is captured into final_state and written to
+                    # Postgres, so the only alternative is re-fetching the
+                    # session afterwards — a round trip in front of a render
+                    # that already takes seconds.
+                    #
+                    # TWO SEPARATE JOBS, deliberately not sharing a condition:
+                    #   emit  — all four states. `busy` and `unavailable` are
+                    #           precisely what a user needs told, and the worker
+                    #           is scaled to zero by default, so `unavailable`
+                    #           is the common path. Filtering them here is what
+                    #           made "the GPU is off" and "this turn had no
+                    #           motion" identical from the UI's side.
+                    #   store — queued/cache_hit only. Those are the only states
+                    #           with a real job to resume later; the others
+                    #           carry no job_id at all.
                     #
                     # Defensive: a malformed/unexpected ToolMessage must not
                     # raise inside the streaming loop and kill the response —
                     # a missing motion id is a far smaller failure than a
-                    # broken chat turn.
+                    # broken chat turn. A payload that fails to parse also
+                    # emits nothing, rather than a half-formed event.
                     try:
                         for msg in node_output.get("messages", []):
                             content = getattr(msg, "content", None)
                             if not isinstance(content, str):
                                 continue
                             job_payload = json.loads(content)
+                            if not isinstance(job_payload, dict):
+                                continue
+                            yield encode_event("motion", job_payload)
                             if job_payload.get("state") in ("queued", "cache_hit"):
                                 job_id = job_payload.get("job_id")
                                 if job_id:
