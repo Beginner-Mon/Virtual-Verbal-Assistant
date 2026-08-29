@@ -202,13 +202,16 @@ export default function MotionControlPanel() {
             </div>
           )}
 
-          {/* (2) Motion FILE selector — DEBUG dev-only. Filtered to exclude built-in
-              state actions; only generated motions appear. */}
-          {import.meta.env.DEV && (
-            <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-secondary/20 border border-border/10">
+          {/* (2) Replay a motion the assistant rendered.
+              NOT dev-gated, unlike the two blocks around it: `exercise` is a
+              one-shot that returns to idle, so a user who looked away has lost
+              it, and this is the only way back. The blocks either side stay
+              dev-only because they drive the FSM and blend shapes directly —
+              those are for us, this is for the user. */}
+          <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-secondary/20 border border-border/10">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
                 <Activity className="w-3 h-3" />
-                Motion file (debug)
+                Xem lại động tác
               </span>
               <select
                 // Uncontrolled with a reset: picking the SAME motion twice must
@@ -236,8 +239,7 @@ export default function MotionControlPanel() {
                   </option>
                 ))}
               </select>
-            </div>
-          )}
+          </div>
 
           {import.meta.env.DEV && (
             <div className="flex flex-col gap-2 p-3 rounded-xl bg-secondary/20 border border-border/10">
