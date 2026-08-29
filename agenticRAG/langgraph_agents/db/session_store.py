@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from langgraph_agents.db.postgres import PostgresClient
@@ -27,7 +27,7 @@ from langgraph_agents.shared.stm import get_stm
 # Same shape as MODEL in nodes/kimodo.py, which is copied for the same reason:
 # the other definition lives on the far side of an image boundary. Unlike that
 # one, this pair is pinned by a test —
-# tests/langgraph_agents/test_motion_expiry_flag.py asserts the two are equal,
+# tests/langgraph_agents/test_motion_expiry_deadline.py asserts the two are equal,
 # so drift fails CI instead of quietly mislabelling every restored motion.
 MOTION_TTL_SECONDS = 24 * 3600
 
@@ -66,44 +66,54 @@ def _shape_message(row, created_at: Optional[datetime]) -> dict:
     job_id = _extras(row).get("motion", {}).get("job_id")
     if job_id:
         out["motion_job_id"] = job_id
-        out["motion_expired"] = motion_expired(created_at)
+        out["motion_expires_at"] = motion_expires_at(created_at)
     return out
 
 
-def motion_expired(created_at: Optional[datetime]) -> bool:
-    """Has this turn's rendered motion aged out of storage?
+def motion_expires_at(created_at: Optional[datetime]) -> Optional[str]:
+    """When this turn's rendered motion stops being fetchable. ISO-8601, UTC.
 
-    `messages.motion_job_id` outlives what it points at. The job row has a 24h
-    DynamoDB TTL and the .bvh has a one-day S3 lifecycle rule, so a day after
-    the turn every stored id is a dead pointer.
+    A DEADLINE, NOT A VERDICT, and the difference is the whole point. "Has it
+    expired" is a question whose answer changes while nobody is looking: a
+    payload computed at 10:00 says `false`, and a tab left open until the next
+    morning is still holding that `false` long after it stopped being true. An
+    absolute instant never goes stale — the client compares it to its own clock
+    at the moment it actually needs to decide.
 
-    `GET /motion/{job_id}` cannot report that. A swept row, an expired row and
-    an id that never existed all answer 404 the same way — once the evidence is
-    deleted there is nothing left to distinguish them. The age of the message
-    is the only signal, and Postgres is the only place that has it.
+    It is also why this is not simply left to the browser to work out from
+    `timestamp`. Doing that puts the 24h in TypeScript as a second copy of a
+    constant that already exists twice (see MOTION_TTL_SECONDS above), across a
+    language boundary where nothing can pin them together. Sending the instant
+    keeps the rule server-side and hands the client an answer it cannot get
+    wrong.
 
-    Deciding it here rather than in the browser keeps one clock: TTL_SECONDS is
-    imported from the module the worker and the queue already share, instead of
-    a 24 copied into the frontend that nobody updates when the rule changes.
+    Why a deadline exists at all: `messages.extras` outlives what it points at.
+    The job row has a 24h DynamoDB TTL and the .bvh a one-day S3 lifecycle
+    rule, so a day after the turn every stored id is a dead pointer — and
+    `GET /motion/{job_id}` cannot say so, because a swept row, an expired row
+    and an id that never existed all answer 404 identically. The age of the
+    message is the only surviving signal, and Postgres is the only place with
+    it.
 
-    The S3 lifecycle is the binding deadline, not the DynamoDB TTL. The file is
-    what the browser actually fetches, lifecycle deletes it on schedule, and
-    AWS only promises to get around to a TTL sweep "within a few days" — so the
-    row can outlive the file it describes, never the other way round.
+    The S3 rule is the binding clock, not the DynamoDB TTL: the file is what
+    the browser fetches, lifecycle deletes it on schedule, and AWS only promises
+    a TTL sweep "within a few days" — so the row can outlive the file it
+    describes, never the reverse.
 
-    Unknown age counts as expired. The two mistakes are not equal: calling a
-    live motion expired costs a replay the user can ask for again, while
-    calling a dead one live costs a pointless poll and ends in a message that
-    says the render failed when it merely got old.
+    Returns None when the age is unknown, which a client must read as "assume
+    gone". The mistakes are not symmetric: treating a live motion as expired
+    costs a replay the user can ask for again; treating a dead one as live
+    costs a poll that ends in a message saying the render failed when it merely
+    got old.
     """
     if created_at is None:
-        return True
+        return None
     # asyncpg returns tz-aware timestamps; a hand-built row or another driver
-    # may not. A naive value read as local time shifts by the machine's offset
-    # and silently reclassifies everything near the boundary.
+    # may not. A naive value read as local time shifts by the machine's offset,
+    # which moves the deadline by hours.
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=timezone.utc)
-    return (datetime.now(timezone.utc) - created_at).total_seconds() >= MOTION_TTL_SECONDS
+    return (created_at + timedelta(seconds=MOTION_TTL_SECONDS)).isoformat()
 
 # _REDIS_URL used to live here, hardcoded to localhost, and was one of four
 # copies of the same string. shared/stm.py owns it now — see that module for why
