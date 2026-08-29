@@ -3,7 +3,6 @@ import {
   DndContext,
   useDraggable,
   type DragEndEvent,
-  type DragStartEvent,
   PointerSensor,
   useSensor,
   useSensors,
@@ -23,10 +22,10 @@ import {
   Settings2,
   GripVertical,
 } from 'lucide-react'
-// @ts-expect-error - reserved for auth feature (commented out)
-import { LogOut } from 'lucide-react'
-// @ts-expect-error - reserved for auth feature (commented out)
-import type { LucideIcon } from 'lucide-react'
+// LogOut and LucideIcon were imported here "reserved for auth feature
+// (commented out)" behind @ts-expect-error. Nothing references them, and an
+// unused import is not a reservation — git remembers. Reinstate when the
+// feature lands.
 import { useMediaQuery } from '../lib/use-media-query'
 import { useAuth } from '../contexts/AuthContext'
 import { useMotion } from '../contexts/MotionContext'
@@ -376,7 +375,9 @@ export default function FloatingNavBar() {
     })
   )
 
-  const handleDragStart = useCallback((_event: DragStartEvent) => {
+  // No parameter: dnd-kit passes a DragStartEvent, this handler does not read
+  // it, and the leading-underscore convention is not configured here.
+  const handleDragStart = useCallback(() => {
     setIsDragging(true)
     setActivePanel(null)
   }, [])

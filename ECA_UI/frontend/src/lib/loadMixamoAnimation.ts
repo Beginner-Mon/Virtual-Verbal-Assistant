@@ -13,6 +13,7 @@
 import * as THREE from 'three'
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
 import type { VRM, VRMHumanBoneName } from '@pixiv/three-vrm'
+import type { RestPoseMap } from './restPose'
 
 /* ────────────────────────── Mixamo → VRM Bone Map ────────────────── */
 
@@ -172,7 +173,7 @@ export async function loadMixamoAnimation(
       if (!worldRestData) continue
       const { worldRest, worldRestInv } = worldRestData
 
-      const vrmRestPose = (vrm.scene.userData.restPoses as Map<string, any>)?.get(vrmBoneName)
+      const vrmRestPose = (vrm.scene.userData.restPoses as RestPoseMap | undefined)?.get(vrmBoneName)
       const vrmRest = vrmRestPose ? vrmRestPose.quaternion.clone() : vrmBoneNode.quaternion.clone()
 
       const retargetedValues = new Float32Array(track.values.length)
@@ -214,7 +215,7 @@ export async function loadMixamoAnimation(
     if (property === 'position' && vrmBoneName === 'hips') {
       const retargetedValues = new Float32Array(track.values.length)
       
-      const vrmRestPose = (vrm.scene.userData.restPoses as Map<string, any>)?.get(vrmBoneName)
+      const vrmRestPose = (vrm.scene.userData.restPoses as RestPoseMap | undefined)?.get(vrmBoneName)
       const vrmRestPos = vrmRestPose ? vrmRestPose.position.clone() : vrmBoneNode.position.clone()
 
       // Mixamo FBX positions are in centimeters

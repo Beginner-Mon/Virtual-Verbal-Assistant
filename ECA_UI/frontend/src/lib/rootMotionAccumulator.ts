@@ -24,6 +24,7 @@
  */
 
 import * as THREE from 'three'
+import { VRMHumanBoneName } from '@pixiv/three-vrm'
 import type { VRM } from '@pixiv/three-vrm'
 
 export class RootMotionAccumulator {
@@ -56,7 +57,7 @@ export class RootMotionAccumulator {
    * Captures the hips world position as the reference for displacement.
    */
   beginOneShot(vrm: VRM): void {
-    const hips = vrm.humanoid?.getNormalizedBoneNode('hips' as any)
+    const hips = vrm.humanoid?.getNormalizedBoneNode(VRMHumanBoneName.Hips)
     if (!hips) return
     this.startHipsWorld = new THREE.Vector3()
     hips.getWorldPosition(this.startHipsWorld)
@@ -70,7 +71,7 @@ export class RootMotionAccumulator {
    */
   commitOneShot(vrm: VRM, crossfadeSec: number): void {
     if (!this.startHipsWorld) return
-    const hips = vrm.humanoid?.getNormalizedBoneNode('hips' as any)
+    const hips = vrm.humanoid?.getNormalizedBoneNode(VRMHumanBoneName.Hips)
     if (!hips) { this.startHipsWorld = null; return }
 
     hips.getWorldPosition(this.scratch)
