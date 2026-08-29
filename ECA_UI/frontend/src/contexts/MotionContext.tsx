@@ -66,7 +66,7 @@ interface MotionContextType {
    * motion handler and by the debug file selector, which is the only way to
    * verify the Kimodo NPZ→BVH pipeline without a backend (plan §4.3).
    */
-  playMotionFile: (url: string) => Promise<boolean>
+  playMotionFile: (url: string, cacheKey?: string) => Promise<boolean>
   motionFileOptions: MotionFile[]
 
   /** Camera framing. FSM-driven; the setter is a manual debug override. */
@@ -247,7 +247,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
   )
 
   const playMotionFile = useCallback(
-    async (url: string) => {
+    async (url: string, cacheKey?: string) => {
       const registry = registryRef.current
       if (!registry || !animController || !url) return false
       // Registry first: `transitionTo('exercise')` resolves the clip through it,
@@ -255,7 +255,13 @@ export function MotionProvider({ children }: { children: ReactNode }) {
       // The loader is inferred rather than assumed: the debug selector lists the
       // .fbx files alongside the .bvh ones, and every dynamic clip used to be
       // loaded as SMPL-X BVH regardless.
-      registry.update('exercise', { url, loader: loaderForUrl(url), retarget: 'smplx' })
+      //
+      // cacheKey is the motion's job_id when this came from the chat stream.
+      // The URL is a CloudFront signature that changes per request, so without
+      // it a replayed motion is re-fetched and re-retargeted every time — see
+      // DynamicClip.cacheKey. The debug selector passes bundled URLs and no
+      // key, which stays correct because those URLs are stable.
+      registry.update('exercise', { url, loader: loaderForUrl(url), retarget: 'smplx', cacheKey })
       return animController.transitionTo('exercise')
     },
     [animController],

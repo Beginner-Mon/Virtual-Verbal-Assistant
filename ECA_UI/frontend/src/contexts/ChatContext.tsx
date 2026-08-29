@@ -9,7 +9,11 @@ import {
   type ReactNode,
 } from 'react'
 import type { Message } from '../components/ChatMessage'
-import { getSession, listSessions, deleteSession, streamChat, type SessionMessage } from '../lib/api'
+import {
+  getSession, listSessions, deleteSession, streamChat, fetchMotionStatus,
+  type SessionMessage,
+} from '../lib/api'
+import { pollMotionJob } from '../lib/motionJob'
 import { useMotion } from './MotionContext'
 import { uiStringsFor, FALLBACK_UI_STRINGS, type UiStrings } from '../lib/characterCopy'
 import { useAudioRecorder } from '../hooks/useAudioRecorder'
@@ -107,7 +111,7 @@ export interface ChatContextType {
 const ChatContext = createContext<ChatContextType | null>(null)
 
 export function ChatProvider({ children }: { children: ReactNode }) {
-  const { transitionTo, selectedVrmId, vrmOptions } = useMotion()
+  const { transitionTo, selectedVrmId, vrmOptions, playMotionFile } = useMotion()
 
   /** Copy for whoever is on screen. Falls back to neutral strings until the
    *  catalog resolves, so nothing renders "undefined" on a cold load. */
@@ -459,6 +463,55 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 msg.id === assistantMsgId ? { ...msg, speechPending: false } : msg
               )
             )
+          } else if (type === 'motion') {
+            // The agent enqueues a render and returns straight away; the GPU
+            // takes a few seconds. This event carries the job id (or the reason
+            // there is none), so the browser can poll for it and play the clip
+            // on the avatar when it lands.
+            //
+            // Fire-and-forget on purpose: this callback is synchronous and the
+            // rest of the reply must keep streaming while the render runs.
+            // Nothing here touches `isGenerating` or `stageLabel` — a motion is
+            // an extra on top of an answer, and must never hold the composing
+            // UI open or block `done`.
+            const m = data as {
+              state: string
+              job_id?: string
+              retry_after_seconds?: number
+            }
+            const notice = (text: string | undefined) =>
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantMsgId ? { ...msg, motionNotice: text } : msg
+                )
+              )
+
+            if (m.state === 'unavailable') {
+              notice(copy.motion_unavailable)
+            } else if (m.state === 'busy') {
+              notice(copy.motion_busy)
+            } else if (m.job_id) {
+              const jobId = m.job_id
+              notice(copy.motion_rendering)
+              void (async () => {
+                try {
+                  const url = await pollMotionJob(
+                    jobId,
+                    (id) => fetchMotionStatus(id, controller.signal),
+                    { signal: controller.signal },
+                  )
+                  // job_id is the cache key: the URL is a CloudFront signature
+                  // that differs on every fetch, so keying on it would re-fetch
+                  // and re-retarget the same clip each replay.
+                  await playMotionFile(url, jobId)
+                  notice(undefined)
+                } catch (e) {
+                  if ((e as Error).name === 'AbortError') return
+                  console.warn('[motion]', e)
+                  notice(copy.motion_failed)
+                }
+              })()
+            }
           } else if (type === 'done') {
             if (!isCurrent()) return
             setStageLabel(null)
@@ -488,7 +541,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         endThinking()
       }
     }
-  }, [webSearch, voiceReply, selectedVrmId, transitionTo, endThinking])
+  }, [webSearch, voiceReply, selectedVrmId, transitionTo, endThinking, playMotionFile])
 
   useEffect(() => {
     return () => {

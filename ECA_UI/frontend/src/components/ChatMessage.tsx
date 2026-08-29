@@ -20,6 +20,12 @@ export interface Message {
    *  "Trả lời bằng giọng nói" promises exactly this — attaching a silent audio
    *  file looks identical to the toggle being off. */
   autoplay?: boolean
+  /** One line about this reply's 3D motion: rendering, or why there is none.
+   *  Cleared once the clip plays, because the avatar is then saying it. The
+   *  GPU worker is off by default, so "unavailable" is the ordinary case and a
+   *  user who asked to SEE a movement needs telling — silence reads as the
+   *  request having been misunderstood. */
+  motionNotice?: string
 }
 
 interface ChatMessageProps {
@@ -51,6 +57,13 @@ export default function ChatMessage({ message, isStreaming }: ChatMessageProps) 
         <div className="prose dark:prose-invert prose-p:leading-relaxed prose-strong:text-foreground prose-headings:text-foreground prose-pre:bg-secondary/50 prose-pre:border prose-pre:border-border/40 max-w-none text-[clamp(0.75rem,0.68rem+0.3vw,0.875rem)] text-foreground/90">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{cleaned}</ReactMarkdown>
         </div>
+        {message.motionNotice && (
+          // Muted and small: an aside about the 3D clip, not part of the
+          // answer. It disappears on its own once the avatar starts moving.
+          <p className="mt-1 text-[0.7rem] italic text-muted-foreground">
+            {message.motionNotice}
+          </p>
+        )}
         <AssistantActions
           content={message.content}
           audioUrl={message.audioUrl}
