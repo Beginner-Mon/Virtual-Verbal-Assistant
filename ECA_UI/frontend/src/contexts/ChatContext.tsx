@@ -503,7 +503,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                   // job_id is the cache key: the URL is a CloudFront signature
                   // that differs on every fetch, so keying on it would re-fetch
                   // and re-retarget the same clip each replay.
-                  await playMotionFile(url, jobId)
+                  // `text` is what the user typed, so the motion picker lists
+                  // "động tác squat" rather than a hash nobody can read.
+                  await playMotionFile(url, jobId, text)
                   notice(undefined)
                 } catch (e) {
                   if ((e as Error).name === 'AbortError') return

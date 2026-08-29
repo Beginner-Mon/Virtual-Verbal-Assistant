@@ -22,6 +22,16 @@ import { useAutoAfterTrigger } from '../hooks/useFsmTriggers'
 import instrumentalUrl from '../asset/audio/instrumental-ver.mp3'
 import { DEFAULT_CAMERA_CONFIG, type CameraConfig } from '../lib/CameraConfig'
 
+/** One motion the backend rendered this session. */
+export interface SessionMotion {
+  /** Content hash of the request. Doubles as the clip cache key. */
+  jobId: string
+  /** Signed CloudFront URL from the first play. Expires; the cache does not. */
+  url: string
+  /** What the user asked for, e.g. "động tác squat". */
+  label: string
+}
+
 export type { CameraMode }
 
 type AssetOption = {
@@ -66,7 +76,22 @@ interface MotionContextType {
    * motion handler and by the debug file selector, which is the only way to
    * verify the Kimodo NPZ→BVH pipeline without a backend (plan §4.3).
    */
-  playMotionFile: (url: string, cacheKey?: string) => Promise<boolean>
+  playMotionFile: (url: string, cacheKey?: string, label?: string) => Promise<boolean>
+  /**
+   * Motions the backend rendered during this page session, newest first.
+   *
+   * `exercise` is a one-shot: it plays through and returns to idle, so a user
+   * who looked away has missed it. This list is how they get it back — the
+   * motion picker replays from here. Nothing is re-downloaded: the clip is
+   * cached under its job_id, so a replay never touches the network, and the
+   * stored `url` is only a fallback for the first play (its CloudFront
+   * signature expires after five minutes and is not needed once the clip is
+   * in memory).
+   *
+   * Page-session scoped, deliberately. Surviving a reload needs the job ids in
+   * the conversation history, which is a separate piece of work.
+   */
+  sessionMotions: SessionMotion[]
   motionFileOptions: MotionFile[]
 
   /** Camera framing. FSM-driven; the setter is a manual debug override. */
@@ -163,6 +188,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
 
   const [isPlaying, setIsPlaying] = useState(true)
   const [speed, setSpeed] = useState(1.0)
+  const [sessionMotions, setSessionMotions] = useState<SessionMotion[]>([])
   const [clipInfo, setClipInfo] = useState<{ tracks: number; duration: number } | null>(null)
   const [cameraMode, setCameraModeState] = useState<CameraMode>('head')
   const [cameraConfig, setCameraConfig] = useState<CameraConfig>(DEFAULT_CAMERA_CONFIG)
@@ -247,9 +273,21 @@ export function MotionProvider({ children }: { children: ReactNode }) {
   )
 
   const playMotionFile = useCallback(
-    async (url: string, cacheKey?: string) => {
+    async (url: string, cacheKey?: string, label?: string) => {
       const registry = registryRef.current
       if (!registry || !animController || !url) return false
+
+      // Only backend renders are listed: a cacheKey means this came from the
+      // motion queue, where `label` is what the user asked for. The bundled
+      // debug files carry neither and must not accumulate in the list.
+      // Newest first, deduped by job id — asking twice for the same movement
+      // is one entry, the same way it is one render.
+      if (cacheKey) {
+        setSessionMotions((prev) => [
+          { jobId: cacheKey, url, label: label?.trim() || cacheKey.slice(0, 8) },
+          ...prev.filter((m) => m.jobId !== cacheKey),
+        ])
+      }
       // Registry first: `transitionTo('exercise')` resolves the clip through it,
       // so updating afterwards would play the previous motion.
       // The loader is inferred rather than assumed: the debug selector lists the
@@ -346,6 +384,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
       currentState,
       stateOptions: STATE_OPTIONS,
       playMotionFile,
+      sessionMotions,
       motionFileOptions: MOTION_FILES,
       cameraMode,
       setCameraMode,
@@ -382,6 +421,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
       attachControllers,
       isPlaying,
       speed,
+      sessionMotions,
       handleReset,
       clipInfo,
       isMusicPlaying,

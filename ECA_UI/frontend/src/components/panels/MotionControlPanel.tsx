@@ -24,7 +24,7 @@ export default function MotionControlPanel() {
     transitionTo,
     stateOptions,
     playMotionFile,
-    motionFileOptions,
+    sessionMotions,
     avatarRef,
     selectedVrmId,
     vrmOptions,
@@ -62,12 +62,14 @@ export default function MotionControlPanel() {
   const [avatarMode, setAvatarMode] = useState<string>('—')
 
   // Filter motion files so Character state actions don't leak into the debug picker.
-  // Built-in clips (Standard Idle, action_greeting, random_Bored, Thinking) are the
-  // state's static sources — debug picker should only list generated motions.
-  const filteredMotionFiles = useMemo(
-    () => motionFileOptions.filter((f) => !/built-in/i.test(f.label)),
-    [motionFileOptions],
-  )
+  // The picker used to list bundled sample .bvh files under asset/motions/
+  // generated/. Those were fixtures for verifying the Kimodo NPZ→BVH pipeline
+  // offline, before a render could actually be requested; they are gone, and
+  // the list is now the motions the backend rendered this session.
+  //
+  // motionFileOptions still exists for AnimationRegistry, which resolves the
+  // FSM's static clips (Standard Idle, action_greeting, random_Bored,
+  // Thinking) out of the same index — those stay bundled and are not pickable.
 
   useEffect(() => {
     ;(window as unknown as { __avatar?: () => unknown }).__avatar = () => avatarRef.current
@@ -209,16 +211,28 @@ export default function MotionControlPanel() {
                 Motion file (debug)
               </span>
               <select
-                defaultValue=""
+                // Uncontrolled with a reset: picking the SAME motion twice must
+                // fire again, and a controlled value would make the second pick
+                // a no-op — replaying is the whole point of this list.
+                value=""
+                disabled={sessionMotions.length === 0}
                 onChange={(e) => {
-                  if (e.target.value) void playMotionFile(e.target.value)
+                  const picked = sessionMotions.find((m) => m.jobId === e.target.value)
+                  // job_id, not the URL: the clip is cached under it, so a
+                  // replay costs nothing and works even after the URL's
+                  // five-minute signature has expired.
+                  if (picked) void playMotionFile(picked.url, picked.jobId, picked.label)
                 }}
-                className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-0.5"
+                className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-0.5 disabled:opacity-50"
               >
-                <option value="" className="bg-card text-muted-foreground">Pick a file to play…</option>
-                {filteredMotionFiles.map((option) => (
-                  <option key={option.label} value={option.url} className="bg-card text-foreground">
-                    {option.label}
+                <option value="" className="bg-card text-muted-foreground">
+                  {sessionMotions.length === 0
+                    ? 'Chưa có động tác nào — hãy hỏi để xem một động tác'
+                    : 'Chọn để xem lại…'}
+                </option>
+                {sessionMotions.map((m) => (
+                  <option key={m.jobId} value={m.jobId} className="bg-card text-foreground">
+                    {m.label}
                   </option>
                 ))}
               </select>
