@@ -24,7 +24,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from langgraph_agents.db.session_store import MOTION_TTL_SECONDS, motion_expired
+from langgraph_agents.db.session_store import (
+    MOTION_TTL_SECONDS, _shape_message, motion_expired,
+)
 from vva_motion.jobs import TTL_SECONDS as QUEUE_TTL_SECONDS
 
 
@@ -77,6 +79,30 @@ def test_naive_timestamp_is_read_as_utc_not_local():
     everything near the boundary."""
     naive = datetime.utcnow() - timedelta(seconds=TTL_SECONDS + 60)
     assert motion_expired(naive) is True
+
+
+@pytest.mark.unit
+def test_the_flag_is_absent_when_there_is_no_motion():
+    """Most messages have no motion — it is an occasional extra, never part of
+    a chat turn. Stamping every one of them with `motion_expired` says
+    something false about a thing that does not exist, and puts a key on every
+    row of every history payload to describe nothing.
+
+    The flag belongs to the job id: present together, absent together.
+    """
+    rows = [
+        {"role": "user", "content": "cho tôi xem squat",
+         "token_count": None, "motion_job_id": None},
+        {"role": "assistant", "content": "đây",
+         "token_count": 12, "motion_job_id": "a72fb4b3"},
+        {"role": "assistant", "content": "chỉ là chữ",
+         "token_count": 8, "motion_job_id": None},
+    ]
+    shaped = [_shape_message(r, _ago(minutes=5)) for r in rows]
+
+    assert "motion_expired" not in shaped[0]
+    assert shaped[1]["motion_expired"] is False
+    assert "motion_expired" not in shaped[2]
 
 
 @pytest.mark.unit

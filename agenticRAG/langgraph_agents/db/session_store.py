@@ -32,6 +32,27 @@ from langgraph_agents.shared.stm import get_stm
 MOTION_TTL_SECONDS = 24 * 3600
 
 
+def _shape_message(row, created_at: Optional[datetime]) -> dict:
+    """One history message as the API returns it.
+
+    `motion_expired` appears ONLY next to a `motion_job_id`. Motion is an
+    occasional extra, never part of a chat turn, so most rows have neither —
+    and a message with no motion cannot have an expired one. Emitting the flag
+    unconditionally would put a key describing nothing on the large majority of
+    every history payload, and assert something false about each of them.
+    """
+    out = {
+        "role":          row["role"],
+        "content":       row["content"],
+        "tokens":        row["token_count"],
+        "motion_job_id": row["motion_job_id"],
+        "timestamp":     created_at.isoformat() if created_at else None,
+    }
+    if row["motion_job_id"]:
+        out["motion_expired"] = motion_expired(created_at)
+    return out
+
+
 def motion_expired(created_at: Optional[datetime]) -> bool:
     """Has this turn's rendered motion aged out of storage?
 
@@ -252,21 +273,7 @@ async def load_session_messages(
         )
         rows = list(reversed(rows))
 
-    messages = [
-        {
-            "role":          r["role"],
-            "content":       r["content"],
-            "tokens":        r["token_count"],
-            "motion_job_id": r["motion_job_id"],
-            # Whether that id still points at anything. Computed here because
-            # this is the only layer that knows the message's age — see
-            # motion_expired(). Always present, so a client never has to
-            # reimplement the TTL to find out.
-            "motion_expired": motion_expired(r["created_at"]),
-            "timestamp":     r["created_at"].isoformat(),
-        }
-        for r in rows
-    ]
+    messages = [_shape_message(r, r["created_at"]) for r in rows]
     return {
         "session_id": session_id,
         "messages":   messages,
