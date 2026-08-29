@@ -51,6 +51,12 @@ def _ago(**kw) -> datetime:
     return datetime.now(timezone.utc) - timedelta(**kw)
 
 
+class _Row(dict):
+    """asyncpg Record stand-in: `_shape_message` probes it with `.keys()`."""
+    def __init__(self, **kw):
+        super().__init__(**kw)
+
+
 @pytest.mark.unit
 def test_fresh_turn_is_not_expired():
     assert motion_expired(_ago(minutes=5)) is False
@@ -91,18 +97,20 @@ def test_the_flag_is_absent_when_there_is_no_motion():
     The flag belongs to the job id: present together, absent together.
     """
     rows = [
-        {"role": "user", "content": "cho tôi xem squat",
-         "token_count": None, "motion_job_id": None},
-        {"role": "assistant", "content": "đây",
-         "token_count": 12, "motion_job_id": "a72fb4b3"},
-        {"role": "assistant", "content": "chỉ là chữ",
-         "token_count": 8, "motion_job_id": None},
+        _Row(role="user", content="cho tôi xem squat", token_count=None, extras=None),
+        _Row(role="assistant", content="đây", token_count=12,
+             extras='{"motion": {"job_id": "a72fb4b3"}}'),
+        # Extras present but for another subsystem — the whole point of the
+        # JSONB column. Still no motion, so still no motion keys.
+        _Row(role="assistant", content="chỉ là chữ", token_count=8,
+             extras='{"tts": {"lang": "vi"}}'),
     ]
     shaped = [_shape_message(r, _ago(minutes=5)) for r in rows]
 
-    assert "motion_expired" not in shaped[0]
+    assert "motion_job_id" not in shaped[0] and "motion_expired" not in shaped[0]
+    assert shaped[1]["motion_job_id"] == "a72fb4b3"
     assert shaped[1]["motion_expired"] is False
-    assert "motion_expired" not in shaped[2]
+    assert "motion_job_id" not in shaped[2] and "motion_expired" not in shaped[2]
 
 
 @pytest.mark.unit

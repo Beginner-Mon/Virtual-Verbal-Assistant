@@ -1,4 +1,4 @@
-"""Guards on migration 008_messages_motion_job_id.py.
+"""Guards on migration 008_messages_extras.py.
 
 THIS FILE USED TO PASS FOR THE WRONG REASON. It string-matched
 `infra/sql/init_schema.sql` — a file with no runner anywhere in the repo. The
@@ -34,7 +34,7 @@ VERSIONS = (
     Path(__file__).resolve().parents[2]
     / "agenticRAG" / "langgraph_agents" / "alembic" / "versions"
 )
-MIGRATION = VERSIONS / "008_messages_motion_job_id.py"
+MIGRATION = VERSIONS / "008_messages_extras.py"
 
 
 def _load(path: Path):
@@ -73,7 +73,7 @@ def test_nothing_else_claims_007_rls_as_its_parent():
         p.name for p in VERSIONS.glob("*.py")
         if _load(p).down_revision == "007_rls"
     ]
-    assert children == ["008_messages_motion_job_id.py"], children
+    assert children == ["008_messages_extras.py"], children
 
 
 @pytest.mark.unit
@@ -85,13 +85,13 @@ def test_revision_id_matches_the_filename():
 
 @pytest.mark.unit
 def test_upgrade_adds_the_column_the_session_store_selects():
-    """db/session_store.py:185 SELECTs motion_job_id and :273 INSERTs it, both
+    """db/session_store.py SELECTs `extras` and INSERTs it, both
     unconditionally. Without this column GET /sessions/{id} raises
     UndefinedColumn and write_session_turn fails into session_persist_failed —
     where it is swallowed, so chat answers and silently stops persisting."""
     sql = " ".join(_statements()).lower()
     assert re.search(
-        r"alter table messages add column if not exists motion_job_id text", sql
+        r"alter table messages add column if not exists extras jsonb", sql
     ), sql
 
 
@@ -107,7 +107,7 @@ def test_it_is_additive_and_nullable():
 @pytest.mark.unit
 def test_downgrade_removes_it():
     sql = " ".join(_statements("downgrade")).lower()
-    assert "drop column if exists motion_job_id" in sql
+    assert "drop column if exists extras" in sql
 
 
 @pytest.mark.unit
