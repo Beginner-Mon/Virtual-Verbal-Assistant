@@ -111,7 +111,8 @@ export interface ChatContextType {
 const ChatContext = createContext<ChatContextType | null>(null)
 
 export function ChatProvider({ children }: { children: ReactNode }) {
-  const { transitionTo, selectedVrmId, vrmOptions, playMotionFile } = useMotion()
+  const { transitionTo, selectedVrmId, vrmOptions, playMotionFile, registerSessionMotion } =
+    useMotion()
 
   /** Copy for whoever is on screen. Falls back to neutral strings until the
    *  catalog resolves, so nothing renders "undefined" on a cold load. */
@@ -235,8 +236,52 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             timestamp: new Date(m.timestamp),
             // Audio is not persisted — the WAV lives on the TTS box under a
             // random name. The per-message speaker button can re-synthesise it.
+            //
+            // Motion IS: the job id rides on the message row, so a refresh
+            // does not lose a render the GPU already paid for. Carried here
+            // and acted on by the effect below.
+            motionJobId: m.motion_job_id,
+            motionExpiresAt: m.motion_expires_at,
+            // The user's own words for this turn — the picker lists motions by
+            // what was asked for, and on a restore the question is the message
+            // immediately before the answer.
+            motionLabel: m.role === 'assistant' ? history[i - 1]?.content : undefined,
           })),
         ])
+
+        // Motions the GPU already rendered for this conversation. Two outcomes
+        // and no third: still fetchable, or gone.
+        //
+        // Nothing is played. A restore is not the moment to start animating —
+        // the avatar may not even have loaded yet, and replaying an answer the
+        // user read yesterday is not what they came back for. They go into the
+        // replay picker, and the user chooses.
+        history.forEach((m, i) => {
+          if (m.role !== 'assistant' || !m.motion_job_id) return
+          // Deadline, not a stored verdict: this payload may have been sitting
+          // in the tab for hours. Compare against the clock NOW. No expiry at
+          // all means assume gone — see session_store.motion_expires_at.
+          const alive = m.motion_expires_at
+            ? new Date(m.motion_expires_at) > new Date()
+            : false
+          if (alive) {
+            registerSessionMotion({
+              jobId: m.motion_job_id,
+              // Deliberately no url. A signed URL lives five minutes, and this
+              // page has no cached clip — fetching one now would hand the
+              // picker a dead link. It resolves a fresh one when picked.
+              label: history[i - 1]?.content ?? '',
+            })
+          } else {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === `restored-${i}`
+                  ? { ...msg, motionNotice: uiRef.current.motion_gone }
+                  : msg
+              )
+            )
+          }
+        })
       } catch (e) {
         const status = (e as { response?: { status?: number } }).response?.status
         if (status !== 404) console.warn('[session] restore failed:', e)

@@ -26,6 +26,13 @@ export interface Message {
    *  user who asked to SEE a movement needs telling — silence reads as the
    *  request having been misunderstood. */
   motionNotice?: string
+  /** Restored turns only: the motion this reply rendered, and when it dies.
+   *  A live turn plays its motion straight from the SSE event and needs
+   *  neither. */
+  motionJobId?: string
+  motionExpiresAt?: string
+  /** What the user asked for, so the replay picker can label it. */
+  motionLabel?: string
 }
 
 interface ChatMessageProps {

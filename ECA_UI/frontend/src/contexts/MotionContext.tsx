@@ -22,12 +22,19 @@ import { useAutoAfterTrigger } from '../hooks/useFsmTriggers'
 import instrumentalUrl from '../asset/audio/instrumental-ver.mp3'
 import { DEFAULT_CAMERA_CONFIG, type CameraConfig } from '../lib/CameraConfig'
 
-/** One motion the backend rendered this session. */
+/** One motion the backend rendered and this page can replay. */
 export interface SessionMotion {
   /** Content hash of the request. Doubles as the clip cache key. */
   jobId: string
-  /** Signed CloudFront URL from the first play. Expires; the cache does not. */
-  url: string
+  /**
+   * Signed CloudFront URL, when one is already in hand.
+   *
+   * Absent for a motion restored from conversation history: that page load has
+   * no cached clip and no URL, and a signed URL only lives five minutes, so
+   * fetching one at restore time would hand the picker a link that is dead
+   * before anybody clicks it. The picker resolves a fresh one when picked.
+   */
+  url?: string
   /** What the user asked for, e.g. "động tác squat". */
   label: string
 }
@@ -77,6 +84,9 @@ interface MotionContextType {
    * verify the Kimodo NPZ→BVH pipeline without a backend (plan §4.3).
    */
   playMotionFile: (url: string, cacheKey?: string, label?: string) => Promise<boolean>
+  /** List a motion for replay without playing it — used when restoring a
+   *  conversation, where the avatar has nothing loaded yet. */
+  registerSessionMotion: (m: SessionMotion) => void
   /**
    * Motions the backend rendered during this page session, newest first.
    *
@@ -272,6 +282,18 @@ export function MotionProvider({ children }: { children: ReactNode }) {
     [animController],
   )
 
+  /** Add a motion to the replay list, newest first, one entry per job.
+   *
+   * Separate from playMotionFile because restoring a conversation has to list
+   * motions the avatar is not going to play right now — and at mount there is
+   * no registry to play them with anyway. */
+  const registerSessionMotion = useCallback((m: SessionMotion) => {
+    setSessionMotions((prev) => [
+      { ...m, label: m.label.trim() || m.jobId.slice(0, 8) },
+      ...prev.filter((p) => p.jobId !== m.jobId),
+    ])
+  }, [])
+
   const playMotionFile = useCallback(
     async (url: string, cacheKey?: string, label?: string) => {
       const registry = registryRef.current
@@ -283,10 +305,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
       // Newest first, deduped by job id — asking twice for the same movement
       // is one entry, the same way it is one render.
       if (cacheKey) {
-        setSessionMotions((prev) => [
-          { jobId: cacheKey, url, label: label?.trim() || cacheKey.slice(0, 8) },
-          ...prev.filter((m) => m.jobId !== cacheKey),
-        ])
+        registerSessionMotion({ jobId: cacheKey, url, label: label ?? '' })
       }
       // Registry first: `transitionTo('exercise')` resolves the clip through it,
       // so updating afterwards would play the previous motion.
@@ -302,7 +321,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
       registry.update('exercise', { url, loader: loaderForUrl(url), retarget: 'smplx', cacheKey })
       return animController.transitionTo('exercise')
     },
-    [animController],
+    [animController, registerSessionMotion],
   )
 
   const dispatchActivity = useCallback(
@@ -384,6 +403,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
       currentState,
       stateOptions: STATE_OPTIONS,
       playMotionFile,
+      registerSessionMotion,
       sessionMotions,
       motionFileOptions: MOTION_FILES,
       cameraMode,
@@ -422,6 +442,7 @@ export function MotionProvider({ children }: { children: ReactNode }) {
       isPlaying,
       speed,
       sessionMotions,
+      registerSessionMotion,
       handleReset,
       clipInfo,
       isMusicPlaying,

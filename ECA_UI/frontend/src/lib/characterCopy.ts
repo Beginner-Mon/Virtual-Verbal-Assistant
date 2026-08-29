@@ -31,6 +31,9 @@ export interface UiStrings {
   motion_unavailable: string
   motion_busy: string
   motion_failed: string
+  /** Restored history: the render is past its storage deadline and cannot be
+   *  fetched again. Distinct from motion_failed — it did not fail, it aged. */
+  motion_gone: string
 }
 
 /**
@@ -49,6 +52,7 @@ export const FALLBACK_UI_STRINGS: UiStrings = {
   motion_unavailable: 'Tính năng dựng động tác đang tạm tắt.',
   motion_busy: 'Đang có nhiều yêu cầu dựng động tác, bạn thử lại sau nhé.',
   motion_failed: 'Mình chưa dựng được động tác này.',
+  motion_gone: 'Động tác của câu này đã hết hạn lưu trữ.',
 }
 
 /**

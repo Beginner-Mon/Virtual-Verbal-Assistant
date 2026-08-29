@@ -6,6 +6,7 @@ import type { CharState } from '../../lib/AnimationStates'
 import { CANONICAL_EMOTIONS, type CanonicalEmotion } from '../../avatar/AvatarProfile'
 import { getManifest } from '../../avatar/vrmManifest'
 import { DEFAULT_CAMERA_CONFIG } from '../../lib/CameraConfig'
+import { fetchMotionStatus } from '../../lib/api'
 
 const PRESET_TO_CANONICAL: Record<string, CanonicalEmotion> = {
   neutral: 'neutral',
@@ -221,10 +222,27 @@ export default function MotionControlPanel() {
                 disabled={sessionMotions.length === 0}
                 onChange={(e) => {
                   const picked = sessionMotions.find((m) => m.jobId === e.target.value)
-                  // job_id, not the URL: the clip is cached under it, so a
-                  // replay costs nothing and works even after the URL's
-                  // five-minute signature has expired.
-                  if (picked) void playMotionFile(picked.url, picked.jobId, picked.label)
+                  if (!picked) return
+                  void (async () => {
+                    // A motion played earlier this session already has a URL,
+                    // and the clip is cached under its job_id — that replay
+                    // touches nothing and works even after the URL's
+                    // five-minute signature has expired.
+                    //
+                    // One restored from conversation history has neither: fresh
+                    // page, empty cache, and no URL worth storing. Ask for a
+                    // signed one now, at the moment it is about to be used.
+                    let url = picked.url
+                    if (!url) {
+                      const status = await fetchMotionStatus(picked.jobId)
+                      if (status.status !== 'done' || !status.url) {
+                        console.warn('[motion] replay unavailable:', status)
+                        return
+                      }
+                      url = status.url
+                    }
+                    await playMotionFile(url, picked.jobId, picked.label)
+                  })()
                 }}
                 className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-0.5 disabled:opacity-50"
               >

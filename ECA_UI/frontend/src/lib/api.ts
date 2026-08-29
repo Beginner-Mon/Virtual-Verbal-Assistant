@@ -293,6 +293,18 @@ export interface SessionMessage {
   content: string
   timestamp: string
   tokens?: number
+  /** Present only when this turn rendered a motion. Assistant rows only. */
+  motion_job_id?: string
+  /**
+   * When that motion stops being fetchable — ISO-8601, absolute.
+   *
+   * A deadline rather than an `expired` boolean, and the difference matters
+   * here: a restored payload can sit in this tab for hours, and a boolean
+   * computed server-side would still be claiming what was true when the
+   * request was made. Compare this against the clock at the moment you need
+   * the answer. Absent means treat it as gone.
+   */
+  motion_expires_at?: string
 }
 
 /**
