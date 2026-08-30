@@ -1,6 +1,4 @@
 import {
-  createContext,
-  useContext,
   useRef,
   useState,
   useCallback,
@@ -14,8 +12,11 @@ import {
   type SessionMessage,
 } from '../lib/api'
 import { pollMotionJob } from '../lib/motionJob'
-import { useMotion } from './MotionContext'
+import { useMotion } from '../hooks/useMotion'
+import { ChatContext, type ChatContextType, type SessionItem } from '../hooks/useChat'
 import { uiStringsFor, FALLBACK_UI_STRINGS, type UiStrings } from '../lib/characterCopy'
+
+export type { SessionItem, ChatContextType } from '../hooks/useChat'
 import { useAudioRecorder } from '../hooks/useAudioRecorder'
 
 /** Key holding the *pointer* to the conversation, never the conversation.
@@ -60,55 +61,7 @@ function buildInitialMessages(ui: UiStrings): Message[] {
   ]
 }
 
-export interface SessionItem {
-  session_id: string
-  created_at: string
-  updated_at: string
-  first_user_message_preview: string
-  message_count: number
-}
 
-export interface ChatContextType {
-  messages: Message[]
-  setMessages: React.Dispatch<React.SetStateAction<Message[]>>
-  input: string
-  setInput: (value: string) => void
-  isTyping: boolean
-  isGenerating: boolean
-  stageLabel: string | null
-  /** Chat-surface copy for the selected character (greeting, placeholder,
-   *  stage labels, error line). Always fully populated — see uiStringsFor. */
-  ui: UiStrings
-  webSearch: boolean
-  setWebSearch: (value: boolean) => void
-  voiceReply: boolean
-  setVoiceReply: (value: boolean) => void
-  isRestoring: boolean
-  startNewSession: () => void
-  handleSend: () => Promise<void>
-  handleStop: () => void
-  imageUrls: string[]
-  addImage: (file: File) => void
-  removeImage: (index: number) => void
-  sessionList: SessionItem[]
-  sessionsDirty: boolean
-  activeSessionId: string
-  refreshSessions: () => Promise<void>
-  switchToSession: (sessionId: string) => Promise<void>
-  deleteSessionAction: (sessionId: string) => Promise<void>
-  markSessionsClean: () => void
-  // Audio recording (frontend only, click toggle)
-  isRecording: boolean
-  recordingDuration: number
-  recordingError: string | null
-  previewAudioUrl: string | null
-  startRecord: () => Promise<void>
-  stopRecord: () => void
-  cancelRecord: () => void
-  sendAudio: () => void
-}
-
-const ChatContext = createContext<ChatContextType | null>(null)
 
 export function ChatProvider({ children }: { children: ReactNode }) {
   const { transitionTo, selectedVrmId, vrmOptions, playMotionFile, registerSessionMotion } =
@@ -293,7 +246,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [registerSessionMotion])
 
   /** Abandon this conversation and start a clean one.
    *
@@ -638,10 +591,4 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   )
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>
-}
-
-export function useChat(): ChatContextType {
-  const ctx = useContext(ChatContext)
-  if (!ctx) throw new Error('useChat must be used within ChatProvider')
-  return ctx
 }

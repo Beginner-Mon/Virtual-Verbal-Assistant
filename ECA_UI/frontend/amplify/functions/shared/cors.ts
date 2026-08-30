@@ -13,8 +13,10 @@ import { ALLOWED_ORIGINS, WEB_DEV_ORIGIN } from '../../shared/origins';
  * The header is omitted entirely for an origin that is not allowed. Echoing an
  * arbitrary origin back would turn the allowlist into decoration.
  */
-export function corsHeadersFor(event: any): Record<string, string> {
-  const headers = event?.headers ?? {};
+type CorsEvent = { headers?: Record<string, string | undefined> }
+
+export function corsHeadersFor(event: CorsEvent): Record<string, string> {
+  const headers = (event as { headers?: Record<string, string | undefined> })?.headers ?? {};
   // API Gateway does not normalise header casing.
   const origin: string | undefined = headers.origin ?? headers.Origin;
 

@@ -1,6 +1,6 @@
-import { MonitorCog } from 'lucide-react'
+﻿import { MonitorCog } from 'lucide-react'
 import { Switch } from './ui/switch'
-import { useGraphics, type GraphicsSettings } from '../contexts/GraphicsContext'
+import { useGraphics, type GraphicsSettings } from '../hooks/useGraphics'
 
 interface Section {
   title: string
@@ -74,3 +74,4 @@ export default function GraphicSettingsContent() {
     </div>
   )
 }
+

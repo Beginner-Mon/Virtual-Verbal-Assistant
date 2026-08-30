@@ -1,14 +1,8 @@
-import { createContext, useContext, useSyncExternalStore, useCallback, type ReactNode } from 'react'
+import { useSyncExternalStore, useCallback, type ReactNode } from 'react'
 import { ENV_CONFIG } from '../config/environmentConfig'
+import { GraphicsContext, type GraphicsSettings } from '../hooks/useGraphics'
 
-export interface GraphicsSettings {
-  ssao: boolean
-  particles: boolean
-  vignette: boolean
-  showGrid: boolean
-  showAxes: boolean
-  mtoon: boolean
-}
+export type { GraphicsSettings } from '../hooks/useGraphics'
 
 const DEFAULTS: GraphicsSettings = {
   // The NormalPass it needs is wired up now, so the toggle finally does
@@ -51,7 +45,7 @@ type Listener = () => void
 let state: GraphicsSettings = load()
 const listeners = new Set<Listener>()
 
-export const graphicsStore = {
+const graphicsStore = {
   get(): GraphicsSettings {
     return state
   },
@@ -65,13 +59,6 @@ export const graphicsStore = {
     return () => { listeners.delete(fn) }
   },
 }
-
-interface GraphicsContextValue {
-  settings: GraphicsSettings
-  setSetting: <K extends keyof GraphicsSettings>(key: K, value: GraphicsSettings[K]) => void
-}
-
-const GraphicsContext = createContext<GraphicsContextValue | null>(null)
 
 export function GraphicsProvider({ children }: { children: ReactNode }) {
   const settings = useSyncExternalStore(
@@ -89,10 +76,4 @@ export function GraphicsProvider({ children }: { children: ReactNode }) {
       {children}
     </GraphicsContext.Provider>
   )
-}
-
-export function useGraphics(): GraphicsContextValue {
-  const ctx = useContext(GraphicsContext)
-  if (!ctx) throw new Error('useGraphics must be used within GraphicsProvider')
-  return ctx
 }

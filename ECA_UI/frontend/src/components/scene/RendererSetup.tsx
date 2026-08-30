@@ -1,10 +1,10 @@
-/**
- * RendererSetup — Phase 1: Color Pipeline & Material Audit
+﻿/**
+ * RendererSetup â€” Phase 1: Color Pipeline & Material Audit
  *
  * Configures the WebGL renderer for proper color management and performs
  * a one-time material/texture audit on every VRM load to correct color spaces.
  *
- * This component renders nothing — it only applies side effects via hooks.
+ * This component renders nothing â€” it only applies side effects via hooks.
  */
 
 import { useThree } from '@react-three/fiber'
@@ -12,7 +12,7 @@ import { useEffect } from 'react'
 import * as THREE from 'three'
 import type { VRM, MToonMaterial } from '@pixiv/three-vrm'
 import { ENV_CONFIG } from '../../config/environmentConfig'
-import { useGraphics } from '../../contexts/GraphicsContext'
+import { useGraphics } from '../../hooks/useGraphics'
 
 /** Texture property names that should be in linear space (non-color data). */
 const LINEAR_TEXTURE_PROPS = new Set([
@@ -44,14 +44,14 @@ export default function RendererSetup({ vrm }: RendererSetupProps) {
   const { gl } = useThree()
   const { settings: gfx } = useGraphics()
 
-  // ── Renderer config (once) ────────────────────────────────────────────
+  // â”€â”€ Renderer config (once) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     gl.toneMapping = ENV_CONFIG.renderer.toneMapping
     gl.toneMappingExposure = ENV_CONFIG.renderer.toneMappingExposure
     gl.outputColorSpace = ENV_CONFIG.renderer.outputColorSpace
   }, [gl])
 
-  // ── Material & Texture Audit (per VRM load) ───────────────────────────
+  // â”€â”€ Material & Texture Audit (per VRM load) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     if (!vrm?.scene) return
 
@@ -99,7 +99,8 @@ export default function RendererSetup({ vrm }: RendererSetupProps) {
     if (corrections > 0 && import.meta.env.DEV) {
       console.log(`[RendererSetup] Corrected ${corrections} material setting(s)`)
     }
-  }, [vrm])
+  }, [vrm, gfx.mtoon])
 
   return null
 }
+

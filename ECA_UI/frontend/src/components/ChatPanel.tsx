@@ -1,11 +1,11 @@
-import { useState, useRef, useEffect, type KeyboardEvent } from 'react'
+﻿import { useState, useRef, useEffect, type KeyboardEvent } from 'react'
 import { ArrowUp, Mic, Sparkles, Square, Plus, Globe, Image, X, Volume2, SquarePen } from 'lucide-react'
 import TextareaAutosize from 'react-textarea-autosize'
 import { ScrollArea } from './ui/scroll-area'
 import ChatMessage from './ChatMessage'
-import { useChat } from '../contexts/ChatContext'
+import { useChat } from '../hooks/useChat'
 
-/* ─── ChatPanel ─── */
+/* â”€â”€â”€ ChatPanel â”€â”€â”€ */
 export default function ChatPanel() {
   const {
     messages,
@@ -68,7 +68,7 @@ export default function ChatPanel() {
 
   return (
     <div className="flex flex-col h-full bg-transparent md:backdrop-blur-xl border-r border-border/40 relative z-10">
-      {/* ── Header ── */}
+      {/* â”€â”€ Header â”€â”€ */}
       <header className="hidden md:flex items-center gap-3 px-5 py-4 border-b border-border/40 bg-card/80 backdrop-blur-sm shrink-0">
         <div className="flex-1 min-w-0">
           <h1 className="text-sm font-semibold text-foreground tracking-tight">
@@ -76,21 +76,21 @@ export default function ChatPanel() {
           </h1>
           <p className="text-xs text-muted-foreground flex items-center gap-1">
             <Sparkles className="w-3 h-3" />
-            {isRestoring ? 'Đang tải hội thoại trước...' : 'Online · Ready to chat'}
+            {isRestoring ? 'Äang táº£i há»™i thoáº¡i trÆ°á»›c...' : 'Online Â· Ready to chat'}
           </p>
         </div>
         {/* Without this the conversation restored on load is the only one the
-            user can ever be in — there is no other way out of it yet. */}
+            user can ever be in â€” there is no other way out of it yet. */}
         <button
           onClick={startNewSession}
-          title="Cuộc trò chuyện mới"
+          title="Cuá»™c trÃ² chuyá»‡n má»›i"
           className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors shrink-0"
         >
           <SquarePen className="w-4 h-4" />
         </button>
       </header>
 
-      {/* ── Messages ── */}
+      {/* â”€â”€ Messages â”€â”€ */}
       <ScrollArea className="flex-1 min-h-0 px-1 md:px-2">
         <div className="py-2 md:py-4 space-y-1 md:space-y-2 max-w-full overflow-x-hidden">
           {messages.map((msg, i) => (
@@ -115,7 +115,7 @@ export default function ChatPanel() {
         </div>
       </ScrollArea>
 
-      {/* ── Input ── */}
+      {/* â”€â”€ Input â”€â”€ */}
       <div className="p-2 md:p-4 bg-transparent md:bg-card/80 md:backdrop-blur-sm shrink-0">
         <div className="flex flex-col gap-3 bg-card border border-border/40 rounded-2xl p-1.5 md:p-2 focus-within:ring-1 focus-within:ring-primary/50 focus-within:border-primary/50 transition-all relative">
           {imageUrls.length > 0 && (
@@ -174,7 +174,7 @@ export default function ChatPanel() {
                     className="w-full flex items-center gap-3 px-4 py-3 text-sm text-foreground hover:bg-secondary/60 transition-colors"
                   >
                     <Volume2 className="w-4 h-4 text-muted-foreground" />
-                    Trả lời bằng giọng nói
+                    Tráº£ lá»i báº±ng giá»ng nÃ³i
                     {voiceReply && <span className="ml-auto text-xs text-primary">On</span>}
                   </button>
                   <div className="h-px bg-border/40 mx-3" />
@@ -214,7 +214,7 @@ export default function ChatPanel() {
             {voiceReply && (
               <div className="flex items-center gap-1 bg-secondary rounded-lg px-2 py-1 text-xs text-muted-foreground">
                 <Volume2 className="w-3 h-3" />
-                Giọng nói
+                Giá»ng nÃ³i
                 <button
                   onClick={() => setVoiceReply(false)}
                   className="hover:text-foreground transition-colors cursor-pointer"
@@ -225,7 +225,7 @@ export default function ChatPanel() {
             )}
 
             {isRecording && (
-              <span className="text-xs text-destructive animate-pulse">● {String(Math.floor(recordingDuration / 60)).padStart(2, '0')}:{String(recordingDuration % 60).padStart(2, '0')}</span>
+              <span className="text-xs text-destructive animate-pulse">â— {String(Math.floor(recordingDuration / 60)).padStart(2, '0')}:{String(recordingDuration % 60).padStart(2, '0')}</span>
             )}
             {recordingError && (
               <span className="text-xs text-destructive truncate max-w-[120px]" title={recordingError}>{recordingError}</span>
@@ -233,8 +233,8 @@ export default function ChatPanel() {
             {previewAudioUrl && !isRecording && (
               <div className="flex items-center gap-1">
                 <audio controls src={previewAudioUrl} className="h-8 w-32" />
-                <button onClick={sendAudio} className="px-2 py-1 text-xs bg-primary text-primary-foreground rounded-lg">Gửi</button>
-                <button onClick={cancelRecord} className="px-2 py-1 text-xs border rounded-lg">Hủy</button>
+                <button onClick={sendAudio} className="px-2 py-1 text-xs bg-primary text-primary-foreground rounded-lg">Gá»­i</button>
+                <button onClick={cancelRecord} className="px-2 py-1 text-xs border rounded-lg">Há»§y</button>
               </div>
             )}
 
@@ -242,7 +242,7 @@ export default function ChatPanel() {
 
             <div className="flex items-center gap-1">
               <button
-                title={isRecording ? 'Dừng ghi' : 'Ghi âm'}
+                title={isRecording ? 'Dá»«ng ghi' : 'Ghi Ã¢m'}
                 onClick={() => (isRecording ? stopRecord() : void startRecord())}
                 className={`p-2 rounded-lg transition-colors ${isRecording ? 'bg-destructive text-destructive-foreground animate-pulse' : 'text-muted-foreground hover:text-foreground hover:bg-secondary/60'}`}
                 disabled={isGenerating}
@@ -289,3 +289,4 @@ export default function ChatPanel() {
     </div>
   )
 }
+

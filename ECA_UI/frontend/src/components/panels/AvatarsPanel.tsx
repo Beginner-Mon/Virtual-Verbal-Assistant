@@ -1,20 +1,20 @@
-import { useState, type CSSProperties } from 'react'
+﻿import { useState, type CSSProperties } from 'react'
 import { UserRound, Check, TriangleAlert } from 'lucide-react'
 import { ScrollArea } from '../ui/scroll-area'
-import { useMotion } from '../../contexts/MotionContext'
+import { useMotion } from '../../hooks/useMotion'
 import { incompatibilityReason, type Character } from '../../lib/characters'
 
-/** [nền A, nền B + blob phụ, accent blob] */
+/** [ná»n A, ná»n B + blob phá»¥, accent blob] */
 const MESH_PALETTE: Array<[string, string, string]> = [
   ['#7c3aed', '#a855f7', '#e879f9'], // violet
-  ['#0891b2', '#2563eb', '#22d3ee'], // cyan → blue
+  ['#0891b2', '#2563eb', '#22d3ee'], // cyan â†’ blue
   ['#e11d48', '#ec4899', '#fb7185'], // rose
   ['#d97706', '#ea580c', '#fbbf24'], // amber
   ['#059669', '#0d9488', '#34d399'], // emerald
   ['#4f46e5', '#9333ea', '#818cf8'], // indigo
 ]
 
-/** FNV-1a. Colours hang off the slug, not the list position — reordering the
+/** FNV-1a. Colours hang off the slug, not the list position â€” reordering the
  *  catalog used to repaint every character. */
 function hashSlug(s: string): number {
   let h = 2166136261
@@ -35,8 +35,8 @@ function meshStyle(slug: string): CSSProperties {
   // a single smear and every card looks the same again. `flip` decides which
   // half the bright accent takes, otherwise every card lights up top-left.
   const flip = (h >>> 27) & 1
-  const near = { x: 8 + ((h >>> 3) % 34), y: 4 + ((h >>> 9) % 36) } //  8–42% / 4–40%
-  const far = { x: 58 + ((h >>> 15) % 34), y: 56 + ((h >>> 21) % 36) } // 58–92% / 56–92%
+  const near = { x: 8 + ((h >>> 3) % 34), y: 4 + ((h >>> 9) % 36) } //  8â€“42% / 4â€“40%
+  const far = { x: 58 + ((h >>> 15) % 34), y: 56 + ((h >>> 21) % 36) } // 58â€“92% / 56â€“92%
   const accent = flip ? far : near
   const wash = flip ? near : far
   return {
@@ -86,7 +86,7 @@ function AvatarCard({
         focus-visible:ring-offset-2 focus-visible:ring-offset-card
       "
     >
-      {/* Clip layer — anything painted inside is guaranteed to follow the radius.
+      {/* Clip layer â€” anything painted inside is guaranteed to follow the radius.
           The old label sat directly on the button with `backdrop-blur`, which
           Chromium refuses to clip against an ancestor's border-radius; that is
           what made the name bar bleed out of the bottom corners. */}
@@ -102,9 +102,9 @@ function AvatarCard({
               transition-transform duration-500 ease-out group-hover:scale-110
             "
           >
-            {/* eca-logo.svg is 638×543 with `meet`, so in a square box it fits by
+            {/* eca-logo.svg is 638Ã—543 with `meet`, so in a square box it fits by
                 width and pads top/bottom. 114% of the card width reproduces the
-                old `w-40` on a 140px card at any card size — do not "fix" it. */}
+                old `w-40` on a 140px card at any card size â€” do not "fix" it. */}
             <img
               src="/eca-logo.svg"
               alt=""
@@ -116,8 +116,8 @@ function AvatarCard({
             />
           </div>
 
-          {/* No thumbnails exist yet — characters.thumbnail_url is null for every
-              row — but when they land they cover the placeholder. */}
+          {/* No thumbnails exist yet â€” characters.thumbnail_url is null for every
+              row â€” but when they land they cover the placeholder. */}
           {thumbnailUrl && !imgFailed && (
             <img
               src={thumbnailUrl}
@@ -249,3 +249,4 @@ export default function AvatarsPanel() {
     </div>
   )
 }
+

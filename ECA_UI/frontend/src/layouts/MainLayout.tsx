@@ -1,8 +1,9 @@
-import { Link, Outlet } from 'react-router-dom'
+﻿import { Link, Outlet } from 'react-router-dom'
 import { Music2 } from 'lucide-react'
 import FloatingNavBar from '../components/FloatingNavBar'
 import ChatPanel from '../components/ChatPanel'
-import { MotionProvider, useMotion } from '../contexts/MotionContext'
+import { MotionProvider } from '../contexts/MotionContext'
+import { useMotion } from '../hooks/useMotion'
 import { ChatProvider } from '../contexts/ChatContext'
 import { GraphicsProvider } from '../contexts/GraphicsContext'
 
@@ -42,7 +43,7 @@ export default function MainLayout() {
           <Outlet />
         </div>
 
-        {/* Mobile chat — fixed at bottom */}
+        {/* Mobile chat â€” fixed at bottom */}
         <div className="block md:hidden fixed bottom-0 inset-x-0 z-40 h-[40vh] max-h-[40vh] rounded-t-2xl border-t border-border/30 shadow-2xl overflow-hidden backdrop-blur-md">
           <ChatPanel />
         </div>
@@ -55,3 +56,4 @@ export default function MainLayout() {
     </MotionProvider>
   )
 }
+

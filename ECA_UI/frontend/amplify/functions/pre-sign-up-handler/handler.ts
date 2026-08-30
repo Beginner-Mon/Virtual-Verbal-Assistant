@@ -97,10 +97,10 @@ async function createNativeAnchor(
         { Name: 'preferred_username', Value: displayName },
       ],
     }));
-  } catch (error: any) {
+  } catch (error: unknown) {
     // Two first sign-ins racing each other. The loser just adopts the winner's
     // user, which is the same outcome — no lock needed.
-    if (error.name !== 'UsernameExistsException') throw error;
+    if ((error as { name?: string }).name !== 'UsernameExistsException') throw error;
     console.log('ANCHOR_ALREADY_EXISTS', JSON.stringify({ email }));
     return email;
   }
@@ -134,9 +134,9 @@ async function linkGoogleTo(
         ProviderAttributeValue: googleSub,
       },
     }));
-  } catch (error: any) {
+  } catch (error: unknown) {
     // Already linked — a retried redirect, or the other side of the race above.
-    if (error.name === 'InvalidParameterException' || error.name === 'AliasExistsException') {
+    if ((error as { name?: string }).name === 'InvalidParameterException' || (error as { name?: string }).name === 'AliasExistsException') {
       console.log('ALREADY_LINKED', JSON.stringify({ destinationUsername }));
       return;
     }
@@ -182,12 +182,20 @@ async function recordGoogleAvailable(email: string, displayName: string): Promis
         ':now': new Date().toISOString(),
       },
     }));
-  } catch (error: any) {
-    console.warn('MAPPING_WRITE_SKIPPED', JSON.stringify({ email, error: error.message }));
+  } catch (error: unknown) {
+    console.warn('MAPPING_WRITE_SKIPPED', JSON.stringify({ email, error: error instanceof Error ? error.message : String(error) }));
   }
 }
 
-export const handler = async (event: any) => {
+type CognitoEvent = {
+  triggerSource: string
+  request: { userAttributes: Record<string, string> }
+  response: { autoConfirmUser?: boolean; autoVerifyEmail?: boolean }
+  userName: string
+  userPoolId: string
+}
+
+export const handler = async (event: CognitoEvent) => {
   const { triggerSource, request, userName, userPoolId } = event;
 
   if (triggerSource === 'PreSignUp_ExternalProvider') {

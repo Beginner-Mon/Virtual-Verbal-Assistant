@@ -13,7 +13,13 @@ const docClient = DynamoDBDocumentClient.from(dynamoClient)
 
 const TABLE_NAME = process.env.USER_MAPPINGS_TABLE_NAME
 
-export const handler = async (event: any) => {
+interface ApiEvent {
+  body?: string | null
+  headers?: Record<string, string>
+  requestContext?: { authorizer?: { claims?: Record<string, string> } }
+}
+
+export const handler = async (event: ApiEvent) => {
   try {
     const body = JSON.parse(event.body || '{}')
     const { password } = body
@@ -52,11 +58,11 @@ export const handler = async (event: any) => {
         Username: email,
       }))
       nativeSub = existing.UserAttributes?.find((a) => a.Name === 'sub')?.Value ?? ''
-    } catch (e: any) {
+    } catch (e: unknown) {
       // Only reachable for accounts created before the single-user model, or if
       // PreSignUp failed to anchor. Creating one here would resurrect the
       // duplicate, so fail loudly instead.
-      console.error('NATIVE_USER_MISSING', JSON.stringify({ email, error: e.name }))
+      console.error('NATIVE_USER_MISSING', JSON.stringify({ email, error: (e as { name?: string }).name }))
       return {
         statusCode: 409,
         body: JSON.stringify({
@@ -107,8 +113,8 @@ export const handler = async (event: any) => {
       body: JSON.stringify({ message: 'Password set successfully' }),
       headers: corsHeadersFor(event),
     }
-  } catch (error: any) {
-    console.error('SET_PASSWORD_FAILED', JSON.stringify({ errorMessage: error.message }))
+  } catch (error: unknown) {
+    console.error('SET_PASSWORD_FAILED', JSON.stringify({ errorMessage: error instanceof Error ? error.message : String(error) }))
     return {
       statusCode: 500,
       body: JSON.stringify({ message: 'Failed to set password' }),

@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Outlet, Navigate } from 'react-router-dom'
 import { fetchAuthSession, fetchUserAttributes, signOut } from 'aws-amplify/auth'
-import { AuthContext, type FetchUserAttributesOutput } from '../contexts/AuthContext'
+import type { AuthSession } from 'aws-amplify/auth'
+import { AuthContext, type AuthUser, type FetchUserAttributesOutput } from '../contexts/AuthContext'
 import { AUTH_ERROR_KEY, clearExpectedEmail, cognitoLogoutUrl, emailsMatch, peekExpectedEmail } from '../lib/googleSignIn'
 import LoadingOverlay from './ui/LoadingOverlay'
 
@@ -27,10 +28,10 @@ function clearLocalAuthStorage() {
 }
 
 function CognitoAuthGuard() {
-  const [user, setUser] = useState<any>(null)
+  const [user, setUser] = useState<AuthUser | undefined>(undefined)
   const [attrs, setAttrs] = useState<FetchUserAttributesOutput | undefined>(undefined)
   const [ready, setReady] = useState(false)
-  const [session, setSession] = useState<any>(null)
+  const [session, setSession] = useState<AuthSession | null>(null)
   const signingOutRef = useRef(false)
 
   useEffect(() => {
@@ -83,7 +84,7 @@ function CognitoAuthGuard() {
       })
       .catch(() => {
         setSession(null)
-        setUser(null)
+        setUser(undefined)
       })
       .finally(() => setReady(true))
   }, [])

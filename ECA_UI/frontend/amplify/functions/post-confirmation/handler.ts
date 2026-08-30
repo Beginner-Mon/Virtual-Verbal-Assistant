@@ -7,7 +7,11 @@ const docClient = DynamoDBDocumentClient.from(client);
 const TABLE_NAME = process.env.USER_MAPPINGS_TABLE_NAME;
 const LOCKS_TABLE_NAME = process.env.EMAIL_LOCKS_TABLE_NAME;
 
-export const handler = async (event: any) => {
+type CognitoEvent = {
+  request: { userAttributes: Record<string, string> }
+}
+
+export const handler = async (event: CognitoEvent) => {
   const { request } = event;
   const email = request.userAttributes.email;
   const cognitoSub = request.userAttributes.sub;
@@ -28,7 +32,7 @@ export const handler = async (event: any) => {
     displayName = (request.userAttributes['preferred_username'] || '').trim() || emailPrefix;
   }
 
-  let existing: Record<string, any> | undefined;
+  let existing: Record<string, unknown> | undefined;
 
   try {
     const queryResponse = await docClient.send(new QueryCommand({
@@ -101,8 +105,8 @@ export const handler = async (event: any) => {
     console.log('ACCOUNT_MAPPED_EXISTING', JSON.stringify({
       appUserId: existing.appUserId, email, subField, cognitoSub,
     }));
-  } catch (error: any) {
-    if (error.name === 'TransactionCanceledException') {
+  } catch (error: unknown) {
+    if ((error as { name?: string }).name === 'TransactionCanceledException') {
       if (!existing) {
         const retryQuery = await docClient.send(new QueryCommand({
           TableName: TABLE_NAME,
@@ -145,7 +149,7 @@ export const handler = async (event: any) => {
     }
 
     console.error('POST_CONFIRMATION_FAILED', JSON.stringify({
-      email, cognitoSub, error: (error as Error).message,
+      email, cognitoSub, error: error instanceof Error ? error.message : String(error),
     }));
     throw error;
   }

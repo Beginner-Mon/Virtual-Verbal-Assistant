@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, useMemo } from 'react'
-import { useMotion } from '../contexts/MotionContext'
+﻿import { useEffect, useRef, useState, useMemo } from 'react'
+import { useMotion } from '../hooks/useMotion'
 import { CANONICAL_EMOTIONS, type CanonicalEmotion } from './AvatarProfile'
 import { getManifest } from './vrmManifest'
 import { ensureAudioContext, playSyntheticSpeech, type SyntheticSpeech } from './lipSyncAudio'
@@ -33,14 +33,14 @@ export default function AvatarDevPanel() {
     }
     return all.map((e) => ({
       label: e.name,
-      // `presetName` is null for custom blendShapes — fall through to `emit`.
+      // `presetName` is null for custom blendShapes â€” fall through to `emit`.
       emotion: PRESET_TO_CANONICAL[e.presetName ?? ''] ?? PRESET_TO_CANONICAL[e.emit] ?? 'neutral',
     }))
   }, [manifest])
   const [intensity, setIntensity] = useState(0.8)
   const [durationMs, setDurationMs] = useState(500)
-  const [last, setLast] = useState<string>('—')
-  const [mode, setMode] = useState<string>('—')
+  const [last, setLast] = useState<string>('â€”')
+  const [mode, setMode] = useState<string>('â€”')
   const [speaking, setSpeaking] = useState(false)
   const speechRef = useRef<SyntheticSpeech | null>(null)
 
@@ -51,7 +51,7 @@ export default function AvatarDevPanel() {
 
   // Poll the engaged/idle mode for display.
   useEffect(() => {
-    const id = setInterval(() => setMode(avatarRef.current?.mode ?? '—'), 400)
+    const id = setInterval(() => setMode(avatarRef.current?.mode ?? 'â€”'), 400)
     return () => clearInterval(id)
   }, [avatarRef])
 
@@ -104,7 +104,7 @@ export default function AvatarDevPanel() {
         userSelect: 'none',
       }}
     >
-      <strong style={{ fontSize: 11, letterSpacing: 0.4 }}>AVATAR DEV — emotions</strong>
+      <strong style={{ fontSize: 11, letterSpacing: 0.4 }}>AVATAR DEV â€” emotions</strong>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
         {emotionButtons.map(({ label, emotion }) => (
@@ -165,7 +165,7 @@ export default function AvatarDevPanel() {
           font: 'inherit',
         }}
       >
-        {speaking ? 'speaking…' : 'Speak (test lip-sync)'}
+        {speaking ? 'speakingâ€¦' : 'Speak (test lip-sync)'}
       </button>
 
       <span style={{ opacity: 0.7 }}>mode: {mode}</span>
@@ -173,3 +173,4 @@ export default function AvatarDevPanel() {
     </div>
   )
 }
+

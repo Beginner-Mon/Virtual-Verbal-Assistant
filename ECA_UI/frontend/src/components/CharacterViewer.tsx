@@ -1,8 +1,8 @@
-import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber'
+﻿import { Canvas, useFrame, useLoader, useThree } from '@react-three/fiber'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMHumanBoneName } from '@pixiv/three-vrm'
 import type { VRM } from '@pixiv/three-vrm'
-import { useTheme } from '../contexts/ThemeContext'
+import { useTheme } from '../hooks/useTheme'
 import { OrbitControls, Html } from '@react-three/drei'
 import { useRef, useEffect, useState, Suspense, useMemo } from 'react'
 import * as THREE from 'three'
@@ -14,7 +14,7 @@ import type { CameraResponsivePreset } from '../lib/CameraConfig'
 import type { CameraMode } from '../lib/AnimationStates'
 import { cameraModeOf, loopModeOf } from '../lib/AnimationStates'
 import { useFsmBoot } from '../hooks/useFsmTriggers'
-import { useMotion } from '../contexts/MotionContext'
+import { useMotion } from '../hooks/useMotion'
 import { AvatarController } from '../avatar/AvatarController'
 import { BodyPartPicker } from '../avatar/BodyPartPicker'
 import { bodyPartClick } from '../avatar/userActivity'
@@ -27,7 +27,8 @@ import SceneLighting from './scene/SceneLighting'
 import SceneEnvironment from './scene/SceneEnvironment'
 import ScenePostProcessing from './scene/ScenePostProcessing'
 import ClickRipple from './scene/ClickRipple'
-import { GraphicsProvider, useGraphics } from '../contexts/GraphicsContext'
+import { GraphicsProvider } from '../contexts/GraphicsContext'
+import { useGraphics } from '../hooks/useGraphics'
 
 const CAMERA_MODES: Record<CameraMode, { boneName: VRMHumanBoneName }> = {
   head: { boneName: VRMHumanBoneName.Head },
@@ -56,7 +57,7 @@ const CAMERA_RESPONSIVE_PRESETS: Record<CameraMode, CameraResponsivePreset> = {
  *
  * R3F calls `root.configure(props)` on every render of <Canvas> and writes
  * these onto the live renderer. Passing fresh object literals meant that work
- * repeated on every React re-render — and re-renders got more frequent once FSM
+ * repeated on every React re-render â€” and re-renders got more frequent once FSM
  * state started flowing through context. Module constants make the config what
  * it actually is: fixed for the lifetime of the app.
  */
@@ -69,7 +70,7 @@ const CANVAS_GL = {
   toneMappingExposure: ENV_CONFIG.renderer.toneMappingExposure,
 }
 
-/* ───────────────────── VRM Character with FSM-driven animation ──────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ VRM Character with FSM-driven animation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 interface VRMCharacterProps {
   vrmUrl: string
@@ -117,10 +118,10 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
 
   // Dispose GPU resources (geometry/material/texture) when the VRM truly
   // unmounts (model switch). React 19 StrictMode double-fires effects in dev
-  // (mount → cleanup → remount): a naive cleanup would destroy the
+  // (mount â†’ cleanup â†’ remount): a naive cleanup would destroy the
   // useLoader-cached VRM on the first cycle, making the model invisible on
   // remount. The `mountedRef` flag lets us distinguish: on cleanup we set it
-  // false, then on the synchronous remount we set it true again — the
+  // false, then on the synchronous remount we set it true again â€” the
   // microtask only fires dispose if the ref is still false (real unmount).
   const disposeGuardRef = useRef(true)
   useEffect(() => {
@@ -143,7 +144,7 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
   const rootMotionRef = useRef<RootMotionAccumulator | null>(null)
   const posedRef = useRef(false)
   const emotionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  // Per-instance state — key={vrmUrl} remounts resets these on model switch.
+  // Per-instance state â€” key={vrmUrl} remounts resets these on model switch.
   // `posed`: the first animation pose has reached the bones.
   const [posed, setPosed] = useState(false)
   // `avatarAttached`: AvatarController exists, so eye/head follow is driving.
@@ -155,8 +156,8 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
    * AvatarController is built behind `await loadProfileAsync(...)`, a network
    * request, while the greeting clip starts as soon as it is retargeted. Showing
    * the model on the pose alone exposed that gap: for its duration nothing holds
-   * Neck/Head, so the greeting clip's own head track shows through — the head
-   * leans down — and then snaps straight the moment HeadController attaches.
+   * Neck/Head, so the greeting clip's own head track shows through â€” the head
+   * leans down â€” and then snaps straight the moment HeadController attaches.
    * A warm HTTP cache shrinks the gap to nothing, which is why a second refresh
    * "fixed" it and why HMR (VRM served instantly from the useLoader cache, profile
    * still refetched) made it easiest to reproduce. Waiting costs one small request
@@ -188,8 +189,8 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
   }, [revealed])
 
   // Facial-animation controller lifecycle: attach on VRM load, detach on
-  // model change / unmount. Kept out of React state — this ref IS the handle
-  // (facial-animation-plan.md §8 rules 2-4).
+  // model change / unmount. Kept out of React state â€” this ref IS the handle
+  // (facial-animation-plan.md Â§8 rules 2-4).
   // The profile now comes from the character record, so this awaits before
   // attaching. Cheap in context: the VRM this runs after is a 10-18 MB
   // download, and loadProfileAsync falls back to the bundled registry rather
@@ -205,13 +206,13 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
       try {
         profile = await loadProfileAsync(modelId, abort.signal)
       } catch (err) {
-        // loadProfileAsync rethrows ONLY AbortError — every other failure falls
+        // loadProfileAsync rethrows ONLY AbortError â€” every other failure falls
         // back to the bundled registry (AvatarProfile.ts:131-136). That used to
         // be a detail; now that reveal waits on this effect it is load-bearing,
         // so an unexpected throw must release the gate rather than strand the
         // model behind the loading overlay forever.
         if (!abort.signal.aborted) {
-          console.error('[avatar] profile load failed — revealing without facial controller', err)
+          console.error('[avatar] profile load failed â€” revealing without facial controller', err)
           setAvatarAttached(true)
         }
         return
@@ -225,7 +226,7 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
       // The profile is what declares this character's gestures, so this is the
       // first moment the set is known. Warming them on idle keeps the first
       // click off the fetch-and-retarget path (111-214 ms, measured in
-      // AnimationRegistry) — the whole reason gestures are declared rather than
+      // AnimationRegistry) â€” the whole reason gestures are declared rather than
       // named ad-hoc at the moment of the click.
       prefetchIdle = scheduleIdle(prefetchGestures)
     })()
@@ -243,7 +244,7 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
   }, [vrm, modelId, avatarRef, prefetchGestures])
 
   // Animation FSM lifecycle. The registry is per-VRM because clips are
-  // retargeted against a specific skeleton (plan lỗi #6); a new instance per
+  // retargeted against a specific skeleton (plan lá»—i #6); a new instance per
   // model IS the invalidation.
   useEffect(() => {
     if (!vrm) return
@@ -252,7 +253,7 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
     const controller = new AnimationController(vrm, registry, {
       onClipApplied: (info) => {
         setClipInfoRef.current({ tracks: info.tracks, duration: info.duration })
-        // Record that a real pose has reached the bones. Event-driven — never a
+        // Record that a real pose has reached the bones. Event-driven â€” never a
         // timed wait. Reveal itself is derived from this plus the avatar attach.
         if (!posedRef.current) {
           posedRef.current = true
@@ -300,12 +301,12 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
     }
   }, [vrm, vrmUrl, attachControllers])
 
-  // Boot: greet once, then idle (plan §2.5).
+  // Boot: greet once, then idle (plan Â§2.5).
   useFsmBoot(animController, registry)
 
   // Update body animation, then facial expressions, then the VRM itself.
-  // Order is mandatory (§8 rule 1): the avatar controller calls setValue, and
-  // vrm.update applies those weights via expressionManager.update() — so the
+  // Order is mandatory (Â§8 rule 1): the avatar controller calls setValue, and
+  // vrm.update applies those weights via expressionManager.update() â€” so the
   // tick must land BETWEEN the mixer update and vrm.update.
   useFrame((_state, delta) => {
     animControllerRef.current?.update(delta)
@@ -314,7 +315,7 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
     // Last: the clamp reads the pose this frame actually produced. A generated
     // clip can descend further than the character is tall (measured: 1.21 m on
     // motion_b28e8284), which would otherwise sink it through the floor and
-    // kill its shadow — see lib/groundClamp.ts.
+    // kill its shadow â€” see lib/groundClamp.ts.
     if (modelGroupRef.current) {
       if (!groundClampRef.current) {
         groundClampRef.current = new GroundClamp(modelGroupRef.current, groundScratch, {
@@ -332,14 +333,14 @@ function VRMCharacter({ vrmUrl, modelId, onReady, vrmRef, avatarRef }: VRMCharac
 
   return (
     <group ref={modelGroupRef} position={[0, 1.5, 0]} rotation={[Math.PI / 2, 0, 0]}>
-      {/* visible=false until the first animation pose is applied — the model
+      {/* visible=false until the first animation pose is applied â€” the model
           never renders in bind pose (T-pose). */}
       <primitive object={vrm.scene} visible={revealed} />
     </group>
   )
 }
 
-/* ───────────────────────── Floating Particles ────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Floating Particles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 function FloatingParticles() {
   const { particles } = ENV_CONFIG
@@ -385,7 +386,7 @@ function FloatingParticles() {
   )
 }
 
-/* ────────────────────────────── Scene ─────────────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Scene â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 interface SceneProps {
   theme: 'light' | 'dark'
@@ -397,9 +398,10 @@ interface SceneProps {
 
 function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
   // Camera mode is owned by CameraController and driven by FSM state
-  // (exercise → wide + 3s cooldown). The old URL-substring heuristic is gone.
+  // (exercise â†’ wide + 3s cooldown). The old URL-substring heuristic is gone.
   const { cameraMode, cameraConfig } = useMotion()
   const { settings: gfx } = useGraphics()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- drei OrbitControls ref is an untyped Three.js controls instance; precise typing adds no safety here
   const controlsRef = useRef<any>(null)
   const vrmRef = useRef<VRM | null>(null)
   const { camera, size } = useThree()
@@ -443,7 +445,7 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
       startTarget: controlsRef.current.target.clone(),
       elapsed: 0,
     }
-  }, [cameraMode])
+  }, [cameraMode]) // eslint-disable-line react-hooks/exhaustive-deps -- camera.position is mutable and should not trigger a transition; only cameraMode matters
 
   // Reusable vectors to avoid GC pressure
   const followPos = useMemo(() => new THREE.Vector3(), [])
@@ -455,7 +457,7 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
   // re-attach the object on every state change.
   const axesHelper = useMemo(() => new THREE.AxesHelper(3), [])
 
-  // Lock X/Y/Z — freeze per-axis when toggled (Plan C). Stored frozen value is
+  // Lock X/Y/Z â€” freeze per-axis when toggled (Plan C). Stored frozen value is
   // the last unrestricted position; right-drag delta on a locked axis is reverted.
   const lockPrevTargetRef = useRef(new THREE.Vector3())
   const lockPrevPosRef = useRef(new THREE.Vector3())
@@ -467,8 +469,8 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
   useFrame((_state, delta) => {
     if (!vrmRef.current || !controlsRef.current) return
 
-    // Compute t from canvas width: desktop (>768px) → t=0 (wideFraming only),
-    // mobile (<360px) → t=1 (full narrowFraming + targetZ shift for chat panel).
+    // Compute t from canvas width: desktop (>768px) â†’ t=0 (wideFraming only),
+    // mobile (<360px) â†’ t=1 (full narrowFraming + targetZ shift for chat panel).
     // Matches Tailwind md breakpoint where MobileNavBar/ChatPanel activate.
     const tClamped = Math.max(0, Math.min(1,
       (768 - size.width) / (768 - 360)
@@ -594,19 +596,19 @@ function Scene({ theme, vrmUrl, modelId, onReady, avatarRef }: SceneProps) {
 
 return (
     <>
-      {/* ── Phase 1: Renderer color pipeline + material audit ────── */}
+      {/* â”€â”€ Phase 1: Renderer color pipeline + material audit â”€â”€â”€â”€â”€â”€ */}
       <RendererSetup vrm={vrmRef.current} />
 
-      {/* ── Phase 2+3+4: Lighting, shadows & ground ─────────────── */}
+      {/* â”€â”€ Phase 2+3+4: Lighting, shadows & ground â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <SceneLighting vrm={vrmRef.current} />
 
-      {/* ── Phase 5: Background (gradient / HDRI + stars) ────────── */}
+      {/* â”€â”€ Phase 5: Background (gradient / HDRI + stars) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <SceneEnvironment theme={theme} />
 
-      {/* ── Phase 6: Post processing (Bloom / SSAO / Vignette) ──── */}
+      {/* â”€â”€ Phase 6: Post processing (Bloom / SSAO / Vignette) â”€â”€â”€â”€ */}
       <ScenePostProcessing />
 
-      {/* key={vrmUrl}: a model switch is a clean remount — the old model is
+      {/* key={vrmUrl}: a model switch is a clean remount â€” the old model is
           dropped immediately and the new one stays hidden (plus a loading
           overlay) until its first pose is applied. */}
       <VRMCharacter
@@ -619,7 +621,7 @@ return (
       />
       <FloatingParticles />
 
-      {/* ── Debug Overlays ─────────────────────────────────────── */}
+      {/* â”€â”€ Debug Overlays â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {gfx.showGrid && (
         <group rotation={[Math.PI / 2, 0, 0]}>
           <gridHelper
@@ -658,7 +660,7 @@ return (
   )
 }
 
-/* ────────────────────────── Body-part picking ────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Body-part picking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 /** Pointer travel, in CSS px, still counted as a click rather than a drag. */
 const DRAG_SLOP_PX = 5
@@ -666,13 +668,13 @@ const DRAG_SLOP_PX = 5
 /**
  * Turns a click on the avatar into a `UserActivity`.
  *
- * This component knows which body part was hit and nothing else — not which
+ * This component knows which body part was hit and nothing else â€” not which
  * animation plays, not which expression follows. It reports the interaction and
  * `dispatchActivity` asks the character's own profile what that means, so a
  * model can bring different reactions from the database without this file
  * changing.
  *
- * The picking itself lives in BodyPartPicker (a GPU pick, not a raycast — see
+ * The picking itself lives in BodyPartPicker (a GPU pick, not a raycast â€” see
  * that file). What stays here is plumbing: rebuild the picker when the VRM is
  * swapped, keep its one-off vertex pass off the frame that swapped the model in,
  * and tell a click apart from a camera drag.
@@ -684,7 +686,7 @@ function BodyPartClickLogger({ vrmRef }: { vrmRef: React.MutableRefObject<VRM | 
   const builtForRef = useRef<VRM | null>(null)
   const idleRef = useRef<{ cancel: () => void } | null>(null)
 
-  // The VRM arrives — and is replaced on a model switch — through a ref, so
+  // The VRM arrives â€” and is replaced on a model switch â€” through a ref, so
   // there is no render to hang an effect on. One identity compare per frame is
   // cheaper than routing the model through context just for this.
   useFrame(() => {
@@ -738,7 +740,7 @@ function BodyPartClickLogger({ vrmRef }: { vrmRef: React.MutableRefObject<VRM | 
         console.log(
           '[bodyPart]',
           part ?? 'miss',
-          `blocking ${blocking.toFixed(2)}ms (render ${render.toFixed(2)}) · answer in ${latency.toFixed(2)}ms`,
+          `blocking ${blocking.toFixed(2)}ms (render ${render.toFixed(2)}) Â· answer in ${latency.toFixed(2)}ms`,
         )
         if (part) void dispatchActivity(bodyPartClick(part))
       })
@@ -784,7 +786,7 @@ function scheduleIdle(task: () => void): { cancel: () => void } {
   return { cancel: () => clearTimeout(handle) }
 }
 
-/* ───────────────────────── Exported Component ────────────────────── */
+/* â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Exported Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 export default function CharacterViewer() {
   const { theme } = useTheme()
@@ -796,7 +798,7 @@ export default function CharacterViewer() {
   // safety net would put the 15.8 MB this change removes straight back in.
   const vrmUrl = selectedVrm?.url
   // Readiness gate driven by VRMCharacter: the model (and this overlay) swap
-  // only when the first pose is actually applied — never a timed wait.
+  // only when the first pose is actually applied â€” never a timed wait.
   const [viewerReady, setViewerReady] = useState(false)
   // Stable model id for loadProfile. With the catalog it is already the slug;
   // the bundled-fallback path still yields a label like "models/anne.vrm".
@@ -809,7 +811,7 @@ export default function CharacterViewer() {
     setClipInfo(null)
   }, [vrmUrl, setClipInfo])
 
-  // Click ripple state — uses native pointerdown with capture to fire before
+  // Click ripple state â€” uses native pointerdown with capture to fire before
   // R3F's internal event system calls stopPropagation on the canvas element.
   const [clicks, setClicks] = useState<{ id: number; x: number; y: number }[]>([])
   const clickIdRef = useRef(0)
@@ -836,7 +838,7 @@ export default function CharacterViewer() {
     setClicks((prev) => prev.filter((c) => c.id !== id))
   }
 
-  // Feed normalized mouse position to the avatar's eye gaze (§4.2 / EyeController).
+  // Feed normalized mouse position to the avatar's eye gaze (Â§4.2 / EyeController).
   // Suppressed during the greeting animation so the model performs its scripted
   // wave without being pulled toward the cursor.
   const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -888,7 +890,7 @@ export default function CharacterViewer() {
 
       {/* Loading overlay: shown while the model has no pose yet (initial load
           / model switch). Replaces the old T-pose flash with a spinner.
-          A catalog failure is called out by name — without this the screen is
+          A catalog failure is called out by name â€” without this the screen is
           an indistinguishable spinner whether the CDN is unreachable or the
           model is merely still downloading. */}
       {!viewerReady && (
@@ -908,3 +910,4 @@ export default function CharacterViewer() {
     </div>
   )
 }
+

@@ -1,10 +1,10 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+﻿import { useState, useRef, useCallback, useEffect } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Copy, ThumbsUp, ThumbsDown, Volume2, Check, Pause, Square, Loader2 } from 'lucide-react'
 import { speakText } from '../lib/api'
 import { createSpeechAudio, startSpeaking, stopSpeaking } from '../lib/speechLipSync'
-import { useMotion } from '../contexts/MotionContext'
+import { useMotion } from '../hooks/useMotion'
 
 export interface Message {
   id: string
@@ -17,13 +17,13 @@ export interface Message {
    *  anything during the 30-45s wait. */
   speechPending?: boolean
   /** Voice mode: speak as soon as the audio lands, without waiting for a click.
-   *  "Trả lời bằng giọng nói" promises exactly this — attaching a silent audio
+   *  "Tráº£ lá»i báº±ng giá»ng nÃ³i" promises exactly this â€” attaching a silent audio
    *  file looks identical to the toggle being off. */
   autoplay?: boolean
   /** One line about this reply's 3D motion: rendering, or why there is none.
    *  Cleared once the clip plays, because the avatar is then saying it. The
    *  GPU worker is off by default, so "unavailable" is the ordinary case and a
-   *  user who asked to SEE a movement needs telling — silence reads as the
+   *  user who asked to SEE a movement needs telling â€” silence reads as the
    *  request having been misunderstood. */
   motionNotice?: string
   /** Restored turns only: the motion this reply rendered, and when it dies.
@@ -58,10 +58,10 @@ export default function ChatMessage({ message, isStreaming }: ChatMessageProps) 
   const isUser = message.role === 'user'
 
   if (!isUser) {
-    /* Assistant message được tạo rỗng ngay lúc user gửi (ChatContext.tsx:364)
-     * để id của nó bắt token từ stream. Chưa có text thì không render — cái
-     * shell rỗng vẫn ăn py-3 + space-y-2 của container, đẩy loading indicator
-     * xuống hơn 30px so với user message. */
+    /* Assistant message Ä‘Æ°á»£c táº¡o rá»—ng ngay lÃºc user gá»­i (ChatContext.tsx:364)
+     * Ä‘á»ƒ id cá»§a nÃ³ báº¯t token tá»« stream. ChÆ°a cÃ³ text thÃ¬ khÃ´ng render â€” cÃ¡i
+     * shell rá»—ng váº«n Äƒn py-3 + space-y-2 cá»§a container, Ä‘áº©y loading indicator
+     * xuá»‘ng hÆ¡n 30px so vá»›i user message. */
     if (!message.content) return null
 
     const cleaned = message.content.replace(/<\/?evidence_citation>/g, '')
@@ -146,10 +146,10 @@ function AssistantActions({
       <button className={btnClass} onClick={handleCopy} title="Copy">
         {copied ? <Check className={iconSize} /> : <Copy className={iconSize} />}
       </button>
-      <button className={btnClass} onClick={handleLike} title="Thích">
+      <button className={btnClass} onClick={handleLike} title="ThÃ­ch">
         <ThumbsUp className={`${iconSize} ${liked ? 'text-green-500' : ''}`} />
       </button>
-      <button className={btnClass} onClick={handleDislike} title="Không thích">
+      <button className={btnClass} onClick={handleDislike} title="KhÃ´ng thÃ­ch">
         <ThumbsDown className={`${iconSize} ${disliked ? 'text-blue-500' : ''}`} />
       </button>
       <AudioButton
@@ -168,8 +168,8 @@ function AssistantActions({
  * Speaker control for one assistant message.
  *
  * `audioUrl` is present only when the reply was voiced automatically (the
- * "Trả lời bằng giọng nói" toggle). Otherwise the first click synthesises on
- * demand — which is also the only way a restored conversation can be heard,
+ * "Tráº£ lá»i báº±ng giá»ng nÃ³i" toggle). Otherwise the first click synthesises on
+ * demand â€” which is also the only way a restored conversation can be heard,
  * since the WAV files are not persisted with the transcript.
  */
 function AudioButton({
@@ -204,7 +204,7 @@ function AudioButton({
 
   /* An automatically-voiced reply arrives *after* the message is first rendered
    * (speech_ready lands seconds later), so the prop has to be adopted when it
-   * changes — and the old <audio> discarded, or the element keeps the stale
+   * changes â€” and the old <audio> discarded, or the element keeps the stale
    * source and plays the previous answer. */
   useEffect(() => {
     if (!audioUrl || audioUrl === url) return
@@ -319,11 +319,11 @@ function AudioButton({
       return
     }
 
-    // Voice mode already has a job running for this message — clicking must not
+    // Voice mode already has a job running for this message â€” clicking must not
     // queue a second synthesis of the same text.
     if (speechPending) return
 
-    // Nothing to play yet — ask the server to read this message aloud.
+    // Nothing to play yet â€” ask the server to read this message aloud.
     if (synthesizing) return
     setSynthesizing(true)
     setFailed(false)
@@ -367,16 +367,16 @@ function AudioButton({
         disabled={busy}
         title={
           busy
-            ? 'Đang tạo giọng đọc... (CPU, có thể mất 30-45s)'
+            ? 'Äang táº¡o giá»ng Ä‘á»c... (CPU, cÃ³ thá»ƒ máº¥t 30-45s)'
             : failed
-              ? 'Không tạo được giọng đọc — bấm để thử lại'
+              ? 'KhÃ´ng táº¡o Ä‘Æ°á»£c giá»ng Ä‘á»c â€” báº¥m Ä‘á»ƒ thá»­ láº¡i'
               : playing
-                ? 'Tạm dừng'
+                ? 'Táº¡m dá»«ng'
                 : paused
-                  ? 'Tiếp tục'
+                  ? 'Tiáº¿p tá»¥c'
                   : url
                     ? 'Nghe'
-                    : 'Đọc tin nhắn này'
+                    : 'Äá»c tin nháº¯n nÃ y'
         }
         onDoubleClick={(e) => e.preventDefault()}
       >
@@ -399,13 +399,13 @@ function AudioButton({
         />
       </div>
       {/* Kept mounted and collapsed rather than unmounted, so appearing does not
-          shove the progress bar sideways — same trick the bar itself uses. */}
+          shove the progress bar sideways â€” same trick the bar itself uses. */}
       <button
         className={`${btnClass} overflow-hidden transition-all duration-300 ease-out ${
           isActive ? 'opacity-100' : 'w-0 p-0 opacity-0 pointer-events-none'
         }`}
         onClick={handleStop}
-        title="Dừng hẳn"
+        title="Dá»«ng háº³n"
         tabIndex={isActive ? 0 : -1}
         aria-hidden={!isActive}
       >
@@ -430,3 +430,4 @@ function UserCopyAction({ content }: { content: string }) {
     </div>
   )
 }
+

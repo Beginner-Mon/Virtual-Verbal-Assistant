@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+﻿import { useState, useEffect, useCallback, useRef } from 'react'
 import { MessageSquare, Trash2, RefreshCw, Loader2 } from 'lucide-react'
 import { ScrollArea } from '../ui/scroll-area'
 import ConfirmDialog from '../ui/confirm-dialog'
-import { useChat, type SessionItem } from '../../contexts/ChatContext'
+import { useChat, type SessionItem } from '../../hooks/useChat'
 
 let _cacheLoaded = false
 
@@ -149,3 +149,4 @@ export default function ChatSessionsPanel({ onSessionSelected }: { onSessionSele
     </div>
   )
 }
+

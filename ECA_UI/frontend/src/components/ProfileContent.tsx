@@ -15,15 +15,15 @@ export default function ProfileContent({ onClose }: Props) {
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const [activeSection, setActiveSection] = useState<string>('profile')
 
-  const [payload, setPayload] = useState<Record<string, any> | null>(null)
+  const [payload, setPayload] = useState<Record<string, unknown> | null>(null)
 
   useEffect(() => {
     fetchAuthSession().then(session => {
-      setPayload(session.tokens?.idToken?.payload as any)
+      setPayload((session.tokens?.idToken?.payload as Record<string, unknown>) ?? null)
     })
   }, [])
 
-  const emailSub = payload?.['custom:emailSub'] || null
+  const emailSub = (payload?.['custom:emailSub'] as string | undefined) || null
 
   /**
    * Is Google actually attached to this account?
@@ -39,7 +39,7 @@ export default function ProfileContent({ onClose }: Props) {
    * kept as a fallback for accounts written before that.
    */
   const identities = (() => {
-    const raw = payload?.identities
+    const raw = payload?.identities as unknown
     if (!raw) return [] as Array<{ providerName?: string }>
     // Cognito sends an array, but it arrives JSON-encoded in some token shapes.
     if (Array.isArray(raw)) return raw as Array<{ providerName?: string }>
@@ -53,10 +53,10 @@ export default function ProfileContent({ onClose }: Props) {
 
   const googleLinked =
     identities.some((i) => i?.providerName?.toLowerCase() === 'google') ||
-    !!payload?.['custom:googleSub'] ||
-    payload?.['custom:googleLinked'] === 'true'
-  const displayName = payload?.['custom:displayName'] || null
-  const email = payload?.['custom:email'] || user?.signInDetails?.loginId || userAttributes?.email || 'Unknown user'
+    !!(payload?.['custom:googleSub'] as string | undefined) ||
+    (payload?.['custom:googleLinked'] as string | undefined) === 'true'
+  const displayName = (payload?.['custom:displayName'] as string | undefined) || null
+  const email = (payload?.['custom:email'] as string | undefined) || (user?.signInDetails?.loginId as string | undefined) || (userAttributes?.email as string | undefined) || 'Unknown user'
 
   const profilePicture = userAttributes?.picture
   const navigate = useNavigate()

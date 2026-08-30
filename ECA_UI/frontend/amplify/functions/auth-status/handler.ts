@@ -7,9 +7,14 @@ const docClient = DynamoDBDocumentClient.from(client);
 
 const TABLE_NAME = process.env.USER_MAPPINGS_TABLE_NAME;
 
-export const handler = async (event: any) => {
+interface ApiEvent {
+  requestContext?: { authorizer?: { claims?: Record<string, string> } }
+  headers?: Record<string, string>
+}
+
+export const handler = async (event: ApiEvent) => {
   try {
-    const claims = event.requestContext.authorizer?.claims;
+    const claims = event.requestContext?.authorizer?.claims;
     const appUserId = claims?.['custom:appUserId'];
 
     if (!appUserId) {
@@ -45,8 +50,8 @@ export const handler = async (event: any) => {
       }),
       headers: corsHeadersFor(event),
     };
-  } catch (error) {
-    console.error('AUTH_STATUS_FAILED', JSON.stringify({ errorMessage: (error as Error).message }));
+  } catch (error: unknown) {
+    console.error('AUTH_STATUS_FAILED', JSON.stringify({ errorMessage: error instanceof Error ? error.message : String(error) }));
     return {
       statusCode: 500,
       body: JSON.stringify({ message: 'Failed to get auth status' }),

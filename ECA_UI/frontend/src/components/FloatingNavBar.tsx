@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+﻿import { useState, useRef, useCallback, useEffect } from 'react'
 import {
   DndContext,
   useDraggable,
@@ -24,11 +24,11 @@ import {
 } from 'lucide-react'
 // LogOut and LucideIcon were imported here "reserved for auth feature
 // (commented out)" behind @ts-expect-error. Nothing references them, and an
-// unused import is not a reservation — git remembers. Reinstate when the
+// unused import is not a reservation â€” git remembers. Reinstate when the
 // feature lands.
 import { useMediaQuery } from '../lib/use-media-query'
 import { useAuth } from '../contexts/AuthContext'
-import { useMotion } from '../contexts/MotionContext'
+import { useMotion } from '../hooks/useMotion'
 import ChatPanel from './ChatPanel'
 import ChatSessionsPanel from './panels/ChatSessionsPanel'
 import AvatarsPanel from './panels/AvatarsPanel'
@@ -38,7 +38,7 @@ import ProfileSettingsModal from './ProfileSettingsModal'
 import MobileNavBar from './MobileNavBar'
 import AvatarWithLogo from './AvatarWithLogo'
 
-/* ─── Types ─── */
+/* â”€â”€â”€ Types â”€â”€â”€ */
 type DockedEdge = 'left' | 'right' | 'top' | 'bottom'
 export type PanelId = 'chat' | 'sessions' | 'avatars' | 'motion' | 'settings' | null
 
@@ -55,7 +55,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'motion', icon: Settings2, label: 'Motion' },
 ]
 
-/* ─── Panel content map ─── */
+/* â”€â”€â”€ Panel content map â”€â”€â”€ */
 function PanelContent({
   panelId,
   onOpenModal,
@@ -81,7 +81,7 @@ function PanelContent({
   }
 }
 
-/* ─── Helpers ─── */
+/* â”€â”€â”€ Helpers â”€â”€â”€ */
 function getPlacementFromEdge(edge: DockedEdge): Placement {
   switch (edge) {
     case 'left':
@@ -127,9 +127,9 @@ function findNearestEdge(x: number, y: number, barWidth: number, barHeight: numb
   return 'bottom'
 }
 
-/* ═══════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Draggable Nav Bar (inner component)
-   ═══════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 function DraggableBar({
   dockedEdge,
@@ -241,9 +241,9 @@ function DraggableBar({
   )
 }
 
-/* ═══════════════════════════════════════════════
+/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    FloatingNavBar (main export)
-   ═══════════════════════════════════════════════ */
+   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
 export default function FloatingNavBar() {
   const isMobile = useMediaQuery('(max-width: 767px)')
@@ -265,7 +265,7 @@ export default function FloatingNavBar() {
   // Initialize vertical center on mount
   useEffect(() => {
     setPosition({ x: 16, y: Math.round((window.innerHeight - barSize.height) / 2) })
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Re-measure bar size when docked edge changes (orientation flips)
   useEffect(() => {
@@ -293,9 +293,9 @@ export default function FloatingNavBar() {
     if (el) {
       refs.setReference(el as HTMLElement)
     }
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Plan A1: keep position after viewport resize — re-measure bar, clamp position, keep floating ref fresh
+  // Plan A1: keep position after viewport resize â€” re-measure bar, clamp position, keep floating ref fresh
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null
     const handleResize = () => {
@@ -331,13 +331,13 @@ export default function FloatingNavBar() {
     }
   }, [isMobile, refs, barSize.width, barSize.height])
 
-  // Plan A1: when breakpoint flips (mobile ↔ desktop) re-anchor floating-ui and re-measure
+  // Plan A1: when breakpoint flips (mobile â†” desktop) re-anchor floating-ui and re-measure
   useEffect(() => {
     if (isMobile) return
     const raf = requestAnimationFrame(() => {
       const el = barRef.current?.querySelector('.floating-nav-bar') as HTMLElement | null
       if (!el) {
-        // DOM may not be painted yet — retry next frame
+        // DOM may not be painted yet â€” retry next frame
         requestAnimationFrame(() => {
           const retry = barRef.current?.querySelector('.floating-nav-bar') as HTMLElement | null
           if (!retry) return
@@ -366,7 +366,7 @@ export default function FloatingNavBar() {
     return () => cancelAnimationFrame(raf)
   }, [isMobile, refs])
 
-  // DnD sensors — increase activation distance so clicks don't trigger drag
+  // DnD sensors â€” increase activation distance so clicks don't trigger drag
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
@@ -461,7 +461,7 @@ export default function FloatingNavBar() {
     }
   }
 
-  /* ─── Mobile: draggable hamburger + icon-only dropdown ─── */
+  /* â”€â”€â”€ Mobile: draggable hamburger + icon-only dropdown â”€â”€â”€ */
   if (isMobile) {
     return (
       <>
@@ -504,7 +504,7 @@ export default function FloatingNavBar() {
     )
   }
 
-  /* ─── Desktop: full draggable nav bar + floating panels ─── */
+  /* â”€â”€â”€ Desktop: full draggable nav bar + floating panels â”€â”€â”€ */
   return (
     <div ref={barRef}>
       <DndContext
@@ -555,7 +555,7 @@ export default function FloatingNavBar() {
         </div>
       )}
 
-      {/* Settings dropdown — manually positioned at bottom of sidebar */}
+      {/* Settings dropdown â€” manually positioned at bottom of sidebar */}
       {activePanel === 'settings' && (
         <div
           style={{
@@ -620,3 +620,4 @@ export default function FloatingNavBar() {
     </div>
   )
 }
+

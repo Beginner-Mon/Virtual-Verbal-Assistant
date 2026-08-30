@@ -1,7 +1,7 @@
-import { Activity, Sliders, Camera, Smile, Lock } from 'lucide-react'
+﻿import { Activity, Sliders, Camera, Smile, Lock } from 'lucide-react'
 import { useEffect, useState, useMemo } from 'react'
 import { ScrollArea } from '../ui/scroll-area'
-import { useMotion } from '../../contexts/MotionContext'
+import { useMotion } from '../../hooks/useMotion'
 import type { CharState } from '../../lib/AnimationStates'
 import { CANONICAL_EMOTIONS, type CanonicalEmotion } from '../../avatar/AvatarProfile'
 import { getManifest } from '../../avatar/vrmManifest'
@@ -155,7 +155,7 @@ export default function MotionControlPanel() {
                           ? 'bg-primary text-primary-foreground border-primary shadow-sm'
                           : 'bg-secondary/40 text-muted-foreground border-border/20 hover:bg-secondary/60 hover:text-foreground'
                       }`}
-                      title={locked ? `Lock ${axis} — drag won't change ${axis}` : `Unlock ${axis}`}
+                      title={locked ? `Lock ${axis} â€” drag won't change ${axis}` : `Unlock ${axis}`}
                     >
                       <Lock className="w-3 h-3" />
                       {axis}
@@ -207,7 +207,7 @@ export default function MotionControlPanel() {
               NOT dev-gated, unlike the two blocks around it: `exercise` is a
               one-shot that returns to idle, so a user who looked away has lost
               it, and this is the only way back. The blocks either side stay
-              dev-only because they drive the FSM and blend shapes directly —
+              dev-only because they drive the FSM and blend shapes directly â€”
               those are for us, this is for the user. */}
           <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-secondary/20 border border-border/10">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
@@ -317,3 +317,4 @@ export default function MotionControlPanel() {
     </div>
   )
 }
+

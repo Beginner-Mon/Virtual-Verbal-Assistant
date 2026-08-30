@@ -7,7 +7,13 @@ const docClient = DynamoDBDocumentClient.from(client)
 
 const TABLE_NAME = process.env.USER_MAPPINGS_TABLE_NAME
 
-export const handler = async (event: any) => {
+interface ApiEvent {
+  queryStringParameters?: { email?: string } | null
+  headers?: Record<string, string>
+  requestContext?: { authorizer?: { claims?: Record<string, string> } }
+}
+
+export const handler = async (event: ApiEvent) => {
   try {
     const email = event.queryStringParameters?.email
 
@@ -40,8 +46,8 @@ export const handler = async (event: any) => {
       }),
       headers: corsHeadersFor(event),
     }
-  } catch (error) {
-    console.error('LOOKUP_FAILED', JSON.stringify({ errorMessage: (error as Error).message }))
+  } catch (error: unknown) {
+    console.error('LOOKUP_FAILED', JSON.stringify({ errorMessage: error instanceof Error ? error.message : String(error) }))
     return {
       statusCode: 500,
       body: JSON.stringify({ message: 'Failed to lookup email' }),

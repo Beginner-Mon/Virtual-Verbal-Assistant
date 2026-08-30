@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { AUTH_ERROR_KEY, startGoogleSignIn } from '../lib/googleSignIn'
+import { errorMessage } from '../lib/errors'
 import { customOutputs } from '../config/amplify'
 import { useRedirectIfAuthenticated } from '../hooks/useRedirectIfAuthenticated'
 import { Loader2 } from 'lucide-react'
@@ -85,8 +86,8 @@ export default function LoginPage() {
       } else if (data.hasEmail && !data.hasGoogle) {
         navigate('/enter-password', { state: { email: lookedUp } })
       }
-    } catch (err: any) {
-      setError(err.message || 'Something went wrong')
+    } catch (err: unknown) {
+      setError(errorMessage(err) || 'Something went wrong')
     } finally {
       setLoading(false)
     }

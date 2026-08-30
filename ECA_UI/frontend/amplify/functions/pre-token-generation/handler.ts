@@ -6,12 +6,17 @@ const docClient = DynamoDBDocumentClient.from(client);
 
 const TABLE_NAME = process.env.USER_MAPPINGS_TABLE_NAME;
 
-export const handler = async (event: any) => {
+type CognitoEvent = {
+  request: { userAttributes: Record<string, string> }
+  response?: { claimsOverrideDetails?: { claimsToAddOrOverride?: Record<string, string> } }
+}
+
+export const handler = async (event: CognitoEvent) => {
   const { request } = event;
   const cognitoSub = request.userAttributes.sub;
 
   try {
-    let record: Record<string, any> | undefined;
+    let record: Record<string, unknown> | undefined;
 
     const emailSubQuery = await docClient.send(new QueryCommand({
       TableName: TABLE_NAME,
@@ -77,10 +82,10 @@ export const handler = async (event: any) => {
       hasEmailSub: !!record.emailSub,
       hasGoogleSub: !!record.googleSub,
     }));
-  } catch (error: any) {
+  } catch (error: unknown) {
     // Same rule as above: a DynamoDB failure degrades the claims, it does not
     // lock the user out. `sub` still identifies them.
-    console.error('PRETOKEN_DEGRADED', JSON.stringify({ cognitoSub, error: error.message }));
+    console.error('PRETOKEN_DEGRADED', JSON.stringify({ cognitoSub, error: error instanceof Error ? error.message : String(error) }));
     event.response = {
       claimsOverrideDetails: {
         claimsToAddOrOverride: {

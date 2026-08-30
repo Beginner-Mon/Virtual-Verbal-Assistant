@@ -8,5 +8,5 @@ export function useRedirectIfAuthenticated(to = '/') {
     fetchAuthSession().then(s => {
       if (s.tokens) navigate(to, { replace: true })
     })
-  }, [])
+  }, [navigate, to])
 }

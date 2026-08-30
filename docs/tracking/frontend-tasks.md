@@ -1,7 +1,7 @@
 # Frontend Tasks — 25/08/2026
 
 > Tách từ `tech-debt.md` cho gọn — chỉ việc frontend. Sắp xếp theo **priority** (giá trị user) rồi **difficulty** (rủi ro kỹ thuật).
-> Branch hiện tại: `feature/frontend-fixes` (tách từ `feature/langgraph-rewrite` 25/08).
+> Branch hiện tại: `feature/langgraph-rewrite` (đã merge `feature/frontend-fixes` + `feature/motion-frontend` 30/08 — chứa motion replay + handoff 62 lint).
 > Mỗi task ghi rõ *hiện trạng → kỳ vọng → acceptance* để N pick vertical slice.
 
 Priority: 🔴 Critical · 🟠 High · 🟡 Medium · ⚪ Low
@@ -63,5 +63,5 @@ Difficulty: ★☆☆ Low · ★★☆ Medium · ★★★ High
 ## Liên kết
 
 - Gốc: `docs/tracking/tech-debt.md` (438 dòng, nhiều mục infra) — file này chỉ frontend.
-- Worklog liên quan: `25-08-2026.md` (single-port + characters local shim).
-- Branch: `feature/frontend-fixes` — các fix trên nên làm vertical slice, mỗi task 1 commit.
+- Worklog liên quan: `25-08-2026.md` (single-port + characters local shim) + `29-08-2026-frontend-lint-backlog.md` (62 lint handoff chi tiết).
+- Branch: `feature/langgraph-rewrite` (hiện tại, đã gồm `frontend-fixes`) — các fix trên nên làm vertical slice, mỗi task 1 commit.

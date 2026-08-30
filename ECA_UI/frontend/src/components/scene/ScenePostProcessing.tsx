@@ -1,8 +1,8 @@
-/**
- * ScenePostProcessing — Phase 6: Post Processing
+﻿/**
+ * ScenePostProcessing â€” Phase 6: Post Processing
  *
  * Very light post-processing stack: Bloom + SSAO + Vignette.
- * All values pulled from ENV_CONFIG — no hardcoding.
+ * All values pulled from ENV_CONFIG â€” no hardcoding.
  *
  * Design principle: enhance depth, not drama. Keep the anime/VRM look.
  * SSAO can be individually disabled via config if it causes artifacts
@@ -18,7 +18,7 @@ import {
 import { BlendFunction } from 'postprocessing'
 import { memo, type ReactElement } from 'react'
 import { ENV_CONFIG } from '../../config/environmentConfig'
-import { useGraphics } from '../../contexts/GraphicsContext'
+import { useGraphics } from '../../hooks/useGraphics'
 
 function ScenePostProcessing() {
   const { settings: gfx } = useGraphics()
@@ -68,8 +68,8 @@ function ScenePostProcessing() {
   }
 
   // SSAO reads the scene normals, and the r3f wrapper bails out with
-  // `console.error("Please enable the NormalPass…")` and an empty object when
-  // the composer has none — so until now the SSAO toggle produced a console
+  // `console.error("Please enable the NormalPassâ€¦")` and an empty object when
+  // the composer has none â€” so until now the SSAO toggle produced a console
   // error and nothing else. Tied to the flag rather than switched on: the normal
   // pass is a second full pass over the scene, not worth paying for when SSAO
   // is off.
@@ -82,3 +82,4 @@ function ScenePostProcessing() {
  * re-created the effect elements inside EffectComposer.
  */
 export default memo(ScenePostProcessing)
+

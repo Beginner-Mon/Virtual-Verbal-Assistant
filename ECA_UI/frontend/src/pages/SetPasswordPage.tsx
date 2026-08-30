@@ -5,6 +5,7 @@ import { customOutputs } from '../config/amplify'
 import { Loader2, CheckCircle2, ArrowLeft } from 'lucide-react'
 import AuthLayout from '../layouts/AuthLayout'
 import { PasswordInput } from '../components/ui/password-input'
+import { errorMessage } from '../lib/errors'
 
 export default function SetPasswordPage() {
   const navigate = useNavigate()
@@ -17,8 +18,8 @@ export default function SetPasswordPage() {
 
   useEffect(() => {
     fetchAuthSession().then(session => {
-      const p = session.tokens?.idToken?.payload as any
-      setEmail(p?.['custom:email'] || '')
+      const p = session.tokens?.idToken?.payload as Record<string, unknown> | undefined
+      setEmail((p?.['custom:email'] as string) || '')
     })
   }, [])
 
@@ -48,8 +49,8 @@ export default function SetPasswordPage() {
 
       setSuccess(true)
       await fetchAuthSession({ forceRefresh: true })
-    } catch (err: any) {
-      setError(err.message || 'Failed to set password')
+    } catch (err: unknown) {
+      setError(errorMessage(err) || 'Failed to set password')
     } finally {
       setLoading(false)
     }

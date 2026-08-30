@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { signIn, resetPassword, confirmResetPassword } from 'aws-amplify/auth'
 import { startGoogleSignIn } from '../lib/googleSignIn'
+import { errorMessage } from '../lib/errors'
 import { useRedirectIfAuthenticated } from '../hooks/useRedirectIfAuthenticated'
 import { Loader2 } from 'lucide-react'
 import AuthLayout from '../layouts/AuthLayout'
@@ -11,7 +12,7 @@ export default function EnterPasswordPage() {
   const navigate = useNavigate()
   const location = useLocation()
   useRedirectIfAuthenticated()
-  const email = (location.state as any)?.email || ''
+  const email = (location.state as { email?: string } | null)?.email || ''
 
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -31,8 +32,8 @@ export default function EnterPasswordPage() {
     try {
       await signIn({ username: email, password })
       navigate('/')
-    } catch (err: any) {
-      setError(err.message || 'Invalid email or password')
+    } catch (err: unknown) {
+      setError(errorMessage(err) || 'Invalid email or password')
     } finally {
       setLoading(false)
     }
@@ -45,8 +46,8 @@ export default function EnterPasswordPage() {
     try {
       await resetPassword({ username: email })
       setForgotStep('code')
-    } catch (err: any) {
-      setResetError(err.message || 'Failed to send reset code')
+    } catch (err: unknown) {
+      setResetError(errorMessage(err) || 'Failed to send reset code')
     } finally {
       setResetLoading(false)
     }
@@ -63,8 +64,8 @@ export default function EnterPasswordPage() {
     try {
       await confirmResetPassword({ username: email, confirmationCode: resetCode.trim(), newPassword })
       setForgotStep('success')
-    } catch (err: any) {
-      setResetError(err.message || 'Failed to reset password')
+    } catch (err: unknown) {
+      setResetError(errorMessage(err) || 'Failed to reset password')
     } finally {
       setResetLoading(false)
     }

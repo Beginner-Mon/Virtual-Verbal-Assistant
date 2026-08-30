@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { signUp, confirmSignUp, signIn } from 'aws-amplify/auth'
 import { startGoogleSignIn } from '../lib/googleSignIn'
+import { errorMessage } from '../lib/errors'
 import { useRedirectIfAuthenticated } from '../hooks/useRedirectIfAuthenticated'
 import { Loader2 } from 'lucide-react'
 import AuthLayout from '../layouts/AuthLayout'
@@ -11,7 +12,7 @@ export default function CreateAccountPage() {
   const navigate = useNavigate()
   const location = useLocation()
   useRedirectIfAuthenticated()
-  const email = (location.state as any)?.email || ''
+  const email = (location.state as { email?: string } | null)?.email || ''
 
   const [displayName, setDisplayName] = useState('')
   const [password, setPassword] = useState('')
@@ -35,8 +36,8 @@ export default function CreateAccountPage() {
         options: { userAttributes: { preferred_username: displayName.trim() } },
       })
       setStep('verification')
-    } catch (err: any) {
-      setError(err.message || 'Failed to create account')
+    } catch (err: unknown) {
+      setError(errorMessage(err) || 'Failed to create account')
     } finally {
       setLoading(false)
     }
@@ -52,8 +53,8 @@ export default function CreateAccountPage() {
       await signIn({ username: email, password })
       setStep('success')
       setTimeout(() => navigate('/'), 1500)
-    } catch (err: any) {
-      setError(err.message || 'Failed to verify code')
+    } catch (err: unknown) {
+      setError(errorMessage(err) || 'Failed to verify code')
     } finally {
       setLoading(false)
     }
