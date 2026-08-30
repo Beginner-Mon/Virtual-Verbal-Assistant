@@ -7,11 +7,27 @@ Handles:
 """
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
 from unittest.mock import patch
 from fastapi.testclient import TestClient
+
+
+# ---------------------------------------------------------------------------
+# Import path
+#
+# DART's root is no longer on pytest.ini's `pythonpath` — see the comment there.
+# It owns api_server.py and mcp_server.py, names SpeechLLm and Kimodo also own,
+# and a top-level name resolves once per process. This suite therefore carries
+# its own root, which keeps the shadowing contained to the one process that
+# actually wants DART's copies.
+# ---------------------------------------------------------------------------
+
+_DART_ROOT = Path(__file__).resolve().parents[3] / "text-to-motion" / "DART"
+if str(_DART_ROOT) not in sys.path:
+    sys.path.insert(0, str(_DART_ROOT))
 
 
 # ---------------------------------------------------------------------------

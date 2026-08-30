@@ -7,12 +7,113 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from langgraph_agents.db.postgres import PostgresClient
 from langgraph_agents.shared import get_pg_client
 from langgraph_agents.shared.stm import get_stm
+
+# Second copy of vva_motion.jobs.TTL_SECONDS, and it cannot be an import.
+#
+# This module is served by TWO deployments. The agent is a container image that
+# COPYs vva_motion in (agenticRAG/Dockerfile:112), but the CRUD Lambda is a zip
+# built from agenticRAG/langgraph_agents alone (infra/build_crud_api.py:44) —
+# `from vva_motion.jobs import ...` at module scope there is a
+# ModuleNotFoundError at cold start, which takes /sessions and /me/memory down
+# with it. A lazy import only moves the crash to request time, on the very
+# endpoint that needs the value.
+#
+# Same shape as MODEL in nodes/kimodo.py, which is copied for the same reason:
+# the other definition lives on the far side of an image boundary. Unlike that
+# one, this pair is pinned by a test —
+# tests/langgraph_agents/test_motion_expiry_deadline.py asserts the two are equal,
+# so drift fails CI instead of quietly mislabelling every restored motion.
+MOTION_TTL_SECONDS = 24 * 3600
+
+
+def _extras(row) -> dict:
+    """`messages.extras` as a dict, whatever the driver handed back.
+
+    asyncpg returns JSONB as a `str` unless a codec is registered; a test or
+    another driver may hand back a dict already. NULL — the common case, since
+    most messages have no extras at all — becomes `{}`.
+    """
+    raw = row["extras"] if "extras" in row.keys() else None
+    if not raw:
+        return {}
+    return raw if isinstance(raw, dict) else json.loads(raw)
+
+
+def _shape_message(row, created_at: Optional[datetime]) -> dict:
+    """One history message as the API returns it.
+
+    Storage is one JSONB column; the wire stays flat, because a client wants
+    `motion_job_id`, not a shape that mirrors how it happens to be persisted.
+
+    Motion keys appear ONLY when the message has a motion. It is an occasional
+    extra, never part of a chat turn, so most rows have none — and a message
+    with no motion cannot have an expired one. Emitting them unconditionally
+    would put keys describing nothing on the large majority of every history
+    payload, and assert something false about each.
+    """
+    out = {
+        "role":      row["role"],
+        "content":   row["content"],
+        "tokens":    row["token_count"],
+        "timestamp": created_at.isoformat() if created_at else None,
+    }
+    job_id = _extras(row).get("motion", {}).get("job_id")
+    if job_id:
+        out["motion_job_id"] = job_id
+        out["motion_expires_at"] = motion_expires_at(created_at)
+    return out
+
+
+def motion_expires_at(created_at: Optional[datetime]) -> Optional[str]:
+    """When this turn's rendered motion stops being fetchable. ISO-8601, UTC.
+
+    A DEADLINE, NOT A VERDICT, and the difference is the whole point. "Has it
+    expired" is a question whose answer changes while nobody is looking: a
+    payload computed at 10:00 says `false`, and a tab left open until the next
+    morning is still holding that `false` long after it stopped being true. An
+    absolute instant never goes stale — the client compares it to its own clock
+    at the moment it actually needs to decide.
+
+    It is also why this is not simply left to the browser to work out from
+    `timestamp`. Doing that puts the 24h in TypeScript as a second copy of a
+    constant that already exists twice (see MOTION_TTL_SECONDS above), across a
+    language boundary where nothing can pin them together. Sending the instant
+    keeps the rule server-side and hands the client an answer it cannot get
+    wrong.
+
+    Why a deadline exists at all: `messages.extras` outlives what it points at.
+    The job row has a 24h DynamoDB TTL and the .bvh a one-day S3 lifecycle
+    rule, so a day after the turn every stored id is a dead pointer — and
+    `GET /motion/{job_id}` cannot say so, because a swept row, an expired row
+    and an id that never existed all answer 404 identically. The age of the
+    message is the only surviving signal, and Postgres is the only place with
+    it.
+
+    The S3 rule is the binding clock, not the DynamoDB TTL: the file is what
+    the browser fetches, lifecycle deletes it on schedule, and AWS only promises
+    a TTL sweep "within a few days" — so the row can outlive the file it
+    describes, never the reverse.
+
+    Returns None when the age is unknown, which a client must read as "assume
+    gone". The mistakes are not symmetric: treating a live motion as expired
+    costs a replay the user can ask for again; treating a dead one as live
+    costs a poll that ends in a message saying the render failed when it merely
+    got old.
+    """
+    if created_at is None:
+        return None
+    # asyncpg returns tz-aware timestamps; a hand-built row or another driver
+    # may not. A naive value read as local time shifts by the machine's offset,
+    # which moves the deadline by hours.
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return (created_at + timedelta(seconds=MOTION_TTL_SECONDS)).isoformat()
 
 # _REDIS_URL used to live here, hardcoded to localhost, and was one of four
 # copies of the same string. shared/stm.py owns it now — see that module for why
@@ -182,7 +283,7 @@ async def load_session_messages(
     # transcript would read.
     if before:
         rows = await pg.fetch(
-            """SELECT role, content, token_count, created_at
+            """SELECT role, content, token_count, extras, created_at
                FROM messages
                WHERE session_id = $1::uuid AND created_at < $2::timestamptz
                ORDER BY created_at DESC, seq_id DESC LIMIT $3""",
@@ -191,7 +292,7 @@ async def load_session_messages(
         rows = list(reversed(rows))
     else:
         rows = await pg.fetch(
-            """SELECT role, content, token_count, created_at
+            """SELECT role, content, token_count, extras, created_at
                FROM messages
                WHERE session_id = $1::uuid
                ORDER BY created_at DESC, seq_id DESC LIMIT $2""",
@@ -199,15 +300,7 @@ async def load_session_messages(
         )
         rows = list(reversed(rows))
 
-    messages = [
-        {
-            "role":       r["role"],
-            "content":    r["content"],
-            "tokens":     r["token_count"],
-            "timestamp":  r["created_at"].isoformat(),
-        }
-        for r in rows
-    ]
+    messages = [_shape_message(r, r["created_at"]) for r in rows]
     return {
         "session_id": session_id,
         "messages":   messages,
@@ -244,7 +337,21 @@ async def write_session_turn(
     assistant_answer: str,
     total_tokens: int = 0,
     grader_result: str = "pass",
+    motion_job_id: str | None = None,
 ) -> None:
+    """`motion_job_id` is stored inside the `extras` JSONB column, namespaced
+    under "motion" — not as a column of its own. Motion is an occasional extra
+    on a chat turn, and it is not the last one: TTS wants to record the language
+    and voice that answered, and the next feature will want its own field. A
+    column each would grow `messages` a tail of nullable columns belonging to
+    unrelated subsystems, one migration at a time. See migration 008.
+
+    The parameter stays flat because that is what the caller has.
+
+    `motion_job_id` (R25): the Kimodo job id for this turn, if any. Only
+    the `queued`/`cache_hit` states carry one — `busy`/`unavailable` pass
+    None, same as a turn with no motion at all. Written on the assistant row
+    only; the user row's motion_job_id is always NULL."""
     user_id = _to_uuid(user_id)
     pg = get_pg_client()
     await pg.connect()
@@ -264,11 +371,12 @@ async def write_session_turn(
     # by seq_id (BIGSERIAL, insert order), not created_at. Passing an ISO string
     # for a timestamptz param fails under executemany() binary binding.
     await pg.executemany(
-        """INSERT INTO messages (session_id, role, content, token_count)
-           VALUES ($1::uuid, $2, $3, $4)""",
+        """INSERT INTO messages (session_id, role, content, token_count, extras)
+           VALUES ($1::uuid, $2, $3, $4, $5::jsonb)""",
         [
-            (session_id, "user",      user_query,       None),
-            (session_id, "assistant", assistant_answer, total_tokens),
+            (session_id, "user",      user_query,       None,         None),
+            (session_id, "assistant", assistant_answer, total_tokens,
+             json.dumps({"motion": {"job_id": motion_job_id}}) if motion_job_id else None),
         ],
     )
     await _append_stm(session_id, user_query, assistant_answer, ts)

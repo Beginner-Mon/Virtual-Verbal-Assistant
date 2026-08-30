@@ -52,6 +52,30 @@ jobs:
             artifact_name: "speechllm-test-results"
             timeout: 30
 
+          # The motion queue: the CDK stacks that define the DynamoDB table, its
+          # GSI and the free gateway endpoint, plus the worker loop and the
+          # shared job module. Every guard here ran only on a developer's
+          # machine until this entry existed — someone deleting the gateway
+          # endpoint (an interface endpoint bills per hour whether or not the
+          # GPU is on) or the queue's expiry rules would have seen nothing red.
+          #
+          # Runs without AWS credentials: moto fakes DynamoDB and S3, and CDK
+          # synthesises templates offline. No GPU either — the worker tests
+          # drive run_once() with a fake engine, because Kimodo cannot be
+          # tested locally.
+          #
+          # tests/text-to-motion/DART is excluded: DART is the legacy backup of
+          # this path, its suite needs model weights, and its api_server.py /
+          # mcp_server.py shadow live modules of the same name (see pytest.ini).
+          - module_name: "Motion Queue + Infra"
+            requirements: "infra/requirements-dev.txt"
+            test_dir: "tests/infra tests/text-to-motion"
+            pytest_args: "-m unit --ignore=tests/text-to-motion/DART"
+            python_version: "3.12"
+            extra_pythonpath: "infra"
+            artifact_name: "motion-infra-test-results"
+            timeout: 15
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -70,14 +94,36 @@ jobs:
           pip install pytest httpx pytest-asyncio
         shell: bash
 
-      # Run from repo root — pytest.ini and conftest.py handle paths
+      # Run from repo root — pytest.ini and conftest.py handle paths.
+      #
+      # NO --override-ini="pythonpath=...". It used to be here, and it did the
+      # opposite of what the comment above says: overriding `pythonpath` REPLACES
+      # pytest.ini's whole list rather than adding to it, so
+      # `text-to-motion/kimodo` was dropped and `vva_motion` became unimportable.
+      # That is not confined to the motion tests — nodes/kimodo.py imports it, and
+      # graph.py and api/main.py import that, so unrelated suites
+      # (test_phase5_sse.py, test_phase6_health.py) failed at COLLECTION too. With
+      # no --continue-on-collection-errors, pytest reports `Interrupted` and the
+      # job fails outright.
+      #
+      # matrix.extra_pythonpath is kept as the PYTHONPATH env var below, which
+      # pytest ADDS to rather than replacing. If a future matrix entry genuinely
+      # needs different roots, change pytest.ini or add to PYTHONPATH — do not
+      # bring --override-ini back.
+      #
+      # Removing the override had a second-order cost that had to be paid in
+      # pytest.ini, not here: the override was also the only thing keeping
+      # text-to-motion/DART from shadowing SpeechLLm's api_server.py, so this
+      # job went 44 passed -> 21 passed / 17 failed / 13 errors. DART is the
+      # legacy backup of the Kimodo path and is now off pytest.ini's pythonpath
+      # entirely; see the comment there. Both roots on one path could never have
+      # worked anyway — one top-level name, one sys.modules slot.
       - name: Run unit tests
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PYTHONPATH: ${{ matrix.extra_pythonpath }}
         run: |
           python -m pytest ${{ matrix.test_dir }} ${{ matrix.pytest_args }} \
-            --override-ini="pythonpath=${{ matrix.extra_pythonpath }}" \
             --junitxml=test-results/${{ matrix.artifact_name }}.xml
         shell: bash
 

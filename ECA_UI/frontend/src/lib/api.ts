@@ -35,6 +35,7 @@ import { fetchAuthSession } from 'aws-amplify/auth'
  * nothing here changes.
  */
 import { API_GATEWAY } from './apiBase'
+import type { MotionStatus } from './motionJob'
 
 
 // ── Auth helpers ──────────────────────────────────────────────────────────────
@@ -292,6 +293,18 @@ export interface SessionMessage {
   content: string
   timestamp: string
   tokens?: number
+  /** Present only when this turn rendered a motion. Assistant rows only. */
+  motion_job_id?: string
+  /**
+   * When that motion stops being fetchable — ISO-8601, absolute.
+   *
+   * A deadline rather than an `expired` boolean, and the difference matters
+   * here: a restored payload can sit in this tab for hours, and a boolean
+   * computed server-side would still be claiming what was true when the
+   * request was made. Compare this against the clock at the moment you need
+   * the answer. Absent means treat it as gone.
+   */
+  motion_expires_at?: string
 }
 
 /**
@@ -328,6 +341,38 @@ export async function speakText(
     }
   }
   throw new Error(`TTS timed out after ${Math.round(timeoutMs / 1000)}s`)
+}
+
+// ── Motion renders ─────────────────────────────────────────────────────────────
+
+/**
+ * One status read for a motion render job.
+ *
+ * Pair it with `pollMotionJob` from ./motionJob, which owns the loop and stays
+ * free of this module so it can be tested without aws-amplify:
+ *
+ *     const url = await pollMotionJob(jobId, (id) => fetchMotionStatus(id, signal), { signal })
+ *
+ * The `http` client attaches the Cognito ID token, which the route requires —
+ * it is authenticated (any signed-in user), not owner-scoped: a job_id is a
+ * hash of the request, so identical prompts deliberately share one render.
+ */
+export async function fetchMotionStatus(
+  jobId: string,
+  signal?: AbortSignal,
+): Promise<MotionStatus> {
+  try {
+    const res = await http.get(`/motion/${encodeURIComponent(jobId)}`, { signal })
+    return res.data as MotionStatus
+  } catch (e) {
+    const status = (e as { response?: { status?: number } }).response?.status
+    // THE OPPOSITE OF speakText ABOVE. There, 404 means "not ready, keep
+    // polling". Here the row either never existed or has aged out of DynamoDB
+    // (24h TTL) and no amount of waiting will produce it, so it is normalised
+    // into the terminal `not_found` status rather than swallowed as "pending".
+    if (status === 404) return { status: 'not_found' }
+    throw e
+  }
 }
 
 // ── User memory CRUD ───────────────────────────────────────────────────────────

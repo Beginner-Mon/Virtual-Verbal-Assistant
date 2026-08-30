@@ -226,8 +226,11 @@ Chat **không cần** Kimodo. Việc sinh động tác 3D chạy trên cloud và
 Chuyển động tác đã sinh (NPZ → BVH) để xem offline:
 
 ```bash
-python scripts/kimodo_npz_to_bvh.py <file.npz> [output.bvh]
+python text-to-motion/kimodo/npz_to_bvh.py <file.npz> [output.bvh]
 ```
+
+(Trước ở `scripts/kimodo_npz_to_bvh.py`. Đã chuyển vào cạnh worker vì
+`Dockerfile.prod` COPY nó vào image.)
 
 Script đọc cả hai định dạng: **Kimodo** (`local_rot_mats` + `root_positions`) và
 **AMASS/SMPL-X** (`poses` + `trans`).

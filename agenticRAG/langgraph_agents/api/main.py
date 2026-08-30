@@ -39,6 +39,7 @@ from fastapi.responses import JSONResponse
 from langgraph_agents.api.auth import current_user_id, verify_auth_config
 from langgraph_agents.api.billing import router as billing_router
 from langgraph_agents.api.crud_app import add_cors
+from langgraph_agents.api.motion_status import motion_status
 from langgraph_agents.api.routes_characters import router as characters_router
 from langgraph_agents.api.routes_crud import router as crud_router
 from langgraph_agents.api.schemas import (
@@ -340,6 +341,30 @@ def create_app() -> FastAPI:
         except (json.JSONDecodeError, TypeError):
             raise HTTPException(500, "Corrupt task result in cache")
 
+    @application.get("/motion/{job_id}")
+    async def motion_status_endpoint(job_id: str, uid: str = Depends(current_user_id)):
+        """Poll target for a motion job kimodo_node (nodes/kimodo.py) enqueued.
+
+        `Depends(current_user_id)` here is a second, redundant-looking check —
+        API Gateway's Cognito authorizer (rest_api_stack.py) already rejects an
+        unauthenticated request before it reaches this Lambda. It stays anyway
+        for the same reason /chat and the GDPR routes carry it: local
+        development runs this app directly, with no API Gateway in front of it
+        at all, so this is the only gate that exists outside AWS.
+        job_id is content-addressed (an HMAC of prompt+params, not tied to a
+        session — see vva_motion/jobs.py's compute_job_id), so there is no
+        per-row ownership to check beyond "is this caller authenticated".
+
+        motion_status() makes synchronous boto3 calls (DynamoDB, and SSM/
+        CloudFront signing on the done path) — asyncio.to_thread keeps them
+        off the event loop, the same pattern nodes/kimodo.py already uses for
+        the same client.
+        """
+        result = await asyncio.to_thread(motion_status, job_id)
+        if result["status"] == "not_found":
+            raise HTTPException(404, "job not found")
+        return result
+
     # Sessions and user memory are NOT defined here — they come from
     # crud_router (api/routes_crud.py), mounted above, and are also what the
     # CRUD Lambda serves. The two GDPR routes below stay put because both fire
@@ -470,6 +495,53 @@ async def _stream_chat(req, request_id, config, state, background_tasks, request
             if not isinstance(payload, dict):
                 continue
             for node_name, node_output in payload.items():
+                if node_name == "kimodo" and isinstance(node_output, dict):
+                    # kimodo stays out of _STAGE_NODES (R26) and this branch
+                    # still runs ahead of that gate. `stage` reports node
+                    # progress; `motion` carries a job the client has to act on.
+                    # They are different kinds of event — do not "fix" the
+                    # asymmetry by adding kimodo to _STAGE_NODES.
+                    #
+                    # R26 deferred emitting anything because no client listened.
+                    # ChatContext's motion handler listens now, and without the
+                    # event the browser has no way to learn the job id during
+                    # the turn: it is captured into final_state and written to
+                    # Postgres, so the only alternative is re-fetching the
+                    # session afterwards — a round trip in front of a render
+                    # that already takes seconds.
+                    #
+                    # TWO SEPARATE JOBS, deliberately not sharing a condition:
+                    #   emit  — all four states. `busy` and `unavailable` are
+                    #           precisely what a user needs told, and the worker
+                    #           is scaled to zero by default, so `unavailable`
+                    #           is the common path. Filtering them here is what
+                    #           made "the GPU is off" and "this turn had no
+                    #           motion" identical from the UI's side.
+                    #   store — queued/cache_hit only. Those are the only states
+                    #           with a real job to resume later; the others
+                    #           carry no job_id at all.
+                    #
+                    # Defensive: a malformed/unexpected ToolMessage must not
+                    # raise inside the streaming loop and kill the response —
+                    # a missing motion id is a far smaller failure than a
+                    # broken chat turn. A payload that fails to parse also
+                    # emits nothing, rather than a half-formed event.
+                    try:
+                        for msg in node_output.get("messages", []):
+                            content = getattr(msg, "content", None)
+                            if not isinstance(content, str):
+                                continue
+                            job_payload = json.loads(content)
+                            if not isinstance(job_payload, dict):
+                                continue
+                            yield encode_event("motion", job_payload)
+                            if job_payload.get("state") in ("queued", "cache_hit"):
+                                job_id = job_payload.get("job_id")
+                                if job_id:
+                                    final_state["motion_job_id"] = job_id
+                    except Exception as exc:
+                        logger.warning("kimodo_job_id_capture_failed", extra={"error": str(exc)})
+
                 if node_name not in _STAGE_NODES:
                     continue
 
@@ -519,6 +591,7 @@ async def _stream_chat(req, request_id, config, state, background_tasks, request
                 assistant_answer=final_answer,
                 total_tokens=final_state.get("total_tokens", 0),
                 grader_result=final_state.get("grader_result", "pass"),
+                motion_job_id=final_state.get("motion_job_id"),
             )
             yield encode_event("session_persisted", {"session_id": req.session_id})
         except Exception as exc:

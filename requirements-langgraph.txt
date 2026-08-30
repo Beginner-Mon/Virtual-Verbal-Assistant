@@ -103,6 +103,19 @@ pydantic>=2.0
 # Testing
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+# The `table` fixture in tests/conftest.py mocks DynamoDB with moto. Same pin as
+# infra/requirements-dev.txt, which needs it for the worker and infra suites —
+# change both together.
+#
+# 5.2.3, not the 5.0.28 this started on. boto3/botocore here float
+# (`boto3>=1.34.0`) and resolve to the newest release, and moto has to
+# understand whatever wire protocol that botocore speaks. On 5.0.28 against
+# botocore 1.43.82 every DynamoDB call in CI came back
+#   ClientError: An error occurred (404) ... CreateTable: Not yet implemented
+# — moto intercepting the request and failing to route it. 34 errors, and only
+# on the Linux runner: the same tests on windows-latest passed, which is why
+# this took a log to find rather than a local run.
+moto[dynamodb]==5.2.3
 
 # YouTube transcript ingestion (Phase 6.10)
 # Pinned <1.0: code uses the 0.6.x static API (YouTubeTranscriptApi.get_transcript);
@@ -111,6 +124,17 @@ youtube-transcript-api>=0.6.0,<1.0
 
 # JWT verification — Cognito RS256 (PART A auth integration)
 PyJWT[crypto]>=2.8.0
+
+# CloudFront signed URLs for motion/* (Task 9). Already an install-time
+# dependency via PyJWT[crypto]'s extra, but api/motion_status.py imports it
+# directly (RSA-SHA1 signing for CloudFrontSigner), so it needs its own
+# declared line — the completeness check below matches on the importED name,
+# not on what pulled a transitive wheel in.
+cryptography>=42.0.0
+# Same reason: motion_status.py imports botocore.signers.CloudFrontSigner
+# directly. It ships with boto3 either way; declared for the same completeness
+# reason as cryptography above.
+botocore>=1.34.0
 
 # Direct billing integration. Runtime code hard-rejects live-mode API keys and
 # live webhook events. Pin the current major so SDK/API changes are deliberate.

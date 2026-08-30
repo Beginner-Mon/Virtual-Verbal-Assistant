@@ -6,6 +6,7 @@ import type { CharState } from '../../lib/AnimationStates'
 import { CANONICAL_EMOTIONS, type CanonicalEmotion } from '../../avatar/AvatarProfile'
 import { getManifest } from '../../avatar/vrmManifest'
 import { DEFAULT_CAMERA_CONFIG } from '../../lib/CameraConfig'
+import { fetchMotionStatus } from '../../lib/api'
 
 const PRESET_TO_CANONICAL: Record<string, CanonicalEmotion> = {
   neutral: 'neutral',
@@ -24,7 +25,7 @@ export default function MotionControlPanel() {
     transitionTo,
     stateOptions,
     playMotionFile,
-    motionFileOptions,
+    sessionMotions,
     avatarRef,
     selectedVrmId,
     vrmOptions,
@@ -62,12 +63,14 @@ export default function MotionControlPanel() {
   const [avatarMode, setAvatarMode] = useState<string>('—')
 
   // Filter motion files so Character state actions don't leak into the debug picker.
-  // Built-in clips (Standard Idle, action_greeting, random_Bored, Thinking) are the
-  // state's static sources — debug picker should only list generated motions.
-  const filteredMotionFiles = useMemo(
-    () => motionFileOptions.filter((f) => !/built-in/i.test(f.label)),
-    [motionFileOptions],
-  )
+  // The picker used to list bundled sample .bvh files under asset/motions/
+  // generated/. Those were fixtures for verifying the Kimodo NPZ→BVH pipeline
+  // offline, before a render could actually be requested; they are gone, and
+  // the list is now the motions the backend rendered this session.
+  //
+  // motionFileOptions still exists for AnimationRegistry, which resolves the
+  // FSM's static clips (Standard Idle, action_greeting, random_Bored,
+  // Thinking) out of the same index — those stay bundled and are not pickable.
 
   useEffect(() => {
     ;(window as unknown as { __avatar?: () => unknown }).__avatar = () => avatarRef.current
@@ -200,30 +203,61 @@ export default function MotionControlPanel() {
             </div>
           )}
 
-          {/* (2) Motion FILE selector — DEBUG dev-only. Filtered to exclude built-in
-              state actions; only generated motions appear. */}
-          {import.meta.env.DEV && (
-            <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-secondary/20 border border-border/10">
+          {/* (2) Replay a motion the assistant rendered.
+              NOT dev-gated, unlike the two blocks around it: `exercise` is a
+              one-shot that returns to idle, so a user who looked away has lost
+              it, and this is the only way back. The blocks either side stay
+              dev-only because they drive the FSM and blend shapes directly —
+              those are for us, this is for the user. */}
+          <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-secondary/20 border border-border/10">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
                 <Activity className="w-3 h-3" />
-                Motion file (debug)
+                Xem lại động tác
               </span>
               <select
-                defaultValue=""
+                // Uncontrolled with a reset: picking the SAME motion twice must
+                // fire again, and a controlled value would make the second pick
+                // a no-op — replaying is the whole point of this list.
+                value=""
+                disabled={sessionMotions.length === 0}
                 onChange={(e) => {
-                  if (e.target.value) void playMotionFile(e.target.value)
+                  const picked = sessionMotions.find((m) => m.jobId === e.target.value)
+                  if (!picked) return
+                  void (async () => {
+                    // A motion played earlier this session already has a URL,
+                    // and the clip is cached under its job_id — that replay
+                    // touches nothing and works even after the URL's
+                    // five-minute signature has expired.
+                    //
+                    // One restored from conversation history has neither: fresh
+                    // page, empty cache, and no URL worth storing. Ask for a
+                    // signed one now, at the moment it is about to be used.
+                    let url = picked.url
+                    if (!url) {
+                      const status = await fetchMotionStatus(picked.jobId)
+                      if (status.status !== 'done' || !status.url) {
+                        console.warn('[motion] replay unavailable:', status)
+                        return
+                      }
+                      url = status.url
+                    }
+                    await playMotionFile(url, picked.jobId, picked.label)
+                  })()
                 }}
-                className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-0.5"
+                className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-0.5 disabled:opacity-50"
               >
-                <option value="" className="bg-card text-muted-foreground">Pick a file to play…</option>
-                {filteredMotionFiles.map((option) => (
-                  <option key={option.label} value={option.url} className="bg-card text-foreground">
-                    {option.label}
+                <option value="" className="bg-card text-muted-foreground">
+                  {sessionMotions.length === 0
+                    ? 'Chưa có động tác nào — hãy hỏi để xem một động tác'
+                    : 'Chọn để xem lại…'}
+                </option>
+                {sessionMotions.map((m) => (
+                  <option key={m.jobId} value={m.jobId} className="bg-card text-foreground">
+                    {m.label}
                   </option>
                 ))}
               </select>
-            </div>
-          )}
+          </div>
 
           {import.meta.env.DEV && (
             <div className="flex flex-col gap-2 p-3 rounded-xl bg-secondary/20 border border-border/10">

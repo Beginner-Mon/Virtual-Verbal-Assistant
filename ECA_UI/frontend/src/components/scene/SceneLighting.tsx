@@ -14,6 +14,7 @@ import { useRef, useEffect } from 'react'
 import * as THREE from 'three'
 import { useFrame } from '@react-three/fiber'
 import { ContactShadows } from '@react-three/drei'
+import { VRMHumanBoneName } from '@pixiv/three-vrm'
 import type { VRM } from '@pixiv/three-vrm'
 import { ENV_CONFIG } from '../../config/environmentConfig'
 import { DEFAULT_SHADOW_FIT, ShadowCameraFitter } from '../../lib/shadowFit'
@@ -63,7 +64,7 @@ export default function SceneLighting({ vrm }: SceneLightingProps) {
 
     // Make the contact shadow follow the character's root position horizontally
     if (vrm && contactShadowGroupRef.current) {
-      const hips = vrm.humanoid?.getNormalizedBoneNode('hips' as any)
+      const hips = vrm.humanoid?.getNormalizedBoneNode(VRMHumanBoneName.Hips)
       if (hips) {
         hips.getWorldPosition(scratchRef.current)
         // Group rotation is [-PI/2, 0, 0] (X-up rotated to Z-up).

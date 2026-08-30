@@ -27,6 +27,21 @@ export interface DynamicClip {
   loader: 'fbx' | 'bvh'
   /** BVH only. Defaults to `smplx`, which is what Kimodo emits. */
   retarget?: 'smplx' | 'standard'
+  /**
+   * Stable identity for the clip cache, when the URL is not one.
+   *
+   * A rendered motion arrives as a CloudFront **signed** URL, whose
+   * `Signature`/`Policy` are regenerated for every request and expire after
+   * five minutes. Keying the cache on that URL means the same motion is
+   * fetched and retargeted again on every replay, and `THREE.Cache` — keyed by
+   * full URL — accumulates a copy per signature.
+   *
+   * Pass the motion's `job_id`: it is an HMAC of the request that produced the
+   * clip, so it is stable, unique per distinct motion, and already the S3
+   * object name. Omit it for bundled assets, whose URLs are stable identities
+   * in their own right.
+   */
+  cacheKey?: string
 }
 
 /**
@@ -113,7 +128,14 @@ export class AnimationRegistry {
     const step = () => {
       const next = pending.shift()
       if (next === undefined) return
-      void this.load({ loader: next.loader, retarget: next.retarget }, next.url)
+      // cacheKey travels here too: prefetching a clip under a different key
+      // than `get()` will later use would warm the cache into a slot nothing
+      // reads, doing the retarget twice. Bundled gestures carry no key, so
+      // this is a no-op for them today.
+      void this.load(
+        { loader: next.loader, retarget: next.retarget, cacheKey: next.cacheKey },
+        next.url,
+      )
         .catch(() => null)
         .finally(() => schedule())
     }
@@ -160,7 +182,10 @@ export class AnimationRegistry {
   private async build(state: CharState): Promise<THREE.AnimationClip | null> {
     const dynamic = this.dynamicClips.get(state)
     if (dynamic) {
-      return this.load({ loader: dynamic.loader, retarget: dynamic.retarget }, dynamic.url)
+      return this.load(
+        { loader: dynamic.loader, retarget: dynamic.retarget, cacheKey: dynamic.cacheKey },
+        dynamic.url,
+      )
     }
 
     const source = staticSourceOf(state)
@@ -185,12 +210,22 @@ export class AnimationRegistry {
    * in and made every dynamic clip a Kimodo clip.
    */
   private async load(
-    source: { loader: 'fbx' | 'bvh'; retarget?: 'smplx' | 'standard'; subclip?: SubclipRange },
+    source: {
+      loader: 'fbx' | 'bvh'
+      retarget?: 'smplx' | 'standard'
+      subclip?: SubclipRange
+      cacheKey?: string
+    },
     url: string,
   ): Promise<THREE.AnimationClip | null> {
     // The shared cache dedupes concurrent loads and is keyed per model, so the
     // fetch + retarget pass happens once per (model, file) pair.
-    const base = await getAnimationClip(`${this.vrmUrl}|${url}`, () =>
+    //
+    // `cacheKey ?? url`: a signed URL is not a stable identity — see
+    // DynamicClip.cacheKey. The model stays in the key either way, because a
+    // retarget is per-skeleton and sharing a clip between avatars would put one
+    // character's bone lengths on another.
+    const base = await getAnimationClip(`${this.vrmUrl}|${source.cacheKey ?? url}`, () =>
       source.loader === 'fbx'
         ? loadMixamoAnimation(url, this.vrm)
         : loadAndRetargetBVH(

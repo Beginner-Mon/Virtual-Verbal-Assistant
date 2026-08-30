@@ -64,6 +64,120 @@ cdk deploy VvaCharacterStack -c neon_dsn_param=/vva/neon/dsn-staging
 
 ---
 
+## SSM parameters and deploy-time flags
+
+Every value here is either a secret (so it must not enter a CloudFormation
+template) or an identifier that does not exist until something else has been
+deployed. None of them have usable defaults, and a stack that is missing one
+now **fails at synth** rather than deploying something broken.
+
+### The parameters, once per account
+
+```bash
+# Neon, pooled endpoint — read by VvaCrudApiStack and VvaAgentStack.
+# POOLED here (with "-pooler"), unlike /vva/neon/dsn above, which is direct.
+aws ssm put-parameter --name /vva/neon/dsn-pooler --type SecureString \
+  --value 'postgresql://USER:PASS@ep-xxx-pooler.c-NN.us-east-1.aws.neon.tech/neondb?sslmode=require'
+
+# LLM credentials. Lambda environment variables are plaintext in the template
+# and CloudFormation's {{resolve:ssm-secure}} is not supported for them, so
+# llm.py reads these at run time instead.
+aws ssm put-parameter --name /vva/llm/deepseek-api-key --type SecureString --value 'sk-...'
+aws ssm put-parameter --name /vva/llm/gemini-api-keys  --type SecureString --value 'key1,key2'
+
+# The CloudFront PRIVATE signing key for motions/* (see below for generating it).
+aws ssm put-parameter --name /vva/motion/signing-key-pem --type SecureString \
+  --value "$(cat motion_signing_key.pem)"
+
+# HMAC secret for the motion job id. Not the signing key and not interchangeable
+# with it: this one makes the DynamoDB key underivable from the prompt while
+# keeping identical prompts on the same key, so the cache still hits.
+# Any 32+ random bytes. CHANGING IT INVALIDATES EVERY CACHED MOTION — the job id
+# is the hash, so every prompt re-renders on the GPU once.
+aws ssm put-parameter --name /vva/motion/hash-secret --type SecureString \
+  --value "$(python -c 'import secrets; print(secrets.token_hex(32))')"
+```
+
+| Parameter | Read by | Held as |
+|---|---|---|
+| `/vva/neon/dsn` | `VvaCharacterStack` | SecureString, DIRECT endpoint |
+| `/vva/neon/dsn-pooler` | `VvaCrudApiStack`, `VvaAgentStack` | SecureString, POOLED endpoint |
+| `/vva/llm/deepseek-api-key` | `VvaAgentStack` (`llm.py`) | SecureString |
+| `/vva/llm/gemini-api-keys` | `VvaAgentStack` (`llm.py`) | SecureString, comma-separated |
+| `/vva/motion/signing-key-pem` | `VvaAgentStack` (`api/motion_status.py`) | SecureString |
+| `/vva/motion/hash-secret` | `VvaAgentStack` (`nodes/kimodo.py`) | SecureString |
+
+The stacks are given the parameter **NAME**, never the value — the Lambda
+resolves it at call time with `ssm:GetParameter(WithDecryption=True)`. No secret
+ever reaches a CDK context flag or the synthesized template, and
+`tests/infra/test_motion_route_infra.py` asserts exactly that.
+
+### The CloudFront signing keypair for motions/*
+
+`motions/*` is served only through signed URLs, so it needs an RSA keypair whose
+halves are deployed to two different places. Generate it once and keep the
+private half out of the repo:
+
+```bash
+openssl genrsa -out motion_signing_key.pem 2048
+openssl rsa -in motion_signing_key.pem -pubout -out motion_signing_key.pub
+```
+
+* **public half** → a `-c` flag on `VvaAssetStack`, which registers it as a
+  CloudFront public key. It is not read from SSM: CDK needs it at synth time to
+  build the key group.
+* **private half** → the `/vva/motion/signing-key-pem` SecureString above. It
+  never appears in CDK at all.
+
+### Deploy order — and why it is a strict order
+
+`motion_key_pair_id` is assigned **by CloudFront**, so it does not exist until
+`VvaAssetStack` has been deployed once. `VvaAgentStack` cannot be deployed
+correctly before that.
+
+```bash
+# 1. Register the public key. Fails at synth without the flag.
+cdk deploy VvaAssetStack -c motion_public_key_pem="$(cat motion_signing_key.pub)"
+
+# 2. Read back the id CloudFront just assigned.
+aws cloudfront list-public-keys \
+  --query 'PublicKeyList.Items[].{Id:Id,Name:Name}' --output table
+
+# 3. Agent, two-step the first time (repository, then function).
+cdk deploy VvaAgentStack -c agent_bootstrap=1
+#    ... CI pushes vva-agent:<sha> (deploy-agent.yml) ...
+cdk deploy VvaAgentStack -c agent_image_tag=<sha> -c motion_key_pair_id=<K2EXAMPLE...>
+```
+
+Step 3 without `motion_key_pair_id` used to synthesize and deploy cleanly, then
+hand out signed URLs CloudFront answers with **403** — the environment variable
+was present, merely empty, so nothing raised anywhere. Same for the CDN origin
+(`asset_base_url`, passed from `VvaAssetStack` by `app.py`), whose absence
+produced URLs with no host. Both are now `Annotations.add_error` at synth,
+scoped to `VvaAgentStack` so unrelated stacks still synthesize.
+
+### Schema
+
+The Alembic revisions under
+`agenticRAG/langgraph_agents/alembic/versions/` are the only schema system in
+this repo with a runner. `infra/sql/init_schema.sql` is a stale reference copy —
+nothing executes it, and it has drifted (`tokens` where the code reads
+`token_count`). Run migrations before deploying an agent image that depends on
+a new column:
+
+```bash
+cd agenticRAG/langgraph_agents && alembic upgrade head
+```
+
+It needs `VVA_PG_DSN_OWNER` (falling back to `VVA_PG_DSN`) — the DIRECT
+endpoint, and the credential that OWNS the tables, not `eca_user`. Since
+007_rls the application connects as `eca_user`, which has no CREATE and is
+subject to row-level security, so `alembic upgrade` as that role fails on the
+first DDL statement. `env.py` gives the owner credential its own variable name
+for exactly that reason.
+
+---
+
 ## Track 1 — production reference (frozen, NOT synthesised)
 
 ```

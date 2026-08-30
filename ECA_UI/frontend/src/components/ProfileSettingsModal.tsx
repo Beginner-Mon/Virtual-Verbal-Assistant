@@ -50,7 +50,11 @@ export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileS
     } else if (settingsView === 'graphics' || settingsView === 'about') {
       setSettingsView(ROOT_VIEW)
     } else {
-      onBack ?? onClose()
+      // `onBack ?? onClose()` read onBack and discarded it: when a parent
+      // passed one, the expression evaluated to the function and never called
+      // anything, so back did nothing at all. Parenthesise the choice, then
+      // call it.
+      ;(onBack ?? onClose)()
     }
   }
 

@@ -1,182 +1,156 @@
-"""Tests for kimodo_node — the wire, not the thing at the far end of it.
+"""kimodo_node giờ ghi một row DynamoDB, không gọi mạng tới Kimodo nữa.
 
-Until 21-08 this node had no tests at all. test_phase3_mcp_kimodo.py exercised
-the mock MCP server directly, which is a different piece of code: it called
-`_generate_motion_mock(prompt=...)` and passed, while the node called
-`ainvoke({"query": ...})` and failed schema validation on every single request.
-The failure was swallowed into a RECOVERABLE error, so motion silently never ran
-and nothing went red.
-
-That is why the fixture below builds a REAL StructuredTool with a real pydantic
-schema instead of a MagicMock. A mock accepts any keyword you hand it, so a mock
-based test would have passed for the whole time the bug existed — it would have
-asserted the node's opinion of the contract rather than the contract.
-
-The schema here mirrors both servers:
-  * mcp/kimodo_server.py            inputSchema.required = ["prompt"]
-  * text-to-motion/kimodo/mcp_server.py   def generate_motion(prompt: str)
+Import ở module scope là load-bearing: pytest.ini đặt filterwarnings = error và chuỗi
+import của langgraph phát LangChainPendingDeprecationWarning, không nằm trong danh sách
+ignore. Import trong hàm test sẽ làm mọi assertion đỏ vì lý do không liên quan.
 """
-
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch
+import time as _time
 
 import pytest
-from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
 
-# Imported at module scope, not inside the tests, and that is load-bearing:
-# pytest.ini sets `filterwarnings = error` and langgraph's import chain emits a
-# LangChainPendingDeprecationWarning, which subclasses PendingDeprecationWarning
-# and so is not covered by the DeprecationWarning ignore. Imported inside a test
-# the warning is raised as an error and every assertion below fails for a reason
-# that has nothing to do with Kimodo.
-from langgraph_agents.nodes.kimodo import kimodo_node
-from langgraph_agents.state import ErrorSeverity
+from langgraph_agents.nodes.kimodo import DEFAULT_DURATION, DEFAULT_STEPS, MODEL, kimodo_node
+from vva_motion.jobs import MAX_QUEUE_DEPTH, compute_job_id, enqueue, write_heartbeat
+
+HASH_SECRET = "test-secret"
+
+CONFIG = {"configurable": {"request_id": "r1", "query": "nâng hai tay qua đầu",
+                           "session_id": "s1", "user_id": "u1"}}
 
 
-_MOTION_RESULT = {"status": "success", "files": ["motion_abc.npz"]}
+def _content(result):
+    return json.loads(result["messages"][0].content)
 
 
-class _GenerateMotionArgs(BaseModel):
-    """The argument contract both Kimodo MCP servers declare."""
-
-    prompt: str = Field(description="motion description")
-
-
-def _make_motion_tool(calls: list) -> StructuredTool:
-    """A generate_motion tool that ENFORCES the real schema."""
-
-    async def _run(prompt: str) -> str:
-        calls.append(prompt)
-        return json.dumps(_MOTION_RESULT)
-
-    return StructuredTool.from_function(
-        coroutine=_run,
-        name="generate_motion",
-        description="Generate a 3D motion animation from a description.",
-        args_schema=_GenerateMotionArgs,
-    )
-
-
-def _patch_client(tools: list):
-    """Patch MCP discovery — the same seam test_phase3_retriever_with_mcp uses.
-
-    Patched on the module rather than on the node, because the node imports the
-    function inside its try block: a patch of `nodes.kimodo.get_mcp_tools` would
-    bind nothing and the real discovery would run.
-    """
-    return patch(
-        "langgraph_agents.mcp.client.get_mcp_tools",
-        new=AsyncMock(return_value=tools),
-    )
-
-
-def _config(query: str = "động tác squat"):
-    return {"configurable": {"query": query, "request_id": "test-req"}}
-
-
-# ── The regression this file exists for ───────────────────────────────────────
+@pytest.fixture(autouse=True)
+def _hash_secret(monkeypatch):
+    # Read lazily inside kimodo_node (not module scope), so this only needs to
+    # be present by the time the node runs, not by import time.
+    monkeypatch.setenv("MOTION_HASH_SECRET", HASH_SECRET)
 
 
 @pytest.mark.unit
-@pytest.mark.asyncio
-async def test_node_calls_tool_with_the_argument_the_schema_declares():
-    """The whole point. A regression to {"query": ...} fails schema validation.
-
-    Note what is NOT asserted: that the payload key is the literal string
-    "prompt". Hardcoding that on both sides would only restate the node's own
-    choice. The schema does the judging, so this test tracks the servers'
-    contract rather than a copy of it.
-    """
-    calls: list = []
-    with _patch_client([_make_motion_tool(calls)]):
-        result = await kimodo_node({}, _config("động tác squat"))
-
-    assert calls == ["động tác squat"], (
-        f"Tool was invoked {len(calls)} time(s) with {calls}. The node must pass "
-        f"the resolved query as the argument generate_motion's schema requires."
-    )
-    assert "errors" not in result, f"Unexpected error path: {result.get('errors')}"
-    assert "messages" in result and len(result["messages"]) == 1
-    assert "motion_abc.npz" in result["messages"][0].content
+async def test_unavailable_when_no_heartbeat(table, monkeypatch):
+    monkeypatch.setattr("langgraph_agents.nodes.kimodo._table", lambda: table)
+    out = _content(await kimodo_node({"resolved_query": "nâng hai tay"}, CONFIG))
+    assert out["state"] == "unavailable"
+    assert table.scan()["Count"] == 0          # hàng đợi không bao giờ được nạp rác
 
 
 @pytest.mark.unit
-@pytest.mark.asyncio
-async def test_node_prefers_resolved_query_over_raw_query():
-    """resolved_query is the planner's rewrite — the raw query is the fallback.
-
-    Worth pinning: the planner exists partly to turn "bài tập cổ đã hỏi tuần
-    trước" into something searchable, and sending the raw text instead would
-    quietly waste that.
-    """
-    calls: list = []
-    with _patch_client([_make_motion_tool(calls)]):
-        await kimodo_node({"resolved_query": "squat có tạ"}, _config("cái đó"))
-
-    assert calls == ["squat có tạ"]
-
-
-# ── Degradation: motion is optional, the answer is not ────────────────────────
+async def test_queued_with_position_and_eta(table, monkeypatch):
+    monkeypatch.setattr("langgraph_agents.nodes.kimodo._table", lambda: table)
+    write_heartbeat(table)
+    out = _content(await kimodo_node({"resolved_query": "nâng hai tay"}, CONFIG))
+    assert out["state"] == "queued"
+    assert out["queue_position"] == 1 and out["eta_seconds"] == 5
 
 
 @pytest.mark.unit
-@pytest.mark.asyncio
-async def test_missing_tool_degrades_instead_of_raising():
-    """Kimodo down (or not deployed) must not take the graph with it.
-
-    This is the everyday case right now: Kimodo runs on a GPU box that is off
-    unless someone is demoing.
-    """
-    with _patch_client([]):                      # discovery returned no tools
-        result = await kimodo_node({}, _config())
-
-    assert "errors" in result and len(result["errors"]) == 1
-    assert result["errors"][0]["severity"] == ErrorSeverity.RECOVERABLE
-    assert result["errors"][0]["node"] == "kimodo"
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_tool_exception_degrades_instead_of_escaping():
-    """A GPU OOM or a timeout inside Kimodo is still a RECOVERABLE error here.
-
-    If this escaped, one failed motion render would abort a turn that already
-    has a usable text answer waiting in the synthesizer.
-    """
-    async def _boom(prompt: str) -> str:
-        raise RuntimeError("CUDA out of memory")
-
-    exploding = StructuredTool.from_function(
-        coroutine=_boom,
-        name="generate_motion",
-        description="always fails",
-        args_schema=_GenerateMotionArgs,
-    )
-
-    with _patch_client([exploding]):
-        result = await kimodo_node({}, _config())
-
-    assert "errors" in result
-    assert result["errors"][0]["severity"] == ErrorSeverity.RECOVERABLE
-    assert "CUDA out of memory" in result["errors"][0]["message"]
+async def test_second_identical_request_while_queued_reuses_same_job(table, monkeypatch):
+    """Second call sees the first job still `status="queued"` — this exercises
+    the queued-dedup branch, NOT cache_hit. (`existing["status"] in ("queued",
+    "processing")` in the node.) Renamed from a name that claimed cache_hit;
+    see test_cache_hit_when_job_already_done below for the real thing."""
+    monkeypatch.setattr("langgraph_agents.nodes.kimodo._table", lambda: table)
+    write_heartbeat(table)
+    first = _content(await kimodo_node({"resolved_query": "nâng hai tay"}, CONFIG))
+    second = _content(await kimodo_node({"resolved_query": "NÂNG HAI TAY"}, CONFIG))
+    assert first["state"] == "queued" and second["state"] == "queued"
+    assert second["job_id"] == first["job_id"]
+    assert table.scan()["Count"] == 2          # 1 job + 1 heartbeat, KHÔNG phải 2 job
 
 
 @pytest.mark.unit
-@pytest.mark.asyncio
-async def test_wrong_argument_name_would_be_caught():
-    """Proof that the fixture actually judges — a guard on the guard.
+async def test_cache_hit_when_job_already_done(table, monkeypatch):
+    """The whole point of cache_hit: a row already marked `done` (GPU already
+    rendered this exact request, same prompt/duration/steps/model) skips a
+    redundant render entirely — the node must not enqueue anything new."""
+    monkeypatch.setattr("langgraph_agents.nodes.kimodo._table", lambda: table)
+    write_heartbeat(table)
+    job_id = compute_job_id(HASH_SECRET, "nâng hai tay", DEFAULT_DURATION, DEFAULT_STEPS, MODEL)
+    table.put_item(Item={
+        "job_id": job_id, "status": "done", "s3_key": "motions/abc.npz", "created_at": 0,
+        # read_status enforces expires_at now, so a hand-written row needs one.
+        # enqueue() always writes it; a fixture without it is not a real row.
+        "expires_at": int(_time.time()) + 3600,
+    })
+    out = _content(await kimodo_node({"resolved_query": "nâng hai tay"}, CONFIG))
+    assert out["state"] == "cache_hit"
+    assert out["job_id"] == job_id
+    assert table.scan()["Count"] == 2          # heartbeat + the pre-seeded row, KHÔNG job mới
 
-    If StructuredTool silently accepted extra keys, every assertion above would
-    pass no matter what the node sent, and this file would be decoration. This
-    test fails loudly if that ever becomes true.
+
+@pytest.mark.unit
+async def test_expired_done_row_re_renders_instead_of_claiming_a_cache_hit(
+    table, monkeypatch,
+):
+    """The other half of the two-clocks problem.
+
+    S3 deletes motions/* reliably at 24h; DynamoDB TTL is best-effort within
+    48h. If an expired `done` row still counted as a cache hit, this node would
+    enqueue nothing and answer with a job id whose file no longer exists — and
+    it would do that for every future request with the same prompt, because the
+    row that causes it is the row that never gets replaced. That prompt becomes
+    permanently un-renderable, with no error anywhere.
+
+    Note the row is REPLACED, not added to: same HMAC job_id, so the count stays
+    at heartbeat + one job.
+
+    RULING R29 — this test used to pass while none of that worked. Its three
+    assertions were all true for the wrong reasons: `!= "cache_hit"` held
+    because the node answered `queued`; `job_id` held because it is computed
+    from the HMAC whether or not any row is written; and `Count == 2` held
+    precisely BECAUSE the write was rejected. The one thing it never checked is
+    the only thing that matters — what the row in the table actually says. It
+    still said `done`, and claim_next_job() only ever queries `queued`.
+
+    So: read the row back. A test of an enqueue that asserts nothing about the
+    row is a test of the return value's spelling.
     """
-    calls: list = []
-    tool = _make_motion_tool(calls)
+    monkeypatch.setattr("langgraph_agents.nodes.kimodo._table", lambda: table)
+    write_heartbeat(table)
+    job_id = compute_job_id(HASH_SECRET, "nâng hai tay", DEFAULT_DURATION, DEFAULT_STEPS, MODEL)
+    table.put_item(Item={
+        "job_id": job_id, "status": "done", "s3_key": "motions/gone.npz",
+        "created_at": 0, "expires_at": int(_time.time()) - 1,
+    })
+    out = _content(await kimodo_node({"resolved_query": "nâng hai tay"}, CONFIG))
+    assert out["state"] == "queued"
+    assert out["job_id"] == job_id
 
-    with pytest.raises(Exception):
-        await tool.ainvoke({"query": "động tác squat"})
+    row = table.get_item(Key={"job_id": job_id})["Item"]
+    assert row["status"] == "queued", "the row a worker must be able to claim"
+    assert "s3_key" not in row, "the stale key would outlive the file it names"
+    assert int(row["expires_at"]) > int(_time.time())
+    assert table.scan()["Count"] == 2
 
-    assert calls == [], "The tool ran despite a payload missing its required field"
+
+@pytest.mark.unit
+async def test_enqueued_row_records_who_asked(table, monkeypatch):
+    """job_id is content-only on purpose: two users asking for the same exercise
+    must share one render, so the key cannot carry a user. Provenance therefore
+    has to live in the row's attributes or it is not recorded anywhere.
+
+    session_id alone does not answer "who": a session is one conversation, and
+    the same person has many. The design table in the plan lists user_id for
+    exactly this and the code was only writing session_id.
+    """
+    monkeypatch.setattr("langgraph_agents.nodes.kimodo._table", lambda: table)
+    write_heartbeat(table)
+    out = _content(await kimodo_node({"resolved_query": "nâng hai tay"}, CONFIG))
+    row = table.get_item(Key={"job_id": out["job_id"]})["Item"]
+    assert row["user_id"] == "u1"
+    assert row["session_id"] == "s1"
+
+
+@pytest.mark.unit
+async def test_busy_when_queue_full(table, monkeypatch):
+    monkeypatch.setattr("langgraph_agents.nodes.kimodo._table", lambda: table)
+    write_heartbeat(table)
+    for i in range(MAX_QUEUE_DEPTH):
+        enqueue(table, f"filler{i}", prompt=f"p{i}")
+    out = _content(await kimodo_node({"resolved_query": "nâng hai tay"}, CONFIG))
+    assert out["state"] == "busy"

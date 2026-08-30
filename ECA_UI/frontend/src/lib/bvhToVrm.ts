@@ -9,7 +9,9 @@
 
 import * as THREE from 'three'
 import { BVHLoader } from 'three/examples/jsm/loaders/BVHLoader.js'
+import { VRMHumanBoneName } from '@pixiv/three-vrm'
 import type { VRM } from '@pixiv/three-vrm'
+import type { RestPoseMap } from './restPose'
 
 export interface RetargetOptions {
   mirrorZ: boolean
@@ -183,7 +185,7 @@ export function retargetBVHToVRM(
     if (!vrmBoneName) continue
 
     // Get the VRM bone node
-    const vrmBoneNode = vrm.humanoid?.getNormalizedBoneNode(vrmBoneName as any)
+    const vrmBoneNode = vrm.humanoid?.getNormalizedBoneNode(vrmBoneName as VRMHumanBoneName)
     if (!vrmBoneNode) continue
 
     if (vrmBoneNode.name !== vrmBoneName) {
@@ -206,7 +208,7 @@ export function retargetBVHToVRM(
       
       const sourceRestInv = sourceRestConverted.clone().invert()
       
-      const vrmRestPose = (vrm.scene.userData.restPoses as Map<string, any>)?.get(vrmBoneName)
+      const vrmRestPose = (vrm.scene.userData.restPoses as RestPoseMap | undefined)?.get(vrmBoneName)
       const targetRest = vrmRestPose ? vrmRestPose.quaternion.clone() : vrmBoneNode.quaternion.clone()
 
       const retargetedValues = new Float32Array(track.values.length)
@@ -253,7 +255,7 @@ export function retargetBVHToVRM(
       const scaledValues = new Float32Array(track.values.length)
       const scale = 0.01 // BVH centimeters → meters
       
-      const vrmRestPose = (vrm.scene.userData.restPoses as Map<string, any>)?.get(vrmBoneName)
+      const vrmRestPose = (vrm.scene.userData.restPoses as RestPoseMap | undefined)?.get(vrmBoneName)
       const targetRestPos = vrmRestPose ? vrmRestPose.position.clone() : vrmBoneNode.position.clone()
       
       const bvhStartX = track.values[0]

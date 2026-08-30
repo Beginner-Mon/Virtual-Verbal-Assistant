@@ -22,7 +22,14 @@ RUN SKIP_MOTION_CORRECTION_IN_SETUP=1 \
  && rm -rf /build
 
 WORKDIR /workspace
+# worker.py is what this image is actually DEPLOYED to run: KimodoEcsStack sets
+# command=["python", "worker.py"]. It is listed first so the thing the container
+# entrypoint needs is the hardest line to delete by accident.
+COPY worker.py /workspace/worker.py
 COPY mcp_server.py /workspace/mcp_server.py
+COPY motion_engine.py /workspace/motion_engine.py
+COPY npz_to_bvh.py /workspace/npz_to_bvh.py
+COPY vva_motion /workspace/vva_motion
 
 # Prove the package imports and that its assets came along in the wheel. Cheap here,
 # and it fails the build instead of failing a g5.xlarge at 3am.
@@ -31,6 +38,23 @@ import kimodo; from kimodo.assets import SKELETONS_ROOT; \
 assert (SKELETONS_ROOT / 'smplx22').is_dir(), SKELETONS_ROOT; \
 print('kimodo OK:', SKELETONS_ROOT)"
 
-EXPOSE 8000
+# Same reasoning, one layer up: the COPY above was missing once, and the failure
+# mode was a g5.xlarge that started, pulled the image and exited immediately with
+# "can't open file '/workspace/worker.py'" — billed, and silent, because there is
+# deliberately no ECS Service to report a crash loop (see kimodo_ecs_stack.py).
+# A missing entrypoint file must fail the BUILD, not the instance.
+RUN test -f /workspace/worker.py \
+ && python -c "import ast,pathlib; ast.parse(pathlib.Path('/workspace/worker.py').read_text())" \
+ && echo "worker.py OK"
+
+# No EXPOSE. This image is run by KimodoEcsStack as `python worker.py`, which
+# polls DynamoDB and serves no HTTP — kimodo_ecs_stack.py sets no port_mappings
+# for exactly that reason. The old `EXPOSE 8000` described mcp_server.py, the
+# HTTP/MCP link this queue replaced.
 ENTRYPOINT ["inference-entrypoint"]
-CMD ["python", "mcp_server.py"]
+# mcp_server.py is still COPY'd above so the image can be run interactively as
+# the old MCP server for debugging (`docker run ... python mcp_server.py`), but
+# it is NOT the deployed entrypoint and must not be the default: a container
+# that starts the server instead of the worker looks healthy and drains the
+# queue never.
+CMD ["python", "worker.py"]

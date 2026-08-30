@@ -9,7 +9,11 @@ import {
   type ReactNode,
 } from 'react'
 import type { Message } from '../components/ChatMessage'
-import { getSession, listSessions, deleteSession, streamChat, type SessionMessage } from '../lib/api'
+import {
+  getSession, listSessions, deleteSession, streamChat, fetchMotionStatus,
+  type SessionMessage,
+} from '../lib/api'
+import { pollMotionJob } from '../lib/motionJob'
 import { useMotion } from './MotionContext'
 import { uiStringsFor, FALLBACK_UI_STRINGS, type UiStrings } from '../lib/characterCopy'
 import { useAudioRecorder } from '../hooks/useAudioRecorder'
@@ -107,7 +111,8 @@ export interface ChatContextType {
 const ChatContext = createContext<ChatContextType | null>(null)
 
 export function ChatProvider({ children }: { children: ReactNode }) {
-  const { transitionTo, selectedVrmId, vrmOptions } = useMotion()
+  const { transitionTo, selectedVrmId, vrmOptions, playMotionFile, registerSessionMotion } =
+    useMotion()
 
   /** Copy for whoever is on screen. Falls back to neutral strings until the
    *  catalog resolves, so nothing renders "undefined" on a cold load. */
@@ -231,8 +236,52 @@ export function ChatProvider({ children }: { children: ReactNode }) {
             timestamp: new Date(m.timestamp),
             // Audio is not persisted — the WAV lives on the TTS box under a
             // random name. The per-message speaker button can re-synthesise it.
+            //
+            // Motion IS: the job id rides on the message row, so a refresh
+            // does not lose a render the GPU already paid for. Carried here
+            // and acted on by the effect below.
+            motionJobId: m.motion_job_id,
+            motionExpiresAt: m.motion_expires_at,
+            // The user's own words for this turn — the picker lists motions by
+            // what was asked for, and on a restore the question is the message
+            // immediately before the answer.
+            motionLabel: m.role === 'assistant' ? history[i - 1]?.content : undefined,
           })),
         ])
+
+        // Motions the GPU already rendered for this conversation. Two outcomes
+        // and no third: still fetchable, or gone.
+        //
+        // Nothing is played. A restore is not the moment to start animating —
+        // the avatar may not even have loaded yet, and replaying an answer the
+        // user read yesterday is not what they came back for. They go into the
+        // replay picker, and the user chooses.
+        history.forEach((m, i) => {
+          if (m.role !== 'assistant' || !m.motion_job_id) return
+          // Deadline, not a stored verdict: this payload may have been sitting
+          // in the tab for hours. Compare against the clock NOW. No expiry at
+          // all means assume gone — see session_store.motion_expires_at.
+          const alive = m.motion_expires_at
+            ? new Date(m.motion_expires_at) > new Date()
+            : false
+          if (alive) {
+            registerSessionMotion({
+              jobId: m.motion_job_id,
+              // Deliberately no url. A signed URL lives five minutes, and this
+              // page has no cached clip — fetching one now would hand the
+              // picker a dead link. It resolves a fresh one when picked.
+              label: history[i - 1]?.content ?? '',
+            })
+          } else {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === `restored-${i}`
+                  ? { ...msg, motionNotice: uiRef.current.motion_gone }
+                  : msg
+              )
+            )
+          }
+        })
       } catch (e) {
         const status = (e as { response?: { status?: number } }).response?.status
         if (status !== 404) console.warn('[session] restore failed:', e)
@@ -459,6 +508,57 @@ export function ChatProvider({ children }: { children: ReactNode }) {
                 msg.id === assistantMsgId ? { ...msg, speechPending: false } : msg
               )
             )
+          } else if (type === 'motion') {
+            // The agent enqueues a render and returns straight away; the GPU
+            // takes a few seconds. This event carries the job id (or the reason
+            // there is none), so the browser can poll for it and play the clip
+            // on the avatar when it lands.
+            //
+            // Fire-and-forget on purpose: this callback is synchronous and the
+            // rest of the reply must keep streaming while the render runs.
+            // Nothing here touches `isGenerating` or `stageLabel` — a motion is
+            // an extra on top of an answer, and must never hold the composing
+            // UI open or block `done`.
+            const m = data as {
+              state: string
+              job_id?: string
+              retry_after_seconds?: number
+            }
+            const notice = (text: string | undefined) =>
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.id === assistantMsgId ? { ...msg, motionNotice: text } : msg
+                )
+              )
+
+            if (m.state === 'unavailable') {
+              notice(copy.motion_unavailable)
+            } else if (m.state === 'busy') {
+              notice(copy.motion_busy)
+            } else if (m.job_id) {
+              const jobId = m.job_id
+              notice(copy.motion_rendering)
+              void (async () => {
+                try {
+                  const url = await pollMotionJob(
+                    jobId,
+                    (id) => fetchMotionStatus(id, controller.signal),
+                    { signal: controller.signal },
+                  )
+                  // job_id is the cache key: the URL is a CloudFront signature
+                  // that differs on every fetch, so keying on it would re-fetch
+                  // and re-retarget the same clip each replay.
+                  // `text` is what the user typed, so the motion picker lists
+                  // "động tác squat" rather than a hash nobody can read.
+                  await playMotionFile(url, jobId, text)
+                  notice(undefined)
+                } catch (e) {
+                  if ((e as Error).name === 'AbortError') return
+                  console.warn('[motion]', e)
+                  notice(copy.motion_failed)
+                }
+              })()
+            }
           } else if (type === 'done') {
             if (!isCurrent()) return
             setStageLabel(null)
@@ -488,7 +588,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         endThinking()
       }
     }
-  }, [webSearch, voiceReply, selectedVrmId, transitionTo, endThinking])
+  }, [webSearch, voiceReply, selectedVrmId, transitionTo, endThinking, playMotionFile])
 
   useEffect(() => {
     return () => {

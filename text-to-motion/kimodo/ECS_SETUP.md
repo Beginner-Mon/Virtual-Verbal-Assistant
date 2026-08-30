@@ -46,31 +46,37 @@ aws ecr create-repository --repository-name kimodo
 
 ## 2. Build, Tag, and Push Docker Image
 
-Both services use the same Docker image with different `command` overrides. 
-Build on your local machine or a build instance first, then push.
+> **Outdated instructions removed.** This section used to say `docker compose build` and
+> push the result as `kimodo:latest`. That builds the **dev** image (`Dockerfile`, NGC
+> PyTorch base, gradio + kimodo-viser), which is not what production runs.
+
+Production uses **two** images, built by CI, never by hand:
+
+| Image | Dockerfile | Contains | Rebuilt when |
+|---|---|---|---|
+| `kimodo-base:vN` | `Dockerfile.base` | Third-party deps from the committed lockfile + compiled `motion_correction` | deps / `MotionCorrection/**` / `scripts/**` / `Dockerfile.base` change |
+| `kimodo:latest` | `Dockerfile.prod` | `FROM kimodo-base:vN` + the kimodo wheel + `mcp_server.py` | any push to `text-to-motion/kimodo/**` |
+
+Both are pushed by GitHub Actions on a push to the `kimodo-release` branch —
+`.github/workflows/build-kimodo-base.yml` and `.github/workflows/deploy-production.yml`.
+The prod build takes ~30 seconds because it only builds a pure-Python wheel; the base
+build takes ~15 minutes and is the one that downloads torch.
+
+**Ordering rule:** `Dockerfile.prod` starts `FROM kimodo-base:${BASE_TAG}`, so bumping
+`BASE_TAG` requires the new base tag to exist in ECR *first*. Dispatch
+`build-kimodo-base.yml` (with the new `base_tag`) and let it finish before merging the
+change that flips `BASE_TAG` in `deploy-production.yml` — otherwise the prod job races a
+base image that is not there yet and fails on the `FROM` line.
+
+To regenerate the production lockfile after editing `docker_requirements_prod.in`:
 
 ```bash
-# Clone repo (if not already)
-git clone https://github.com/nv-tlabs/kimodo.git
-cd kimodo
-git clone https://github.com/nv-tlabs/kimodo-viser.git
-
-# Build the image
-docker compose build
-
-# Tag for ECR
-export ECR_URI=123456789.dkr.ecr.us-east-1.amazonaws.com/kimodo
-docker tag kimodo:1.0 $ECR_URI:latest
-
-# Authenticate Docker to ECR
-aws ecr get-login-password --region us-east-1 | \
-  docker login --username AWS --password-stdin $ECR_URI
-
-# Push
-docker push $ECR_URI:latest
+cd text-to-motion/kimodo
+python kimodo/scripts/lock_requirements.py --prod   # writes docker_requirements_prod.txt
 ```
 
-> **Note**: The Dockerfile uses `COPY kimodo-viser /workspace/kimodo-viser` — the directory must be inside the repo root before building.
+Commit that lockfile. `Dockerfile.base` installs it with `--no-deps`, so it is the sole
+authority on what lands in the image — nothing is resolved at build time.
 
 ---
 
