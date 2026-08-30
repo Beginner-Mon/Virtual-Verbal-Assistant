@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+﻿import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { IdCard, User, KeyRound, Link2, LogOut } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
@@ -30,7 +30,7 @@ export default function ProfileContent({ onClose }: Props) {
    *
    * `custom:googleSub` alone was wrong, which is why the badge stayed on "Not
    * connected" even right after signing in with Google. That claim is injected
-   * from the UserMappings row, and the row is only written on certain paths —
+   * from the UserMappings row, and the row is only written on certain paths â€”
    * a linked sign-in resolves to the existing user without a PostConfirmation,
    * and an anchor created by AdminCreateUser is an admin action, not a sign-up.
    *
@@ -66,7 +66,7 @@ export default function ProfileContent({ onClose }: Props) {
     navigate('/set-password')
   }
 
-  // ── Linking Google ─────────────────────────────────────────────────────
+  // â”€â”€ Linking Google â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   //
   // Deliberately NOT signInWithRedirect. Through the hosted UI a link is a
   // sign-up, so choosing the wrong account in Google's chooser made Cognito
@@ -107,6 +107,7 @@ export default function ProfileContent({ onClose }: Props) {
   }
 
   const setRef = (id: string) => (el: HTMLDivElement | null) => {
+    // eslint-disable-next-line react-hooks/refs -- section anchor ref, not render state
     sectionRefs.current[id] = el
   }
 
@@ -226,7 +227,7 @@ export default function ProfileContent({ onClose }: Props) {
                   Linked
                 </span>
               ) : linkState === 'working' ? (
-                <span className="px-3 py-1.5 text-xs text-muted-foreground">Linking…</span>
+                <span className="px-3 py-1.5 text-xs text-muted-foreground">Linkingâ€¦</span>
               ) : (
                 // Google renders its own button in here. Its markup is fixed by
                 // Google and cannot be restyled, so it sits in a plain box

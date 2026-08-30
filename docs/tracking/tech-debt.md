@@ -344,6 +344,11 @@ Mức: 🔴 critical (phải làm trước Phase 7 deploy) · 🟠 quan trọng 
       `tsc`/`node` **không khởi động nổi** (`paging file is too small`, `VirtualAlloc failed`), rất
       dễ tưởng nhầm là lỗi code. Cần tăng pagefile hoặc đừng chạy TTS song song lúc build FE.
 
+- [ ] 🟡 **30/08 — random `bored` không chạy** — `useFsmTriggers` `autoAfter` cho `idle` không trigger. Nghi do `hasPose` race hoặc `STATE_OPTIONS` thiếu `bored` (bị filter). Cần instrument `STATES[idle].autoAfter` + `hasPose` + `currentState` khi idle >30s. **KHÔNG đụng** các file đã sửa cho lint `refs`/`immutability` nếu chưa xác định liên quan — tách branch riêng.
+- [ ] 🟡 **30/08 — thinking → idle bị trộn motion (chưa xong outro đã nhảy idle)** — `MotionContext` `transitionTo('thinking_outro')` chưa đợi `crossfade` xong đã `transitionTo('idle')`, model trộn 2 clip. Cần check `AnimationController` `onClipApplied`/`onBeforeAutoTransition` + `RootMotionAccumulator` commitOneShot timing. Để lại, không gộp với lint `refs`/`immutability` đợt này.
+- [ ] 🟡 **30/08 — zoom + gõ chat lag mỗi ký tự (khó reproduce, lưu trước)** — khi zoom (camera `hips`/`head` + `followTarget`), mỗi `onChange` trong `ChatPanel` gõ 1 chữ lag 1 lần. Nghi `ChatContext` `isGenerating`/`inputRef` re-render cả `CharacterViewer` `<Canvas>`. Đã lưu vào tech-debt, chưa sửa. Cần profile `React DevTools` + `useFrame` vs `setInput` batch. **ĐÃ LƯU, CHƯA SỬA.**
+- [ ] 🟡 **30/08 — login thiếu regex email (gõ gì cũng cho qua)** — `LoginPage.tsx` `handleLookup` chỉ `trim()` rồi `fetch`, không `zod`/`regex` `^[^\s@]+@[^\s@]+\.[^\s@]+$`. Thiếu `form` validation, `Enter` bypass. Cần thêm `regex` + `setError` + disable `Continue` khi invalid. **CHƯA SỬA — giữ nguyên `any→unknown` đã làm, không gộp regex vào đợt lint.**
+
 ## ⚪ Optional / Phase sau
 
 - [ ] **User upload tài liệu riêng** — ĐÃ QUYẾT (29/05): **Option 1 — KB chỉ của hệ thống.**

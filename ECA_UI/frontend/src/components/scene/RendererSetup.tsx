@@ -46,6 +46,7 @@ export default function RendererSetup({ vrm }: RendererSetupProps) {
 
   // â”€â”€ Renderer config (once) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/immutability -- gl is the Three.js renderer, mutable by design
     gl.toneMapping = ENV_CONFIG.renderer.toneMapping
     gl.toneMappingExposure = ENV_CONFIG.renderer.toneMappingExposure
     gl.outputColorSpace = ENV_CONFIG.renderer.outputColorSpace

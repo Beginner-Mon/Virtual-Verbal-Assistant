@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
+﻿import { useState, useEffect, useCallback, lazy, Suspense } from 'react'
 import { X, ChevronLeft } from 'lucide-react'
 
 const ProfileContent = lazy(() => import('./ProfileContent'))
@@ -21,6 +21,7 @@ export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileS
   const [selectedProvider, setSelectedProvider] = useState<{ id: string; name: string } | undefined>()
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset view when type changes
     setSettingsView(ROOT_VIEW)
     setSelectedProvider(undefined)
   }, [type])

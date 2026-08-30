@@ -264,6 +264,7 @@ export default function FloatingNavBar() {
 
   // Initialize vertical center on mount
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- init position once on mount
     setPosition({ x: 16, y: Math.round((window.innerHeight - barSize.height) / 2) })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -525,6 +526,7 @@ export default function FloatingNavBar() {
       {/* Non-settings floating panels (use floating UI) */}
       {activePanel && activePanel !== 'settings' && (
         <div
+          // eslint-disable-next-line react-hooks/refs -- floating-ui ref, stable
           ref={refs.setFloating}
           style={{
             ...floatingStyles,
