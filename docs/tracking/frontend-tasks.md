@@ -35,11 +35,11 @@ Difficulty: ★☆☆ Low · ★★☆ Medium · ★★★ High
 **Hiện trạng:** Đã fix `0d89006`: bỏ `offset X/Y/Z` → thêm `Lock X/Y/Z`, bỏ `Play/Pause/speed/Clip Info` cả dev+user, `Character state`/`Motion File`/`Expressions` chỉ `DEV`, xóa `Speak/Test WAV` + `test.wav`.
 **Priority:** 🟡 Medium · **Difficulty:** ★☆☆ Low · **Status:** ✅ Xong
 
-### 5) Click nhân vật trả về bộ phận cụ thể — đang lỗi/revert
-**Hiện trạng:** Click effect chạy được, nhưng `raycast` trả về `body part` (bone/mesh name) đang lỗi, đã revert.
-**Priority:** 🟡 Medium (feature) · **Difficulty:** ★★★ High
+### 5) Click nhân vật trả về bộ phận cụ thể — ✅ XONG
+**Hiện trạng:** Đã fix: `raycast` trả về `boneName` đúng (normalize mesh name ↔ `VRMHumanBoneName`), test trên anne/bronya/miku/miki (khác rig). Click effect tách riêng, đã chạy trước đó.
+**Priority:** 🟡 Medium (feature) · **Difficulty:** ★★★ High · **Status:** ✅ Xong
 **Effort:** ~2-3 ngày · **Phụ thuộc:** `CharacterViewer.tsx` + `three` raycaster + VRM `humanoid` bones + `vrmManifest`
-**Acceptance:** Click lên tay/chân/đầu → trả về `boneName` đúng; cần normalize mesh name ↔ `VRMHumanBoneName`, test trên anne/bronya/miku/miki (khác rig). Tách khỏi click effect (đã chạy).
+**Acceptance:** Click lên tay/chân/đầu → trả về `boneName` đúng.
 
 ### 6) Ghi âm trong chat — chưa thực thi
 **Hiện trạng:** UI chat có chỗ cho ghi âm nhưng chưa có `MediaRecorder` flow.
@@ -50,14 +50,13 @@ Difficulty: ★☆☆ Low · ★★☆ Medium · ★★★ High
 
 ---
 
-## Thứ tự làm đề xuất (còn lại — #2 và #4 đã xong)
+## Thứ tự làm đề xuất (còn lại — #2, #4, #5 đã xong)
 
 1. **#3 Session greeting persona** (Critical, Medium) — ⏳ CHƯA LÀM, sai dữ liệu
 2. **#1 Greeting 1 lần** (High, Low) — ⏸️ Chờ agent khác
-3. **#5 Click body part** (Medium, High) — ⏳ CHƯA LÀM
-4. **#6 Ghi âm** (Low-Med, Medium) — ⏳ CHƯA LÀM
+3. **#6 Ghi âm** (Low-Med, Medium) — ⏳ CHƯA LÀM
 
-> #2 và #4 đã ✅ xong, #1 ⏸️ revert cho agent khác.
+> #2, #4, #5 đã ✅ xong, #1 ⏸️ revert cho agent khác.
 
 ---
 

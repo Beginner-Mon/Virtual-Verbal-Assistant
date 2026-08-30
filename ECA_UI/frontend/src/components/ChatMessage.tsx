@@ -45,6 +45,12 @@ export default function ChatMessage({ message, isStreaming }: ChatMessageProps) 
   const isUser = message.role === 'user'
 
   if (!isUser) {
+    /* Assistant message được tạo rỗng ngay lúc user gửi (ChatContext.tsx:364)
+     * để id của nó bắt token từ stream. Chưa có text thì không render — cái
+     * shell rỗng vẫn ăn py-3 + space-y-2 của container, đẩy loading indicator
+     * xuống hơn 30px so với user message. */
+    if (!message.content) return null
+
     const cleaned = message.content.replace(/<\/?evidence_citation>/g, '')
     return (
       <div className="px-3 md:px-5 py-1 md:py-3 animate-message-in w-full max-w-full">
