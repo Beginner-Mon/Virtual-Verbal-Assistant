@@ -81,6 +81,7 @@ export function useAutoAfterTrigger(
   state: CharState,
 ): void {
   const controllerRef = useRef(controller)
+  // eslint-disable-next-line react-hooks/refs -- latest controller ref
   controllerRef.current = controller
 
   useEffect(() => {

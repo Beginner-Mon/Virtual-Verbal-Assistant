@@ -1,10 +1,10 @@
-﻿/**
- * RendererSetup â€” Phase 1: Color Pipeline & Material Audit
+/**
+ * RendererSetup — Phase 1: Color Pipeline & Material Audit
  *
  * Configures the WebGL renderer for proper color management and performs
  * a one-time material/texture audit on every VRM load to correct color spaces.
  *
- * This component renders nothing â€” it only applies side effects via hooks.
+ * This component renders nothing — it only applies side effects via hooks.
  */
 
 import { useThree } from '@react-three/fiber'
@@ -44,7 +44,7 @@ export default function RendererSetup({ vrm }: RendererSetupProps) {
   const { gl } = useThree()
   const { settings: gfx } = useGraphics()
 
-  // â”€â”€ Renderer config (once) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Renderer config (once) ────────────────────────────────────────────
   useEffect(() => {
     // eslint-disable-next-line react-hooks/immutability -- gl is the Three.js renderer, mutable by design
     gl.toneMapping = ENV_CONFIG.renderer.toneMapping
@@ -52,7 +52,7 @@ export default function RendererSetup({ vrm }: RendererSetupProps) {
     gl.outputColorSpace = ENV_CONFIG.renderer.outputColorSpace
   }, [gl])
 
-  // â”€â”€ Material & Texture Audit (per VRM load) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Material & Texture Audit (per VRM load) ───────────────────────────
   useEffect(() => {
     if (!vrm?.scene) return
 

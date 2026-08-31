@@ -4,6 +4,7 @@ import { AUTH_ERROR_KEY, startGoogleSignIn } from '../lib/googleSignIn'
 import { errorMessage } from '../lib/errors'
 import { customOutputs } from '../config/amplify'
 import { useRedirectIfAuthenticated } from '../hooks/useRedirectIfAuthenticated'
+import { emailError as getEmailError } from '../lib/validators'
 import { Loader2 } from 'lucide-react'
 import AuthLayout from '../layouts/AuthLayout'
 import EcaLogo from '../components/EcaLogo'
@@ -28,6 +29,7 @@ export default function LoginPage() {
     { email: string; hasEmail: boolean; hasGoogle: boolean } | null
   >(null)
   const [error, setError] = useState<string | null>(null)
+  const [emailError, setEmailError] = useState<string | null>(null)
   const [mismatchError, setMismatchError] = useState(false)
   /** True when we showed both options because the lookup endpoint is absent,
    *  rather than because the account genuinely has both methods. */
@@ -39,6 +41,7 @@ export default function LoginPage() {
     // registered URL exactly), so the reason is parked in sessionStorage.
     const stored = sessionStorage.getItem(AUTH_ERROR_KEY)
     if (stored === 'email_mismatch' || searchParams.get('error') === 'email_mismatch') {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- init from sessionStorage/searchParams
       setMismatchError(true)
       sessionStorage.removeItem(AUTH_ERROR_KEY)
       if (searchParams.get('error')) setSearchParams({}, { replace: true })
@@ -49,7 +52,14 @@ export default function LoginPage() {
     // Pinned once, here. Every use below refers to the address this lookup was
     // for, even if the field has moved on by the time the response lands.
     const lookedUp = email.trim()
-    if (!lookedUp) return
+    const validationError = getEmailError(lookedUp)
+    if (validationError) {
+      setEmailError(validationError)
+      setError(null)
+      setResult(null)
+      return
+    }
+    setEmailError(null)
     setLoading(true)
     setError(null)
     setResult(null)
@@ -147,12 +157,35 @@ export default function LoginPage() {
             <input
               type="email"
               value={email}
-              onChange={e => setEmail(e.target.value)}
+              onChange={e => {
+                setEmail(e.target.value)
+                // live-clear: if user fixes the error, hide it immediately
+                if (emailError) {
+                  const nextErr = getEmailError(e.target.value)
+                  // keep empty field silent until submit/blur; only clear when now valid or empty
+                  if (!nextErr || !e.target.value.trim()) setEmailError(null)
+                  else if (e.target.value.trim() && getEmailError(e.target.value) !== emailError) {
+                    // update message if it changed (e.g. "enter email" -> "invalid")
+                    setEmailError(nextErr)
+                  }
+                }
+              }}
+              onBlur={() => {
+                if (email.trim()) {
+                  const err = getEmailError(email)
+                  if (err) setEmailError(err)
+                }
+              }}
               onKeyDown={e => e.key === 'Enter' && handleLookup()}
               placeholder="you@ordinary.studio"
               autoFocus
-              className="w-full text-sm text-foreground bg-secondary/40 rounded-lg px-3 py-2.5 border border-border/30 outline-none focus:border-primary/50 transition-colors"
+              aria-invalid={!!emailError}
+              aria-describedby={emailError ? 'email-error' : undefined}
+              className={`w-full text-sm text-foreground bg-secondary/40 rounded-lg px-3 py-2.5 border outline-none transition-colors ${emailError ? 'border-destructive focus:border-destructive' : 'border-border/30 focus:border-primary/50'}`}
             />
+            {emailError && (
+              <p id="email-error" className="text-xs text-destructive mt-1.5">{emailError}</p>
+            )}
           </div>
 
           <button

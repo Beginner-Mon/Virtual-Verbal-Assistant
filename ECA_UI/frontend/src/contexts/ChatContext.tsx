@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/refs, react-hooks/set-state-in-effect */
 import {
   useRef,
   useState,
@@ -592,3 +593,4 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>
 }
+
