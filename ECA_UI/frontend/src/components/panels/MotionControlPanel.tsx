@@ -52,15 +52,15 @@ export default function MotionControlPanel() {
     }
     return all.map((e) => ({
       label: e.name,
-      // `presetName` is null for custom blendShapes � fall through to `emit`.
+      // `presetName` is null for custom blendShapes — fall through to `emit`.
       emotion: PRESET_TO_CANONICAL[e.presetName ?? ''] ?? PRESET_TO_CANONICAL[e.emit] ?? 'neutral',
     }))
   }, [manifest])
 
   const [emotionIntensity, setEmotionIntensity] = useState(0.8)
   const [emotionDurationMs, setEmotionDurationMs] = useState(500)
-  const [lastEmotion, setLastEmotion] = useState<string>('�')
-  const [avatarMode, setAvatarMode] = useState<string>('�')
+  const [lastEmotion, setLastEmotion] = useState<string>('—')
+  const [avatarMode, setAvatarMode] = useState<string>('—')
 
   // Filter motion files so Character state actions don't leak into the debug picker.
   // The picker used to list bundled sample .bvh files under asset/motions/
@@ -70,14 +70,14 @@ export default function MotionControlPanel() {
   //
   // motionFileOptions still exists for AnimationRegistry, which resolves the
   // FSM's static clips (Standard Idle, action_greeting, random_Bored,
-  // Thinking) out of the same index � those stay bundled and are not pickable.
+  // Thinking) out of the same index — those stay bundled and are not pickable.
 
   useEffect(() => {
     ;(window as unknown as { __avatar?: () => unknown }).__avatar = () => avatarRef.current
   }, [avatarRef])
 
   useEffect(() => {
-    const id = setInterval(() => setAvatarMode(avatarRef.current?.mode ?? '�'), 400)
+    const id = setInterval(() => setAvatarMode(avatarRef.current?.mode ?? '—'), 400)
     return () => clearInterval(id)
   }, [avatarRef])
 
@@ -175,7 +175,7 @@ export default function MotionControlPanel() {
             </select>
           </div>
 
-          {/* (1) FSM state selector � dev-only. Contents derived from STATES debugLabel. */}
+          {/* (1) FSM state selector — dev-only. Contents derived from STATES debugLabel. */}
           {import.meta.env.DEV && (
             <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-secondary/20 border border-border/10">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
@@ -187,7 +187,7 @@ export default function MotionControlPanel() {
                 onChange={(e) => void transitionTo(e.target.value as CharState)}
                 className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-0.5"
               >
-                {/* Sequence/dynamic states (thinking_loop, exercise�) are not
+                {/* Sequence/dynamic states (thinking_loop, exercise…) are not
                     manually selectable, so show the live state as a read-only row. */}
                 {!stateOptions.some((o) => o.id === currentState) && (
                   <option value="" className="bg-card text-muted-foreground">
@@ -212,12 +212,12 @@ export default function MotionControlPanel() {
           <div className="flex flex-col gap-1.5 p-3 rounded-xl bg-secondary/20 border border-border/10">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
                 <Activity className="w-3 h-3" />
-                Xem lại động t�c
+                Xem lại động tác
               </span>
               <select
                 // Uncontrolled with a reset: picking the SAME motion twice must
                 // fire again, and a controlled value would make the second pick
-                // a no-op � replaying is the whole point of this list.
+                // a no-op — replaying is the whole point of this list.
                 value=""
                 disabled={sessionMotions.length === 0}
                 onChange={(e) => {
@@ -225,7 +225,7 @@ export default function MotionControlPanel() {
                   if (!picked) return
                   void (async () => {
                     // A motion played earlier this session already has a URL,
-                    // and the clip is cached under its job_id � that replay
+                    // and the clip is cached under its job_id — that replay
                     // touches nothing and works even after the URL's
                     // five-minute signature has expired.
                     //
@@ -248,8 +248,8 @@ export default function MotionControlPanel() {
               >
                 <option value="" className="bg-card text-muted-foreground">
                   {sessionMotions.length === 0
-                    ? 'Chưa c� động t�c n�o � h�y hỏi để xem một động t�c'
-                    : 'Chọn để xem lại�'}
+                    ? 'Chưa có động tác nào — hãy hỏi để xem một động tác'
+                    : 'Chọn để xem lại —'}
                 </option>
                 {sessionMotions.map((m) => (
                   <option key={m.jobId} value={m.jobId} className="bg-card text-foreground">
