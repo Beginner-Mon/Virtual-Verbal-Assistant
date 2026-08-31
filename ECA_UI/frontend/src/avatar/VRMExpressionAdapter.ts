@@ -11,11 +11,10 @@ import type { AvatarProfile } from './AvatarProfile'
  * become safe no-ops — this is what lets a stripped model like bronya_long.vrm
  * (0 blendshape groups) run without crashing.
  *
- * Bind repair: some VRM 0.x files (e.g. seele.vrm) declare expression groups
- * with empty `binds` — the expression registers but drives nothing. The profile's
- * `morphRepairMap` (channel -> morph target name) patches morph-target binds in
- * at attach time BEFORE capability detection so repaired channels are treated as
- * available.
+ * Bind repair: some VRM 0.x files declare expression groups with empty `binds`
+ * — the expression registers but drives nothing. The profile's `morphRepairMap`
+ * (channel -> morph target name) patches morph-target binds in at attach time
+ * BEFORE capability detection so repaired channels are treated as available.
  */
 export class VRMExpressionAdapter {
   private readonly vrm: VRM

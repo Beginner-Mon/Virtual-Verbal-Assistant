@@ -131,24 +131,58 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const abortControllerRef = useRef<AbortController | null>(null)
   const thinkingRef = useRef(false)
 
-  /* Adopt the current character's opening line — but only while that line is
-   * still the only thing on screen.
-   *
-   * Two moments need this: the catalog resolving a beat after mount (the
-   * greeting starts as the neutral fallback), and the user trying avatars
-   * before typing anything.
-   *
-   * Once a real turn exists the greeting is left alone. Rewriting it under a
-   * live conversation would put words in a character's mouth that the user
-   * never saw them say, and would silently edit history the backend has already
-   * persisted. */
+  // Track character switches to append greeting instead of mutating history.
+  // See docs/plans/character-switch-greeting-plan.md
+  const prevVrmRef = useRef<string>('')
+  const hydratedRef = useRef<boolean>(false)
+
   useEffect(() => {
-    setMessages((prev) => {
-      if (prev.length === 0 || prev[0].id !== GREETING_ID) return prev
-      if (prev[0].content === ui.greeting) return prev
-      return [{ ...prev[0], content: ui.greeting }, ...prev.slice(1)]
-    })
-  }, [ui])
+    if (isRestoring) return
+    if (!selectedVrmId) return
+
+    // First time a real character is selected ('' -> 'anne' after catalog).
+    // Adopt greeting once without divider — user hasn't had time to see fallback.
+    if (!hydratedRef.current) {
+      hydratedRef.current = true
+      if (prevVrmRef.current === '') {
+        setMessages((prev) => {
+          if (prev.length === 1 && prev[0].id === GREETING_ID) {
+            if (prev[0].content === uiRef.current.greeting) return prev
+            return [{ ...prev[0], content: uiRef.current.greeting }]
+          }
+          return prev
+        })
+        prevVrmRef.current = selectedVrmId
+        return
+      }
+    }
+
+    if (prevVrmRef.current === selectedVrmId) return
+
+    // User-initiated switch: keep old greeting, append hr + new greeting.
+    const newGreeting = uiRef.current.greeting
+    const character = vrmOptions.find((o) => o.id === selectedVrmId)?.character
+    const toLabel = character?.display_name ?? selectedVrmId
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `divider-${crypto.randomUUID()}`,
+        role: 'system',
+        kind: 'divider',
+        content: '',
+        timestamp: new Date(),
+        dividerMeta: { to: selectedVrmId, toLabel },
+      } as Message,
+      {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: newGreeting,
+        timestamp: new Date(),
+      },
+    ])
+    prevVrmRef.current = selectedVrmId
+  }, [selectedVrmId, isRestoring, vrmOptions])
 
   const addImage = useCallback((file: File) => {
     const url = URL.createObjectURL(file)

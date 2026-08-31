@@ -2,8 +2,8 @@ import type { AvatarProfile } from '../AvatarProfile'
 
 /**
  * Default profile for VRM 0.x models whose presets migrate cleanly to the
- * three-vrm v3 standard 1.0 names. Verified against seele.vrm (17 blendshape
- * groups: neutral, a/i/u/e/o, blink, joy, angry, sorrow, fun, look*, blink_l/r).
+ * three-vrm v3 standard 1.0 names (14-17 blendshape groups: neutral,
+ * a/i/u/e/o, blink, joy, angry, sorrow, fun, look*, blink_l/r).
  *
  * `surprised` is intentionally mapped to the `surprised` preset even though a
  * plain VRM 0.x model has no such preset — VRMExpressionAdapter's capability

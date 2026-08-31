@@ -70,20 +70,20 @@ export interface AvatarProfile {
   /** Channel that carries the blink expression on this model. */
   blinkChannel: string
   /**
-   * Optional repair map for VRM 0.x files that declare expression groups with
-   * EMPTY binds (e.g. seele.vrm — the groups exist but reference no morph
-   * targets, so the expressions register but drive nothing). Maps an expression
-   * channel (runtime preset name) to one or MORE morph target names on the
-   * model's meshes; VRMExpressionAdapter patches the missing binds in at attach
-   * time. An array is used when one channel must drive several morphs together.
-   */
+    * Optional repair map for VRM 0.x files that declare expression groups with
+    * EMPTY binds (the groups exist but reference no morph targets, so the
+    * expressions register but drive nothing). Maps an expression channel
+    * (runtime preset name) to one or MORE morph target names on the model's
+    * meshes; VRMExpressionAdapter patches the missing binds in at attach time.
+    * An array is used when one channel must drive several morphs together.
+    */
   morphRepairMap?: Record<string, string | string[]>
   /**
-   * Canonical emotions whose morph targets are purely on/off — they have no
-   * intensity gradation. The intensity slider is ignored and the expression
-   * always renders at weight 1 (fully visible) whenever triggered.
-   * (e.g. seele.vrm "なごみ" relaxed, bronya.vrm sorrow morphs.)
-   */
+    * Canonical emotions whose morph targets are purely on/off — they have no
+    * intensity gradation. The intensity slider is ignored and the expression
+    * always renders at weight 1 (fully visible) whenever triggered.
+    * (e.g. bronya.vrm sorrow morphs.)
+    */
   binaryEmotions?: CanonicalEmotion[]
   /** Which emotion to trigger at the midpoint of the greeting animation. Defaults to 'happy'. */
   greetingEmotion?: CanonicalEmotion
@@ -102,16 +102,14 @@ export function isCanonicalEmotion(name: string): name is CanonicalEmotion {
 // whose migrated preset names match the standard set.
 import { defaultProfile } from './profiles/default'
 import { bronyaProfile } from './profiles/bronya'
-import { seeleProfile } from './profiles/seele'
 
 const PROFILE_REGISTRY: Record<string, AvatarProfile> = {
   default: defaultProfile,
   bronya: bronyaProfile,
-  seele: seeleProfile,
 }
 
 /**
- * Resolve a profile for a model id (e.g. "seele", "bronya", "bronya_long").
+ * Resolve a profile for a model id (e.g. "bronya", "bronya_long").
  * Falls back to `default` when no per-model override exists — most VRM 0.x
  * models fit the default because three-vrm migrates their presets to the
  * standard 1.0 names.

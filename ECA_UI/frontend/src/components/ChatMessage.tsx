@@ -8,9 +8,13 @@ import { useMotion } from '../hooks/useMotion'
 
 export interface Message {
   id: string
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'system'
   content: string
   timestamp: Date
+  /** Ephemeral divider inserted when character is switched. Rendered as <hr> + label, never persisted. */
+  kind?: 'chat' | 'divider'
+  /** For divider: slug/label of the character switched to */
+  dividerMeta?: { to: string; toLabel?: string }
   audioUrl?: string
   /** Voice mode: audio for this reply is being synthesised right now. Drives the
    *  spinner, which is the only thing that tells the user the toggle did
@@ -421,7 +425,7 @@ function UserCopyAction({ content }: { content: string }) {
   const { copied, handleCopy } = useCopy(content)
 
   return (
-    <div className="flex justify-start mt-0.5 opacity-0 group-hover:opacity-100">
+    <div className="flex justify-end mt-0.5 opacity-0 group-hover:opacity-100">
       <button
         className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary/60"
         onClick={handleCopy}

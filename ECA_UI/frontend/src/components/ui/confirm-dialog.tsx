@@ -1,4 +1,5 @@
 import { AlertTriangle } from 'lucide-react'
+import { createPortal } from 'react-dom'
 import { cn } from '@/lib/utils'
 
 interface ConfirmDialogProps {
@@ -24,13 +25,16 @@ export default function ConfirmDialog({
 }: ConfirmDialogProps) {
   if (!open) return null
 
-  return (
-    <div className="fixed inset-0 z-[10001] flex items-center justify-center">
+  // Portal ra body để thoát khỏi `floating-panel` có `transform` (floating-ui).
+  // `fixed inset-0` trong một ancestor có `transform` sẽ bị kẹt trong panel,
+  // overlay chỉ phủ panel + bị `rounded-2xl overflow-hidden border` cắt thành viền trắng.
+  const node = (
+    <div className="confirm-dialog fixed inset-0 z-[10001] flex items-center justify-center p-4">
       <div
-        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+        className="absolute inset-0 bg-black/65 backdrop-blur-[2px]"
         onClick={onCancel}
       />
-      <div className="relative w-[360px] rounded-2xl bg-card border border-border/50 shadow-[0_16px_64px_rgba(0,0,0,0.4)] animate-panel-in overflow-hidden">
+      <div className="confirm-dialog-panel relative w-full max-w-[300px] rounded-2xl bg-card border border-border/50 shadow-[0_16px_64px_rgba(0,0,0,0.5)] animate-panel-in overflow-hidden">
         <div className="p-5">
           <div className="flex items-start gap-3 mb-4">
             <div
@@ -53,14 +57,14 @@ export default function ConfirmDialog({
           <div className="flex justify-end gap-2">
             <button
               onClick={onCancel}
-              className="h-8 px-4 rounded-lg text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors"
+              className="h-8 px-4 rounded-lg text-xs font-medium cursor-pointer text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors"
             >
               {cancelLabel}
             </button>
             <button
               onClick={onConfirm}
               className={cn(
-                'h-8 px-4 rounded-lg text-xs font-medium transition-colors',
+                'h-8 px-4 rounded-lg text-xs font-medium cursor-pointer transition-colors',
                 variant === 'danger'
                   ? 'bg-destructive text-white hover:bg-destructive/90'
                   : 'bg-primary text-primary-foreground hover:bg-primary/90'
@@ -73,4 +77,7 @@ export default function ConfirmDialog({
       </div>
     </div>
   )
+
+  if (typeof document === 'undefined') return node
+  return createPortal(node, document.body)
 }

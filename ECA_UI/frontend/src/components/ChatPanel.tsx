@@ -3,6 +3,7 @@ import { ArrowUp, Mic, Sparkles, Square, Plus, Globe, Image, X, Volume2, SquareP
 import TextareaAutosize from 'react-textarea-autosize'
 import { ScrollArea } from './ui/scroll-area'
 import ChatMessage from './ChatMessage'
+import ChatDivider from './ChatDivider'
 import { useChat } from '../hooks/useChat'
 
 /* ─── ChatPanel ─── */
@@ -93,9 +94,12 @@ export default function ChatPanel() {
       {/* ── Messages ── */}
       <ScrollArea className="flex-1 min-h-0 px-1 md:px-2">
         <div className="py-2 md:py-4 space-y-1 md:space-y-2 max-w-full overflow-x-hidden">
-          {messages.map((msg, i) => (
-            <ChatMessage key={msg.id} message={msg} isStreaming={isGenerating && i === messages.length - 1} />
-          ))}
+          {messages.map((msg, i) => {
+            if (msg.kind === 'divider' || msg.role === 'system') {
+              return <ChatDivider key={msg.id} toLabel={msg.dividerMeta?.toLabel} />
+            }
+            return <ChatMessage key={msg.id} message={msg} isStreaming={isGenerating && i === messages.length - 1} />
+          })}
 
           {/* typing / stage indicator */}
           {(isTyping || stageLabel) && (

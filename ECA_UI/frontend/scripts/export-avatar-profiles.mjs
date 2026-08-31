@@ -52,10 +52,8 @@ if (requested.length > 0) {
 } else {
   const { defaultProfile } = await import(`file://${resolve(avatarDir, 'profiles', 'default.ts')}`)
   const { bronyaProfile } = await import(`file://${resolve(avatarDir, 'profiles', 'bronya.ts')}`)
-  const { seeleProfile } = await import(`file://${resolve(avatarDir, 'profiles', 'seele.ts')}`)
   process.stdout.write(JSON.stringify({
     default: defaultProfile,
     bronya: bronyaProfile,
-    seele: seeleProfile,
   }, null, 2))
 }

@@ -422,7 +422,8 @@ export default function FloatingNavBar() {
       const target = e.target as HTMLElement
       if (
         target.closest('.floating-nav-bar') ||
-        target.closest('.floating-panel')
+        target.closest('.floating-panel') ||
+        target.closest('.confirm-dialog')
       ) {
         return
       }

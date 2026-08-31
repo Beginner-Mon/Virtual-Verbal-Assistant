@@ -43,7 +43,7 @@ const NECK_SHARE = 0.4 // of the head rotation, neck takes this, the head bone t
 const YAW_SIGN = 1 // verified: head turns toward the cursor left/right
 // EyeController.currentPitch is negative for "look up" (three-vrm convention). On
 // the normalized bone's local +X axis a positive angle tilts the face UP, so we
-// negate to keep the head consistent with the eyes (verified visually on seele).
+// negate to keep the head consistent with the eyes.
 const PITCH_SIGN = -1
 const SMOOTH_PER_SEC = 8 // slightly slower than the eyes → natural lead-then-follow
 const DEG2RAD = Math.PI / 180
