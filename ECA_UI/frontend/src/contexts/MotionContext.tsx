@@ -15,10 +15,9 @@ import type { UserActivity } from '../avatar/userActivity'
 import { CameraController } from '../lib/CameraController'
 import { STATE_OPTIONS, type CameraMode, type CharState } from '../lib/AnimationStates'
 import { MOTION_FILES, resolveMotionByName } from '../lib/motionAssets'
-import { fetchCharacters, isCompatible, type Character } from '../lib/characters'
+import { fetchCharacters, fetchCharacter, isCompatible, type Character, type CharacterLite } from '../lib/characters'
 import { useAutoAfterTrigger } from '../hooks/useFsmTriggers'
 import instrumentalUrl from '../asset/audio/instrumental-ver.mp3'
-import { fetchAuthSession } from 'aws-amplify/auth'
 import { fetchPreferences } from '../lib/preferences'
 import { DEFAULT_CAMERA_CONFIG, type CameraConfig } from '../lib/CameraConfig'
 import { MotionContext, type MotionContextType, type SessionMotion, type AssetOption } from '../hooks/useMotion'
@@ -33,55 +32,98 @@ function toAssetOption(character: Character): AssetOption {
     character,
   }
 }
+function toAssetOptionLite(character: CharacterLite): AssetOption {
+  // Lite has no vrm_url — panel only needs card display; url empty until full fetch
+  return {
+    id: character.slug,
+    label: character.display_name,
+    url: '',
+    character: { ...character, vrm_url: '', voice_language: '', sort_order: 0, vrm_metadata: character.vrm_metadata } as Character,
+  }
+}
 
 export function MotionProvider({ children }: { children: ReactNode }) {
   const [vrmOptions, setVrmOptions] = useState<AssetOption[]>([])
   const [vrmOptionsLoading, setVrmOptionsLoading] = useState(true)
   const [vrmOptionsError, setVrmOptionsError] = useState<string | null>(null)
   const [selectedVrmId, setSelectedVrmId] = useState('')
+  const [hasLite, setHasLite] = useState(false)
 
-  // The catalog comes from the CDN now, so the option list starts empty and the
-  // default selection can only be made once it arrives — hence the effect
-  // rather than a lazily-initialised useState.
+  // Lazy catalog for AvatarsPanel — only when panel opens does it need the 4 lite cards.
+  const ensureCatalogLoaded = useCallback(async () => {
+    if (hasLite) return
+    try {
+      const lites = await fetchCharacters()
+      if (lites.length === 0) return
+      // Preserve full entry for currently selected (has vrm_url) and merge lites
+      setVrmOptions((prev) => {
+        const fullMap = new Map(prev.map((o) => [o.id, o]))
+        const merged = lites.map((lite) => {
+          const existing = fullMap.get(lite.slug)
+          if (existing && existing.url) return existing
+          return toAssetOptionLite(lite)
+        })
+        // Keep any full not in lite (edge)
+        for (const o of prev) if (!merged.some((m) => m.id === o.id)) merged.push(o)
+        return merged
+      })
+      setHasLite(true)
+      setVrmOptionsError(null)
+    } catch (err) {
+      console.error('[MotionContext] lite catalog failed', err)
+    }
+  }, [hasLite])
+
   useEffect(() => {
     const abort = new AbortController()
 
     async function load() {
       try {
-        // A model with incompatible_reasons still appears in the picker, greyed
-        // out with the reason — it is data the user should see, not a row to
-        // hide. Only the default selection skips them.
-        const options = (await fetchCharacters(abort.signal)).map(toAssetOption)
-
-        if (abort.signal.aborted) return
-
-        setVrmOptions(options)
-
-        // Synced default character (Neon user_preferences.selected_character_slug)
-        // overrides the hardcoded /anne/ fallback — cross-device.
+        // New flow: prefs → 1 full character (vrm_url) for <Canvas>, not 4 full.
         let syncedSlug: string | null = null
         try {
-          const s = await fetchAuthSession()
-          if (s.tokens?.idToken) {
-            const prefs = await fetchPreferences(abort.signal)
-            syncedSlug = prefs.selected_character_slug ?? null
-          }
+          const prefs = await fetchPreferences(abort.signal)
+          syncedSlug = prefs.selected_character_slug ?? null
         } catch {
-          // guest or 401 → keep local default
+          // 401 → mandatory login should have redirected, but fallback to Anne
         }
         if (abort.signal.aborted) return
 
-        setSelectedVrmId((current) => {
-          if (current && options.some((o) => o.id === current)) return current
-          if (syncedSlug && options.some((o) => o.id === syncedSlug)) return syncedSlug
-          const usable = options.filter((o) => !o.character || isCompatible(o.character))
-          const preferred = usable.find((o) => /anne/i.test(o.id) || /anne/i.test(o.label))
-          return preferred?.id ?? usable[0]?.id ?? options[0]?.id ?? ''
-        })
+        // Try synced slug first, fallback to Anne, fallback to lite list.
+        let character: Character | null = null
+        const candidates = syncedSlug ? [syncedSlug, 'anne'] : ['anne']
+        for (const slug of candidates) {
+          try {
+            character = await fetchCharacter(slug, abort.signal)
+            if (character) break
+          } catch {
+            // 404 → try next
+          }
+          if (abort.signal.aborted) return
+        }
+        if (!character) {
+          // Last resort: lite list and pick first compatible
+          const lites = await fetchCharacters(abort.signal)
+          if (lites.length > 0) {
+            // Need full for the picked one to get vrm_url
+            const pick = lites.find((c) => isCompatible(c)) ?? lites[0]
+            try {
+              character = await fetchCharacter(pick.slug, abort.signal)
+            } catch {
+              character = null
+            }
+          }
+        }
+        if (abort.signal.aborted) return
+
+        if (character) {
+          setVrmOptions([toAssetOption(character)])
+          setSelectedVrmId(character.slug)
+        }
         setVrmOptionsError(null)
       } catch (err) {
         if (abort.signal.aborted || (err as Error)?.name === 'AbortError') return
-        console.error('[MotionContext] character catalog failed', err)
+        console.error('[MotionContext] initial character failed', err)
         setVrmOptionsError(
           err instanceof Error ? err.message : 'Could not load the character catalog'
         )
@@ -286,6 +328,37 @@ export function MotionProvider({ children }: { children: ReactNode }) {
     }
   }, [isMusicPlaying])
 
+  // Wrapped setter: if the picked id has no vrm_url (lite), fetch full in background
+  const setSelectedVrmIdWrapped = useCallback((id: string) => {
+    setSelectedVrmId(id)
+    // If we already have full url, nothing to do; else fetch full character for <Canvas>
+    const existing = vrmOptions.find((o) => o.id === id)
+    if (existing && existing.url) return
+    void (async () => {
+      try {
+        const c = await fetchCharacter(id)
+        setVrmOptions((prev) => {
+          const map = new Map(prev.map((o) => [o.id, o]))
+          map.set(c.slug, toAssetOption(c))
+          return Array.from(map.values())
+        })
+      } catch {
+        // Fallback to Anne if slug invalid (FK already prevents bad PATCH, but handle 404)
+        if (id !== 'anne') {
+          try {
+            const fallback = await fetchCharacter('anne')
+            setVrmOptions((prev) => {
+              const map = new Map(prev.map((o) => [o.id, o]))
+              map.set(fallback.slug, toAssetOption(fallback))
+              return Array.from(map.values())
+            })
+            setSelectedVrmId(fallback.slug)
+          } catch {}
+        }
+      }
+    })()
+  }, [vrmOptions])
+
   // Memoized: an inline object literal here would be a new value on EVERY
   // provider render, re-rendering every consumer — including CharacterViewer,
   // which owns the <Canvas>. FSM transitions push `currentState` through this
@@ -293,10 +366,11 @@ export function MotionProvider({ children }: { children: ReactNode }) {
   const value = useMemo<MotionContextType>(
     () => ({
       selectedVrmId,
-      setSelectedVrmId,
+      setSelectedVrmId: setSelectedVrmIdWrapped,
       vrmOptions,
       vrmOptionsLoading,
       vrmOptionsError,
+      ensureCatalogLoaded,
       transitionTo,
       currentState,
       stateOptions: STATE_OPTIONS,
@@ -324,9 +398,11 @@ export function MotionProvider({ children }: { children: ReactNode }) {
     }),
     [
       selectedVrmId,
+      setSelectedVrmIdWrapped,
       vrmOptions,
       vrmOptionsLoading,
       vrmOptionsError,
+      ensureCatalogLoaded,
       transitionTo,
       currentState,
       playMotionFile,

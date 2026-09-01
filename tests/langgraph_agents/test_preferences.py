@@ -168,9 +168,9 @@ def test_patch_rejects_unknown_character():
 
     mock_pg = MagicMock()
     mock_conn = AsyncMock()
-    mock_conn.fetchval = AsyncMock(return_value=None)  # character not found
+    # FK violation on UPDATE — now the only check (no SELECT verify)
+    mock_conn.fetchrow = AsyncMock(side_effect=Exception('violates foreign key "user_preferences_selected_character_slug_fkey"'))
     mock_conn.execute = AsyncMock(return_value=None)
-    mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_tx = MagicMock()
     mock_tx.__aenter__ = AsyncMock(return_value=mock_conn)
     mock_tx.__aexit__ = AsyncMock(return_value=None)

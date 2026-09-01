@@ -40,10 +40,12 @@ export interface MotionContextType {
   selectedVrmId: string
   setSelectedVrmId: (id: string) => void
   vrmOptions: AssetOption[]
-  /** False while the catalog request is in flight — nothing to render yet. */
+  /** False while the initial character request is in flight — nothing to render yet. */
   vrmOptionsLoading: boolean
-  /** Set when the catalog could not be fetched; the picker shows it verbatim. */
+  /** Set when the character could not be fetched; the picker shows it verbatim. */
   vrmOptionsError: string | null
+  /** Ensure lite catalog (4-col) for AvatarsPanel — lazy, called when panel opens. */
+  ensureCatalogLoaded: () => Promise<void>
 
   /**
    * FSM — the single entry point for every state change. Returns false when the

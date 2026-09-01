@@ -222,7 +222,13 @@ export default function AvatarsPanel() {
     vrmOptions,
     vrmOptionsLoading,
     vrmOptionsError,
+    ensureCatalogLoaded,
   } = useMotion()
+
+  // Lazy: only when panel mounts does it need the 4 lite cards (not on initial web load)
+  useEffect(() => {
+    void ensureCatalogLoaded()
+  }, [ensureCatalogLoaded])
 
   const [defaultSlug, setDefaultSlug] = useState<string | null>(null)
   const [defaultVersion, setDefaultVersion] = useState<number | null>(null)

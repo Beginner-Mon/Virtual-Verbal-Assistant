@@ -34,8 +34,8 @@ router = APIRouter(tags=["characters"])
 
 _SLUG_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-# Same allowlist as infra/lambda/characters/handler.py — adding a column must
-# not leak it by default (e.g. `persona`).
+# Lite for card grid: display + compatibility (no vrm_url/voice/ui_strings).
+_PUBLIC_COLUMNS_LITE = "slug, display_name, thumbnail_url, description, vrm_metadata"
 _PUBLIC_COLUMNS = (
     "slug, display_name, description, "
     "vrm_url, thumbnail_url, vrm_metadata, "
@@ -51,29 +51,15 @@ def _cache_headers() -> dict:
 
 @router.get("/characters")
 async def list_characters():
-    """List active characters — public, no auth."""
+    """List active characters — lite for card grid (public, no auth)."""
     pg = get_pg_client()
     await pg.connect()
-    # Bypass RLS user scope: characters is public catalog, not per-user.
-    # get_pg_client().fetch goes through _scoped() which sets app.user_id
-    # when bound; for public reads we use the raw transaction to avoid
-    # requiring a token and to avoid RLS filtering.
     async with pg._raw_transaction() as conn:
         rows = await conn.fetch(
-            f"SELECT {_PUBLIC_COLUMNS} FROM characters "
+            f"SELECT {_PUBLIC_COLUMNS_LITE} FROM characters "
             "WHERE is_active ORDER BY sort_order, slug"
         )
-    # asyncpg Record -> dict, decode JSONB strings (asyncpg returns str)
-    characters = []
-    for r in rows:
-        d = dict(r)
-        for k in ("vrm_metadata", "ui_strings"):
-            if isinstance(d.get(k), str):
-                try:
-                    d[k] = json.loads(d[k])
-                except Exception:
-                    pass
-        characters.append(d)
+    characters = [dict(r) for r in rows]
     return JSONResponse(
         content={"characters": characters, "total": len(characters)},
         headers=_cache_headers(),

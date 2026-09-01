@@ -127,50 +127,17 @@ async def patch_preferences(body: UserPreferencesPatch, uid: str = Depends(curre
             uid,
         )
 
-        if body.selected_character_slug is not None:
-            exists = await conn.fetchval(
-                "SELECT 1 FROM characters WHERE slug = $1 AND is_active = true",
-                body.selected_character_slug,
-            )
-            if not exists:
-                raise HTTPException(400, f"unknown or inactive character: {body.selected_character_slug}")
-
+        # No SELECT verify — FK REFERENCES characters(slug) is the guard.
         # Build dynamic update — prefs merged as JSONB ||, other cols COALESCE
         prefs_json = json.dumps(body.prefs) if body.prefs is not None else None
 
-        # Use version in WHERE for optimistic lock
-        if wants_clear_character:
-            query = """
-                UPDATE user_preferences
-                SET selected_character_slug = NULL,
-                    avatar_bg = COALESCE($2, avatar_bg),
-                    display_name = COALESCE($3, display_name),
-                    prefs = CASE WHEN $4::jsonb IS NULL THEN prefs ELSE prefs || $4::jsonb END,
-                    version = version + 1,
-                    updated_at = now()
-                WHERE user_id = $1::uuid AND version = $5
-                RETURNING user_id, avatar_bg, selected_character_slug, display_name, prefs, version, updated_at
-            """
-            row = await conn.fetchrow(query, uid, body.avatar_bg, body.display_name, prefs_json, body.version)
-        else:
-            # When selected_character_slug not sent, keep existing
-            if body.selected_character_slug is not None:
+        # Use version in WHERE for optimistic lock — FK on selected_character_slug is the verify
+        try:
+            if wants_clear_character:
                 query = """
                     UPDATE user_preferences
-                    SET avatar_bg = COALESCE($2, avatar_bg),
-                        selected_character_slug = $3,
-                        display_name = COALESCE($4, display_name),
-                        prefs = CASE WHEN $5::jsonb IS NULL THEN prefs ELSE prefs || $5::jsonb END,
-                        version = version + 1,
-                        updated_at = now()
-                    WHERE user_id = $1::uuid AND version = $6
-                    RETURNING user_id, avatar_bg, selected_character_slug, display_name, prefs, version, updated_at
-                """
-                row = await conn.fetchrow(query, uid, body.avatar_bg, body.selected_character_slug, body.display_name, prefs_json, body.version)
-            else:
-                query = """
-                    UPDATE user_preferences
-                    SET avatar_bg = COALESCE($2, avatar_bg),
+                    SET selected_character_slug = NULL,
+                        avatar_bg = COALESCE($2, avatar_bg),
                         display_name = COALESCE($3, display_name),
                         prefs = CASE WHEN $4::jsonb IS NULL THEN prefs ELSE prefs || $4::jsonb END,
                         version = version + 1,
@@ -179,6 +146,37 @@ async def patch_preferences(body: UserPreferencesPatch, uid: str = Depends(curre
                     RETURNING user_id, avatar_bg, selected_character_slug, display_name, prefs, version, updated_at
                 """
                 row = await conn.fetchrow(query, uid, body.avatar_bg, body.display_name, prefs_json, body.version)
+            else:
+                if body.selected_character_slug is not None:
+                    query = """
+                        UPDATE user_preferences
+                        SET avatar_bg = COALESCE($2, avatar_bg),
+                            selected_character_slug = $3,
+                            display_name = COALESCE($4, display_name),
+                            prefs = CASE WHEN $5::jsonb IS NULL THEN prefs ELSE prefs || $5::jsonb END,
+                            version = version + 1,
+                            updated_at = now()
+                        WHERE user_id = $1::uuid AND version = $6
+                        RETURNING user_id, avatar_bg, selected_character_slug, display_name, prefs, version, updated_at
+                    """
+                    row = await conn.fetchrow(query, uid, body.avatar_bg, body.selected_character_slug, body.display_name, prefs_json, body.version)
+                else:
+                    query = """
+                        UPDATE user_preferences
+                        SET avatar_bg = COALESCE($2, avatar_bg),
+                            display_name = COALESCE($3, display_name),
+                            prefs = CASE WHEN $4::jsonb IS NULL THEN prefs ELSE prefs || $4::jsonb END,
+                            version = version + 1,
+                            updated_at = now()
+                        WHERE user_id = $1::uuid AND version = $5
+                        RETURNING user_id, avatar_bg, selected_character_slug, display_name, prefs, version, updated_at
+                    """
+                    row = await conn.fetchrow(query, uid, body.avatar_bg, body.display_name, prefs_json, body.version)
+        except Exception as exc:
+            # FK violation when slug does not exist in characters
+            if "foreign key" in str(exc).lower() or "violates foreign key" in str(exc).lower():
+                raise HTTPException(400, f"unknown or inactive character: {body.selected_character_slug}")
+            raise
 
         if not row:
             # Distinguish 409 vs missing row — if current version differs, it's a conflict

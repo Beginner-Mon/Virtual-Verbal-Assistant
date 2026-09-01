@@ -48,16 +48,44 @@ function ensureOk(res: Response, body: string): void {
   }
 }
 
+let _prefsCache: UserPreferences | null = null
+let _prefsInflight: Promise<UserPreferences> | null = null
+let _prefsCacheAt = 0
+const PREFS_TTL_MS = 5 * 60 * 1000
+
 export async function fetchPreferences(signal?: AbortSignal): Promise<UserPreferences> {
+  const now = Date.now()
+  if (_prefsCache && now - _prefsCacheAt < PREFS_TTL_MS && !signal?.aborted) {
+    return _prefsCache
+  }
+  if (_prefsInflight && !signal?.aborted) {
+    return _prefsInflight
+  }
   const headers = await authHeader()
-  const res = await fetch(`${API_GATEWAY}/me/preferences`, {
-    method: 'GET',
-    headers: { Accept: 'application/json', ...headers },
-    signal,
-  })
-  const text = await res.text()
-  ensureOk(res, text)
-  return JSON.parse(text) as UserPreferences
+  const p = (async () => {
+    const res = await fetch(`${API_GATEWAY}/me/preferences`, {
+      method: 'GET',
+      headers: { Accept: 'application/json', ...headers },
+      signal,
+    })
+    const text = await res.text()
+    ensureOk(res, text)
+    const data = JSON.parse(text) as UserPreferences
+    _prefsCache = data
+    _prefsCacheAt = Date.now()
+    return data
+  })()
+  if (!signal?.aborted) _prefsInflight = p
+  try {
+    return await p
+  } finally {
+    if (_prefsInflight === p) _prefsInflight = null
+  }
+}
+
+export function invalidatePreferencesCache() {
+  _prefsCache = null
+  _prefsCacheAt = 0
 }
 
 export async function patchPreferences(
@@ -73,5 +101,8 @@ export async function patchPreferences(
   })
   const text = await res.text()
   ensureOk(res, text)
-  return JSON.parse(text) as UserPreferences
+  const data = JSON.parse(text) as UserPreferences
+  _prefsCache = data
+  _prefsCacheAt = Date.now()
+  return data
 }

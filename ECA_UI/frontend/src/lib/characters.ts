@@ -42,34 +42,32 @@ export interface VrmMetadata {
   extracted_at: string
 }
 
-export interface Character {
+export interface CharacterLite {
   slug: string
   display_name: string
   description: string | null
-  vrm_url: string
   thumbnail_url: string | null
+  vrm_metadata: VrmMetadata | null
+}
+
+export interface Character extends CharacterLite {
+  vrm_url: string
   vrm_metadata: VrmMetadata
   voice_language: string
   sort_order: number
-  /** Chat-surface copy — greeting, stage labels, error line, input placeholder.
-   *  Optional because the catalog Lambda only returns it once redeployed with
-   *  the column; see characterCopy.uiStringsFor for the fallback.
-   *  greeting is a nested object {morning,afternoon,evening,night} — not a string. */
+  /** Chat-surface copy — greeting, stage labels, error line, input placeholder. */
   ui_strings?: Record<string, unknown>
 }
 
-interface CharacterListResponse {
-  characters: Character[]
-  total: number
-}
+
 
 /** True when nothing blocks this model from being used. */
-export function isCompatible(character: Character): boolean {
+export function isCompatible(character: Character | CharacterLite): boolean {
   return (character.vrm_metadata?.incompatible_reasons?.length ?? 0) === 0
 }
 
 /** Human-readable reason a model is greyed out, or null when it is fine. */
-export function incompatibilityReason(character: Character): string | null {
+export function incompatibilityReason(character: Character | CharacterLite): string | null {
   const reasons = character.vrm_metadata?.incompatible_reasons ?? []
   if (reasons.length === 0) return null
   const readable: Record<string, string> = {
@@ -80,11 +78,17 @@ export function incompatibilityReason(character: Character): string | null {
   return reasons.map((r) => readable[r] ?? r).join('; ')
 }
 
-export async function fetchCharacters(signal?: AbortSignal): Promise<Character[]> {
+export async function fetchCharacters(signal?: AbortSignal): Promise<CharacterLite[]> {
   const res = await fetch(`${API_GATEWAY}/characters`, { signal })
   if (!res.ok) throw new Error(`GET /characters failed: ${res.status}`)
-  const data = (await res.json()) as CharacterListResponse
+  const data = (await res.json()) as { characters: CharacterLite[]; total: number }
   return data.characters ?? []
+}
+
+export async function fetchCharacter(slug: string, signal?: AbortSignal): Promise<Character> {
+  const res = await fetch(`${API_GATEWAY}/characters/${encodeURIComponent(slug)}`, { signal })
+  if (!res.ok) throw new Error(`GET /characters/${slug} failed: ${res.status}`)
+  return (await res.json()) as Character
 }
 
 export async function fetchAvatarProfile(
