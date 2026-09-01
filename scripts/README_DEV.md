@@ -1,4 +1,4 @@
-# Virtual Verbal Assistant — Developer Overview
+# Embodied Conversational Agent — Developer Overview
 
 > **Audience**: Developers onboarding to this project. This document gives a full-system overview and then dives deep into the two primary subsystems: **AgenticRAG** and **Text-to-Motion (DART)**.
 
@@ -21,7 +21,7 @@
 
 ## 1. System Architecture Overview
 
-The **Virtual Verbal Assistant** is a multi-service pipeline that takes natural language input, generates an intelligent text response, and simultaneously produces a corresponding human motion animation.
+The **Embodied Conversational Agent** is a multi-service pipeline that takes natural language input, generates an intelligent text response, and simultaneously produces a corresponding human motion animation.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -824,7 +824,7 @@ python api_server.py
 
 **Terminal 2 — DART (via WSL):**
 ```powershell
-wsl -e bash -ic "conda activate DART && cd /mnt/d/Project_A/Virtual-Verbal-Assistant/text-to-motion/DART && python api_server.py"
+wsl -e bash -ic "conda activate DART && cd /mnt/d/Project_A/ECA/text-to-motion/DART && python api_server.py"
 # Serves on http://localhost:5001
 ```
 
@@ -915,7 +915,7 @@ Open `test-ui/index.html` in a browser for a visual test interface.
 ## 8. Repository Map
 
 ```
-Virtual-Verbal-Assistant/
+ECA/
 ├── README_DEV.md                      # ← This file
 ├── HOW_TO_RUN.md                      # Startup guide (quick reference)
 │

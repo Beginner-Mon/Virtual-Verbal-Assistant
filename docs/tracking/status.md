@@ -1,4 +1,4 @@
-# VVA — Status & Roadmap
+# ECA — Status & Roadmap
 
 > Last update: 2026-08-17 (K) | Branch: `feature/langgraph-rewrite`
 > Audience: K/N/Owner takeover after context compaction — đọc mục 0 trước tiên.
@@ -9,8 +9,8 @@
 
 - **Service lúc viết file này (08/08)** — kiểm bằng curl, không phải nhớ:
   backend `:8000` ✅ 200 · **TTS `:5000` ✅ 200** · frontend `:5173` ✅ 200 ·
-  docker `vva-postgres`/`vva-redis`/`vva-searxng` up 8 ngày ✅
-  > `vva-postgres` local **không còn là DB đang dùng** — chỉ là đường lùi.
+  docker `eca-postgres`/`eca-redis`/`eca-searxng` up 8 ngày ✅
+  > `eca-postgres` local **không còn là DB đang dùng** — chỉ là đường lùi.
   > TTS phải chạy bằng conda env **`tts`**, không phải `firstconda`.
   > 🔴 **Backend phải chạy bằng `firstconda`.** Trên máy này `python` trần =
   > Python312, **thiếu `langchain_google_genai`**. `pytest` cũng vậy (Python312
@@ -359,8 +359,8 @@ tham khảo CV/portfolio.
   đọc trạng thái TTS/SearXNG qua `/health/detailed` (server-side probe, tránh false-negative do
   CORS) thay vì fetch thẳng client-side. Bỏ hẳn card VieNeu TTS (không có server, chỉ có client
   code — báo "down" gây hiểu lầm).
-- `vva.log`: backend ghi log ra `agenticRAG/vva.log` (biến `LOG_FILE` trong `.env`, path
-  relative theo CWD lúc chạy uvicorn). Chạy qua `cmd /c "... > vva.log 2>&1"` để log sạch (tránh
+- `eca.log`: backend ghi log ra `agenticRAG/eca.log` (biến `LOG_FILE` trong `.env`, path
+  relative theo CWD lúc chạy uvicorn). Chạy qua `cmd /c "... > eca.log 2>&1"` để log sạch (tránh
   PowerShell bọc ErrorRecord khi dùng `*>`).
 
 ### Retrieval perf P1/P2/P3 — `docs/fixes/retrieval-perf-p123.md`
@@ -663,13 +663,13 @@ nên 4 file `M` không thể commit rời khỏi 6 file mới.
 
 ```bash
 # 1. KB ingest còn nguyên?
-docker exec vva-postgres psql -U vva -d vva -c "SELECT COUNT(*) FROM kb_embeddings;"   # kỳ vọng 2918
+docker exec eca-postgres psql -U eca -d eca -c "SELECT COUNT(*) FROM kb_embeddings;"   # kỳ vọng 2918
 # → nếu 0: python scripts/ingest_kb_pgvector.py --reset
 
 # 2. KB thật sự được dùng (không refuse)?
 printf '%s' '{"query":"bài tập cho cơ bụng và lưng dưới","session_id":"77777777-7777-7777-7777-777777777777","user_id":"77777777-7777-7777-7777-777777777778","web_search":false}' > /tmp/kb.json
 curl -s -m 90 -X POST http://localhost:8000/chat -H "Content-Type: application/json" --data-binary @/tmp/kb.json > /tmp/r.txt
-grep -aoE '"mode": "[a-z]+"' agenticRAG/vva_run.log | tail -1     # kỳ vọng "synthesize", KHÔNG "refuse"
+grep -aoE '"mode": "[a-z]+"' agenticRAG/eca_run.log | tail -1     # kỳ vọng "synthesize", KHÔNG "refuse"
 ```
 
 Verify Kimodo retarget (offline, không cần GPU): `:5173` → nav **Motion** → **Motion file (debug)** →

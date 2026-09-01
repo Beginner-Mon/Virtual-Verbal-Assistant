@@ -35,7 +35,7 @@ nhưng SecureString trả về dạng đã mã hoá, và policy này **không c�
 (`--query 'Parameters[].Name'`). Không phải "API không cho đọc" — mà là "đọc ra
 thì cũng không giải mã được".
 
-`docs/ops/iam-vva-recover-readonly.json`
+`docs/ops/iam-eca-recover-readonly.json`
 
 ### Mức 2 — sửa được (chỉ cấp khi mức 1 đã chỉ ra việc phải làm)
 
@@ -48,24 +48,24 @@ Lambda, DynamoDB, API Gateway, IAM role. Đó là lý do dùng managed policy
 `AdministratorAccess-Amplify` thay vì liệt kê tay — liệt kê thiếu một action thì
 stack kẹt ở `DELETE_FAILED`, tệ hơn lúc đầu.
 
-`docs/ops/iam-vva-recover-fix.json` (phần bổ sung, dùng **kèm**
+`docs/ops/iam-eca-recover-fix.json` (phần bổ sung, dùng **kèm**
 `AdministratorAccess-Amplify`)
 
 ---
 
 ## Tri làm cụ thể — ~5 phút
 
-1. IAM Console → **Users** → *Create user* → tên `vva-recover-nguyen`
-   → **không** bật console access
+1. IAM Console → **Users** → *Create user* → tên `eca-recover-nguyen`
+    → **không** bật console access
 2. *Attach policies directly* → **Create policy** → tab **JSON** → dán nội dung
-   `iam-vva-recover-readonly.json` → tên `VVARecoverReadOnly` → gắn vào user
+    `iam-eca-recover-readonly.json` → tên `ECARecoverReadOnly` → gắn vào user
 3. User → tab **Security credentials** → *Create access key* → chọn
    **Command Line Interface (CLI)** → tải file `.csv`
 4. Gửi file đó qua **trình quản lý mật khẩu** (1Password / Bitwarden).
    **Không** qua chat, Slack, Zalo, email.
 5. Khi xong việc: IAM → user → *Deactivate* rồi *Delete* access key
 
-Cần mức 2 thì lặp lại bước 2 với `iam-vva-recover-fix.json`, và gắn thêm managed
+Cần mức 2 thì lặp lại bước 2 với `iam-eca-recover-fix.json`, và gắn thêm managed
 policy **`AdministratorAccess-Amplify`**.
 
 ## N làm — ~1 phút
@@ -93,7 +93,7 @@ bash scripts/amplify_recover.sh status
 Script không nuốt lỗi — AWS trả về tên action bị thiếu ngay trong thông báo, ví dụ:
 
 ```
-User: arn:aws:iam::…:user/vva-recover-nguyen is not authorized to perform:
+User: arn:aws:iam::…:user/eca-recover-nguyen is not authorized to perform:
 cloudformation:DescribeStackEvents
 ```
 
@@ -101,6 +101,6 @@ Thêm đúng action đó vào policy. Không đoán, không cấp `*` cho nhanh.
 
 ## Cách tốt hơn nếu team dùng lâu dài
 
-IAM Identity Center (SSO) → `aws sso login --profile vva`. Credential hết hạn
+IAM Identity Center (SSO) → `aws sso login --profile eca`. Credential hết hạn
 theo phiên, không có access key vĩnh viễn nằm trên đĩa. Tốn thêm ~20 phút setup
 lần đầu, đáng làm nếu còn phải deploy nhiều lần.

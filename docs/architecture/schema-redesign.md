@@ -1,4 +1,4 @@
-# Schema Redesign Plan — VVA PostgreSQL
+# Schema Redesign Plan — ECA PostgreSQL
 
 > Architect: K | Date: 2026-05-29 | Cập nhật: 2026-06-02
 > Audience: N (Developer), Owner, T (Reviewer)

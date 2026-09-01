@@ -85,7 +85,7 @@ async def retriever_agent_node(state, config):
 retriever simply doesn't have the tool available, so LLM can't call it. Graceful.
 
 **Done when**:
-- With `web_search=false`: `docker logs vva-searxng --tail 5` shows NO new requests after chat call
+- With `web_search=false`: `docker logs eca-searxng --tail 5` shows NO new requests after chat call
 - With `web_search=true`: SearXNG logs show GET /search request
 - Both cases return non-empty `final_answer`
 

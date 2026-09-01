@@ -167,7 +167,7 @@ langgraph:
         cool_down_seconds: 60
 
   postgres:
-    dsn: "postgresql://vva:vva_dev@localhost:5432/vva"
+    dsn: "postgresql://vva:eca_dev@localhost:5432/vva"
     pool_min: 2
     pool_max: 10
 

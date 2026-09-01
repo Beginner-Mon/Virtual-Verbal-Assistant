@@ -15,7 +15,7 @@ tags:
   - roadmap
 ---
 
-# Architecture Review — Virtual Verbal Assistant
+# Architecture Review — Embodied Conversational Agent
 
 > Senior-architect critique của hệ thống multi-agent Physiotherapy ECA, đánh giá theo
 > chuẩn "Senior engineer + đồ án tốt nghiệp" với ràng buộc CPU-only 16 GB và yêu cầu
@@ -83,7 +83,7 @@ Hệ quả:
 
 ### A3. Double-RAG inlined trong `OrchestratorAgent.process_query`
 
-```@d:\Project_A\Virtual-Verbal-Assistant\agenticRAG\agentic_rag_gemini\agents\api_orchestrator.py:520-542
+```@d:\Project_A\ECA\agenticRAG\agentic_rag_gemini\agents\api_orchestrator.py:520-542
         # ── Step 2: Multi-Stage Orchestration (Double-RAG) ───────────────────
         # If we need clinical knowledge and motion execution, execute Double-RAG
         double_rag_results = {}
@@ -119,7 +119,7 @@ Vấn đề:
 
 ### A4. Tool registry implicit qua magic strings
 
-```@d:\Project_A\Virtual-Verbal-Assistant\agenticRAG\agentic_rag_gemini\agents\api_orchestrator.py:145-151
+```@d:\Project_A\ECA\agenticRAG\agentic_rag_gemini\agents\api_orchestrator.py:145-151
 _ACTION_TOOL_MAP: Dict[ActionType, List[str]] = {
     ActionType.RETRIEVE_MEMORY: ["memory"],
     ActionType.CALL_LLM:        ["memory", "documents", "web_search"],
@@ -153,7 +153,7 @@ sẽ rút bớt logic ra khỏi class này. Không big-bang rewrite.
 
 ### A6. Schema drift `motion_prompt` ↔ `exercise_motion_prompt`
 
-```@d:\Project_A\Virtual-Verbal-Assistant\agenticRAG\agentic_rag_gemini\orchestration\pipeline_orchestrator.py:117-119
+```@d:\Project_A\ECA\agenticRAG\agentic_rag_gemini\orchestration\pipeline_orchestrator.py:117-119
                 result.text_answer = rag_response.get("text_answer", "")
                 motion_prompt = rag_response.get("motion_prompt")
                 voice_prompt = rag_response.get("voice_prompt")
@@ -182,7 +182,7 @@ Toàn bộ decision được log dưới dạng f-string. Không thể:
 
 ### P1. `process_query_sync` deadlock-prone
 
-```@d:\Project_A\Virtual-Verbal-Assistant\agenticRAG\agentic_rag_gemini\orchestration\pipeline_orchestrator.py:352-367
+```@d:\Project_A\ECA\agenticRAG\agentic_rag_gemini\orchestration\pipeline_orchestrator.py:352-367
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
@@ -211,7 +211,7 @@ giữ `solo` do Celery prefork bug đã biết — đó là trade-off có chủ 
 
 ### P3. Per-user ChromaDB collection
 
-```@d:\Project_A\Virtual-Verbal-Assistant\agenticRAG\agentic_rag_gemini\agents\knowledge_librarian.py:8-11
+```@d:\Project_A\ECA\agenticRAG\agentic_rag_gemini\agents\knowledge_librarian.py:8-11
     1. HumanML3D    → humanml3d_library (kinematic motion descriptions)
     2. Documents    → user_{id}_documents (uploaded PDFs, DOCX, exercise KB)
     3. User Context → user_{id}_collection (conversation memory)
@@ -234,7 +234,7 @@ theo collection name. Khi Pinecone hết quota, fallback Chroma.
 
 ### P5. Không cap `ThreadPoolExecutor` workers
 
-```@d:\Project_A\Virtual-Verbal-Assistant\agenticRAG\agentic_rag_gemini\agents\api_orchestrator.py:715
+```@d:\Project_A\ECA\agenticRAG\agentic_rag_gemini\agents\api_orchestrator.py:715
         with ThreadPoolExecutor(max_workers=len(selected_tools)) as executor:
 ```
 
@@ -262,7 +262,7 @@ skip DART luôn trong 60s tiếp theo.
 
 ### P8. Cold-start nặng
 
-```@d:\Project_A\Virtual-Verbal-Assistant\agenticRAG\agentic_rag_gemini\api_server_pkg\app.py:47-72
+```@d:\Project_A\ECA\agenticRAG\agentic_rag_gemini\api_server_pkg\app.py:47-72
 from agents.api_orchestrator import OrchestratorAgent
 from agents.local_orchestrator import LocalOrchestrator
 from agents.safety_filter import SafetyFilter

@@ -427,7 +427,7 @@ Phase 7: đổi thành domain thực tế của production.
 
 ### Task 4 — Log File Rotation
 
-**Tại sao**: `configure_root_logger` hiện chỉ ghi ra `stderr` (StreamHandler). Trên production server, log cần được ghi ra file có rotation để tránh disk full. Hiện có `vva.log` ở root nhưng không có rotation.
+**Tại sao**: `configure_root_logger` hiện chỉ ghi ra `stderr` (StreamHandler). Trên production server, log cần được ghi ra file có rotation để tránh disk full. Hiện có `eca.log` ở root nhưng không có rotation.
 
 **File**: `shared/logging.py`
 
@@ -456,7 +456,7 @@ def configure_root_logger(level: str = "INFO") -> None:
         file_handler = logging.handlers.RotatingFileHandler(
             log_file,
             maxBytes=10 * 1024 * 1024,   # 10 MB per file
-            backupCount=5,               # giữ 5 file cũ: vva.log.1 … vva.log.5
+            backupCount=5,               # giữ 5 file cũ: eca.log.1 … eca.log.5
             encoding="utf-8",
         )
         file_handler.setFormatter(formatter)
@@ -465,7 +465,7 @@ def configure_root_logger(level: str = "INFO") -> None:
 
 Thêm vào `.env`:
 ```
-LOG_FILE=vva.log
+LOG_FILE=eca.log
 ```
 
 ---
@@ -830,7 +830,7 @@ Expected: tất cả test xanh. Task 1 có thể cần update `test_phase5_sse.p
 ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080
 
 # Task 4
-LOG_FILE=vva.log
+LOG_FILE=eca.log
 
 # Task 6
 VIENEU_URL=http://localhost:5000
@@ -1015,7 +1015,7 @@ Phase 6.10 complete khi:
 - [ ] `pytest tests/` xanh 100%
 - [ ] `GET /health/detailed` trả `"status": "ready"` với tất cả checks green (kể cả speechllm + searxng)
 - [ ] CORS không còn `allow_origins=["*"]`
-- [ ] Log file rotation hoạt động (kiểm tra `vva.log.1` xuất hiện sau khi log đạt 10MB)
+- [ ] Log file rotation hoạt động (kiểm tra `eca.log.1` xuất hiện sau khi log đạt 10MB)
 - [ ] `scripts/cleanup_tts_audio.py --dry-run` chạy không lỗi
 - [ ] Chat SSE stream hoạt động với Stop button
 - [ ] `test-ui` Session tab list/resume/delete hoạt động với schema mới

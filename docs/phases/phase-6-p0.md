@@ -363,7 +363,7 @@ Plan v2.4 chưa có 1 file step-by-step để Owner deploy local từ zero. Hi�
 **File mới: `docs/RUNBOOK.md`** (~250 lines). Structure:
 
 ```markdown
-# VVA LangGraph — Runbook
+# ECA LangGraph — Runbook
 
 ## 1. Prerequisites
 - Windows/WSL with Docker Desktop
@@ -413,7 +413,7 @@ Plan v2.4 chưa có 1 file step-by-step để Owner deploy local từ zero. Hi�
 ## 7. Log analysis
 
 All logs are JSON-per-line. Filter by request_id:
-  Get-Content vva.log | ConvertFrom-Json | Where-Object request_id -eq 'abc-123'
+  Get-Content eca.log | ConvertFrom-Json | Where-Object request_id -eq 'abc-123'
 
 ## 8. Shutdown
 - Ctrl+C uvicorn

@@ -373,7 +373,7 @@ if (cfnUserPool) {
 
 // --- API Gateway ---
 const api = new RestApi(backend.stack, 'AuthApi', {
-  restApiName: 'VVA Auth API',
+  restApiName: 'ECA Auth API',
 });
 
 const authorizer = new CognitoUserPoolsAuthorizer(backend.stack, 'AuthApiAuthorizer', {

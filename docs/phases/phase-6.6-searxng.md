@@ -43,14 +43,14 @@ SearXNG: open-source metasearch, Docker official image, no API key, JSON API mod
 ```yaml
   searxng:
     image: searxng/searxng:latest
-    container_name: vva-searxng
+    container_name: eca-searxng
     ports:
       - "6666:8080"           # internal SearXNG always on 8080
     volumes:
       - ./config/searxng:/etc/searxng:rw
     environment:
       - SEARXNG_BASE_URL=http://localhost:6666/
-      - INSTANCE_NAME=vva-search
+      - INSTANCE_NAME=eca-search
     restart: unless-stopped
     deploy:
       resources:
@@ -87,7 +87,7 @@ ui:
     # ...other fields above...
     environment:
       - SEARXNG_BASE_URL=http://localhost:6666/
-      - INSTANCE_NAME=vva-search
+      - INSTANCE_NAME=eca-search
       - SEARXNG_SECRET_KEY=${SEARXNG_SECRET_KEY:?must be set — see RUNBOOK}
 ```
 
@@ -123,7 +123,7 @@ We inline the service in our existing `docker-compose.langgraph.yml` so one
 **Done when**:
 ```powershell
 docker compose -f docker-compose.langgraph.yml up -d
-docker ps --format "{{.Names}}: {{.Status}}"            # vva-searxng shows Up
+docker ps --format "{{.Names}}: {{.Status}}"            # eca-searxng shows Up
 curl "http://localhost:6666/search?q=physical+therapy&format=json" | jq '.results[0]'
 # Expected: JSON object with title, url, content fields. If 403 → settings.yml not picked up.
 ```
@@ -262,7 +262,7 @@ Add to §3 (Database setup → rename to "§3 Containers setup" since now PG + R
 
 ```markdown
 The compose file creates:
-- PostgreSQL: DB `vva`, user `vva`, password `vva_dev`, port 5432
+- PostgreSQL: DB `eca`, user `eca`, password `eca_dev`, port 5432
 - Redis: port 6379, 512MB maxmemory, LRU eviction
 - SearXNG: port 6666, web search aggregator (Google + Bing + DDG + Wikipedia)
 
@@ -326,7 +326,7 @@ curl -s -N -X POST http://localhost:8080/chat -H "Content-Type: application/json
 # Expected SSE events: stage(memory) → stage(planner intent=knowledge_query) → stage(retriever_agent) → stage(synthesizer) → stage(grader) → stage(conversation) → token(...) → done
 
 # 4. Verify SearXNG actually hit
-docker logs vva-searxng --tail 20    # should show GET /search?q=... entries
+docker logs eca-searxng --tail 20    # should show GET /search?q=... entries
 ```
 
 **Done when**: chat returns non-empty `final_answer` referencing knowledge sources (paste 1 sample answer + SearXNG access log line into worklog).

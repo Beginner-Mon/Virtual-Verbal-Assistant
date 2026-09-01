@@ -54,7 +54,7 @@ redis>=5.0.0,<6.0.0
 # it. No AWS base image, no preinstalled boto3.
 #
 # Needed on two paths, both lazy and both deployed-only: db/postgres.py reads
-# the DSN from SSM when VVA_PG_DSN_PARAM is set, and shared/stm.py talks to
+# the DSN from SSM when ECA_PG_DSN_PARAM (legacy VVA_PG_DSN_PARAM compat) is set, and shared/stm.py talks to
 # DynamoDB when STM_BACKEND=dynamodb. Lazy imports mean a missing boto3 would
 # surface at the first request, not at INIT.
 boto3>=1.34.0

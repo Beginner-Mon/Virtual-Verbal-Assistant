@@ -39,7 +39,7 @@
 
 | # | Điểm yếu | Hiện trạng | Việc cần làm (Phase 7 prep) |
 |---|---|---|---|
-| I1 | Credentials dev hardcode | `vva/vva_dev` trong `config/langgraph.yaml`, `alembic.ini`, `docker-compose` | Chuyển env vars / AWS Secrets Manager; rotate khi lên cloud |
+| I1 | Credentials dev hardcode | `vva/eca_dev` trong `config/langgraph.yaml`, `alembic.ini`, `docker-compose` | Chuyển env vars / AWS Secrets Manager; rotate khi lên cloud |
 | I2 | Redis không AUTH | `redis:7-alpine` mở port 6379 ra host | requirepass + bind private network / ElastiCache in-VPC |
 | I3 | PostgreSQL publish port | `5433:5432` bind mọi interface | Cloud: RDS in-VPC, không public; local: bind 127.0.0.1 |
 | I4 | Rate limiting không có | `/chat` đốt LLM tokens không giới hạn | `slowapi` 20 req/min/user (STATUS #9) — trước khi public |

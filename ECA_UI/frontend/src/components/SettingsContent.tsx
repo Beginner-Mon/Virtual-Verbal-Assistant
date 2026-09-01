@@ -17,7 +17,7 @@ export default function SettingsContent({ view = 'main', onNavigateToProviders, 
 
   if (view === 'providers') {
     const providers = [
-      { id: 'vva', name: 'VVA', icon: Server, official: true },
+      { id: 'eca', name: 'ECA', icon: Server, official: true },
       { id: 'anthropic', name: 'Anthropic', icon: Bot },
       { id: 'gemini', name: 'Gemini', icon: Sparkles },
       { id: 'deepseek', name: 'DeepSeek', icon: Brain },

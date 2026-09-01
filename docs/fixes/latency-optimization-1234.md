@@ -47,7 +47,7 @@ confirm caching is working or measure its savings.
   if evidence were stable across requests, which it isn't; not worth the readability cost.
 
 **Acceptance:** fire a chat request against the live backend (Docker + real DeepSeek key
-running), tail `vva.log`, confirm `node_complete` for planner/retriever/synthesizer include
+running), tail `eca.log`, confirm `node_complete` for planner/retriever/synthesizer include
 `cache_hit_tokens`/`cache_miss_tokens` (values may be `null` if DeepSeek doesn't return them
 for this call — that's an acceptable, informative outcome, not a bug).
 

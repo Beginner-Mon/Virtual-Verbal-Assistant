@@ -648,7 +648,7 @@ from langgraph_agents.nodes._persona_loader import get_persona
 
 logger = logging.getLogger("langgraph.api")
 
-app = FastAPI(title="VVA LangGraph v2.4")
+app = FastAPI(title="ECA LangGraph v2.4")
 _graph = None
 _redis = sync_redis.Redis.from_url("redis://localhost:6379/1")
 

@@ -31,7 +31,8 @@ mcp>=1.0.0
 # Database
 asyncpg>=0.29.0
 pgvector>=0.3.0
-# Reads the connection string from an SSM SecureString when VVA_PG_DSN_PARAM is
+# Reads the connection string from an SSM SecureString when ECA_PG_DSN_PARAM is
+# (legacy VVA_PG_DSN_PARAM still accepted with warning until S6)
 # set — the deployed path, where a DSN in a Lambda environment variable would sit
 # in plaintext in the CloudFormation template. Declared here even though the
 # Lambda runtime already ships it, because db/postgres.py imports it and a local

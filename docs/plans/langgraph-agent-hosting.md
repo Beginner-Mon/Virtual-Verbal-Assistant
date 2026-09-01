@@ -929,7 +929,7 @@ phải coi như không tồn tại, **không** chờ TTL dọn.
 
 **Phase A (local, không cần AWS):**
 ```powershell
-docker stop vva-redis
+docker stop eca-redis
 # firstconda, không phải python trần — status.md mục 0
 uvicorn langgraph_agents.api.main:create_app --factory --port 8000
 curl -N -X POST localhost:8000/chat -H "Authorization: Bearer $(scripts/dev_token.ps1)" `

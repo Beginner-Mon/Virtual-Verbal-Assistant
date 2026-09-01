@@ -1,4 +1,4 @@
-# Virtual Verbal Assistant (VVA)
+# Embodied Conversational Agent (ECA)
 
 ## Roles
 
@@ -120,7 +120,7 @@ một lần:
 /reload-plugins
 ```
 
-Bundles ~20 model-invoked skills — the ones that touch VVA: `aws-cdk`,
+Bundles ~20 model-invoked skills — the ones that touch ECA: `aws-cdk`,
 `aws-cloudformation`, `aws-containers` (ECS for Kimodo), `aws-iam`,
 `aws-secrets-manager`, `aws-observability`, `aws-database`, `aws-deployment`,
 `aws-billing-and-cost-management`, `aws-sdk-python-usage`.

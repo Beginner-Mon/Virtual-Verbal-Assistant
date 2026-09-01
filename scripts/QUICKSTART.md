@@ -1,4 +1,4 @@
-# QUICKSTART — chạy VVA ở máy local
+# QUICKSTART — chạy ECA ở máy local
 
 > Cập nhật **31/07/2026**, viết lại theo kiến trúc **LangGraph** hiện tại.
 > Bản cũ mô tả stack đã bị thay: DART, ChromaDB, orchestrator :8080, UI :3000,
@@ -29,9 +29,9 @@ Chỉ có **2 tiến trình** phải tự chạy: **backend** và **frontend**. 
 |---|:---:|---|
 | **Frontend (Vite)** | **5173** | `npm run dev` |
 | **Backend (FastAPI + LangGraph)** | **8000** | `uvicorn` |
-| PostgreSQL + pgvector | 5433 | Docker `vva-postgres` |
-| Redis | 6379 | Docker `vva-redis` |
-| SearXNG (web search) | 6666 | Docker `vva-searxng` |
+| PostgreSQL + pgvector | 5433 | Docker `eca-postgres` |
+| Redis | 6379 | Docker `eca-redis` |
+| SearXNG (web search) | 6666 | Docker `eca-searxng` |
 | VieNeu-TTS (giọng nói) | 5000 | `SpeechLLm/api_server.py` — **tuỳ chọn** |
 
 > ⚠️ **Tuyệt đối không dùng cổng 8080.** Đó là service Spring của Owner trên máy này.
@@ -110,7 +110,7 @@ python scripts/ingest_kb_pgvector.py --reset      # ~2918 bài tập, ~9 phút n
 Kiểm tra:
 
 ```bash
-docker exec vva-postgres psql -U vva -d vva -c "SELECT COUNT(*) FROM kb_embeddings;"
+docker exec eca-postgres psql -U eca -d eca -c "SELECT COUNT(*) FROM kb_embeddings;"
 # kỳ vọng 2918 — nếu 0 thì chạy lại lệnh trên
 ```
 
@@ -124,7 +124,7 @@ docker exec vva-postgres psql -U vva -d vva -c "SELECT COUNT(*) FROM kb_embeddin
 |---|:---:|---|
 | `DEEPSEEK_API_KEY` | ✅ | LLM chính |
 | `GEMINI_API_KEYS` | ➖ | Fallback, phân tách bằng dấu phẩy |
-| `VVA_PG_DSN` | ➖ | `postgresql://vva:vva_dev@localhost:5433/vva` |
+| `VVA_PG_DSN` | ➖ | `postgresql://vva:eca_dev@localhost:5433/vva` |
 | `SEARXNG_URL` | ➖ | `http://localhost:6666` |
 | `REQUIRE_AUTH` | ➖ | `false` khi dev. Production phải `true` |
 | `LOG_LEVEL` / `LOG_FILE` | ➖ | Ghi log |

@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">🧠 Virtual Verbal Assistant (VVA)</h1>
+  <h1 align="center">🧠 Embodied Conversational Agent (ECA)</h1>
   <p align="center">
     <strong>A multimodal, bilingual (Vietnamese / English) healthcare assistant for physical-therapy exercise guidance — built on a LangGraph multi-agent supervisor with clinical-safety grading, long-term memory, retrieval-augmented generation, token streaming, and an optional 3D avatar.</strong>
   </p>
@@ -17,7 +17,7 @@
 
 ## ✨ What it does
 
-A user asks *"Tôi bị đau lưng dưới khi ngồi lâu, có bài tập nào không?"* ("I get lower-back pain from sitting too long — any exercises?") and VVA:
+A user asks *"Tôi bị đau lưng dưới khi ngồi lâu, có bài tập nào không?"* ("I get lower-back pain from sitting too long — any exercises?") and ECA:
 
 1. **Classifies intent** and plans which knowledge sources are needed.
 2. **Retrieves** from an internal PT knowledge base (vector search) and, when the user opts in, the live web.

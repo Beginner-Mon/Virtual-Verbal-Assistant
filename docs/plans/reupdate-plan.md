@@ -1,4 +1,4 @@
-# VVA — Re-Architecture Plan
+# ECA — Re-Architecture Plan
 
 > Architect: K | Cập nhật: 2026-06-02
 > Audience: N (Developer), T (Reviewer), Owner

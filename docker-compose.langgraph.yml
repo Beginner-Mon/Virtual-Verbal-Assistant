@@ -1,11 +1,11 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: vva-postgres
+    container_name: eca-postgres
     environment:
-      POSTGRES_DB: vva
-      POSTGRES_USER: vva
-      POSTGRES_PASSWORD: vva_dev
+      POSTGRES_DB: eca
+      POSTGRES_USER: eca
+      POSTGRES_PASSWORD: eca_dev
     ports:
       - "5433:5432"
     # Without this, a Docker Desktop restart (or a host reboot) leaves the
@@ -20,7 +20,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vva -d vva"]
+      test: ["CMD-SHELL", "pg_isready -U eca -d eca"]
       interval: 3s
       timeout: 2s
       retries: 20
@@ -33,7 +33,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: vva-redis
+    container_name: eca-redis
     ports:
       - "6379:6379"
     command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
@@ -50,7 +50,7 @@ services:
 
   searxng:
     image: searxng/searxng:latest
-    container_name: vva-searxng
+    container_name: eca-searxng
     ports:
       - "6666:8080"
     volumes:
@@ -67,7 +67,7 @@ services:
       - ./agenticRAG/.env
     environment:
       - SEARXNG_BASE_URL=http://localhost:6666/
-      - INSTANCE_NAME=vva-search
+      - INSTANCE_NAME=eca-search
     restart: unless-stopped
     deploy:
       resources:

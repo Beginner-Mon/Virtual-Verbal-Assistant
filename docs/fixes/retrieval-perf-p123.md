@@ -4,7 +4,7 @@
 **Branch:** feature/langgraph-rewrite
 **Guidelines:** karpathy-guidelines.md — think first, simplicity, surgical, goal-driven. No scope creep.
 
-Diagnosed live via vva.log (request `f75557b7`, query "thời tiết hôm nay ở Hồ Chí Minh").
+Diagnosed live via eca.log (request `f75557b7`, query "thời tiết hôm nay ở Hồ Chí Minh").
 Backend runs on **:8000** (8080 = Owner's Spring, do NOT use). Docker PG(5433)/Redis/SearXNG up.
 
 ---
@@ -29,7 +29,7 @@ SentenceTransformer(model_name, local_files_only=_offline)
 (Use `os` import already present, or add it.) Keep both sites consistent.
 
 **Acceptance:**
-- Backend starts; first `kb_search` produces **no** `huggingface.co` requests in vva.log.
+- Backend starts; first `kb_search` produces **no** `huggingface.co` requests in eca.log.
 - Existing embedding unit tests still pass.
 - RUNBOOK note (§ environment): model must be pre-cached; set `EMBEDDING_ALLOW_DOWNLOAD=1`
   for the one-time download on a clean machine.
@@ -52,7 +52,7 @@ kb_search ×2 — wasting ~25s). The only hard cap today is the graph-wide `recu
 
 **Acceptance:**
 - A query that would loop now runs **at most 2** `retriever_agent` node executions before
-  synthesizer (verify via vva.log `node_start`/`node_complete` count for one request_id).
+  synthesizer (verify via eca.log `node_start`/`node_complete` count for one request_id).
 - Grader retry path (`route_after_grader` → retriever_agent) still works; the counter must not
   permanently wedge a legitimate grader-triggered retry — decide whether the counter resets on
   grader retry or is a per-turn hard ceiling; document the choice in the worklog. (Simplest:
@@ -95,7 +95,7 @@ Net: log showed `web_search: false` for all 3 rounds yet round 1 ran `search_med
 
 **Acceptance:**
 - With `web_search=false`: no `search_medical` in `tool_names`, no SearXNG (:6666) call in
-  vva.log for that request. Verify with a weather query (which previously triggered it).
+  eca.log for that request. Verify with a weather query (which previously triggered it).
 - With `web_search=true`: `search_medical` available and used for a real-time query; SearXNG
   hit; results reach synthesizer.
 - kb_search / memory_search / youtube_transcript unaffected by the toggle.

@@ -132,7 +132,7 @@ có sẵn model embedding cache).
 
    > Gửi **nguyên chuỗi**, không cần tách. N chỉ dán vào một chỗ duy nhất.
    > **Không** đặt DSN vào `config/langgraph.yaml` — file đó **được commit**,
-   > dòng `dsn:` trong đó là fallback local (`vva:vva_dev@localhost:5433`) và
+   > dòng `dsn:` trong đó là fallback local (`vva:eca_dev@localhost:5433`) và
    > phải giữ nguyên như vậy.
 
 3. **N** — sửa `agenticRAG/.env`:

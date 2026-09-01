@@ -1,4 +1,4 @@
-"""Launch all VVA dev services, each in its own PowerShell window.
+"""Launch all ECA dev services, each in its own PowerShell window.
 
 Usage:
     python start_services.py                # start everything
@@ -71,7 +71,7 @@ def build_ps_command(svc: dict) -> str:
 
 
 def launch(name: str, svc: dict) -> None:
-    title = f"VVA · {name}"
+    title = f"ECA · {name}"
     inner = build_ps_command(svc)
     # Set window title, then run the service command. -NoExit keeps the window
     # open so logs/errors stay visible after the process ends.

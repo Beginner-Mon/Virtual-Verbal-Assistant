@@ -1,4 +1,4 @@
-# VVA — Deployment Guide (Phase 7+)
+# ECA — Deployment Guide (Phase 7+)
 
 > **Status**: Stub — Phase 7 Hybrid Edge-Cloud deployment is not yet implemented.
 > For single-machine deployment, see [RUNBOOK.md](./RUNBOOK.md).

@@ -1,11 +1,11 @@
 {
   "mcpServers": {
     "dart-motion": {
-      "command": "D:/Swin documents/Virtual-Verbal-Assistant/text-to-motion/DART/.venv-mcp/Scripts/python.exe",
+      "command": "D:/Swin documents/ECA/text-to-motion/DART/.venv-mcp/Scripts/python.exe",
       "args": [
-        "D:/Swin documents/Virtual-Verbal-Assistant/text-to-motion/DART/mcp_server.py"
+        "D:/Swin documents/ECA/text-to-motion/DART/mcp_server.py"
       ],
-      "cwd": "D:/Swin documents/Virtual-Verbal-Assistant/text-to-motion/DART"
+      "cwd": "D:/Swin documents/ECA/text-to-motion/DART"
     }
   }
 }

@@ -1,6 +1,6 @@
-# VVA LangGraph — Runbook
+# ECA LangGraph — Runbook
 
-Step-by-step guide for deploying the VVA LangGraph backend + ECA UI on a single machine.
+Step-by-step guide for deploying the ECA LangGraph backend + ECA UI on a single machine.
 
 ## Prerequisites
 
@@ -16,8 +16,8 @@ Local install of PostgreSQL/Redis works but isn't documented — Docker is the s
 ## 1. Clone & environment
 
 ```bash
-git clone <repo-url> vva
-cd vva
+git clone <repo-url> eca
+cd eca
 git checkout feature/langgraph-rewrite
 ```
 
@@ -56,11 +56,11 @@ Start PostgreSQL (pgvector) + Redis + SearXNG containers:
 
 ```powershell
 docker compose -f docker-compose.langgraph.yml up -d
-docker ps  # verify vva-postgres (healthy) + vva-redis + vva-searxng are Up
+docker ps  # verify eca-postgres (healthy) + eca-redis + eca-searxng are Up
 ```
 
 The compose file creates:
-- PostgreSQL: DB `vva`, user `vva`, password `vva_dev`, **host port 5433** (mapped 5433→5432
+- PostgreSQL: DB `eca`, user `eca`, password `eca_dev`, **host port 5433** (mapped 5433→5432
   to avoid clashing with a local PostgreSQL on 5432). All DSNs use 5433.
 - Redis: port 6379, 512MB maxmemory, LRU eviction
 - SearXNG: port 6666, web search aggregator (Google + Bing + DDG + Wikipedia)
@@ -85,7 +85,7 @@ alembic upgrade head
 Verify tables exist:
 
 ```bash
-docker exec -it vva-postgres psql -U vva -d vva -c "\dt"
+docker exec -it eca-postgres psql -U eca -d eca -c "\dt"
 # Expected: users, conversations, messages, summaries, user_memory, documents, kb_embeddings
 ```
 
@@ -94,14 +94,14 @@ docker exec -it vva-postgres psql -U vva -d vva -c "\dt"
 Terminal 1 — Backend (port 8000, logs to file):
 
 > ⚠️ **Port 8080 is reserved** on this machine for the Owner's Spring service — do NOT
-> bind the VVA backend to 8080. Use **8000**.
+> bind the ECA backend to 8080. Use **8000**.
 
 ```powershell
 conda activate firstconda
 cd agenticRAG
-# Redirect stdout to vva.log so log-analysis commands in §8 work.
-# Drop the `*> ..\vva.log` part if you prefer console output.
-python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8000 --host 0.0.0.0 *> ..\vva.log
+# Redirect stdout to eca.log so log-analysis commands in §8 work.
+# Drop the `*> ..\eca.log` part if you prefer console output.
+python -m uvicorn langgraph_agents.api.main:create_app --factory --port 8000 --host 0.0.0.0 *> ..\eca.log
 ```
 
 **Check the first two log lines.** The `conda activate` above is load-bearing and easy
@@ -225,15 +225,15 @@ Docker Desktop is not running. Start it from Start menu (or PowerShell):
 ```powershell
 & "C:\Program Files\Docker\Docker\Docker Desktop.exe"
 docker compose -f docker-compose.langgraph.yml up -d
-docker ps  # verify vva-postgres + vva-redis are Up
+docker ps  # verify eca-postgres + eca-redis are Up
 ```
 Wait ~30s for the daemon to be ready before `docker compose up`.
 
 ### PostgreSQL connection refused
 Container down or unhealthy:
 ```powershell
-docker ps --format "{{.Names}}: {{.Status}}"            # should show vva-postgres healthy
-docker logs vva-postgres --tail 30
+docker ps --format "{{.Names}}: {{.Status}}"            # should show eca-postgres healthy
+docker logs eca-postgres --tail 30
 docker compose -f docker-compose.langgraph.yml restart postgres
 ```
 
@@ -248,7 +248,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 ### Redis connection refused
 Container down:
 ```powershell
-docker ps --format "{{.Names}}: {{.Status}}"            # should show vva-redis Up
+docker ps --format "{{.Names}}: {{.Status}}"            # should show eca-redis Up
 docker compose -f docker-compose.langgraph.yml restart redis
 ```
 Local-install fallback (only if you skipped Docker): `redis-server --port 6379`.
@@ -320,7 +320,7 @@ network blip). Liveness `/health` still 200. Investigate Redis health (`redis-cl
 ### Frontend shows "API Error" / "Sorry, something went wrong"
 Check browser console for the failing request URL. The React UI defaults to
 `http://localhost:8000` (via `VITE_API_BASE_URL`). A **404 from :8080** means the
-request hit the Owner's Spring service, not the VVA backend — confirm the backend is
+request hit the Owner's Spring service, not the ECA backend — confirm the backend is
 running on **:8000** (`curl http://localhost:8000/health`) and that
 `ECA_UI/frontend/.env.local` sets `VITE_API_BASE_URL=http://localhost:8000`. The old
 test UI can be pointed with `?api_base=http://localhost:8000`.
@@ -331,20 +331,20 @@ All logs are JSON-per-line (configured by `shared/logging.py` at FastAPI startup
 Each line has: `ts`, `lvl`, `logger`, `msg`, `request_id`, plus per-event extras.
 
 **Capturing logs to a file**: uvicorn writes to stdout by default. Redirect when starting
-backend (see §4 — `*> vva.log` on PowerShell, `> vva.log 2>&1` on bash/WSL). Without
+backend (see §4 — `*> eca.log` on PowerShell, `> eca.log 2>&1` on bash/WSL). Without
 redirect, the filter commands below have nothing to read.
 
 ### Filter by request_id (PowerShell)
 
 ```powershell
 # Tail backend, parse JSON, filter one request
-Get-Content vva.log -Wait | ForEach-Object {
+Get-Content eca.log -Wait | ForEach-Object {
   $obj = $_ | ConvertFrom-Json
   if ($obj.request_id -eq 'abc-123-def') { $obj }
 }
 
 # All ERRORs in last 100 lines
-Get-Content vva.log -Tail 100 | ForEach-Object { $_ | ConvertFrom-Json } |
+Get-Content eca.log -Tail 100 | ForEach-Object { $_ | ConvertFrom-Json } |
   Where-Object lvl -eq 'ERROR' | Format-List
 ```
 
@@ -352,13 +352,13 @@ Get-Content vva.log -Tail 100 | ForEach-Object { $_ | ConvertFrom-Json } |
 
 ```bash
 # All log lines for one request
-tail -f vva.log | jq -c 'select(.request_id == "abc-123-def")'
+tail -f eca.log | jq -c 'select(.request_id == "abc-123-def")'
 
 # Errors with timing
-jq -c 'select(.lvl == "ERROR") | {ts, msg, node, error}' vva.log
+jq -c 'select(.lvl == "ERROR") | {ts, msg, node, error}' eca.log
 
 # Per-node duration distribution (last 1000 lines)
-tail -1000 vva.log | jq -c 'select(.msg == "node_complete") | {node, elapsed_ms}'
+tail -1000 eca.log | jq -c 'select(.msg == "node_complete") | {node, elapsed_ms}'
 ```
 
 ### Tracing one request end-to-end

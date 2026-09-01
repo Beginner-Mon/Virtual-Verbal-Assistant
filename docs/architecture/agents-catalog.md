@@ -1,6 +1,6 @@
 ---
 title: "Agents Catalog"
-description: "Complete inventory of all agents, services, and specialized modules in the Virtual Verbal Assistant system."
+description: "Complete inventory of all agents, services, and specialized modules in the Embodied Conversational Agent system."
 tags:
   - agents
   - catalog

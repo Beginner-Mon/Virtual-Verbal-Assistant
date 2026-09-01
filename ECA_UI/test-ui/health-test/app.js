@@ -1,6 +1,6 @@
 // ── Base URL resolution ────────────────────────────────────────────
 // Priority: ?api_base= query param → window.TEST_UI_API_BASE_URL → default :8000
-// NOTE: 8080 is reserved for the Owner's Spring service — the VVA backend runs on :8000.
+// NOTE: 8080 is reserved for the Owner's Spring service — the ECA backend runs on :8000.
 function resolveBase(paramName, globalName, fallback) {
     const p = new URLSearchParams(window.location.search).get(paramName);
     return String(p || window[globalName] || fallback).replace(/\/$/, '');

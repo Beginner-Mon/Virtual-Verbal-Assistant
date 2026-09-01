@@ -1,5 +1,5 @@
 ---
-title: "Virtual Verbal Assistant — Docs Vault"
+title: "Embodied Conversational Agent — Docs Vault"
 description: "Obsidian-style hub for all project documentation."
 tags:
   - index
@@ -13,7 +13,7 @@ tags:
 date: 2026-05-09
 ---
 
-# Virtual Verbal Assistant — Docs Vault
+# Embodied Conversational Agent — Docs Vault
 
 > This folder is treated as an **Obsidian vault**. Use `[[...]]` wiki links to navigate between notes, and rely on YAML frontmatter tags for filtering.
 

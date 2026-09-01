@@ -1,4 +1,4 @@
-# VVA Architecture — Full Flow + Optimization Inventory (pre-deploy)
+# ECA Architecture — Full Flow + Optimization Inventory (pre-deploy)
 
 > Status: **Living review doc** before Phase 7 deployment
 > Date: 2026-05-26
@@ -227,7 +227,7 @@ synthesize_speech_async (in tasks.py):
 
 | Concern | Current | Deploy needs |
 |---|---|---|
-| Backend log file | stdout redirect via `*> vva.log` | Proper rotation (logrotate or python RotatingFileHandler) |
+| Backend log file | stdout redirect via `*> eca.log` | Proper rotation (logrotate or python RotatingFileHandler) |
 | CORS allow_origins=["*"] | dev only | Lock to known origin in prod |
 | _to_uuid auto-create user | Anonymous "user_123" maps to deterministic UUID | Need real auth — anonymous mode OK for demo, not multi-tenant |
 | Redis no auth | localhost trust | Add password if exposed |
