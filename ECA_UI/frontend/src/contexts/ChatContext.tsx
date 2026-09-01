@@ -15,7 +15,7 @@ import {
 import { pollMotionJob } from '../lib/motionJob'
 import { useMotion } from '../hooks/useMotion'
 import { ChatContext, type ChatContextType, type SessionItem } from '../hooks/useChat'
-import { uiStringsFor, FALLBACK_UI_STRINGS, type UiStrings } from '../lib/characterCopy'
+import { uiStringsFor, FALLBACK_UI_STRINGS, getGreeting, type UiStrings } from '../lib/characterCopy'
 
 export type { SessionItem, ChatContextType } from '../hooks/useChat'
 import { useAudioRecorder } from '../hooks/useAudioRecorder'
@@ -56,7 +56,7 @@ function buildInitialMessages(ui: UiStrings): Message[] {
     {
       id: GREETING_ID,
       role: 'assistant',
-      content: ui.greeting,
+      content: getGreeting(ui),
       timestamp: new Date(),
     },
   ]
@@ -94,6 +94,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const [sessionList, setSessionList] = useState<SessionItem[]>([])
   const [sessionsDirty, setSessionsDirty] = useState(true)
+  const [isSwitching, setIsSwitching] = useState(false)
   const switchingRef = useRef(false)
 
   // Audio recording — frontend only (no backend)
@@ -131,8 +132,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const abortControllerRef = useRef<AbortController | null>(null)
   const thinkingRef = useRef(false)
 
-  // Track character switches to append greeting instead of mutating history.
-  // See docs/plans/character-switch-greeting-plan.md
+  // Keep the initial greeting immutable after first hydration.
+  // - First real character after mount ('' -> 'anne' after catalog) may adopt
+  //   once if still only the fallback greeting is shown.
+  // - Subsequent switches do NOT mutate nor append — greeting gốc giữ nguyên.
+  //   Dấu hiệu đổi character và việc đổi backend role 'assistant' -> tên model
+  //   sẽ làm ở phase sau (hiện giữ nguyên).
   const prevVrmRef = useRef<string>('')
   const hydratedRef = useRef<boolean>(false)
 
@@ -140,15 +145,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     if (isRestoring) return
     if (!selectedVrmId) return
 
-    // First time a real character is selected ('' -> 'anne' after catalog).
-    // Adopt greeting once without divider — user hasn't had time to see fallback.
     if (!hydratedRef.current) {
       hydratedRef.current = true
       if (prevVrmRef.current === '') {
         setMessages((prev) => {
           if (prev.length === 1 && prev[0].id === GREETING_ID) {
-            if (prev[0].content === uiRef.current.greeting) return prev
-            return [{ ...prev[0], content: uiRef.current.greeting }]
+            const cur = getGreeting(uiRef.current)
+            if (prev[0].content === cur) return prev
+            return [{ ...prev[0], content: cur }]
           }
           return prev
         })
@@ -157,32 +161,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    if (prevVrmRef.current === selectedVrmId) return
-
-    // User-initiated switch: keep old greeting, append hr + new greeting.
-    const newGreeting = uiRef.current.greeting
-    const character = vrmOptions.find((o) => o.id === selectedVrmId)?.character
-    const toLabel = character?.display_name ?? selectedVrmId
-
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: `divider-${crypto.randomUUID()}`,
-        role: 'system',
-        kind: 'divider',
-        content: '',
-        timestamp: new Date(),
-        dividerMeta: { to: selectedVrmId, toLabel },
-      } as Message,
-      {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: newGreeting,
-        timestamp: new Date(),
-      },
-    ])
-    prevVrmRef.current = selectedVrmId
-  }, [selectedVrmId, isRestoring, vrmOptions])
+    // Subsequent character switches: intentionally no-op — keep original greeting.
+    // Only track for future use (e.g., when we switch to storing model name).
+    if (prevVrmRef.current !== selectedVrmId) {
+      prevVrmRef.current = selectedVrmId
+    }
+  }, [selectedVrmId, isRestoring])
 
   const addImage = useCallback((file: File) => {
     const url = URL.createObjectURL(file)
@@ -327,17 +311,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     switchingRef.current = true
     abortControllerRef.current?.abort()
 
+    // Đổi UI ngay: không hiện session cũ trong lúc load session mới
+    setIsSwitching(true)
+    setActiveSessionId(sessionId)
+    sessionIdRef.current = sessionId
+    localStorage.setItem(SESSION_KEY, sessionId)
+    setMessages([])
+    setInput('')
+    setIsTyping(false)
+    setStageLabel(null)
+    setIsGenerating(false)
+    endThinking()
+
     try {
       const data = await getSession(sessionId)
+      // Race: user đã bấm session khác trong lúc await
+      if (sessionId !== sessionIdRef.current) return
       const history = (data?.messages ?? []) as SessionMessage[]
-      sessionIdRef.current = sessionId
-      setActiveSessionId(sessionId)
-      localStorage.setItem(SESSION_KEY, sessionId)
-      setInput('')
-      setIsTyping(false)
-      setStageLabel(null)
-      setIsGenerating(false)
-      endThinking()
 
       if (history.length > 0) {
         setMessages([
@@ -354,8 +344,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         setMessages(buildInitialMessages(uiRef.current))
       }
     } catch (e) {
+      const isAbort = (e as { name?: string })?.name === 'AbortError' || (e as { code?: string })?.code === 'ERR_CANCELED'
+      if (isAbort) return
       console.warn('[session] switch failed:', e)
     } finally {
+      // Chỉ clear nếu vẫn đang ở session này (tránh đè isSwitching của session mới)
+      if (sessionId === sessionIdRef.current) setIsSwitching(false)
       switchingRef.current = false
     }
   }, [endThinking])
@@ -600,6 +594,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       voiceReply,
       setVoiceReply,
       isRestoring,
+      isSwitching,
       startNewSession,
       handleSend,
       handleStop,
@@ -622,7 +617,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       cancelRecord,
       sendAudio,
     }),
-    [messages, input, isTyping, isGenerating, stageLabel, ui, webSearch, voiceReply, isRestoring, startNewSession, handleSend, handleStop, imageUrls, addImage, removeImage, sessionList, sessionsDirty, activeSessionId, refreshSessions, switchToSession, deleteSessionAction, markSessionsClean, isRecording, recordingDuration, recordingError, previewAudioUrl, startRecord, stopRecord, cancelRecord, sendAudio],
+    [messages, input, isTyping, isGenerating, stageLabel, ui, webSearch, voiceReply, isRestoring, isSwitching, startNewSession, handleSend, handleStop, imageUrls, addImage, removeImage, sessionList, sessionsDirty, activeSessionId, refreshSessions, switchToSession, deleteSessionAction, markSessionsClean, isRecording, recordingDuration, recordingError, previewAudioUrl, startRecord, stopRecord, cancelRecord, sendAudio],
   )
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>

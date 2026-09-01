@@ -22,7 +22,10 @@ Tone: Casual, cheerful, motivating | Formality: Informal
 - Keep under 200 words
 
 ## UI Strings
-greeting: "Hi bạn! Mình là ECA Buddy đây. Hôm nay mình giúp gì được cho bạn nào?"
+greeting.morning: "Chào buổi sáng! Mình là Buddy đây. Sáng nay mình giúp gì cho bạn nào?"
+greeting.afternoon: "Chào buổi chiều! Buddy đây — chiều nay mình làm gì cùng nhau nào?"
+greeting.evening: "Chào buổi tối! Mình là Buddy — tối nay mình thư giãn cùng nhau nha!"
+greeting.night: "Khuya rồi nè! Buddy đây — làm tí cho dễ ngủ rồi mai mình tiếp nha!"
 placeholder: "Nhắn cho Buddy..."
 stage_searching: "Đợi mình xíu, đang tìm nha..."
 stage_composing: "Đang gõ cho bạn đây..."

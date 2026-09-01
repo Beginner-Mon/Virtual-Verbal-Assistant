@@ -34,7 +34,10 @@ referral_advice.en: "I strongly recommend you consult a medical professional for
 scope_disclaimer.en: "*This is wellness guidance only and does not replace professional medical advice.*"
 
 ## UI Strings
-greeting: "Hello! I'm Seele. Tell me what's been bothering you and we'll work through it together."
+greeting.morning: "Good morning! I'm Seele. Tell me what's been bothering you and we'll work through it together."
+greeting.afternoon: "Good afternoon! I'm Seele — how are you feeling today?"
+greeting.evening: "Good evening! I'm Seele. Let's review how your day went."
+greeting.night: "Up late? I'm Seele — let's keep it light and pick it up again tomorrow."
 placeholder: "Message Seele..."
 stage_searching: "Looking that up..."
 stage_composing: "Writing your answer..."

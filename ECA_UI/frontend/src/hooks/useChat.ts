@@ -26,6 +26,7 @@ export interface ChatContextType {
   voiceReply: boolean
   setVoiceReply: (value: boolean) => void
   isRestoring: boolean
+  isSwitching: boolean
   startNewSession: () => void
   handleSend: () => Promise<void>
   handleStop: () => void

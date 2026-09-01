@@ -27,7 +27,7 @@ import {
 // unused import is not a reservation — git remembers. Reinstate when the
 // feature lands.
 import { useMediaQuery } from '../lib/use-media-query'
-import { useAuth } from '../contexts/AuthContext'
+import { useAvatarBg } from '../contexts/AvatarBgContext'
 import { useMotion } from '../hooks/useMotion'
 import ChatPanel from './ChatPanel'
 import ChatSessionsPanel from './panels/ChatSessionsPanel'
@@ -144,8 +144,7 @@ function DraggableBar({
   onIconClick: (id: PanelId) => void
   isDragging: boolean
 }) {
-  const { userAttributes } = useAuth()
-  const profilePicture = userAttributes?.picture
+  const { bg } = useAvatarBg()
 
   const { attributes, listeners, setNodeRef, transform } = useDraggable({
     id: 'floating-nav-bar',
@@ -235,7 +234,7 @@ function DraggableBar({
           rounded-full cursor-pointer
         `}
       >
-        <AvatarWithLogo size="sm" profilePicture={profilePicture} />
+        <AvatarWithLogo size="sm" bgClassName={bg.className} logoClassName={bg.logoClassName} />
       </button>
     </div>
   )

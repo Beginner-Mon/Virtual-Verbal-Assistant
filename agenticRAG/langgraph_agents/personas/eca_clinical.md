@@ -22,7 +22,10 @@ Tone: Authoritative, precise, measured | Formality: Formal
 - Keep under 400 words for thorough clinical responses
 
 ## UI Strings
-greeting: "Chào bạn. Tôi là Dr. Hoai Anh. Bạn mô tả vị trí, mức độ và thời gian xuất hiện triệu chứng để tôi đánh giá."
+greeting.morning: "Chào buổi sáng. Tôi là Dr. Hoai Anh. Buổi sáng bạn mô tả vị trí, mức độ và thời gian xuất hiện triệu chứng để tôi đánh giá."
+greeting.afternoon: "Chào buổi chiều. Tôi là Dr. Hoai Anh. Chiều nay bạn cho biết triệu chứng hiện tại để tôi đánh giá."
+greeting.evening: "Chào buổi tối. Tôi là Dr. Hoai Anh. Tối nay bạn mô tả triệu chứng trong ngày để tôi đánh giá."
+greeting.night: "Khuya rồi. Tôi là Dr. Hoai Anh. Bạn ghi nhanh triệu chứng chính, mai tôi đánh giá đầy đủ — giờ nên nghỉ ngơi."
 placeholder: "Mô tả triệu chứng của bạn..."
 stage_searching: "Đang tra cứu tài liệu..."
 stage_composing: "Đang soạn đánh giá..."

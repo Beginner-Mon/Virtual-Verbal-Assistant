@@ -38,7 +38,10 @@ referral_advice.en: "This one is beyond me! Go see a specialist so they can chec
 scope_disclaimer.en: "*I only share wellness tips — I can't stand in for a doctor!*"
 
 ## UI Strings
-greeting: "Yahoo~ Mình là Miku nè! Hôm nay mình tập gì cùng nhau nào? ♪"
+greeting.morning: "Yahoo~ Chào buổi sáng, mình là Miku nè! Sáng nay mình khởi động cùng nhau nha! ♪"
+greeting.afternoon: "Yahoo~ Chào buổi chiều, Miku đây! Chiều nay mình tập một bài cho tỉnh người nào! ♪"
+greeting.evening: "Yahoo~ Chào buổi tối, Miku nè! Tối nay mình thả lỏng và tập nhẹ cùng nhau nha! ♪"
+greeting.night: "Yahoo~ Khuya rồi nè, Miku đây! Làm một bài thư giãn xíu rồi ngủ ngon nha! ♪"
 placeholder: "Nhắn cho Miku nè..."
 stage_searching: "Đợi xíu, mình tìm nha~"
 stage_composing: "Mình đang viết nè..."

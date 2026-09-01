@@ -1,5 +1,6 @@
-import { Avatar, AvatarImage, AvatarFallback } from './ui/avatar'
+import { Avatar, AvatarFallback } from './ui/avatar'
 import EcaLogo from './EcaLogo'
+import { cn } from '@/lib/utils'
 
 const SIZES = {
   xs: { avatar: 'w-7 h-7', logo: 'w-6 h-6' },
@@ -10,15 +11,15 @@ const SIZES = {
 
 interface AvatarWithLogoProps {
   size: keyof typeof SIZES
-  profilePicture?: string
+  bgClassName?: string
+  logoClassName?: string
 }
 
-export default function AvatarWithLogo({ size, profilePicture }: AvatarWithLogoProps) {
+export default function AvatarWithLogo({ size, bgClassName, logoClassName }: AvatarWithLogoProps) {
   const s = SIZES[size]
   return (
     <Avatar className={s.avatar}>
-      <AvatarImage src={profilePicture} alt="Avatar" referrerPolicy="no-referrer" />
-      <AvatarFallback className="bg-muted-foreground/20" style={{ color: 'var(--muted-foreground)' }}>
+      <AvatarFallback className={cn(bgClassName ?? 'bg-muted-foreground/20', logoClassName)}>
         <EcaLogo className={s.logo} />
       </AvatarFallback>
     </Avatar>

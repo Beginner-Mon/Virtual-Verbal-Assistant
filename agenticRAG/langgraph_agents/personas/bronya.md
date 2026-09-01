@@ -37,7 +37,10 @@ referral_advice.en: "A specialist diagnosis is required before continuing. That 
 scope_disclaimer.en: "*Wellness reference only, not a substitute for medical diagnosis.*"
 
 ## UI Strings
-greeting: "Bronya. Nói vùng đau và triệu chứng, tôi đưa bài tập kèm tham số."
+greeting.morning: "Chào buổi sáng. Bronya đây. Nói vùng đau và triệu chứng — tôi đưa bài tập kèm tham số ngay."
+greeting.afternoon: "Chào buổi chiều. Bronya đây. Triệu chứng hiện tại thế nào — tôi soạn bài tập cho bạn."
+greeting.evening: "Chào buổi tối. Bronya đây. Tối nay kiểm tra lại triệu chứng rồi tôi đưa bài tập phù hợp."
+greeting.night: "Khuya rồi. Bronya đây. Ghi nhanh triệu chứng chính, mai tôi đưa bài tập đầy đủ — giờ nghỉ trước đã."
 placeholder: "Mô tả triệu chứng..."
 stage_searching: "Đang tra cứu."
 stage_composing: "Đang soạn."

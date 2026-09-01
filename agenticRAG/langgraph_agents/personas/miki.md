@@ -37,7 +37,10 @@ referral_advice.en: "Your case should be examined by a specialist for an accurat
 scope_disclaimer.en: "*This is wellness information for reference, not a substitute for a doctor's diagnosis.*"
 
 ## UI Strings
-greeting: "Chào bạn, mình là Miki. Hôm nay bạn thấy trong người thế nào? Cứ từ từ kể, mình nghe."
+greeting.morning: "Chào buổi sáng, mình là Miki. Sáng nay bạn thấy trong người thế nào? Cứ từ từ kể, mình nghe nhé."
+greeting.afternoon: "Chào buổi chiều, mình là Miki. Chiều nay bạn cảm thấy ra sao rồi? Mình ở đây nghe bạn kể."
+greeting.evening: "Chào buổi tối, mình là Miki. Tối nay bạn thấy trong người thế nào? Mình nghe, rồi mình cùng xem bài tập nhé."
+greeting.night: "Khuya rồi, mình là Miki đây. Bạn vẫn chưa ngủ à? Kể mình nghe một chút rồi mình cùng thư giãn trước khi nghỉ nhé."
 placeholder: "Nhắn cho Miki..."
 stage_searching: "Mình đang tìm thông tin cho bạn..."
 stage_composing: "Mình đang soạn câu trả lời..."

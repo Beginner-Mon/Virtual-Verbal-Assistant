@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type KeyboardEvent } from 'react'
-import { ArrowUp, Mic, Sparkles, Square, Plus, Globe, Image, X, Volume2, SquarePen } from 'lucide-react'
+import { ArrowUp, Mic, Sparkles, Square, Plus, Globe, Image, X, Volume2, SquarePen, Loader2 } from 'lucide-react'
 import TextareaAutosize from 'react-textarea-autosize'
 import { ScrollArea } from './ui/scroll-area'
 import ChatMessage from './ChatMessage'
@@ -21,6 +21,7 @@ export default function ChatPanel() {
     voiceReply,
     setVoiceReply,
     isRestoring,
+    isSwitching,
     startNewSession,
     handleSend,
     handleStop,
@@ -94,26 +95,35 @@ export default function ChatPanel() {
       {/* ── Messages ── */}
       <ScrollArea className="flex-1 min-h-0 px-1 md:px-2">
         <div className="py-2 md:py-4 space-y-1 md:space-y-2 max-w-full overflow-x-hidden">
-          {messages.map((msg, i) => {
-            if (msg.kind === 'divider' || msg.role === 'system') {
-              return <ChatDivider key={msg.id} toLabel={msg.dividerMeta?.toLabel} />
-            }
-            return <ChatMessage key={msg.id} message={msg} isStreaming={isGenerating && i === messages.length - 1} />
-          })}
+          {isSwitching ? (
+            <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground">
+              <Loader2 className="w-6 h-6 animate-spin" />
+              <p className="text-xs">Chờ tí...</p>
+            </div>
+          ) : (
+            <>
+              {messages.map((msg, i) => {
+                if (msg.kind === 'divider' || msg.role === 'system') {
+                  return <ChatDivider key={msg.id} toLabel={msg.dividerMeta?.toLabel} />
+                }
+                return <ChatMessage key={msg.id} message={msg} isStreaming={isGenerating && i === messages.length - 1} />
+              })}
 
-          {/* typing / stage indicator */}
-          {(isTyping || stageLabel) && (
-            <div className="px-3 md:px-5 py-2 md:py-3 animate-message-in">
-              {stageLabel ? (
-                <p className="text-xs text-muted-foreground italic">{stageLabel}</p>
-              ) : (
-                <div className="flex gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.3s]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.15s]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50 animate-bounce" />
+              {/* typing / stage indicator */}
+              {(isTyping || stageLabel) && (
+                <div className="px-3 md:px-5 py-2 md:py-3 animate-message-in">
+                  {stageLabel ? (
+                    <p className="text-xs text-muted-foreground italic">{stageLabel}</p>
+                  ) : (
+                    <div className="flex gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.3s]" />
+                      <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.15s]" />
+                      <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground/50 animate-bounce" />
+                    </div>
+                  )}
                 </div>
               )}
-            </div>
+            </>
           )}
           <div ref={bottomRef} />
         </div>

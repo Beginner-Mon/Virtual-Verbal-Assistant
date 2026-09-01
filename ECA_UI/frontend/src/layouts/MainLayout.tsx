@@ -6,6 +6,7 @@ import { MotionProvider } from '../contexts/MotionContext'
 import { useMotion } from '../hooks/useMotion'
 import { ChatProvider } from '../contexts/ChatContext'
 import { GraphicsProvider } from '../contexts/GraphicsContext'
+import { AvatarBgProvider } from '../contexts/AvatarBgContext'
 
 function AudioToggle() {
   const { isMusicPlaying, toggleMusic } = useMotion()
@@ -29,6 +30,7 @@ export default function MainLayout() {
     <MotionProvider>
       <ChatProvider>
         <GraphicsProvider>
+        <AvatarBgProvider>
         <main className="relative h-screen w-screen overflow-hidden bg-background">
         <div className="fixed top-5 left-5 z-[9990] flex items-center opacity-80 transition-opacity hover:opacity-100">
           <Link to="/" aria-label="Go to home" className="flex items-center">
@@ -51,6 +53,7 @@ export default function MainLayout() {
         {/* Floating navigation overlay */}
         <FloatingNavBar />
       </main>
+        </AvatarBgProvider>
         </GraphicsProvider>
       </ChatProvider>
     </MotionProvider>

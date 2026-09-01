@@ -135,6 +135,38 @@ def _load_persona(persona_id: str) -> dict:
     # system prompt: these strings are for the user's screen, not the model.
     ui_raw = sections.pop("ui_strings", "")
     ui_strings = _parse_key_values(ui_raw)
+    # ── Normalize greeting to nested object ──────────────────────────────
+    # Authoring is flat dot-keys in markdown (greeting.morning: "...") for
+    # readability — one line per slot — but the DB and frontend use a nested
+    # object `greeting: {morning, afternoon, evening, night}`. This block
+    # assembles the object so sync_personas_to_db.py writes the nested shape
+    # and so that a plain string `greeting: "hi"` (old data) would not shadow it.
+    # Also handles the case where greeting was authored as a JSON string
+    # `greeting: {"morning": "..."}` in one line.
+    _greeting_slots: dict[str, str] = {}
+    for _k in list(ui_strings.keys()):
+        if _k.startswith("greeting."):
+            _slot = _k.split(".", 1)[1].strip()
+            if _slot in ("morning", "afternoon", "evening", "night"):
+                _greeting_slots[_slot] = ui_strings.pop(_k)
+    # JSON single-line form: greeting: {"morning": "...", ...}
+    if "greeting" in ui_strings and isinstance(ui_strings["greeting"], str):
+        _raw_g = ui_strings["greeting"].strip()
+        if _raw_g.startswith("{"):
+            try:
+                _parsed = json.loads(_raw_g)
+                if isinstance(_parsed, dict):
+                    for _s in ("morning", "afternoon", "evening", "night"):
+                        if _s in _parsed and isinstance(_parsed[_s], str) and _parsed[_s].strip():
+                            _greeting_slots[_s] = _parsed[_s].strip()
+                    ui_strings.pop("greeting", None)
+            except (ValueError, TypeError):
+                pass
+    if _greeting_slots:
+        # Old flat string `greeting: "..."` must not survive alongside the object —
+        # frontend now expects an object and "bỏ fallback" per spec.
+        ui_strings.pop("greeting", None)
+        ui_strings["greeting"] = _greeting_slots
 
     voice_lines = sections.pop("voice_identity", "")
     voice_identity = _parse_voice_identity(voice_lines)

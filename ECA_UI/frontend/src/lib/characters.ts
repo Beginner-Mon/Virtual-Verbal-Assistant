@@ -53,8 +53,9 @@ export interface Character {
   sort_order: number
   /** Chat-surface copy — greeting, stage labels, error line, input placeholder.
    *  Optional because the catalog Lambda only returns it once redeployed with
-   *  the column; see characterCopy.uiStringsFor for the fallback. */
-  ui_strings?: Record<string, string>
+   *  the column; see characterCopy.uiStringsFor for the fallback.
+   *  greeting is a nested object {morning,afternoon,evening,night} — not a string. */
+  ui_strings?: Record<string, unknown>
 }
 
 interface CharacterListResponse {

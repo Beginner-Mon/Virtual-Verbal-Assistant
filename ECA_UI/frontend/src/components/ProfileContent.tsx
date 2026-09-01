@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { IdCard, User, KeyRound, Link2, LogOut } from 'lucide-react'
+import { IdCard, User, KeyRound, Link2, LogOut, Pen } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { fetchAuthSession } from 'aws-amplify/auth'
 import { linkGoogleAccount, mountGoogleLinkButton } from '../lib/googleLink'
 import AvatarWithLogo from './AvatarWithLogo'
+import { useAvatarBg } from '../contexts/AvatarBgContext'
+import AvatarPickerModal from './AvatarPickerModal'
 
 interface Props {
   onClose?: () => void
@@ -58,7 +60,8 @@ export default function ProfileContent({ onClose }: Props) {
   const displayName = (payload?.['custom:displayName'] as string | undefined) || null
   const email = (payload?.['custom:email'] as string | undefined) || (user?.signInDetails?.loginId as string | undefined) || (userAttributes?.email as string | undefined) || 'Unknown user'
 
-  const profilePicture = userAttributes?.picture
+  const { bg, colorId, setColorId } = useAvatarBg()
+  const [showPicker, setShowPicker] = useState(false)
   const navigate = useNavigate()
 
   const handleOpenSetPassword = () => {
@@ -157,7 +160,16 @@ export default function ProfileContent({ onClose }: Props) {
         <div ref={setRef('profile')} className="scroll-mt-6 pb-5">
           <h3 className="text-base font-semibold text-foreground mb-5">Profile</h3>
           <div className="flex items-center gap-4">
-            <AvatarWithLogo size="md" profilePicture={profilePicture} />
+            <div className="relative shrink-0">
+              <AvatarWithLogo size="md" bgClassName={bg.className} logoClassName={bg.logoClassName} />
+              <button
+                onClick={() => setShowPicker(true)}
+                aria-label="Edit avatar background"
+                className="absolute -right-1 -bottom-1 w-6 h-6 rounded-full bg-card border border-border shadow-md flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer"
+              >
+                <Pen className="w-3 h-3" />
+              </button>
+            </div>
             <div>
               <p className="text-xs text-muted-foreground">Signed in as</p>
               <p className="text-sm font-medium text-foreground">{displayName ?? email.split('@')[0]}</p>
@@ -245,6 +257,13 @@ export default function ProfileContent({ onClose }: Props) {
           </div>
         </div>
       </div>
+      {showPicker && (
+        <AvatarPickerModal
+          currentColorId={colorId}
+          onSelect={(id) => setColorId(id)}
+          onClose={() => setShowPicker(false)}
+        />
+      )}
     </div>
   )
 }

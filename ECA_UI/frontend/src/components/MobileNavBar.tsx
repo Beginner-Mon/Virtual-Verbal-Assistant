@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Menu, X, Music2 } from 'lucide-react'
 import type { PanelId, NavItem } from './FloatingNavBar'
-import { useAuth } from '../contexts/AuthContext'
+import { useAvatarBg } from '../contexts/AvatarBgContext'
 import AvatarWithLogo from './AvatarWithLogo'
 
 interface MobileNavBarProps {
@@ -22,8 +22,7 @@ export default function MobileNavBar({
   isMusicPlaying,
   toggleMusic,
 }: MobileNavBarProps) {
-  const { userAttributes } = useAuth()
-  const profilePicture = userAttributes?.picture
+  const { bg } = useAvatarBg()
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const mobileMenuRef = useRef<HTMLDivElement>(null)
@@ -252,7 +251,7 @@ export default function MobileNavBar({
               className={`rounded-full transition-colors`}
               title="Profile & Settings"
             >
-              <AvatarWithLogo size="xs" profilePicture={profilePicture} />
+              <AvatarWithLogo size="xs" bgClassName={bg.className} logoClassName={bg.logoClassName} />
             </button>
           </div>
         </div>

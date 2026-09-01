@@ -103,9 +103,11 @@ export default function ChatSessionsPanel({ onSessionSelected }: { onSessionSele
               return (
                 <button
                   key={s.session_id}
-                  onClick={() => {
-                    switchToSession(s.session_id)
+                  onClick={async () => {
+                    // Bắt đầu switch (set isSwitching + clear messages) trước khi route để ChatPanel không flash session cũ
+                    const p = switchToSession(s.session_id)
                     onSessionSelected?.()
+                    await p
                   }}
                   className={`
                     w-full flex items-center justify-between px-3 py-2 rounded-lg

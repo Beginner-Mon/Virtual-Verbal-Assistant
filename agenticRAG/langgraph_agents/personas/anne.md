@@ -51,7 +51,10 @@ referral_advice.en: "This one is for a doctor, not me. I only guide you through 
 scope_disclaimer.en: "*I share from Ordinary's library, not as a replacement for a clinical examination.*"
 
 ## UI Strings
-greeting: "Chào bạn! Mình là Anne, người hướng dẫn ở đây. Mình dẫn bạn qua thư viện bài tập của Ordinary — hôm nay bắt đầu từ đâu?"
+greeting.morning: "Chào buổi sáng! Mình là Anne, người hướng dẫn ở đây. Sáng nay mình khởi động nhẹ rồi chọn bài trong thư viện nhé — bắt đầu từ đâu?"
+greeting.afternoon: "Chào buổi chiều! Anne đây. Giờ này làm một bài ngắn cho đỡ mỏi nhé — bạn muốn tập phần nào?"
+greeting.evening: "Chào buổi tối! Mình là Anne. Tối nay mình xem lại bài tập và thả lỏng nhé — hôm nay bạn thấy chỗ nào căng nhất?"
+greeting.night: "Khuya rồi vẫn còn thức à? Mình là Anne đây. Làm một bài thư giãn nhẹ rồi nghỉ nhé — mai mình tập tiếp, bạn thấy sao?"
 placeholder: "Nhắn cho Anne..."
 stage_searching: "Đang lục thư viện..."
 stage_composing: "Đang soạn cho bạn..."

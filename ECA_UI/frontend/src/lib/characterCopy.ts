@@ -17,8 +17,17 @@
 
 import type { Character } from './characters'
 
+export type GreetingSlots = {
+  morning: string
+  afternoon: string
+  evening: string
+  night: string
+}
+
+export type TimeSlot = keyof GreetingSlots
+
 export interface UiStrings {
-  greeting: string
+  greeting: GreetingSlots
   placeholder: string
   stage_searching: string
   stage_composing: string
@@ -43,7 +52,12 @@ export interface UiStrings {
  * no emoji anywhere.
  */
 export const FALLBACK_UI_STRINGS: UiStrings = {
-  greeting: 'Xin chào! Hôm nay mình giúp được gì cho bạn?',
+  greeting: {
+    morning: 'Chào buổi sáng! Hôm nay mình giúp gì cho bạn?',
+    afternoon: 'Chào buổi chiều! Bạn đang thế nào rồi?',
+    evening: 'Chào buổi tối! Mình ở đây với bạn.',
+    night: 'Khuya rồi, bạn vẫn chưa ngủ à? Mình ở đây nhé.',
+  },
   placeholder: 'Nhập tin nhắn...',
   stage_searching: 'Đang tìm kiếm thông tin...',
   stage_composing: 'Đang soạn câu trả lời...',
@@ -55,19 +69,55 @@ export const FALLBACK_UI_STRINGS: UiStrings = {
   motion_gone: 'Động tác của câu này đã hết hạn lưu trữ.',
 }
 
+/** 05-11: morning, 12-17: afternoon, 18-21: evening, 22-04: night */
+export function getTimeSlot(date = new Date()): TimeSlot {
+  const h = date.getHours()
+  if (h >= 5 && h < 12) return 'morning'
+  if (h < 18) return 'afternoon'
+  if (h < 22) return 'evening'
+  return 'night'
+}
+
+export function getGreeting(ui: UiStrings, now = new Date()): string {
+  const slot = getTimeSlot(now)
+  return ui.greeting[slot] ?? FALLBACK_UI_STRINGS.greeting[slot]
+}
+
 /**
  * Resolve one character's copy, filling any missing key from the fallback.
  *
  * Per-key rather than all-or-nothing: a persona that defines a greeting but no
  * stage labels should keep its greeting, not lose it because the object was
- * incomplete.
+ * incomplete. Greeting is an object with 4 slots — each slot falls back
+ * individually, so a persona that only defined morning still gets a usable
+ * afternoon/evening/night.
  */
 export function uiStringsFor(character?: Character | null): UiStrings {
-  const authored = character?.ui_strings ?? {}
-  const resolved = { ...FALLBACK_UI_STRINGS }
+  const authored = (character?.ui_strings ?? {}) as Record<string, unknown>
+  const resolved: UiStrings = {
+    ...FALLBACK_UI_STRINGS,
+    greeting: { ...FALLBACK_UI_STRINGS.greeting },
+  }
+
   for (const key of Object.keys(FALLBACK_UI_STRINGS) as (keyof UiStrings)[]) {
+    if (key === 'greeting') {
+      const g = authored['greeting']
+      if (g && typeof g === 'object' && !Array.isArray(g)) {
+        const obj = g as Record<string, unknown>
+        for (const slot of Object.keys(FALLBACK_UI_STRINGS.greeting) as TimeSlot[]) {
+          const v = obj[slot]
+          if (typeof v === 'string' && v.trim()) {
+            resolved.greeting[slot] = v
+          }
+        }
+      }
+      // No string fallback — greeting is now object-only per spec (bỏ fallback)
+      continue
+    }
     const value = authored[key]
-    if (typeof value === 'string' && value.trim()) resolved[key] = value
+    if (typeof value === 'string' && value.trim()) {
+      ;(resolved as unknown as Record<string, unknown>)[key] = value
+    }
   }
   return resolved
 }
