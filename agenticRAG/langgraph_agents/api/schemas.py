@@ -76,3 +76,36 @@ class UserMemoryItem(BaseModel):
 
 class UserMemoryListResponse(BaseModel):
     facts: list[UserMemoryItem]
+
+
+# ── User preferences — cross-device synced UI prefs (no PHI) ───────────────
+
+
+# Must stay in sync with the CHECK in 009_user_preferences.py
+AvatarBg = Literal["slate", "violet", "blue", "emerald", "amber", "rose", "cyan", "indigo"]
+
+
+class UserPreferencesOut(BaseModel):
+    """What GET /me/preferences returns. prefs is UI-only — notifications/locale.
+
+    Never contains PHI (injury_history etc) — those live in user_memory.
+    """
+
+    avatar_bg: AvatarBg = "slate"
+    selected_character_slug: Optional[str] = None
+    display_name: Optional[str] = None
+    prefs: dict = Field(default_factory=dict)
+    version: int = 1
+    updated_at: str
+
+
+class UserPreferencesPatch(BaseModel):
+    """PATCH /me/preferences — all fields optional except version (optimistic lock)."""
+
+    avatar_bg: Optional[AvatarBg] = None
+    selected_character_slug: Optional[str] = Field(
+        default=None, max_length=100, pattern=r"^[A-Za-z0-9_-]{1,64}$"
+    )
+    display_name: Optional[str] = Field(default=None, max_length=100)
+    prefs: Optional[dict] = None
+    version: int = Field(description="Expected current version; 409 if stale")

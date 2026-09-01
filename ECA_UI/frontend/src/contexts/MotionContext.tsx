@@ -18,6 +18,8 @@ import { MOTION_FILES, resolveMotionByName } from '../lib/motionAssets'
 import { fetchCharacters, isCompatible, type Character } from '../lib/characters'
 import { useAutoAfterTrigger } from '../hooks/useFsmTriggers'
 import instrumentalUrl from '../asset/audio/instrumental-ver.mp3'
+import { fetchAuthSession } from 'aws-amplify/auth'
+import { fetchPreferences } from '../lib/preferences'
 import { DEFAULT_CAMERA_CONFIG, type CameraConfig } from '../lib/CameraConfig'
 import { MotionContext, type MotionContextType, type SessionMotion, type AssetOption } from '../hooks/useMotion'
 
@@ -54,8 +56,24 @@ export function MotionProvider({ children }: { children: ReactNode }) {
         if (abort.signal.aborted) return
 
         setVrmOptions(options)
+
+        // Synced default character (Neon user_preferences.selected_character_slug)
+        // overrides the hardcoded /anne/ fallback — cross-device.
+        let syncedSlug: string | null = null
+        try {
+          const s = await fetchAuthSession()
+          if (s.tokens?.idToken) {
+            const prefs = await fetchPreferences(abort.signal)
+            syncedSlug = prefs.selected_character_slug ?? null
+          }
+        } catch {
+          // guest or 401 → keep local default
+        }
+        if (abort.signal.aborted) return
+
         setSelectedVrmId((current) => {
           if (current && options.some((o) => o.id === current)) return current
+          if (syncedSlug && options.some((o) => o.id === syncedSlug)) return syncedSlug
           const usable = options.filter((o) => !o.character || isCompatible(o.character))
           const preferred = usable.find((o) => /anne/i.test(o.id) || /anne/i.test(o.label))
           return preferred?.id ?? usable[0]?.id ?? options[0]?.id ?? ''

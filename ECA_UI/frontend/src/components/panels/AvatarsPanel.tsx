@@ -1,8 +1,10 @@
-import { useState, type CSSProperties } from 'react'
-import { UserRound, Check, TriangleAlert } from 'lucide-react'
+import { useState, useEffect, type CSSProperties } from 'react'
+import { UserRound, Check, TriangleAlert, Star } from 'lucide-react'
 import { ScrollArea } from '../ui/scroll-area'
 import { useMotion } from '../../hooks/useMotion'
 import { incompatibilityReason, type Character } from '../../lib/characters'
+import { fetchPreferences, patchPreferences } from '../../lib/preferences'
+import { fetchAuthSession } from 'aws-amplify/auth'
 
 /** [nền A, nền B + blob phụ, accent blob] */
 const MESH_PALETTE: Array<[string, string, string]> = [
@@ -59,6 +61,8 @@ function AvatarCard({
   thumbnailUrl,
   disabledReason,
   isSelected,
+  isDefault,
+  onSetDefault,
   onClick,
 }: {
   slug: string
@@ -66,6 +70,8 @@ function AvatarCard({
   thumbnailUrl: string | null
   disabledReason: string | null
   isSelected: boolean
+  isDefault: boolean
+  onSetDefault: () => void
   onClick: () => void
 }) {
   const [imgFailed, setImgFailed] = useState(false)
@@ -178,6 +184,33 @@ function AvatarCard({
           <Check className="w-3 h-3" strokeWidth={3} />
         </span>
       )}
+
+      {isDefault && (
+        <span className="absolute top-2 left-2 flex items-center gap-1 rounded-full bg-amber-500 text-white text-[10px] font-semibold px-2 py-0.5 shadow-sm pointer-events-none">
+          <Star className="w-3 h-3" /> Default
+        </span>
+      )}
+
+      {isSelected && !isDefault && !disabled && (
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={(e) => {
+            e.stopPropagation()
+            onSetDefault()
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault()
+              e.stopPropagation()
+              onSetDefault()
+            }
+          }}
+          className="absolute bottom-2 left-2 right-2 rounded-md bg-primary text-primary-foreground text-[11px] font-medium py-1.5 text-center shadow-md hover:bg-primary/90 transition-colors"
+        >
+          Set as default
+        </span>
+      )}
     </button>
   )
 }
@@ -190,6 +223,55 @@ export default function AvatarsPanel() {
     vrmOptionsLoading,
     vrmOptionsError,
   } = useMotion()
+
+  const [defaultSlug, setDefaultSlug] = useState<string | null>(null)
+  const [defaultVersion, setDefaultVersion] = useState<number | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const s = await fetchAuthSession()
+        if (!s.tokens?.idToken) return
+        const prefs = await fetchPreferences()
+        if (cancelled) return
+        setDefaultSlug(prefs.selected_character_slug)
+        setDefaultVersion(prefs.version)
+      } catch {
+        // guest → no default
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [selectedVrmId])
+
+  const handleSetDefault = async (slug: string) => {
+    try {
+      const s = await fetchAuthSession()
+      if (!s.tokens?.idToken) return
+      // refetch version if stale
+      let ver = defaultVersion
+      if (ver === null) {
+        const prefs = await fetchPreferences()
+        ver = prefs.version
+      }
+      const saved = await patchPreferences({ selected_character_slug: slug, version: ver! })
+      setDefaultSlug(saved.selected_character_slug)
+      setDefaultVersion(saved.version)
+    } catch (e) {
+      const status = (e as { status?: number }).status
+      if (status === 409) {
+        try {
+          const prefs = await fetchPreferences()
+          setDefaultSlug(prefs.selected_character_slug)
+          setDefaultVersion(prefs.version)
+        } catch {
+          // ignore refetch failure
+        }
+      }
+    }
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -238,6 +320,8 @@ export default function AvatarsPanel() {
                     thumbnailUrl={character?.thumbnail_url ?? null}
                     disabledReason={character ? incompatibilityReason(character) : null}
                     isSelected={selectedVrmId === option.id}
+                    isDefault={defaultSlug === option.id}
+                    onSetDefault={() => void handleSetDefault(option.id)}
                     onClick={() => setSelectedVrmId(option.id)}
                   />
                 )
