@@ -61,10 +61,24 @@ _PUBLIC_COLUMNS = """
     voice_language, sort_order, ui_strings
 """
 
+# What the picker grid needs to draw a card, and no more. The list is read on
+# every visit while the fields it drops are wanted only once a character has been
+# chosen, so they are served by /characters/{slug} instead. `vrm_metadata` stays
+# because the card greys itself out for models the device cannot run.
+#
+# This must match _PUBLIC_COLUMNS_LITE in
+# agenticRAG/langgraph_agents/api/routes_characters.py. The two cannot import
+# from each other — this file is deployed alone, as a CDK asset directory
+# (character_stack.py), and that one runs inside the FastAPI app — so
+# tests/infra/test_characters_contract.py compares them instead. They drifted
+# once already: 863458d trimmed the FastAPI copy, which is the local development
+# shim, and left production returning every column.
+_PUBLIC_COLUMNS_LITE = "slug, display_name, thumbnail_url, description, vrm_metadata"
+
 
 def _list_characters(cur) -> dict:
     cur.execute(
-        f"SELECT {_PUBLIC_COLUMNS} FROM characters "
+        f"SELECT {_PUBLIC_COLUMNS_LITE} FROM characters "
         "WHERE is_active ORDER BY sort_order, slug"
     )
     rows = fetch_all(cur)

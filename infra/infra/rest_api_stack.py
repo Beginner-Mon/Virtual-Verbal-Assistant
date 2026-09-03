@@ -5,6 +5,7 @@
     GET    /v1/characters/{slug}/avatar-profile  DELETE /v1/sessions/{id}
     GET    /v1/health, /v1/health/db             GET|POST /v1/me/memory
                                                  DELETE /v1/me/memory/{fact_id}
+                                                 GET|PATCH /v1/me/preferences
 
 Before this, the frontend had to know four API origins and each service carried
 its own CORS and its own auth, with no layer where a shared policy could live and
@@ -236,6 +237,17 @@ class RestApiStack(Stack):
         memory.add_method("GET", crud, **authed)
         memory.add_method("POST", crud, **authed)
         memory.add_resource("{fact_id}").add_method("DELETE", crud, **authed)
+
+        # ── /me/preferences — authenticated ─────────────────────────────
+        # The router has been mounted in crud_app.py since 484bb32, so the
+        # function could already serve these; without the resource declared
+        # here, API Gateway answered every deployed call with 403 "Missing
+        # Authentication Token" and the frontend, which treats any failure as
+        # "guest", fell back to localStorage without saying anything. The
+        # feature worked only against a local uvicorn.
+        preferences = me.add_resource("preferences")
+        preferences.add_method("GET", crud, **authed)
+        preferences.add_method("PATCH", crud, **authed)
 
         # ── /chat — authenticated, and STREAMED ─────────────────────────
         #
