@@ -35,7 +35,7 @@ export interface ChatContextType {
   removeImage: (index: number) => void
   sessionList: SessionItem[]
   sessionsDirty: boolean
-  activeSessionId: string
+  activeSessionId: string | null
   refreshSessions: () => Promise<void>
   switchToSession: (sessionId: string) => Promise<void>
   deleteSessionAction: (sessionId: string) => Promise<void>

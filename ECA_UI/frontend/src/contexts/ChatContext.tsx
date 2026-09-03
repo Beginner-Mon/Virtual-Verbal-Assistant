@@ -13,6 +13,7 @@ import {
   type SessionMessage,
 } from '../lib/api'
 import { pollMotionJob } from '../lib/motionJob'
+import { clearSessionPointer, readSessionPointer, stampSessionPointer } from '../lib/chatSession'
 import { useMotion } from '../hooks/useMotion'
 import { ChatContext, type ChatContextType, type SessionItem } from '../hooks/useChat'
 import { uiStringsFor, FALLBACK_UI_STRINGS, getGreeting, type UiStrings } from '../lib/characterCopy'
@@ -20,21 +21,10 @@ import { uiStringsFor, FALLBACK_UI_STRINGS, getGreeting, type UiStrings } from '
 export type { SessionItem, ChatContextType } from '../hooks/useChat'
 import { useAudioRecorder } from '../hooks/useAudioRecorder'
 
-/** Key holding the *pointer* to the conversation, never the conversation.
- *
- *  Postgres stays the source of truth, so this survives a move to a hosted
- *  database untouched — and the day Cognito is switched on, `currentUserId()`
- *  starts returning the real `sub` and the same session simply belongs to a
- *  real account instead of a per-browser demo id. */
-const SESSION_KEY = 'vva_session_id'
-
-function loadOrCreateSessionId(): string {
-  const existing = localStorage.getItem(SESSION_KEY)
-  if (existing) return existing
-  const fresh = crypto.randomUUID()
-  localStorage.setItem(SESSION_KEY, fresh)
-  return fresh
-}
+/* The pointer to the conversation lives in lib/chatSession.ts, along with the
+ * reason it is written late and expires. Nothing here mints an id: a
+ * conversation gets one when its first message is sent, and until then there is
+ * nothing to point at and nothing to restore. */
 
 /** Id of the opening message, so the greeting can be recognised and replaced
  *  when the user switches character before saying anything. */
@@ -127,8 +117,25 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const isGeneratingRef = useRef(isGenerating)
   isGeneratingRef.current = isGenerating
 
-  const sessionIdRef = useRef<string>(loadOrCreateSessionId())
-  const [activeSessionId, setActiveSessionId] = useState<string>(() => loadOrCreateSessionId())
+  // Read once, not twice: this used to call a minting function in both places.
+  // Null means "no conversation yet" — either a first visit, or the last one
+  // aged out. Neither is an error and neither is worth a request.
+  const initialSessionId = useRef(readSessionPointer()).current
+  const sessionIdRef = useRef<string | null>(initialSessionId)
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(initialSessionId)
+
+  /** The id to send this turn under, minting one if this is the first message.
+   *
+   *  This is the only place an id is created. Doing it here rather than at load
+   *  is what closes the window in which a pointer existed and the row behind it
+   *  did not — the window every clean page load used to spend a 404 in. */
+  const ensureSessionId = useCallback((): string => {
+    const id = sessionIdRef.current ?? crypto.randomUUID()
+    sessionIdRef.current = id
+    stampSessionPointer(id)
+    setActiveSessionId(id)
+    return id
+  }, [])
   const abortControllerRef = useRef<AbortController | null>(null)
   const thinkingRef = useRef(false)
 
@@ -192,9 +199,18 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false
 
+    // No pointer, nothing to restore. Note the setIsRestoring(false): the flag
+    // is cleared in the `finally` below, so returning without it would leave it
+    // true forever and the greeting effect, which waits on it, would never run.
+    if (!sessionIdRef.current) {
+      setIsRestoring(false)
+      return
+    }
+    const sessionId = sessionIdRef.current
+
     ;(async () => {
       try {
-        const data = await getSession(sessionIdRef.current)
+        const data = await getSession(sessionId)
         const history = (data?.messages ?? []) as SessionMessage[]
         if (cancelled || history.length === 0) return
         setMessages([
@@ -273,10 +289,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
    * once the Sessions panel is wired up. */
   const startNewSession = useCallback(() => {
     abortControllerRef.current?.abort()
-    const fresh = crypto.randomUUID()
-    localStorage.setItem(SESSION_KEY, fresh)
-    sessionIdRef.current = fresh
-    setActiveSessionId(fresh)
+    // Clear the pointer rather than mint a new one. Minting here is what left
+    // an id behind for anyone who opened a new chat and never typed in it —
+    // and that id 404'd on every load from then on, permanently. The next
+    // message creates one.
+    clearSessionPointer()
+    sessionIdRef.current = null
+    setActiveSessionId(null)
     setMessages(buildInitialMessages(uiRef.current))
     setInput('')
     setIsTyping(false)
@@ -315,7 +334,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setIsSwitching(true)
     setActiveSessionId(sessionId)
     sessionIdRef.current = sessionId
-    localStorage.setItem(SESSION_KEY, sessionId)
+    // Picking a conversation out of the list makes it the one you are in, so
+    // its clock starts now however old the conversation itself is.
+    stampSessionPointer(sessionId)
     setMessages([])
     setInput('')
     setIsTyping(false)
@@ -422,7 +443,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       await streamChat(
         {
           query: text,
-          sessionId: sessionIdRef.current,
+          sessionId: ensureSessionId(),
           webSearch,
           outputMode: voiceReply ? 'both' : 'text',
           // The selected character IS the persona: characters.slug is what the
@@ -570,7 +591,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         endThinking()
       }
     }
-  }, [webSearch, voiceReply, selectedVrmId, transitionTo, endThinking, playMotionFile])
+  }, [webSearch, voiceReply, selectedVrmId, transitionTo, endThinking, playMotionFile, ensureSessionId])
 
   useEffect(() => {
     return () => {

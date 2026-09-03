@@ -5,6 +5,7 @@ import type { AuthSession } from 'aws-amplify/auth'
 import { AuthContext, type AuthUser, type FetchUserAttributesOutput } from '../contexts/AuthContext'
 import { AUTH_ERROR_KEY, clearExpectedEmail, cognitoLogoutUrl, emailsMatch, peekExpectedEmail } from '../lib/googleSignIn'
 import LoadingOverlay from './ui/LoadingOverlay'
+import { clearSessionPointer } from '../lib/chatSession'
 
 function clearLocalAuthStorage() {
   const purge = (storage: Storage) => {
@@ -25,6 +26,12 @@ function clearLocalAuthStorage() {
 
   purge(localStorage)
   purge(sessionStorage)
+
+  // The conversation pointer goes with them. It used to survive a sign-out, so
+  // the next account inherited a pointer into someone else's conversation —
+  // harmless only because GET /sessions/{id} filters by the token's user and
+  // answered 404, which is precisely the noise being removed.
+  clearSessionPointer()
 }
 
 function CognitoAuthGuard() {
