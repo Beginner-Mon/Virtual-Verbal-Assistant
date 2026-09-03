@@ -1,5 +1,10 @@
 import { useEffect, useState } from 'react'
-import { ThemeContext, type Theme, type ThemeProviderProps } from '../hooks/useTheme'
+import {
+  ThemeContext,
+  resolveInitialTheme,
+  type Theme,
+  type ThemeProviderProps,
+} from '../hooks/useTheme'
 
 export function ThemeProvider({
   children,
@@ -7,8 +12,15 @@ export function ThemeProvider({
   storageKey = 'vite-ui-theme',
   ...props
 }: ThemeProviderProps) {
-  const [theme, setTheme] = useState<Theme>(
-    () => (localStorage.getItem(storageKey) as Theme) || defaultTheme
+  // Decided by resolveInitialTheme, from the class the blocking script in
+  // index.html has already put on <html> — see the reasoning there. Kept out of
+  // this file so it can be tested without a DOM.
+  const [theme, setTheme] = useState<Theme>(() =>
+    resolveInitialTheme(
+      window.document.documentElement,
+      localStorage.getItem(storageKey),
+      defaultTheme,
+    ),
   )
 
   useEffect(() => {
