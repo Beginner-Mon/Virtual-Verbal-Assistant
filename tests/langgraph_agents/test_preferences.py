@@ -1,18 +1,20 @@
-"""Unit tests for user_preferences — GET/PATCH /me/preferences (ADR-007).
+"""Unit tests for user preferences — GET/PATCH /me/preferences (ADR-008).
 
-IDOR-safe: no user_id param, identity from Depends(current_user_id) only.
-prefs is UI-only (no PHI), 8KB/depth/prototype guard, version 409.
+The shape under test changed in plan v3: preferences are one JSONB column on
+`users`, the allowed keys are whatever SyncedPrefs declares, writes are
+last-write-wins, and GET does not create anything.
+
+Several tests here exist to keep a specific past mistake from coming back and
+say so where they do.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
-import json
+
 import pytest
-import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from langgraph_agents.api.schemas import UserPreferencesPatch
-from langgraph_agents.api.routes_preferences import _validate_prefs, MAX_PREFS_BYTES
+from langgraph_agents.api.schemas import SyncedPrefs, UserPreferencesPatch
 
 
 @pytest.fixture(autouse=True)
@@ -29,58 +31,7 @@ def auth_env(monkeypatch):
     auth_mod.get_jwks_client.cache_clear()
 
 
-# ── Schema / validation ─────────────────────────────────────────────────
-
-@pytest.mark.unit
-def test_patch_schema_valid():
-    p = UserPreferencesPatch(version=1, avatar_bg="slate")
-    assert p.avatar_bg == "slate"
-
-@pytest.mark.unit
-def test_patch_schema_rejects_invalid_avatar_bg():
-    with pytest.raises(Exception):
-        UserPreferencesPatch(version=1, avatar_bg="red")  # type: ignore
-
-@pytest.mark.unit
-def test_validate_prefs_ok():
-    _validate_prefs({"locale": "vi", "notifications": {"email": True}})
-
-@pytest.mark.unit
-def test_validate_prefs_too_large():
-    big = "x" * (MAX_PREFS_BYTES + 1)
-    with pytest.raises(Exception) as ei:
-        _validate_prefs({"big": big})
-    assert ei.value.status_code == 413
-
-@pytest.mark.unit
-def test_validate_prefs_too_deep():
-    with pytest.raises(Exception) as ei:
-        _validate_prefs({"a": {"b": {"c": 1}}})
-    assert ei.value.status_code == 400
-
-@pytest.mark.unit
-def test_validate_prefs_proto_pollution():
-    for k in ["__proto__", "constructor", "prototype"]:
-        with pytest.raises(Exception) as ei:
-            _validate_prefs({k: {}})
-        assert ei.value.status_code == 400
-
-@pytest.mark.unit
-def test_validate_prefs_phi_guard():
-    for k in ["injury_history", "fitness_level", "age"]:
-        with pytest.raises(Exception) as ei:
-            _validate_prefs({k: "x"})
-        assert "PHI" in str(ei.value.detail)
-
-@pytest.mark.unit
-def test_validate_prefs_nested_phi_not_blocked():
-    # Only top-level PHI keys are blocked — nested is allowed (still UI-only by convention)
-    _validate_prefs({"a": {"injury_history": "x"}})
-
-
-# ── Route: IDOR + auth + version ────────────────────────────────────────
-
-def _app_with_prefs(uid: str):
+def _app(uid: str):
     """FastAPI with /me/preferences mounted and current_user_id overridden."""
     from langgraph_agents.api.routes_preferences import router as prefs_router
     from langgraph_agents.api.auth import current_user_id, override_user
@@ -90,119 +41,218 @@ def _app_with_prefs(uid: str):
     return app
 
 
+def _mock_pg(*, fetchrow=None, fetchval=None):
+    """A pg client whose transaction() yields a connection we can assert on."""
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(**fetchrow) if fetchrow else AsyncMock(return_value=None)
+    conn.fetchval = AsyncMock(**fetchval) if fetchval else AsyncMock(return_value=None)
+    conn.execute = AsyncMock(return_value=None)
+    tx = MagicMock()
+    tx.__aenter__ = AsyncMock(return_value=conn)
+    tx.__aexit__ = AsyncMock(return_value=None)
+    pg = MagicMock()
+    pg.transaction.return_value = tx
+    return pg, conn
+
+
+def _row(prefs: dict | str = "{}", updated="2026-09-02T00:00:00+00:00"):
+    return {"preferences": prefs, "updated_at": updated}
+
+
+# ── Schema: the whitelist is the guard ──────────────────────────────────
+
+@pytest.mark.unit
+def test_patch_schema_valid():
+    p = UserPreferencesPatch(preferences={"avatar_bg": "slate"})
+    assert p.preferences.avatar_bg == "slate"
+
+
+@pytest.mark.unit
+def test_unknown_key_rejected():
+    """extra='forbid' — anything SyncedPrefs does not declare is refused."""
+    with pytest.raises(Exception):
+        SyncedPrefs.model_validate({"locale": "vi"})
+
+
+@pytest.mark.unit
+def test_phi_key_rejected():
+    for key in ("injury_history", "fitness_level", "age", "medical_history"):
+        with pytest.raises(Exception):
+            SyncedPrefs.model_validate({key: "x"})
+
+
+@pytest.mark.unit
+def test_nested_phi_rejected():
+    """The hole the old blocklist left open: it only looked at the top level.
+
+    A whitelist closes it without knowing the word 'injury_history' at all —
+    the outer key is what fails.
+    """
+    with pytest.raises(Exception):
+        SyncedPrefs.model_validate({"a": {"injury_history": "thoát vị L4"}})
+
+
+@pytest.mark.unit
+def test_avatar_bg_junk_rejected_by_length_not_enum():
+    with pytest.raises(Exception):
+        SyncedPrefs.model_validate({"avatar_bg": "x" * 40})
+    with pytest.raises(Exception):
+        SyncedPrefs.model_validate({"avatar_bg": "Slate"})  # pattern is lowercase
+
+
+@pytest.mark.unit
+def test_unknown_colour_is_accepted():
+    """D4: the palette lives in avatarPalette.ts and nowhere else.
+
+    If someone reintroduces a Literal enum here, this test fails and points at
+    the reason: the frontend deploys through Amplify and the backend through
+    CDK, so a colour shipped to the UI first would 422 for whoever picked it.
+    The UI looks the id up and falls back to 'slate', so this is inert.
+    """
+    assert SyncedPrefs.model_validate({"avatar_bg": "neon"}).avatar_bg == "neon"
+
+
+@pytest.mark.unit
+def test_unset_fields_are_not_written():
+    """exclude_unset is what makes PATCH a merge rather than a replace."""
+    patch = UserPreferencesPatch(preferences={"avatar_bg": "violet"})
+    assert patch.preferences.model_dump(exclude_unset=True) == {"avatar_bg": "violet"}
+
+
+@pytest.mark.unit
+def test_explicit_null_clears_character():
+    patch = UserPreferencesPatch(preferences={"selected_character_slug": None})
+    assert patch.preferences.model_dump(exclude_unset=True) == {
+        "selected_character_slug": None
+    }
+
+
+# ── Routes ──────────────────────────────────────────────────────────────
+
 @pytest.mark.unit
 def test_get_requires_auth():
     from langgraph_agents.api.routes_preferences import router as prefs_router
     app = FastAPI()
     app.include_router(prefs_router)
-    # no override → no token → 401
-    c = TestClient(app)
-    assert c.get("/me/preferences").status_code == 401
+    assert TestClient(app).get("/me/preferences").status_code == 401
 
 
 @pytest.mark.unit
-def test_get_autoseeds_and_returns_prefs():
+def test_get_returns_prefs_and_writes_nothing():
+    """GET is a safe method again.
+
+    The previous version seeded rows into `users` and `user_preferences` on
+    every read, which made a cacheable read a write transaction and created
+    rows for tokens that had never done anything.
+    """
     uid = "00000000-0000-4000-a000-000000000001"
-    app = _app_with_prefs(uid)
+    pg, conn = _mock_pg(
+        fetchrow={"return_value": _row('{"avatar_bg": "violet"}')},
+    )
+    with patch("langgraph_agents.api.routes_preferences.get_pg_client", return_value=pg):
+        r = TestClient(_app(uid)).get("/me/preferences")
 
-    fake_row = {
-        "avatar_bg": "slate",
-        "selected_character_slug": None,
-        "display_name": None,
-        "prefs": {},
-        "version": 1,
-        "updated_at": MagicMock(isoformat=lambda: "2026-09-01T00:00:00+00:00"),
-    }
-
-    mock_pg = MagicMock()
-    mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=fake_row)
-    mock_conn.execute = AsyncMock(return_value=None)
-    # transaction() is async context manager
-    mock_tx = MagicMock()
-    mock_tx.__aenter__ = AsyncMock(return_value=mock_conn)
-    mock_tx.__aexit__ = AsyncMock(return_value=None)
-    mock_pg.transaction.return_value = mock_tx
-
-    with patch("langgraph_agents.api.routes_preferences.get_pg_client", return_value=mock_pg):
-        c = TestClient(app)
-        r = c.get("/me/preferences")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["avatar_bg"] == "slate"
-        assert body["version"] == 1
-        assert "ETag" in r.headers
+    assert r.status_code == 200
+    assert r.json()["preferences"]["avatar_bg"] == "violet"
+    conn.execute.assert_not_called()
 
 
 @pytest.mark.unit
-def test_patch_409_on_stale_version():
+def test_get_with_no_row_returns_defaults():
     uid = "00000000-0000-4000-a000-000000000002"
-    app = _app_with_prefs(uid)
+    pg, _ = _mock_pg(fetchrow={"return_value": None})
+    with patch("langgraph_agents.api.routes_preferences.get_pg_client", return_value=pg):
+        r = TestClient(_app(uid)).get("/me/preferences")
 
-    mock_pg = MagicMock()
-    mock_conn = AsyncMock()
-    # First fetchrow in PATCH returns None (no row updated due to version mismatch)
-    # Second fetchrow returns current version
-    mock_conn.fetchrow = AsyncMock(side_effect=[
-        None,  # UPDATE ... RETURNING → no row
-        {"version": 5},  # SELECT version → current is 5
-    ])
-    mock_conn.fetchval = AsyncMock(return_value=None)
-    mock_conn.execute = AsyncMock(return_value=None)
-    mock_tx = MagicMock()
-    mock_tx.__aenter__ = AsyncMock(return_value=mock_conn)
-    mock_tx.__aexit__ = AsyncMock(return_value=None)
-    mock_pg.transaction.return_value = mock_tx
-
-    with patch("langgraph_agents.api.routes_preferences.get_pg_client", return_value=mock_pg):
-        c = TestClient(app)
-        r = c.patch("/me/preferences", json={"avatar_bg": "violet", "version": 1})
-        assert r.status_code == 409
-        assert r.json()["detail"]["error"] == "version_conflict"
+    assert r.status_code == 200
+    assert r.json()["preferences"] == {"avatar_bg": None, "selected_character_slug": None}
 
 
 @pytest.mark.unit
-def test_patch_rejects_unknown_character():
+def test_get_drops_stored_keys_that_no_longer_validate():
+    """One stale row must not 500 for that user while everyone else is fine."""
     uid = "00000000-0000-4000-a000-000000000003"
-    app = _app_with_prefs(uid)
+    pg, _ = _mock_pg(
+        fetchrow={"return_value": _row('{"avatar_bg": "violet", "legacy_flag": true}')},
+    )
+    with patch("langgraph_agents.api.routes_preferences.get_pg_client", return_value=pg):
+        r = TestClient(_app(uid)).get("/me/preferences")
 
-    mock_pg = MagicMock()
-    mock_conn = AsyncMock()
-    # FK violation on UPDATE — now the only check (no SELECT verify)
-    mock_conn.fetchrow = AsyncMock(side_effect=Exception('violates foreign key "user_preferences_selected_character_slug_fkey"'))
-    mock_conn.execute = AsyncMock(return_value=None)
-    mock_tx = MagicMock()
-    mock_tx.__aenter__ = AsyncMock(return_value=mock_conn)
-    mock_tx.__aexit__ = AsyncMock(return_value=None)
-    mock_pg.transaction.return_value = mock_tx
+    assert r.status_code == 200
+    assert r.json()["preferences"]["avatar_bg"] == "violet"
 
-    with patch("langgraph_agents.api.routes_preferences.get_pg_client", return_value=mock_pg):
-        c = TestClient(app)
-        r = c.patch("/me/preferences", json={"selected_character_slug": "fake_slug", "version": 1})
-        assert r.status_code == 400
-        assert "unknown" in r.json()["detail"].lower()
+
+@pytest.mark.unit
+def test_patch_rejects_inactive_character():
+    """The regression 863458d introduced: a foreign key cannot see is_active."""
+    uid = "00000000-0000-4000-a000-000000000004"
+    pg, conn = _mock_pg(fetchval={"return_value": None})
+    with patch("langgraph_agents.api.routes_preferences.get_pg_client", return_value=pg):
+        r = TestClient(_app(uid)).patch(
+            "/me/preferences", json={"preferences": {"selected_character_slug": "off"}},
+        )
+
+    assert r.status_code == 400
+    assert "inactive" in r.json()["detail"].lower()
+    conn.fetchrow.assert_not_called()  # rejected before the write
+
+
+@pytest.mark.unit
+def test_patch_accepts_active_character():
+    uid = "00000000-0000-4000-a000-000000000005"
+    pg, _ = _mock_pg(
+        fetchval={"return_value": 1},
+        fetchrow={"return_value": _row('{"selected_character_slug": "bronya"}')},
+    )
+    with patch("langgraph_agents.api.routes_preferences.get_pg_client", return_value=pg):
+        r = TestClient(_app(uid)).patch(
+            "/me/preferences",
+            json={"preferences": {"selected_character_slug": "bronya"}},
+        )
+
+    assert r.status_code == 200
+    assert r.json()["preferences"]["selected_character_slug"] == "bronya"
+
+
+@pytest.mark.unit
+def test_patch_rejects_unknown_key():
+    uid = "00000000-0000-4000-a000-000000000006"
+    pg, _ = _mock_pg()
+    with patch("langgraph_agents.api.routes_preferences.get_pg_client", return_value=pg):
+        r = TestClient(_app(uid)).patch(
+            "/me/preferences", json={"preferences": {"injury_history": "L4"}},
+        )
+    assert r.status_code == 422
 
 
 @pytest.mark.unit
 def test_no_user_id_param_on_routes():
-    """IDOR fix: routes must not accept user_id from client."""
+    """IDOR: routes must not accept a user id from the client."""
     from langgraph_agents.api.routes_preferences import router
     import inspect
     for route in router.routes:
         params = list(inspect.signature(route.endpoint).parameters)
         assert "user_id" not in params, f"{route.path} exposes user_id param"
-        assert "uid" in params or "user_id" not in params
-    # Also ensure no path contains {user_id}
-    for route in router.routes:
         assert "{user_id" not in route.path
         assert "{uid" not in route.path
 
 
 @pytest.mark.unit
-def test_prefs_merge_does_not_drop_existing_keys():
-    """Client PATCH with partial prefs must not wipe other keys (prefs || jsonb)."""
-    # This is a code inspection test — the query uses `prefs || $4::jsonb`
+def test_write_is_a_merge_and_carries_no_version():
+    """Last-write-wins, per key.
+
+    `preferences || $2::jsonb` is what makes two devices changing two different
+    preferences both survive. A `version = version + 1` reappearing here would
+    mean the optimistic lock is back, and with it a 409 whose resolution was
+    always going to be "take the other write".
+    """
     import pathlib
-    src = pathlib.Path("agenticRAG/langgraph_agents/api/routes_preferences.py").read_text()
-    assert "prefs ||" in src or "prefs ||" in src.replace(" ", "")
-    assert "version + 1" in src
+    src = pathlib.Path(
+        "agenticRAG/langgraph_agents/api/routes_preferences.py"
+    ).read_text(encoding="utf-8")
+    assert "preferences || $2::jsonb" in src
+    # The mechanics of the lock, not the word — the docstring explains why it is
+    # gone and should be free to say so.
+    assert "version + 1" not in src
+    assert "AND version" not in src
+    assert "409" not in src

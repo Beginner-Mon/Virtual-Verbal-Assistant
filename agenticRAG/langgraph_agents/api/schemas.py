@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal, Optional
 
 
@@ -81,31 +81,58 @@ class UserMemoryListResponse(BaseModel):
 # ── User preferences — cross-device synced UI prefs (no PHI) ───────────────
 
 
-# Must stay in sync with the CHECK in 009_user_preferences.py
-AvatarBg = Literal["slate", "violet", "blue", "emerald", "amber", "rose", "cyan", "indigo"]
+class SyncedPrefs(BaseModel):
+    """The whole of `users.preferences`, and the only thing allowed into it.
+
+    `extra="forbid"` IS the PHI guard. What it replaced was a blocklist of key
+    names — injury_history, fitness_level, age — which missed in both directions:
+    it only looked at the top level, so {"a": {"injury_history": "x"}} went
+    through (there was a test asserting it did), and it only looked at key names,
+    so {"note": "thoát vị L4"} went through as well. A whitelist cannot miss
+    either. A key that is not declared below is a 422 whatever it is called and
+    however deep it sits, which is the property a healthcare project needs from
+    a free-form column. Clinical facts belong in user_memory, which has the
+    `valid` flag and the advisory semantics for them.
+
+    Adding a synced preference means adding a field here and nothing else. The
+    column is JSONB precisely so that set can grow without a migration.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Deliberately not an enum. The palette lives in avatarPalette.ts alongside
+    # the Tailwind classes and hex values the backend has no use for; declaring
+    # the ids here too would mean a backend deploy per colour. The frontend ships
+    # through Amplify and the backend through CDK, independently, so a colour
+    # released to the UI first would 422 for whoever picked it. Unknown values
+    # are inert: the UI looks the id up and falls back to 'slate'.
+    avatar_bg: Optional[str] = Field(
+        default=None, max_length=32, pattern=r"^[a-z][a-z0-9_-]{0,31}$"
+    )
+    selected_character_slug: Optional[str] = Field(
+        default=None, max_length=64, pattern=r"^[A-Za-z0-9_-]{1,64}$"
+    )
 
 
 class UserPreferencesOut(BaseModel):
-    """What GET /me/preferences returns. prefs is UI-only — notifications/locale.
+    """What GET/PATCH /me/preferences return.
 
-    Never contains PHI (injury_history etc) — those live in user_memory.
+    No `version`: writes are last-write-wins. Two devices changing two different
+    preferences do not actually conflict — the merge is per key — so a version
+    check would have manufactured a 409 where there was no disagreement, and the
+    resolution for that 409 was going to be "take the other write" anyway.
     """
 
-    avatar_bg: AvatarBg = "slate"
-    selected_character_slug: Optional[str] = None
-    display_name: Optional[str] = None
-    prefs: dict = Field(default_factory=dict)
-    version: int = 1
-    updated_at: str
+    preferences: "SyncedPrefs" = Field(default_factory=lambda: SyncedPrefs())
+    updated_at: Optional[str] = None
 
 
 class UserPreferencesPatch(BaseModel):
-    """PATCH /me/preferences — all fields optional except version (optimistic lock)."""
+    """PATCH /me/preferences — a shallow merge over `users.preferences`.
 
-    avatar_bg: Optional[AvatarBg] = None
-    selected_character_slug: Optional[str] = Field(
-        default=None, max_length=100, pattern=r"^[A-Za-z0-9_-]{1,64}$"
-    )
-    display_name: Optional[str] = Field(default=None, max_length=100)
-    prefs: Optional[dict] = None
-    version: int = Field(description="Expected current version; 409 if stale")
+    Only the keys actually present in the request are written; the rest of the
+    stored object is left alone. Sending `selected_character_slug: null`
+    explicitly is how a default character is cleared.
+    """
+
+    preferences: SyncedPrefs
