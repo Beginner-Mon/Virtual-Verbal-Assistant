@@ -1,6 +1,7 @@
 ---
 title: Characters Lite + Preferences Dedup — Optimization
-status: draft
+status: superseded
+superseded_by: docs/plans/preferences-v3-plan.md
 branch: feat/user-preferences
 author: K (Senior Solution Architect)
 date: 2026-09-02
