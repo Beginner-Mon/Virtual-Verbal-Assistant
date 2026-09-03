@@ -18,7 +18,7 @@ import { MOTION_FILES, resolveMotionByName } from '../lib/motionAssets'
 import { fetchCharacters, fetchCharacter, isCompatible, type Character, type CharacterLite } from '../lib/characters'
 import { useAutoAfterTrigger } from '../hooks/useFsmTriggers'
 import instrumentalUrl from '../asset/audio/instrumental-ver.mp3'
-import { fetchPreferences } from '../lib/preferences'
+import { usePreferences } from '../hooks/usePreferences'
 import { DEFAULT_CAMERA_CONFIG, type CameraConfig } from '../lib/CameraConfig'
 import { MotionContext, type MotionContextType, type SessionMotion, type AssetOption } from '../hooks/useMotion'
 
@@ -74,20 +74,23 @@ export function MotionProvider({ children }: { children: ReactNode }) {
     }
   }, [hasLite])
 
+  const { data: prefs, loading: prefsLoading } = usePreferences()
+  // Once, and only once. A later change to the default character — someone
+  // pressing the star in AvatarsPanel — must not swap the model out from under
+  // them; that path goes through setSelectedVrmId instead.
+  const didLoadInitialRef = useRef(false)
+
   useEffect(() => {
+    if (prefsLoading || didLoadInitialRef.current) return
+    didLoadInitialRef.current = true
+
     const abort = new AbortController()
 
     async function load() {
       try {
-        // New flow: prefs → 1 full character (vrm_url) for <Canvas>, not 4 full.
-        let syncedSlug: string | null = null
-        try {
-          const prefs = await fetchPreferences(abort.signal)
-          syncedSlug = prefs.selected_character_slug ?? null
-        } catch {
-          // 401 → mandatory login should have redirected, but fallback to Anne
-        }
-        if (abort.signal.aborted) return
+        // prefs → one full character (vrm_url) for <Canvas>, not the whole
+        // catalog. Null for a guest, and for anyone who has not picked one.
+        const syncedSlug = prefs?.preferences.selected_character_slug ?? null
 
         // Try synced slug first, fallback to Anne, fallback to lite list.
         let character: Character | null = null
@@ -134,7 +137,13 @@ export function MotionProvider({ children }: { children: ReactNode }) {
 
     void load()
     return () => abort.abort()
-  }, [])
+    // `prefs` is deliberately not a dependency. It changes on every optimistic
+    // write, and re-running would fire this effect's cleanup — aborting the
+    // character fetch that is still in flight — even though the guard above
+    // makes the new run a no-op. `prefsLoading` goes true→false exactly once,
+    // and `prefs` is already correct in that render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefsLoading])
 
   const [isPlaying, setIsPlaying] = useState(true)
   const [speed, setSpeed] = useState(1.0)
@@ -343,7 +352,9 @@ export function MotionProvider({ children }: { children: ReactNode }) {
           return Array.from(map.values())
         })
       } catch {
-        // Fallback to Anne if slug invalid (FK already prevents bad PATCH, but handle 404)
+        // Fall back to Anne if the slug no longer resolves. PATCH refuses an
+        // unknown or disabled character, but a character switched off after it
+        // was stored still 404s here.
         if (id !== 'anne') {
           try {
             const fallback = await fetchCharacter('anne')
@@ -353,7 +364,10 @@ export function MotionProvider({ children }: { children: ReactNode }) {
               return Array.from(map.values())
             })
             setSelectedVrmId(fallback.slug)
-          } catch {}
+          } catch {
+            // The fallback failed too — the catalog is unreachable, which the
+            // initial load has already reported. Nothing left to try.
+          }
         }
       }
     })()

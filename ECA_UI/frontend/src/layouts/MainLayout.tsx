@@ -7,6 +7,7 @@ import { useMotion } from '../hooks/useMotion'
 import { ChatProvider } from '../contexts/ChatContext'
 import { GraphicsProvider } from '../contexts/GraphicsContext'
 import { AvatarBgProvider } from '../contexts/AvatarBgContext'
+import { PreferencesProvider } from '../contexts/PreferencesContext'
 
 function AudioToggle() {
   const { isMusicPlaying, toggleMusic } = useMotion()
@@ -27,6 +28,10 @@ function AudioToggle() {
 
 export default function MainLayout() {
   return (
+    // Outermost of the four: MotionProvider reads the default character from it,
+    // and AvatarBgProvider the background colour. One GET /me/preferences serves
+    // both plus AvatarsPanel.
+    <PreferencesProvider>
     <MotionProvider>
       <ChatProvider>
         <GraphicsProvider>
@@ -57,6 +62,7 @@ export default function MainLayout() {
         </GraphicsProvider>
       </ChatProvider>
     </MotionProvider>
+    </PreferencesProvider>
   )
 }
 

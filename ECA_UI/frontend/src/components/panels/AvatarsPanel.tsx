@@ -1,10 +1,9 @@
-import { useState, useEffect, type CSSProperties } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { UserRound, Check, TriangleAlert, Star } from 'lucide-react'
 import { ScrollArea } from '../ui/scroll-area'
 import { useMotion } from '../../hooks/useMotion'
 import { incompatibilityReason, type Character } from '../../lib/characters'
-import { fetchPreferences, patchPreferences } from '../../lib/preferences'
-import { fetchAuthSession } from 'aws-amplify/auth'
+import { usePreferences } from '../../hooks/usePreferences'
 
 /** [nền A, nền B + blob phụ, accent blob] */
 const MESH_PALETTE: Array<[string, string, string]> = [
@@ -230,53 +229,15 @@ export default function AvatarsPanel() {
     void ensureCatalogLoaded()
   }, [ensureCatalogLoaded])
 
-  const [defaultSlug, setDefaultSlug] = useState<string | null>(null)
-  const [defaultVersion, setDefaultVersion] = useState<number | null>(null)
+  // The star reads from the same fetch everything else does, and writing to it
+  // is one optimistic call — no session check, no version to carry, and nothing
+  // to reconcile if two devices set a default at once (last write wins).
+  const { data: prefs, patch } = usePreferences()
+  const defaultSlug = prefs?.preferences.selected_character_slug ?? null
 
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      try {
-        const s = await fetchAuthSession()
-        if (!s.tokens?.idToken) return
-        const prefs = await fetchPreferences()
-        if (cancelled) return
-        setDefaultSlug(prefs.selected_character_slug)
-        setDefaultVersion(prefs.version)
-      } catch {
-        // guest → no default
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [selectedVrmId])
-
-  const handleSetDefault = async (slug: string) => {
-    try {
-      const s = await fetchAuthSession()
-      if (!s.tokens?.idToken) return
-      // refetch version if stale
-      let ver = defaultVersion
-      if (ver === null) {
-        const prefs = await fetchPreferences()
-        ver = prefs.version
-      }
-      const saved = await patchPreferences({ selected_character_slug: slug, version: ver! })
-      setDefaultSlug(saved.selected_character_slug)
-      setDefaultVersion(saved.version)
-    } catch (e) {
-      const status = (e as { status?: number }).status
-      if (status === 409) {
-        try {
-          const prefs = await fetchPreferences()
-          setDefaultSlug(prefs.selected_character_slug)
-          setDefaultVersion(prefs.version)
-        } catch {
-          // ignore refetch failure
-        }
-      }
-    }
+  const handleSetDefault = (slug: string) => {
+    if (!prefs) return // guest: nothing to sync to
+    patch({ selected_character_slug: slug })
   }
 
   return (
@@ -327,7 +288,7 @@ export default function AvatarsPanel() {
                     disabledReason={character ? incompatibilityReason(character) : null}
                     isSelected={selectedVrmId === option.id}
                     isDefault={defaultSlug === option.id}
-                    onSetDefault={() => void handleSetDefault(option.id)}
+                    onSetDefault={() => handleSetDefault(option.id)}
                     onClick={() => setSelectedVrmId(option.id)}
                   />
                 )

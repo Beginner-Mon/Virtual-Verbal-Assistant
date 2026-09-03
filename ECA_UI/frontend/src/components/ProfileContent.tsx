@@ -5,7 +5,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { fetchAuthSession } from 'aws-amplify/auth'
 import { linkGoogleAccount, mountGoogleLinkButton } from '../lib/googleLink'
 import AvatarWithLogo from './AvatarWithLogo'
-import { useAvatarBg } from '../contexts/AvatarBgContext'
+import { useAvatarBg } from '../hooks/useAvatarBg'
 import AvatarPickerModal from './AvatarPickerModal'
 
 interface Props {

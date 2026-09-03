@@ -27,7 +27,7 @@ import {
 // unused import is not a reservation — git remembers. Reinstate when the
 // feature lands.
 import { useMediaQuery } from '../lib/use-media-query'
-import { useAvatarBg } from '../contexts/AvatarBgContext'
+import { useAvatarBg } from '../hooks/useAvatarBg'
 import { useMotion } from '../hooks/useMotion'
 import ChatPanel from './ChatPanel'
 import ChatSessionsPanel from './panels/ChatSessionsPanel'

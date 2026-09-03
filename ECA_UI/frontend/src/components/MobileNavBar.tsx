@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Menu, X, Music2 } from 'lucide-react'
 import type { PanelId, NavItem } from './FloatingNavBar'
-import { useAvatarBg } from '../contexts/AvatarBgContext'
+import { useAvatarBg } from '../hooks/useAvatarBg'
 import AvatarWithLogo from './AvatarWithLogo'
 
 interface MobileNavBarProps {

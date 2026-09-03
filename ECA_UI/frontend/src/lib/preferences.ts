@@ -3,30 +3,47 @@
  *
  * No user_id param anywhere — /me means "whoever the token says you are"
  * (api/auth.py current_user_id). No cookie, no DynamoDB.
- * prefs is UI-only (notifications/locale), never PHI.
+ *
+ * Preferences are UI-only. Clinical facts live in user_memory; the backend
+ * refuses any key its SyncedPrefs model does not declare, so sending one here
+ * is a 422 rather than something that quietly lands in the database.
+ *
+ * There is no request cache and no shared in-flight promise. There used to be
+ * both, because three components fetched this independently — and because the
+ * shared promise was created with one caller's AbortSignal, whichever of them
+ * unmounted first cancelled the fetch the other two were awaiting (React's
+ * StrictMode double-mount made that reliable in development). The deduplication
+ * belongs one level up: PreferencesProvider fetches once and passes the result
+ * down. See contexts/PreferencesContext.tsx.
  */
 
 import { fetchAuthSession } from 'aws-amplify/auth'
 import { API_GATEWAY } from './apiBase'
 
-export type AvatarBgId = 'slate' | 'violet' | 'blue' | 'emerald' | 'amber' | 'rose' | 'cyan' | 'indigo'
+/**
+ * Everything that follows a user between devices.
+ *
+ * Mirrors SyncedPrefs in agenticRAG/langgraph_agents/api/schemas.py. Adding a
+ * synced preference means adding a field in both places and nothing else — the
+ * column is JSONB so there is no migration.
+ *
+ * `avatar_bg` is a plain string rather than AvatarBgId on purpose: the backend
+ * does not know the palette (it lives in avatarPalette.ts alone, so adding a
+ * colour needs no backend deploy), which means a value from a newer build can
+ * reach an older one. Look it up and fall back; never assume it is known.
+ */
+export interface SyncedPrefs {
+  avatar_bg?: string | null
+  selected_character_slug?: string | null
+}
 
 export interface UserPreferences {
-  avatar_bg: AvatarBgId
-  selected_character_slug: string | null
-  display_name: string | null
-  prefs: Record<string, unknown>
-  version: number
-  updated_at: string
+  preferences: SyncedPrefs
+  updated_at: string | null
 }
 
-export interface PreferencesPatch {
-  avatar_bg?: AvatarBgId
-  selected_character_slug?: string | null
-  display_name?: string | null
-  prefs?: Record<string, unknown>
-  version: number
-}
+/** A partial write. Only the keys present are changed; `null` clears one. */
+export type PreferencesPatch = SyncedPrefs
 
 async function authHeader(): Promise<Record<string, string>> {
   try {
@@ -40,7 +57,6 @@ async function authHeader(): Promise<Record<string, string>> {
 
 function ensureOk(res: Response, body: string): void {
   if (!res.ok) {
-    // 409 carries JSON {detail:{error:"version_conflict"...}}
     throw Object.assign(new Error(`HTTP ${res.status}: ${body}`), {
       status: res.status,
       body,
@@ -48,61 +64,27 @@ function ensureOk(res: Response, body: string): void {
   }
 }
 
-let _prefsCache: UserPreferences | null = null
-let _prefsInflight: Promise<UserPreferences> | null = null
-let _prefsCacheAt = 0
-const PREFS_TTL_MS = 5 * 60 * 1000
-
-export async function fetchPreferences(signal?: AbortSignal): Promise<UserPreferences> {
-  const now = Date.now()
-  if (_prefsCache && now - _prefsCacheAt < PREFS_TTL_MS && !signal?.aborted) {
-    return _prefsCache
-  }
-  if (_prefsInflight && !signal?.aborted) {
-    return _prefsInflight
-  }
+export async function fetchPreferences(): Promise<UserPreferences> {
   const headers = await authHeader()
-  const p = (async () => {
-    const res = await fetch(`${API_GATEWAY}/me/preferences`, {
-      method: 'GET',
-      headers: { Accept: 'application/json', ...headers },
-      signal,
-    })
-    const text = await res.text()
-    ensureOk(res, text)
-    const data = JSON.parse(text) as UserPreferences
-    _prefsCache = data
-    _prefsCacheAt = Date.now()
-    return data
-  })()
-  if (!signal?.aborted) _prefsInflight = p
-  try {
-    return await p
-  } finally {
-    if (_prefsInflight === p) _prefsInflight = null
-  }
-}
-
-export function invalidatePreferencesCache() {
-  _prefsCache = null
-  _prefsCacheAt = 0
+  const res = await fetch(`${API_GATEWAY}/me/preferences`, {
+    method: 'GET',
+    headers: { Accept: 'application/json', ...headers },
+  })
+  const text = await res.text()
+  ensureOk(res, text)
+  return JSON.parse(text) as UserPreferences
 }
 
 export async function patchPreferences(
   patch: PreferencesPatch,
-  signal?: AbortSignal,
 ): Promise<UserPreferences> {
   const headers = await authHeader()
   const res = await fetch(`${API_GATEWAY}/me/preferences`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...headers },
-    body: JSON.stringify(patch),
-    signal,
+    body: JSON.stringify({ preferences: patch }),
   })
   const text = await res.text()
   ensureOk(res, text)
-  const data = JSON.parse(text) as UserPreferences
-  _prefsCache = data
-  _prefsCacheAt = Date.now()
-  return data
+  return JSON.parse(text) as UserPreferences
 }

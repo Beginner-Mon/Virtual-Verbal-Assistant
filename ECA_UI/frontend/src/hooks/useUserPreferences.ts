@@ -1,11 +1,17 @@
 /**
- * useUserPreferences — SWR for cross-device synced UI prefs (Neon).
+ * useUserPreferences — the one place that reads and writes synced prefs.
  *
- * Fetch GET /me/preferences once after auth, cache 5m, refetch on
- * visibilitychange. PATCH with optimistic lock (version), debounce 300ms,
- * rollback on 409.
+ * Fetch once after auth, refresh on `visibilitychange` and every five minutes,
+ * write through an optimistic PATCH debounced by 300ms.
  *
- * Guest (no token) → null, callers fall back to localStorage.
+ * Call this exactly once, in PreferencesProvider. Every consumer reads the
+ * result out of that context. Three components calling it independently is the
+ * arrangement this replaced.
+ *
+ * Guest (no token) → data stays null, and callers fall back to localStorage.
+ *
+ * Writes are last-write-wins, so there is no 409 to handle: the server merges
+ * per key, and two devices changing two different preferences never disagree.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -13,56 +19,50 @@ import { fetchAuthSession } from 'aws-amplify/auth'
 import {
   fetchPreferences,
   patchPreferences,
-  type UserPreferences,
   type PreferencesPatch,
+  type UserPreferences,
 } from '@/lib/preferences'
 
 const REFRESH_MS = 5 * 60 * 1000
+const PATCH_DEBOUNCE_MS = 300
 
 export function useUserPreferences() {
   const [data, setData] = useState<UserPreferences | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const abortRef = useRef<AbortController | null>(null)
-  const patchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const isAuthed = useCallback(async () => {
-    try {
-      const s = await fetchAuthSession()
-      return !!s.tokens?.idToken
-    } catch {
-      return false
-    }
-  }, [])
+  // A generation counter rather than an AbortController: fetchPreferences takes
+  // no signal any more (one shared promise cancelled by one caller's unmount was
+  // the bug that removed it), so what is needed here is only to ignore the
+  // result of a refresh that a newer one has overtaken.
+  const generationRef = useRef(0)
+  const patchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingRef = useRef<PreferencesPatch>({})
 
   const refresh = useCallback(async () => {
-    if (!(await isAuthed())) {
-      setData(null)
-      setLoading(false)
-      return
-    }
-    abortRef.current?.abort()
-    const ac = new AbortController()
-    abortRef.current = ac
+    const generation = ++generationRef.current
     try {
-      const prefs = await fetchPreferences(ac.signal)
-      if (!ac.signal.aborted) {
-        setData(prefs)
-        setError(null)
+      const session = await fetchAuthSession()
+      if (!session.tokens?.idToken) {
+        if (generation === generationRef.current) {
+          setData(null)
+          setLoading(false)
+        }
+        return
       }
+      const prefs = await fetchPreferences()
+      if (generation !== generationRef.current) return
+      setData(prefs)
+      setError(null)
     } catch (e) {
-      if ((e as Error).name === 'AbortError') return
-      // 401 for guest or expired token → treat as no prefs, not error toast
-      const status = (e as { status?: number }).status
-      if (status === 401) {
-        setData(null)
-      } else {
-        setError(e instanceof Error ? e.message : String(e))
-      }
+      if (generation !== generationRef.current) return
+      // 401 is a guest or an expired token, not something to show anyone.
+      if ((e as { status?: number }).status === 401) setData(null)
+      else setError(e instanceof Error ? e.message : String(e))
     } finally {
-      if (!ac.signal.aborted) setLoading(false)
+      if (generation === generationRef.current) setLoading(false)
     }
-  }, [isAuthed])
+  }, [])
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional initial sync: hydrate prefs once after mount
@@ -73,54 +73,52 @@ export function useUserPreferences() {
     document.addEventListener('visibilitychange', onVisible)
     const id = window.setInterval(() => void refresh(), REFRESH_MS)
     return () => {
-      abortRef.current?.abort()
+      // Not a DOM ref: bumping the counter is exactly the point, so that any
+      // refresh still in flight discards its result instead of setting state on
+      // an unmounted component.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      generationRef.current++
       document.removeEventListener('visibilitychange', onVisible)
       window.clearInterval(id)
       if (patchTimerRef.current) window.clearTimeout(patchTimerRef.current)
     }
   }, [refresh])
 
-  // Optimistic PATCH with debounce 300ms (Q7 rare). Caller passes partial patch
-  // without version — we fill current version. On 409, refetch.
+  /**
+   * Apply a partial change locally, then send it.
+   *
+   * Debounced so a run of quick changes coalesces into one request, and
+   * accumulated rather than replaced while the timer runs — otherwise picking a
+   * colour and then a character within 300ms would send only the character.
+   */
   const patch = useCallback(
-    async (partial: Omit<PreferencesPatch, 'version'>) => {
-      if (!data) return
-      const nextVersion = data.version
-      const optimistic: UserPreferences = {
-        ...data,
-        ...partial,
-        // prefs is merged shallow — keep existing keys not in patch
-        prefs: partial.prefs ? { ...data.prefs, ...partial.prefs } : data.prefs,
-        version: data.version + 1,
-      }
-      // Apply optimistic immediately
-      setData(optimistic)
+    (partial: PreferencesPatch) => {
+      setData((current) =>
+        current
+          ? { ...current, preferences: { ...current.preferences, ...partial } }
+          : current,
+      )
+      pendingRef.current = { ...pendingRef.current, ...partial }
 
-      // Debounce the network call — multiple rapid patches (theme toggles) coalesce
       if (patchTimerRef.current) window.clearTimeout(patchTimerRef.current)
-      return new Promise<UserPreferences | null>((resolve) => {
-        patchTimerRef.current = window.setTimeout(async () => {
+      patchTimerRef.current = window.setTimeout(() => {
+        const body = pendingRef.current
+        pendingRef.current = {}
+        void (async () => {
           try {
-            const saved = await patchPreferences({ ...partial, version: nextVersion })
+            const saved = await patchPreferences(body)
             setData(saved)
             setError(null)
-            resolve(saved)
           } catch (e) {
-            const status = (e as { status?: number }).status
-            if (status === 409) {
-              // Version conflict — refetch canonical
-              await refresh()
-            } else {
-              // Rollback on other error
-              setData(data)
-              setError(e instanceof Error ? e.message : String(e))
-            }
-            resolve(null)
+            // The optimistic value is now wrong and there is nothing to reconcile
+            // against, so take the server's word for it.
+            setError(e instanceof Error ? e.message : String(e))
+            void refresh()
           }
-        }, 300)
-      })
+        })()
+      }, PATCH_DEBOUNCE_MS)
     },
-    [data, refresh],
+    [refresh],
   )
 
   return { data, loading, error, refresh, patch }
