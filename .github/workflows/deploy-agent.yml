@@ -29,20 +29,34 @@
 # it is what stops any branch anyone pushes from being able to publish an image.
 # Adding a branch means editing the trust policy, deliberately.
 #
-# AND PER REPOSITORY NAME. The `sub` carries `<owner>/<repo>`, and GitHub mints
-# it from the CURRENT name — so renaming the repository revokes this role as
-# surely as deleting the branch would. Virtual-Verbal-Assistant became ProjectECA
-# between 29-08 and 03-09 and every run from #14 onward died here while the
-# trust policy still named the old repo. Fixed on 05-09 by replacing both subs
-# rather than appending: the old name is now unclaimed, and a repo re-created
-# under it by this owner would otherwise inherit the right to publish images.
+# AND THE SUB IS NOT THE STRING YOU EXPECT. GitHub now mints it with the owner
+# and repository IDs appended:
 #
-# What made it survive four weeks is worth knowing. Both test jobs pass — they
-# need no AWS — so the run reaches `build-and-push` looking healthy, and the
-# only symptom is that ECR has no image for the commit. `git push` does warn
-# ("This repository moved"), but nothing connects that line to a deploy that
-# reports its own failure two minutes later in a different tab. When an agent
-# deploy fails, check ECR for the sha before reading any logs.
+#     repo:Beginner-Mon@142661626/ProjectECA@1057715951:ref:refs/heads/release
+#
+# not `repo:<owner>/<repo>:ref:refs/heads/<branch>`. Every run from #14 (03-09)
+# to #16 died here against a policy that matched the name-only form. Do not
+# guess this string — read it. CloudTrail records the presented `sub` on the
+# denial itself, which is the only place it appears in full:
+#
+#     aws cloudtrail lookup-events \
+#       --lookup-attributes AttributeKey=EventName,AttributeValue=AssumeRoleWithWebIdentity
+#
+# The IDs are the durable half: they survive a rename, and a repository
+# re-created under an old name gets a different ID and so cannot inherit the
+# right to publish images. The trust policy lists both forms — the ID form is
+# what GitHub sends today, the name form is there in case that changes back.
+#
+# This was first misdiagnosed as fallout from renaming the repository
+# (Virtual-Verbal-Assistant -> ProjectECA, between 29-08 and 03-09), which fit
+# the timing and is what `git push` warns about. Correcting the name in the
+# policy changed nothing, because the format was never the name.
+#
+# What let it run four weeks unnoticed is worth knowing separately. Both test
+# jobs pass — they need no AWS — so the run reaches `build-and-push` looking
+# healthy, and the only symptom is that ECR holds no image for the commit,
+# while the Lambda quietly keeps serving the last one that got through. When an
+# agent deploy fails, check ECR for the sha before reading anything else.
 
 name: Deploy Agent Image
 
