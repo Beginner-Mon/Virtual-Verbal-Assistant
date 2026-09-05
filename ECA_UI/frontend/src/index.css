@@ -106,4 +106,20 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+
+  /* Tailwind v4 dropped Preflight's `button { cursor: pointer }`, so every
+     button in the app fell back to the browser default arrow. Put it back
+     once here instead of sprinkling `cursor-pointer` across ~76 call sites.
+     Lives in @layer base, so any `cursor-*` utility (cursor-grab on the
+     dnd-kit handles, disabled:cursor-not-allowed) still overrides it. */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  summary,
+  select:not(:disabled),
+  input[type="checkbox"]:not(:disabled),
+  input[type="radio"]:not(:disabled),
+  input[type="range"]:not(:disabled),
+  input[type="file"]:not(:disabled) {
+    cursor: pointer;
+  }
 }
