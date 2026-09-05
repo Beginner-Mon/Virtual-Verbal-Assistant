@@ -28,6 +28,21 @@
 # that only `kimodo-release` was trusted. This is the design working, not a bug:
 # it is what stops any branch anyone pushes from being able to publish an image.
 # Adding a branch means editing the trust policy, deliberately.
+#
+# AND PER REPOSITORY NAME. The `sub` carries `<owner>/<repo>`, and GitHub mints
+# it from the CURRENT name — so renaming the repository revokes this role as
+# surely as deleting the branch would. Virtual-Verbal-Assistant became ProjectECA
+# between 29-08 and 03-09 and every run from #14 onward died here while the
+# trust policy still named the old repo. Fixed on 05-09 by replacing both subs
+# rather than appending: the old name is now unclaimed, and a repo re-created
+# under it by this owner would otherwise inherit the right to publish images.
+#
+# What made it survive four weeks is worth knowing. Both test jobs pass — they
+# need no AWS — so the run reaches `build-and-push` looking healthy, and the
+# only symptom is that ECR has no image for the commit. `git push` does warn
+# ("This repository moved"), but nothing connects that line to a deploy that
+# reports its own failure two minutes later in a different tab. When an agent
+# deploy fails, check ECR for the sha before reading any logs.
 
 name: Deploy Agent Image
 
