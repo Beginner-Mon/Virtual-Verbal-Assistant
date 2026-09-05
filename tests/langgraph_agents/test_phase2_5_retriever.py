@@ -176,7 +176,7 @@ class TestRetrieverNode:
 
         config = RunnableConfig(configurable={
             "user_id": "test-user", "session_id": "test-sess",
-            "query": "bai tap squat", "persona_id": "eca_default",
+            "query": "bai tap squat", "persona_id": "anne",
             "request_id": "req-001", "web_search": False,
         })
         state: AgentState = {
@@ -204,7 +204,7 @@ class TestRetrieverNode:
 
         config = RunnableConfig(configurable={
             "user_id": "test-user", "session_id": "test-sess",
-            "query": "hello", "persona_id": "eca_default",
+            "query": "hello", "persona_id": "anne",
             "request_id": "req-001", "web_search": False,
         })
         state: AgentState = {
@@ -231,7 +231,7 @@ class TestRetrieverNode:
 
         config = RunnableConfig(configurable={
             "user_id": "test-user", "session_id": "test-sess",
-            "query": "bai tap squat", "persona_id": "eca_default",
+            "query": "bai tap squat", "persona_id": "anne",
             "request_id": "req-001", "web_search": False,
         })
         state: AgentState = {

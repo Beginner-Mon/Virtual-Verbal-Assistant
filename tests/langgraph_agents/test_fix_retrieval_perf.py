@@ -163,7 +163,7 @@ class TestP2RetrieverRoundCap:
 
         config = RunnableConfig(configurable={
             "user_id": "u1", "session_id": "s1",
-            "query": "test", "persona_id": "eca_default",
+            "query": "test", "persona_id": "anne",
             "request_id": "r1", "web_search": False,
         })
         state: AgentState = {
@@ -490,7 +490,7 @@ class TestP3WebSearchGuard:
 
         config = RunnableConfig(configurable={
             "user_id": "u1", "session_id": "s1",
-            "query": "weather", "persona_id": "eca_default",
+            "query": "weather", "persona_id": "anne",
             "request_id": "r2",
             # "web_search" intentionally absent — should default False
         })

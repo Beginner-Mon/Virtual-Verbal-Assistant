@@ -17,11 +17,13 @@ from langgraph_agents.nodes.grader import (
 from langgraph_agents.state import AgentState
 
 CHARACTERS = ["anne", "bronya", "miki", "hatsune-miku"]
+# eca_default was deleted on 04-09: the product has four characters, and a
+# persona that fails to load now raises instead of standing in for one.
 SAFETY_TAGS = ["red_flag_screen", "referral_advice", "scope_disclaimer"]
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("slug", CHARACTERS + ["eca_default"])
+@pytest.mark.parametrize("slug", CHARACTERS)
 @pytest.mark.parametrize("tag", SAFETY_TAGS)
 def test_every_character_has_both_languages(slug, tag):
     vi = get_safety_text(tag, slug, "vi")
@@ -31,7 +33,7 @@ def test_every_character_has_both_languages(slug, tag):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("slug", CHARACTERS + ["eca_default"])
+@pytest.mark.parametrize("slug", CHARACTERS)
 @pytest.mark.parametrize("tag", SAFETY_TAGS)
 def test_language_variants_do_not_contain_the_other_alphabet(slug, tag):
     """A cheap smoke test that catches a copy-paste of the wrong line."""
@@ -61,7 +63,12 @@ def test_persona_customisation_survives_a_missing_en_variant():
 
     loader._persona_cache["_probe"] = {
         "persona_id": "_probe",
-        "safety_templates": {"red_flag_screen": "CUSTOM ONLY"},
+        "locales": {
+            "en": {
+                "voice": "", "examples": "", "ui_strings": {},
+                "safety_templates": {"red_flag_screen": "CUSTOM ONLY"},
+            }
+        },
     }
     try:
         assert get_safety_text("red_flag_screen", "_probe", "en") == "CUSTOM ONLY"
@@ -89,7 +96,14 @@ async def test_english_answer_gets_an_english_warning_injected():
             "4 out of 10, then rest for a full day before the next session."
         ),
     }
-    config = {"configurable": {"persona_id": "anne", "query": "What stretches should I do?"}}
+    # locale, not detection: the grader stopped guessing on 04-09.
+    config = {
+        "configurable": {
+            "persona_id": "anne",
+            "query": "What stretches should I do?",
+            "locale": "en",
+        }
+    }
     result = await grader_node(state, config)
 
     assert result["grader_result"] == "pass_with_warning"
@@ -105,15 +119,25 @@ async def test_vietnamese_answer_still_gets_the_vietnamese_warning():
         "required_outputs": ["red_flag_screen"],
         "final_answer": "Bạn nên tập bài kéo giãn cơ lưng dưới, mỗi hiệp 10 lần, thở đều.",
     }
-    config = {"configurable": {"persona_id": "anne", "query": "Tôi nên tập bài nào?"}}
+    config = {
+        "configurable": {
+            "persona_id": "anne",
+            "query": "Tôi nên tập bài nào?",
+            "locale": "vi",
+        }
+    }
     result = await grader_node(state, config)
 
     assert get_safety_text("red_flag_screen", "anne", "vi") in result["final_answer"]
 
 
 @pytest.mark.asyncio
-async def test_node_works_without_a_query_in_config():
-    """/tts and older call sites do not put `query` in configurable."""
+async def test_node_works_without_a_locale_in_config():
+    """An older client that sends no locale still gets a warning, not a crash.
+
+    It gets the ENGLISH one, because that is the declared default everywhere.
+    A Vietnamese answer with an English warning is the accepted trade of
+    preferring a declared locale over a detected language."""
     state: AgentState = {
         "messages": [], "errors": [], "retry_count": 0, "total_tokens": 0,
         "required_outputs": ["red_flag_screen"],

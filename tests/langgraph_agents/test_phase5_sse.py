@@ -326,7 +326,7 @@ def test_tts_endpoint_503_when_not_configured(api_client, monkeypatch):
     client, _, _ = api_client
     monkeypatch.delenv("VIENEU_TTS_URL", raising=False)
 
-    resp = client.post("/tts", json={"text": "xin chào", "persona_id": "eca_default"})
+    resp = client.post("/tts", json={"text": "xin chào", "persona_id": "anne"})
     assert resp.status_code == 503
 
 

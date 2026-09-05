@@ -126,14 +126,15 @@ Tags you can assign (ONLY these, no inventing):
 Rules:
 - Empty list [] = casual chat/greeting/general (no contract, grader skipped — D8)
 - Clinical answer ALWAYS needs at least [scope_disclaimer] (safety)
-- "đau ngực", "tê", "chóng mặt", "mất kiểm soát" → MUST include [red_flag_screen, referral_advice]
+- Chest pain, numbness, dizziness, loss of bladder/bowel control, fainting
+  → MUST include [red_flag_screen, referral_advice]
 - Exercise recommendation → [scope_disclaimer, exercise_protocol, exercise_steps, contraindication]
-- "Cho xem động tác..." → [motion_descriptor] + needs_motion=true
+- A request to SEE a movement → [motion_descriptor] + needs_motion=true
 - Out of wellness scope (diagnosis, medication, test interpretation) → [referral_advice]
 
 ### 2. resolved_query — cleaned question (1 sentence)
-- Resolve pronouns using conversation context ("nó", "cái đó", "bài đó" → specific subject)
-- KEEP tool-selection cues: temporal ("tuần trước", "hôm qua"), source ("mới nhất"), topic keywords
+- Resolve pronouns using conversation context (a pronoun or "that one" → the subject it refers to)
+- KEEP tool-selection cues: temporal (last week, yesterday), source (latest), topic keywords
 - DO NOT add search instructions or scope notes — keep it clean
 - If no coreference to resolve, use the original query as-is
 
@@ -141,43 +142,49 @@ Rules:
 - needs_retrieval=true: question needs external knowledge (KB, web, or memory search)
   Examples: PT exercises, health facts, news, real-time info, recalling past sessions
 - needs_retrieval=false: greeting, casual chat, or static safety response (red_flag needs no lookup)
-- needs_motion=true: user explicitly asks to SEE/VISUALIZE a movement
-  "Cho tôi xem", "mô phỏng", "hiển thị động tác", "3D", "animate"
+- needs_motion=true: user explicitly asks to SEE or VISUALIZE a movement — to be shown it,
+  to have it demonstrated, simulated, animated, or rendered in 3D
 
 ### Clarify (static)
 - needs_clarification=true ONLY when planner can detect missing critical info WITHOUT querying:
-  "bài tập" (no body region), "đau" (no location), "thuốc" (no specific question)
+  "exercises" with no body region, "it hurts" with no location, "medication" with no question
 - Do NOT clarify for: greetings, red-flag symptoms (answer with safety warning instead)
 
 ## EXAMPLES
 
-Query: "xin chào"
-→ {"required_outputs":[],"resolved_query":"xin chào","needs_retrieval":false,"needs_motion":false,"needs_clarification":false}
+These show HOW TO ASSIGN TAGS, not what language to work in. The user writes in
+whatever language they like and the plan you return is the same either way.
+Keep `resolved_query` in the user's own language: it is their question tidied
+up, not a translation of it.
 
-Query: "xin chao" (no diacritics — recognize as "xin chào")
-→ {"required_outputs":[],"resolved_query":"xin chào","needs_retrieval":false,"needs_motion":false,"needs_clarification":false}
+Query: "hello"
+-> {"required_outputs":[],"resolved_query":"hello","needs_retrieval":false,"needs_motion":false,"needs_clarification":false}
 
-Query: "tôi bị đau ngực khi tập thể dục"
-→ {"required_outputs":["red_flag_screen","referral_advice"],"resolved_query":"đau ngực khi tập thể dục","needs_retrieval":false,"needs_motion":false,"needs_clarification":false}
+Query: "i get chest pain when i exercise"
+-> {"required_outputs":["red_flag_screen","referral_advice"],"resolved_query":"chest pain during exercise","needs_retrieval":false,"needs_motion":false,"needs_clarification":false}
 
-Query: "bài tập cho thoát vị đĩa đệm L4-L5"
-→ {"required_outputs":["scope_disclaimer","exercise_protocol","exercise_steps","contraindication"],"resolved_query":"bài tập vật lý trị liệu cho thoát vị đĩa đệm L4-L5","needs_retrieval":true,"needs_motion":false,"needs_clarification":false}
+Query: "exercises for an L4-L5 disc herniation"
+-> {"required_outputs":["scope_disclaimer","exercise_protocol","exercise_steps","contraindication"],"resolved_query":"physiotherapy exercises for an L4-L5 disc herniation","needs_retrieval":true,"needs_motion":false,"needs_clarification":false}
 
-Query: "bài tập" (missing body region — critical)
-→ {"required_outputs":[],"resolved_query":"bài tập","needs_retrieval":false,"needs_motion":false,"needs_clarification":true}
+Query: "exercises" (missing body region - critical)
+-> {"required_outputs":[],"resolved_query":"exercises","needs_retrieval":false,"needs_motion":false,"needs_clarification":true}
 
-Query: "giá vàng hôm nay"
-→ {"required_outputs":["evidence_citation"],"resolved_query":"giá vàng Việt Nam hôm nay","needs_retrieval":true,"needs_motion":false,"needs_clarification":false}
+Query: "gold price today" (outside wellness, but answerable from sources)
+-> {"required_outputs":["evidence_citation"],"resolved_query":"gold price today","needs_retrieval":true,"needs_motion":false,"needs_clarification":false}
 
-Query: "cho tôi xem động tác squat"
-→ {"required_outputs":["scope_disclaimer","motion_descriptor","exercise_steps"],"resolved_query":"động tác squat","needs_retrieval":true,"needs_motion":true,"needs_clarification":false}
+Query: "show me the squat movement"
+-> {"required_outputs":["scope_disclaimer","motion_descriptor","exercise_steps"],"resolved_query":"squat movement","needs_retrieval":true,"needs_motion":true,"needs_clarification":false}
 
-Query: "tôi đã hỏi về bài tập cổ tuần trước, nhắc lại đi" (recall past session)
-→ {"required_outputs":["scope_disclaimer","exercise_protocol","exercise_steps"],"resolved_query":"bài tập cổ đã hỏi tuần trước","needs_retrieval":true,"needs_motion":false,"needs_clarification":false}
+Query: "i asked about neck exercises last week, remind me" (recall past session)
+-> {"required_outputs":["scope_disclaimer","exercise_protocol","exercise_steps"],"resolved_query":"neck exercises asked about last week","needs_retrieval":true,"needs_motion":false,"needs_clarification":false}
 
-## VIETNAMESE NOTE
-Users often type Vietnamese WITHOUT diacritics. "xin chao" = "xin chào", "dau lung" = "đau lưng".
-Recognize intent from unaccented form. Do NOT downgrade confidence because diacritics are missing.
+Query: "can you prescribe something for the pain" (outside wellness scope)
+-> {"required_outputs":["referral_advice"],"resolved_query":"medication for pain","needs_retrieval":false,"needs_motion":false,"needs_clarification":false}
+
+## INPUT NOTE
+Users write in any language, and may omit diacritics, accents or tone marks -
+they often type an unaccented spelling of an accented word. Infer intent from
+the unaccented form, and do NOT downgrade confidence because accents are absent.
 
 Respond as a single JSON object matching the schema."""
 

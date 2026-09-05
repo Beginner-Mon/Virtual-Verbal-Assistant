@@ -30,7 +30,7 @@ from langgraph.config import get_stream_writer
 from langgraph_agents.state import AgentState, ErrorSeverity
 from langgraph_agents.llm import get_chat_model, get_fallback_chat_model, extract_cache_tokens
 from langgraph_agents.nodes._persona_loader import (
-    get_persona, build_persona_prompt, build_voice_card,
+    get_persona, build_persona_prompt, build_voice_card, get_ui_string,
 )
 from langgraph_agents.shared.logging import get_logger
 
@@ -40,16 +40,15 @@ logger = get_logger("langgraph.synthesizer")
 # ── Language rule (shared across all modes) ──────────────────────────────
 
 _LANGUAGE_RULE = """## LANGUAGE (which language to answer in — not how to sound)
-- Supported: ENGLISH and VIETNAMESE only.
-- Detect the user's query language:
-    * Mostly Vietnamese → respond entirely in Vietnamese
-    * Mostly English → respond entirely in English
-- CRITICAL: the persona rules are WRITTEN in Vietnamese. That is the language of
-  the instructions, NOT the language of your reply. Obey what they MEAN, then
-  write the reply in the user's language. An English query gets an English reply
-  — including clinical terms, exercise names and safety warnings.
-- Do NOT mix languages. Do NOT write preambles like "I'll answer in...".
-- Start your response DIRECTLY with the answer content.
+- Answer in the SAME language the user wrote their question in. Whatever that
+  language is.
+- Everything in this prompt — these instructions, the persona description, the
+  retrieved evidence — is reference material. Its language is not the language
+  of your reply. Obey what it MEANS, then write in the user's language.
+- The whole reply is in that one language, including clinical terms, exercise
+  names and safety warnings. Do NOT mix languages.
+- Do NOT write preambles like "I'll answer in...". Start DIRECTLY with the
+  answer content.
 """
 
 
@@ -123,7 +122,7 @@ Answer the user's wellness question from the evidence below.
 Instructions:
 - Cover ALL required_outputs tags in your response
 - Base your answer on the retrieved evidence — cite sources when available
-- For exercise_protocol: include sets, reps, frequency (e.g. "3 hiệp × 10 lần, 2-3 lần/tuần")
+- For exercise_protocol: include sets, reps, frequency (e.g. "3 sets of 10 reps, 2-3 times a week")
 - For exercise_steps: provide ≥2 ordered steps
 - For contraindication: list conditions where the exercise should NOT be done
 - For motion_descriptor: describe the movement + joints involved clearly
@@ -301,7 +300,7 @@ async def synthesizer_node(state: AgentState, config: RunnableConfig) -> dict:
     """
     t0 = time.perf_counter()
     request_id = config["configurable"].get("request_id", "-")
-    persona_id = config["configurable"].get("persona_id", "eca_default")
+    persona_id = config["configurable"].get("persona_id", "anne")
     resolved_query = state.get("resolved_query") or config["configurable"]["query"]
     required_outputs = state.get("required_outputs", [])
 
@@ -317,7 +316,11 @@ async def synthesizer_node(state: AgentState, config: RunnableConfig) -> dict:
     # ── Build prompts ─────────────────────────────────────────────────
     # Persona is loaded before the task prompt, not after it: the safety block
     # is now worded from this character's own templates.
-    persona = get_persona(persona_id)
+    # The site locale, not a guess at this message's language: the voice card
+    # built from it is IMITATED by the model, so it has to be a declared
+    # choice rather than something detected and occasionally wrong.
+    locale = config["configurable"].get("locale", "en")
+    persona = get_persona(persona_id, locale)
     tool_results = _extract_tool_results(state.get("messages", []))
     tags_str = ", ".join(required_outputs) if required_outputs else "(none — free response)"
 
@@ -453,7 +456,16 @@ async def synthesizer_node(state: AgentState, config: RunnableConfig) -> dict:
                 "node": "synthesizer", "request_id": request_id,
                 "elapsed_ms": elapsed_ms, "error": str(exc),
             }, exc_info=True)
-            fallback = "Xin lỗi, tôi không thể trả lời ngay lúc này. Vui lòng thử lại."
+            # The character's own wording, not a string hard-coded in this node.
+            # api/main.py:582 already resolves the same key on the path where the
+            # graph produces no answer at all; two places that both mean "we
+            # could not answer" should not disagree about how to say it.
+            #
+            # It still reads Vietnamese today because personas/*.md are Vietnamese.
+            # That is the persona overlay's problem to fix, and fixing it there
+            # fixes both call sites at once — which is the point of routing
+            # through here rather than translating this literal.
+            fallback = get_ui_string(persona_id, "error_unavailable", locale)
             return {
                 "final_answer": fallback,
                 "errors": [{

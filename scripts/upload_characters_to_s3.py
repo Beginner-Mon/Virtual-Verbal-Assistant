@@ -177,15 +177,18 @@ def load_persona(slug: str) -> dict:
     Importing _load_persona rather than reimplementing it means the JSONB in
     the DB cannot drift from what get_persona() produces at runtime.
     """
-    from langgraph_agents.nodes._persona_loader import _load_persona
+    from langgraph_agents.nodes._persona_loader import PersonaError, _load_persona
 
-    persona = _load_persona(slug)
-    if persona.get("_fallback"):
+    try:
+        return _load_persona(slug)
+    except PersonaError as exc:
+        # There is no fallback persona to detect any more — the loader raises.
+        # Re-raised as FileNotFoundError so this script's existing error handling
+        # and message shape are unchanged for whoever runs it.
         raise FileNotFoundError(
-            f"personas/{slug}.md is missing or unparseable — refusing to seed a "
-            f"fallback persona for character '{slug}'"
+            f"personas/{slug}/ is missing or unparseable ({exc}) — refusing to "
+            f"seed character '{slug}' without one"
         )
-    return persona
 
 
 def display_name_for(slug: str, persona: dict) -> str:

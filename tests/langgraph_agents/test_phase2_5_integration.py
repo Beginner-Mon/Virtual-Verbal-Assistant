@@ -31,7 +31,7 @@ def _base_state_config(**overrides):
             "user_id": "test-user",
             "session_id": "test-session",
             "query": overrides.pop("query", "Xin chào"),
-            "persona_id": "eca_default",
+            "persona_id": "anne",
             "request_id": "test-001",
             "web_search": False,
         }

@@ -25,8 +25,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 
 from langgraph_agents.state import AgentState
-from langgraph_agents.nodes._persona_loader import get_persona
-from langgraph_agents.shared.lang import detect_lang
+from langgraph_agents.nodes._persona_loader import PersonaError, get_persona
 from langgraph_agents.shared.logging import get_logger
 
 logger = get_logger("langgraph.grader")
@@ -273,22 +272,26 @@ def _unauthorized_disclaimer(lang: str) -> str:
 
 
 def get_safety_text(tag: str, persona_id: str, lang: str = "vi") -> str:
-    """Get safety template for tag, persona-customized if available.
+    """The safety line for one tag, in the character's own words, in `lang`.
 
     Resolution order, most specific first:
-        persona `<tag>.<lang>` → persona `<tag>` → DEFAULT for `<lang>` → ""
+        persona overlay for `lang` → module default for `lang` → ""
 
-    `lang` defaults to "vi" so every existing caller and test keeps its current
-    behaviour; only callers that know the answer's language pass it.
+    The `<tag>.en` suffix convention is gone. It existed because a persona was a
+    single flat file that had to carry two languages at once; now each language
+    is its own overlay file (`personas/<slug>/<lang>.md`) and the key is just
+    `<tag>` in both. A persona that has no overlay for `lang` gets the neutral
+    default rather than a warning in the wrong language.
 
-    The persona's plain `<tag>` sits ABOVE the English default on purpose: a
-    persona that customised its warning did so for a reason, and silently
-    replacing it with the generic English one would drop that customisation. A
-    persona that wants a different English wording declares `<tag>.en`.
+    Falls back rather than raising, unlike `get_persona`: every caller is already
+    injecting text into a reply that is about to ship, and a missing template
+    must degrade to the generic warning, never to silence.
     """
-    persona = get_persona(persona_id)
-    templates = persona.get("safety_templates", {})
-    custom = templates.get(f"{tag}.{lang}") or templates.get(tag)
+    try:
+        templates = get_persona(persona_id, lang).get("safety_templates") or {}
+    except PersonaError:
+        templates = {}
+    custom = templates.get(tag)
     if custom:
         return custom
     defaults = DEFAULT_SAFETY_TEMPLATES_EN if lang == "en" else DEFAULT_SAFETY_TEMPLATES
@@ -377,7 +380,7 @@ async def grader_node(state: AgentState, config: RunnableConfig) -> dict:
     required_outputs = state.get("required_outputs", [])
     final_answer = state.get("final_answer", "")
     retry_count = state.get("retry_count", 0)
-    persona_id = config["configurable"].get("persona_id", "eca_default")
+    persona_id = config["configurable"].get("persona_id", "anne")
 
     # Safety: required_outputs=[] should never reach grader (D8 + D15 routing)
     if not required_outputs:
@@ -388,16 +391,17 @@ async def grader_node(state: AgentState, config: RunnableConfig) -> dict:
 
     result = _grade_tags(final_answer, required_outputs)
 
-    # Injected text must match the language the synthesizer actually answered
-    # in, not the persona's nominal one — an English answer used to get its
-    # safety warning stapled on in Vietnamese. The query is the tie-breaker for
-    # answers too short to classify.
-    persona = get_persona(persona_id)
-    lang = str(detect_lang(
-        final_answer,
-        query=config["configurable"].get("query"),
-        fallback=persona.get("voice_identity", {}).get("language", "vi"),
-    ))
+    # The site language the user chose, not a guess at the answer's language.
+    #
+    # This used to call detect_lang(final_answer). Detection reads the reply and
+    # is usually right, but "usually" is the problem: a safety warning is the one
+    # sentence a reader must not skip, and a declared preference cannot be
+    # mis-read the way a two-word answer can.
+    #
+    # Known consequence, accepted: a Vietnamese question asked on an English site
+    # gets a Vietnamese answer with an English warning attached. The reply
+    # language still mirrors the question — locale governs inserted text only.
+    lang = config["configurable"].get("locale", "en")
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000)
 

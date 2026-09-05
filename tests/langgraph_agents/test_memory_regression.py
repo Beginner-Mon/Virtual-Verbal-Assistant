@@ -124,7 +124,7 @@ async def test_synthesizer_includes_conversation_history():
         "total_tokens": 0,
     }
     config = {"configurable": {
-        "request_id": "r", "persona_id": "eca_default", "query": "what is my name",
+        "request_id": "r", "persona_id": "anne", "query": "what is my name",
     }}
 
     # No stream writer outside a running graph → synthesizer uses ainvoke(msgs).

@@ -25,7 +25,36 @@ def _load_config() -> dict:
 
 
 _CFG = _load_config()
-_DEFAULT_PERSONA = _CFG.get("persona", {}).get("default", "eca_default")
+_DEFAULT_PERSONA = _CFG.get("persona", {}).get("default", "anne")
+
+# The languages a character can be authored in. A `lang` becomes part of a file
+# path, so this is an allowlist and not merely a hint.
+LANGS = ("vi", "en")
+DEFAULT_LANG = "en"
+
+# Sections that describe WHO the character is and what they may do. Written once,
+# in English, in `_core.md`. The model reads them in English and still answers in
+# the user's language — the same way every other instruction in the prompt works.
+_CORE_SECTIONS = (
+    "identity", "personality", "behavioral_rules", "response_formatting",
+)
+
+# Sections the model IMITATES, or that are inserted verbatim into something a
+# person reads. These cannot be shared: "Xưng 'mình', gọi người dùng là 'bạn'"
+# has no English equivalent, which is why `vi.md` and `en.md` are two authored
+# voices rather than one voice and a translation.
+_OVERLAY_SECTIONS = ("voice", "examples", "safety_templates", "ui_strings")
+
+
+class PersonaError(RuntimeError):
+    """A character could not be loaded, or was asked for in an unknown language.
+
+    Raised rather than substituted. There used to be a `_fallback_persona()` that
+    returned a generic "ECA Default" stand-in for any bad or missing id, which
+    meant a broken persona silently became a DIFFERENT character: the user still
+    saw Bronya's avatar while reading words written for nobody. Owner's call —
+    answering as the wrong character is worse than not answering.
+    """
 
 
 def _resolve_personas_dir() -> Path:
@@ -33,21 +62,6 @@ def _resolve_personas_dir() -> Path:
     if not Path(cfg_dir).is_absolute():
         return Path(__file__).resolve().parents[2] / cfg_dir
     return Path(cfg_dir)
-
-
-def _fallback_persona(persona_id: str) -> dict:
-    return {
-        "persona_id": persona_id,
-        "_fallback": True,   # not cached by get_persona (avoid unbounded cache from bad ids)
-        "title": "ECA Default",
-        "identity": "Name: ECA | Role: Physical therapy AI assistant",
-        "voice_identity": {"voice_path": None, "language": "vi"},
-        "personality": "Tone: Warm, professional, encouraging",
-        "behavioral_rules": "Use Vietnamese by default. Keep responses helpful.",
-        "response_formatting": "Keep under 300 words.",
-        "safety_templates": {},
-        "ui_strings": {},
-    }
 
 
 def _parse_voice_identity(text: str) -> dict:
@@ -88,28 +102,47 @@ def _parse_key_values(text: str) -> dict[str, str]:
     return result
 
 
-def _load_persona(persona_id: str) -> dict:
-    # ── Defense in depth: validate persona_id before using as path ──
+def _safe_persona_file(persona_id: str, filename: str) -> Path:
+    """`personas/<persona_id>/<filename>`, proven to be inside `personas/`.
+
+    Two fences, both kept from the previous flat-file loader and now applied to
+    the language segment as well, since `lang` also becomes part of a path:
+
+      1. the id must match a strict character class before it touches the
+         filesystem at all
+      2. the RESOLVED path must still sit inside `personas/` — which catches
+         anything symlinks or `..` could do that the regex did not anticipate
+
+    Raises rather than returning a stand-in. See `PersonaError`.
+    """
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", persona_id):
         logger.warning("invalid_persona_id", extra={"persona_id": persona_id[:80]})
-        return _fallback_persona(persona_id)
+        raise PersonaError(f"invalid persona id: {persona_id[:80]!r}")
 
     personas_dir = _resolve_personas_dir()
-    resolved = (personas_dir / f"{persona_id}.md").resolve()
+    resolved = (personas_dir / persona_id / filename).resolve()
 
-    # Containment check: resolved path must be inside personas_dir
     try:
         resolved.relative_to(personas_dir.resolve())
     except ValueError:
-        logger.warning("persona_path_traversal_attempt", extra={"persona_id": persona_id[:80]})
-        return _fallback_persona(persona_id)
+        logger.warning(
+            "persona_path_traversal_attempt", extra={"persona_id": persona_id[:80]}
+        )
+        raise PersonaError(f"persona path escapes the personas directory: {persona_id[:80]!r}")
 
-    if not resolved.exists():
-        logger.warning("Persona file not found: %s, using fallback", resolved)
-        return _fallback_persona(persona_id)
+    if not resolved.is_file():
+        logger.warning("persona_file_missing", extra={"path": str(resolved)})
+        raise PersonaError(f"persona file not found: {resolved}")
 
-    content = resolved.read_text(encoding="utf-8")
+    return resolved
 
+
+def _parse_sections(content: str) -> dict:
+    """Parse one markdown file into the section dict the rest of this module uses.
+
+    Shared by `_core.md` and the language overlays — they have the same shape and
+    differ only in which sections they are expected to carry.
+    """
     sections: dict[str, str] = {}
     current_header = "identity"
     current_body: list[str] = []
@@ -175,14 +208,13 @@ def _load_persona(persona_id: str) -> dict:
     title = title_match.group(1).strip() if title_match else ""
 
     return {
-        "persona_id": persona_id,
         "title": title,
         "identity": sections.get("identity", ""),
         "voice_identity": voice_identity,
         "personality": sections.get("personality", ""),
-        # Optional. `voice` is speech habits, `examples` verbatim sample lines —
-        # the two sections a model actually imitates. Personas written before
-        # they existed return "" and render exactly as they used to.
+        # `voice` is speech habits, `examples` verbatim sample lines — the two
+        # sections a model actually imitates, which is why they live in the
+        # language overlay rather than the shared core.
         "voice": sections.get("voice", ""),
         "examples": sections.get("examples", ""),
         "behavioral_rules": sections.get("behavioral_rules", ""),
@@ -192,57 +224,142 @@ def _load_persona(persona_id: str) -> dict:
     }
 
 
-def get_persona(persona_id: str) -> dict:
-    cached = _persona_cache.get(persona_id)
-    if cached is not None:
-        return cached
-    persona = _load_persona(persona_id)
-    # Only cache real personas — fallbacks (bad/missing id) are not cached so a
-    # flood of distinct invalid ids can't grow the cache unbounded.
-    if not persona.get("_fallback"):
-        _persona_cache[persona_id] = persona
-    return persona
+def _load_persona(persona_id: str) -> dict:
+    """Read `_core.md` plus every language overlay into ONE cache entry.
+
+    Deliberately NOT one entry per (slug, language). `test_a0_persona_security`
+    reaches into `_persona_cache` with a plain string key to prove an invalid id
+    cannot poison it; re-keying on a tuple would have forced a security test to
+    change shape in order to suit a feature. So the cache stores everything under
+    the slug and `get_persona` flattens on read — a few dict lookups, no cost.
+    """
+    core = _parse_sections(_safe_persona_file(persona_id, "_core.md").read_text("utf-8"))
+
+    locales: dict[str, dict] = {}
+    for lang in LANGS:
+        try:
+            overlay = _parse_sections(
+                _safe_persona_file(persona_id, f"{lang}.md").read_text("utf-8")
+            )
+        except PersonaError:
+            # A character may ship only some languages. Asking for a missing one
+            # raises in `get_persona`; it must not stop the ones that exist from
+            # loading.
+            continue
+        locales[lang] = {k: overlay[k] for k in _OVERLAY_SECTIONS}
+
+    if not locales:
+        raise PersonaError(f"{persona_id!r} has no language overlay")
+
+    return {
+        "persona_id": persona_id,
+        "title": core["title"],
+        "voice_identity": core["voice_identity"],
+        **{k: core[k] for k in _CORE_SECTIONS},
+        "locales": locales,
+    }
 
 
-# Chat-surface copy used when a persona ships no `## UI Strings` section. These
-# are verbatim the strings that used to be hard-coded at the call sites, so a
-# persona without its own copy behaves exactly as it did before.
-_DEFAULT_UI_STRINGS = {
-    "error_system": "Xin lỗi, hệ thống đang gặp sự cố. Vui lòng thử lại sau.",
-    "error_partial": "Đã có lỗi nhỏ, nhưng tôi vẫn cố gắng trả lời.",
-    "error_unavailable": "Xin lỗi, tôi không thể xử lý yêu cầu này.",
+def get_persona(persona_id: str, lang: str = DEFAULT_LANG) -> dict:
+    """One character in one language, flattened to the shape callers expect.
+
+    The return value looks exactly like it did before overlays existed — core
+    fields and overlay fields side by side — so `build_persona_prompt`,
+    `build_voice_card` and `get_safety_text` read `persona["voice"]` and
+    `persona["safety_templates"]` unchanged. They simply receive the right
+    language's copy.
+
+    Raises `PersonaError` for an unknown character or an unknown language. There
+    is no stand-in: see `PersonaError`.
+    """
+    if lang not in LANGS:
+        raise PersonaError(f"unsupported persona language: {lang!r}")
+
+    parsed = _persona_cache.get(persona_id)
+    if parsed is None:
+        parsed = _load_persona(persona_id)
+        _persona_cache[persona_id] = parsed
+
+    overlay = parsed["locales"].get(lang)
+    if overlay is None:
+        raise PersonaError(f"{persona_id!r} has no {lang!r} overlay")
+
+    flat = {k: v for k, v in parsed.items() if k != "locales"}
+    flat.update(overlay)
+    return flat
+
+
+# Last-resort chat-surface copy, per language, for a persona that ships no
+# `## UI Strings`. Deliberately character-neutral: a wrong name is worse than no
+# name. This is the ONLY user-visible text left in this module, and it exists so
+# that a missing string renders as something readable rather than as "".
+_DEFAULT_UI_STRINGS: dict[str, dict[str, str]] = {
+    "en": {
+        "error_system": "Something went wrong on our side. Please try again shortly.",
+        "error_partial": "There was a small problem, but here is what I can tell you.",
+        "error_unavailable": "I could not handle that request.",
+    },
+    "vi": {
+        "error_system": "Xin lỗi, hệ thống đang gặp sự cố. Vui lòng thử lại sau.",
+        "error_partial": "Đã có lỗi nhỏ, nhưng tôi vẫn cố gắng trả lời.",
+        "error_unavailable": "Xin lỗi, tôi không thể xử lý yêu cầu này.",
+    },
 }
 
 
-def get_ui_string(persona_id: str, key: str, default: str = "") -> str:
-    """One chat-surface string for a character, with a safe fallback.
+def get_ui_string(
+    persona_id: str, key: str, lang: str = DEFAULT_LANG, default: str = ""
+) -> str:
+    """One chat-surface string for a character, in one language.
 
     Display copy only — this must never be fed to the model. Keeping the read
     path separate from build_persona_prompt is what stops UI text drifting into
     the model's instructions, and it is why `ui_strings` is popped out of
     `sections` during parsing rather than left to render with the rest.
+
+    Never raises. Unlike `get_persona`, every caller here is already ON an error
+    path — `api/main.py` reaching for `error_unavailable` because the graph
+    produced nothing — and a loader failure there would replace a readable
+    message with a stack trace.
     """
-    value = (get_persona(persona_id).get("ui_strings") or {}).get(key)
+    try:
+        value = (get_persona(persona_id, lang).get("ui_strings") or {}).get(key)
+    except PersonaError:
+        value = None
     if value:
         return value
-    return default or _DEFAULT_UI_STRINGS.get(key, "")
+    table = _DEFAULT_UI_STRINGS.get(lang) or _DEFAULT_UI_STRINGS[DEFAULT_LANG]
+    return default or table.get(key, "")
 
 
-_PERSONA_SECTIONS = (
-    "title", "identity", "voice_identity", "personality",
-    "behavioral_rules", "response_formatting", "safety_templates",
-    # `voice` (speech habits) and `examples` (verbatim sample lines) are the two
-    # sections that actually move a model. Both are optional: a persona without
-    # them renders exactly as before.
-    "voice", "examples",
-    # Chat-surface copy. Never reaches the model — see get_ui_string.
-    "ui_strings",
-)
+def _normalise_db_persona(slug: str, persona: dict) -> dict:
+    """Accept both the overlay shape and the flat shape rows were written in before.
 
-# Sections whose default is an empty dict rather than an empty string. Keyed by
-# suffix because the alternative is a second list to keep in sync with the one
-# above.
-_DICT_SECTION_SUFFIXES = ("_templates", "_identity", "_strings")
+    A row written by an older `sync_personas_to_db.py` has no `locales` key: its
+    fields sit at the top level and are Vietnamese. Reading it as the `vi`
+    overlay means the deploy order does not matter — a new backend serves an old
+    row, and a new row does not break an old backend.
+    """
+    if isinstance(persona.get("locales"), dict) and persona["locales"]:
+        out = dict(persona)
+        out.setdefault("persona_id", slug)
+        return out
+
+    core = {k: persona.get(k, "") for k in _CORE_SECTIONS}
+    overlay = {
+        "voice": persona.get("voice", ""),
+        "examples": persona.get("examples", ""),
+        "safety_templates": persona.get("safety_templates") or {},
+        "ui_strings": persona.get("ui_strings") or {},
+    }
+    logger.info("persona_preload_legacy_shape", extra={"slug": slug})
+    return {
+        "persona_id": slug,
+        "title": persona.get("title", ""),
+        "voice_identity": persona.get("voice_identity") or {},
+        **core,
+        "locales": {"vi": overlay},
+    }
 
 
 async def preload_personas_from_db() -> int:
@@ -296,12 +413,7 @@ async def preload_personas_from_db() -> int:
             logger.warning("persona_preload_incomplete", extra={"slug": slug})
             continue
 
-        persona.setdefault("persona_id", slug)
-        for section in _PERSONA_SECTIONS:
-            persona.setdefault(
-                section, {} if section.endswith(_DICT_SECTION_SUFFIXES) else ""
-            )
-        _persona_cache[slug] = persona
+        _persona_cache[slug] = _normalise_db_persona(slug, persona)
         loaded += 1
 
     logger.info("persona_preload", extra={"count": loaded, "rows": len(rows)})

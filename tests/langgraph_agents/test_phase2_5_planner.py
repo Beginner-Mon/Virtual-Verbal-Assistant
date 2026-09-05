@@ -131,7 +131,7 @@ class TestPlannerNode:
             )
             config = RunnableConfig(configurable={
                 "user_id": "test", "session_id": "test-sess",
-                "query": "test query", "persona_id": "eca_default",
+                "query": "test query", "persona_id": "anne",
                 "request_id": "req-001",
             })
             state: AgentState = {"messages": [], "errors": [], "total_tokens": 0,
@@ -158,7 +158,7 @@ class TestPlannerNode:
             )
             config = RunnableConfig(configurable={
                 "user_id": "test", "session_id": "test-sess",
-                "query": "dau nguc", "persona_id": "eca_default",
+                "query": "dau nguc", "persona_id": "anne",
                 "request_id": "req-001",
             })
             state: AgentState = {"messages": [], "errors": [], "total_tokens": 0,
@@ -180,7 +180,7 @@ class TestPlannerNode:
             )
             config = RunnableConfig(configurable={
                 "user_id": "test", "session_id": "test-sess",
-                "query": "hello", "persona_id": "eca_default",
+                "query": "hello", "persona_id": "anne",
                 "request_id": "req-001",
             })
             state: AgentState = {"messages": [], "errors": [], "total_tokens": 0,
@@ -201,7 +201,7 @@ class TestPlannerNode:
             )
             config = RunnableConfig(configurable={
                 "user_id": "test", "session_id": "test-sess",
-                "query": "hello", "persona_id": "eca_default",
+                "query": "hello", "persona_id": "anne",
                 "request_id": "req-001",
             })
             state: AgentState = {"messages": [], "errors": [], "total_tokens": 0,
@@ -227,7 +227,7 @@ class TestPlannerNode:
             )
             config = RunnableConfig(configurable={
                 "user_id": "test", "session_id": "test-sess",
-                "query": "dao sau ve no", "persona_id": "eca_default",
+                "query": "dao sau ve no", "persona_id": "anne",
                 "request_id": "req-001",
             })
             state: AgentState = {"messages": [], "errors": [], "total_tokens": 0,

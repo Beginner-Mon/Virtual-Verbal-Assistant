@@ -28,7 +28,7 @@ def _make_config(user_id="test-user-a", session_id=None):
         "user_id": user_id,
         "session_id": session_id or str(uuid.uuid4()),
         "query": "test",
-        "persona_id": "eca_default",
+        "persona_id": "anne",
         "request_id": "req-test",
     })
 

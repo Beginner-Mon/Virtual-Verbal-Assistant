@@ -48,7 +48,7 @@ async def test_retriever_has_generate_motion_tool():
                 "user_id": "test-user",
                 "session_id": "test-session",
                 "query": "Cho tôi xem động tác bridge",
-                "persona_id": "eca_default",
+                "persona_id": "anne",
                 "output_mode": "text",
                 "request_id": "test-mcp-001",
                 "token_limit": None,

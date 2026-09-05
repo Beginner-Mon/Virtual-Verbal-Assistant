@@ -178,7 +178,7 @@ async def test_planner_handles_breaker_open_as_recoverable(monkeypatch):
         "user_id": "u1",
         "session_id": "s1",
         "request_id": "r-test",
-        "persona_id": "eca_default",
+        "persona_id": "anne",
     }}
 
     # Gemini fallback (fix #2) is disabled here so this test stays a pure
@@ -225,7 +225,7 @@ async def test_planner_degrades_when_no_provider_can_be_built(monkeypatch):
         "user_id": "u1",
         "session_id": "s1",
         "request_id": "r-test",
-        "persona_id": "eca_default",
+        "persona_id": "anne",
     }}
 
     with patch("langgraph_agents.nodes.planner.get_fallback_chat_model", return_value=None):

@@ -83,9 +83,11 @@ def test_persona_voice_path_is_no_longer_consulted():
     express "this character, in English". If it comes back, this test says so."""
     from langgraph_agents.nodes._persona_loader import _load_persona
 
-    for slug in ("anne", "bronya", "miki", "hatsune-miku",
-                 "eca_default", "eca_clinical", "eca_friendly"):
+    # eca_default / eca_clinical / eca_friendly were deleted: the product has
+    # four characters, and a persona that fails to load now raises rather than
+    # standing in for a real one.
+    for slug in ("anne", "bronya", "miki", "hatsune-miku"):
         assert not _load_persona(slug)["voice_identity"].get("voice_path"), (
-            f"{slug}.md declares voice_path again; resolve_voice derives the "
-            "name from the slug and will ignore it"
+            f"{slug}/_core.md declares voice_path again; resolve_voice derives "
+            "the name from the slug and will ignore it"
         )

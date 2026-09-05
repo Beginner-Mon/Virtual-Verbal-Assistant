@@ -14,7 +14,7 @@ import pytest
 from unittest.mock import patch
 
 #: Minimal RunnableConfig — grader only reads `persona_id` from it.
-GRADER_CONFIG = {"configurable": {"persona_id": "eca_default"}}
+GRADER_CONFIG = {"configurable": {"persona_id": "anne"}}
 
 
 from langgraph_agents.state import AgentState

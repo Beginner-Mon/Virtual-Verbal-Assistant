@@ -291,7 +291,7 @@ class TestMemoryNode:
 
         config = RunnableConfig(configurable={
             "user_id": "test-user", "session_id": "test-sess",
-            "query": "xin chao", "persona_id": "eca_default",
+            "query": "xin chao", "persona_id": "anne",
             "request_id": "req-001",
         })
         state: AgentState = {"messages": [], "errors": [], "total_tokens": 0,
@@ -315,7 +315,7 @@ class TestMemoryNode:
 
         config = RunnableConfig(configurable={
             "user_id": "test-user", "session_id": "test-sess",
-            "query": "xin chao", "persona_id": "eca_default",
+            "query": "xin chao", "persona_id": "anne",
             "request_id": "req-001",
         })
         state: AgentState = {"messages": [], "errors": [], "total_tokens": 0,

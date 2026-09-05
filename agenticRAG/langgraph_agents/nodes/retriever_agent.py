@@ -105,10 +105,12 @@ to search for. Do NOT write the final answer — that's the synthesizer's job.
   Use for: exercises, stretches, anatomy, physiotherapy techniques, health facts.
 {web_search_tool_block}\
 - **memory_search(query, since_days=None, top_k=3)**: Search user's past conversation summaries.
-  Use for: "lần trước", "tuần trước", "tôi đã hỏi", "nhắc lại".
+  Use when the user refers back to an earlier conversation — recalling what they asked
+  before, naming a past time ("last week", "yesterday"), or asking you to repeat something.
   Scope is automatically scoped to the current user — no need to pass user_id.
 - **resume_last_session(since_days=None)**: Resume the most recent past session.
-  Use for: "tiếp tục", "làm tiếp bài hôm trước", "quay lại bài tập".
+  Use when the user wants to CONTINUE where they left off rather than recall a fact —
+  picking the previous session's work back up, carrying on with it.
   Returns both summary chunks and recent messages from that session.
 - **youtube_transcript(url)**: Fetch the spoken transcript of a YouTube video.
   Use ONLY when the user's message contains a YouTube link (youtube.com/watch?v= or youtu.be/).
@@ -118,7 +120,8 @@ to search for. Do NOT write the final answer — that's the synthesizer's job.
 1. **PT/wellness topic** (exercises, stretches, anatomy, physiotherapy) → kb_search FIRST
 {pt_fallback_rule_line}\
 {web_search_rule_line}\
-2. **Past conversation recall** ("lần trước", "như đã nói", "tiếp tục") → memory_search
+2. **Past conversation recall** (the user refers to something said earlier, or asks to
+   continue previous work) → memory_search
 3. **YouTube link in message** (youtube.com/watch or youtu.be) → call `youtube_transcript(url)`
    with the exact URL from the user's message; use the returned transcript to answer.
 4. **Multiple needs** → call tools IN PARALLEL (multiple tool_calls in one response)
@@ -126,9 +129,11 @@ to search for. Do NOT write the final answer — that's the synthesizer's job.
 
 ## SEARCH QUERY TIPS
 - Use the resolved_query as base, enrich with relevant keywords from required_outputs tags
-- For Vietnamese queries: include both accented and unaccented variants
-- For exercises: add "bài tập", "hướng dẫn", "vật lý trị liệu"
-- For anatomy: add "giải phẫu", "cơ", "xương khớp"
+- The knowledge base is written in English. When the user asks in another language,
+  search in ENGLISH — use the English clinical term for what they described. The
+  embedding model is multilingual, but an English query matches English documents best.
+- Enrich with the domain words that fit the question: for a movement, the exercise or
+  stretch name; for anatomy, the muscle or joint. Do not pad with generic words.
 
 ## EMPTY vs ERROR
 {empty_handling}\

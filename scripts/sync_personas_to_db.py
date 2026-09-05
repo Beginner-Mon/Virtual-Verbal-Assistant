@@ -23,8 +23,11 @@ no model attached.
     python scripts/sync_personas_to_db.py anne          # one character
     python scripts/sync_personas_to_db.py               # every active character
 
-Requires VVA_PG_DSN — the same variable the backend and Alembic read, so there
-is no way to write personas into one database while the app reads another.
+Requires VVA_PG_DSN_OWNER (falls back to VVA_PG_DSN for the read-only
+dry-run). The application role cannot write `characters` — 007_rls lists it as
+SYSTEM_READONLY because the catalog belongs to nobody. Same variables the
+backend and Alembic read, so there is no way to write personas into one
+database while the app reads another.
 """
 
 from __future__ import annotations
@@ -35,14 +38,27 @@ import json
 import sys
 from pathlib import Path
 
+# This script's whole job is printing persona text, which is Vietnamese, at a
+# Windows console defaulting to cp1252. Without this the dry-run — the step that
+# exists so nobody writes blind — dies on the first accented character.
+# Same fix as start_services.py; third occurrence of this in the repo.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        pass
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "agenticRAG"))
 
 # Sections compared and reported. Order matters only for readable output.
-_REPORTED = (
-    "identity", "personality", "voice", "behavioral_rules",
-    "response_formatting", "examples", "safety_templates", "ui_strings",
+# Core sections are shared across languages; the rest live per language under
+# `locales`. Reported separately so a diff says WHICH language changed rather
+# than just "locales".
+_REPORTED_CORE = (
+    "title", "identity", "personality", "behavioral_rules", "response_formatting",
 )
+_REPORTED_OVERLAY = ("voice", "examples", "safety_templates", "ui_strings")
 
 
 def load_from_markdown(slug: str) -> dict:
@@ -52,15 +68,30 @@ def load_from_markdown(slug: str) -> dict:
     the JSONB in the DB drifting from what get_persona() produces at runtime —
     the same reasoning as upload_characters_to_s3.load_persona.
     """
-    from langgraph_agents.nodes._persona_loader import _load_persona
+    from langgraph_agents.nodes._persona_loader import PersonaError, _load_persona
 
-    persona = _load_persona(slug)
-    if persona.get("_fallback"):
-        raise SystemExit(
-            f"personas/{slug}.md is missing or unparseable — refusing to write a "
-            f"fallback persona over a real one."
-        )
-    return persona
+    try:
+        return _load_persona(slug)
+    except PersonaError as exc:
+        # There is no fallback persona to guard against any more — the loader
+        # raises. Turning that into a clean exit keeps the failure readable
+        # instead of a traceback, and stops a half-written character reaching
+        # the row that a working one is being served from.
+        raise SystemExit(f"personas/{slug}/ cannot be loaded: {exc}")
+
+
+def _public_ui_strings(persona: dict) -> dict:
+    """`{lang: {...}}` for the `ui_strings` column the catalog Lambda serves.
+
+    A projection of `persona`, not a second source: both come from the same
+    parsed dict in the same UPDATE, so the column and the JSONB cannot drift.
+    The column exists because `persona` is the system prompt and must never
+    reach a browser, while this is display copy that only exists to.
+    """
+    return {
+        lang: overlay.get("ui_strings") or {}
+        for lang, overlay in (persona.get("locales") or {}).items()
+    }
 
 
 def _summarise(value) -> str:
@@ -72,16 +103,45 @@ def _summarise(value) -> str:
 def diff_sections(old: dict, new: dict) -> list[str]:
     """Section names that differ, for a report worth reading before a write."""
     changed = []
-    for section in _REPORTED:
+    for section in _REPORTED_CORE:
         if _summarise(old.get(section)) != _summarise(new.get(section)):
             changed.append(section)
+
+    old_locales = old.get("locales") or {}
+    new_locales = new.get("locales") or {}
+    for lang in sorted(set(old_locales) | set(new_locales)):
+        o, n = old_locales.get(lang) or {}, new_locales.get(lang) or {}
+        for section in _REPORTED_OVERLAY:
+            if _summarise(o.get(section)) != _summarise(n.get(section)):
+                changed.append(f"{lang}.{section}")
     return changed
+
+
+def _writer_client():
+    """A client that can actually UPDATE `characters`.
+
+    `get_pg_client()` connects as the application role, and since 007_rls that
+    role has `characters` in SYSTEM_READONLY — the catalog belongs to nobody and
+    the app must not write it. So this script's own docstring was wrong: with
+    only VVA_PG_DSN it fails with `permission denied for table characters`, and
+    has done since that migration.
+
+    Same precedence alembic/env.py uses for the same reason: owner first, app
+    role second, so a machine that has only the app DSN still gets the readable
+    dry-run rather than an import-time failure.
+    """
+    import os
+
+    from langgraph_agents.db.postgres import PostgresClient
+
+    dsn = os.environ.get("VVA_PG_DSN_OWNER") or os.environ.get("VVA_PG_DSN")
+    return PostgresClient(dsn) if dsn else None
 
 
 async def sync(slugs: list[str], dry_run: bool) -> int:
     from langgraph_agents.shared import get_pg_client
 
-    pg = get_pg_client()
+    pg = _writer_client() or get_pg_client()
     await pg.connect()
 
     rows = await pg.fetch(
@@ -136,7 +196,7 @@ async def sync(slugs: list[str], dry_run: bool) -> int:
                 "UPDATE characters SET persona = $1, ui_strings = $2, "
                 "updated_at = now() WHERE slug = $3",
                 json.dumps(new, ensure_ascii=False),
-                json.dumps(new.get("ui_strings") or {}, ensure_ascii=False),
+                json.dumps(_public_ui_strings(new), ensure_ascii=False),
                 slug,
             )
         written += 1

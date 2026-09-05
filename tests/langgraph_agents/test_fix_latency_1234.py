@@ -84,7 +84,7 @@ class TestFix1NodeCompleteLogsCacheTokens:
             )
             config = RunnableConfig(configurable={
                 "user_id": "u", "session_id": "s", "query": "xin chao",
-                "persona_id": "eca_default", "request_id": "r1",
+                "persona_id": "anne", "request_id": "r1",
             })
             state = {"messages": [], "errors": [], "total_tokens": 0, "retry_count": 0}
             await planner_mod.planner_node(state, config)
@@ -112,7 +112,7 @@ class TestFix1NodeCompleteLogsCacheTokens:
             )
             config = RunnableConfig(configurable={
                 "user_id": "u", "session_id": "s", "query": "hi",
-                "persona_id": "eca_default", "request_id": "r1b",
+                "persona_id": "anne", "request_id": "r1b",
             })
             state = {"messages": [], "errors": [], "total_tokens": 0, "retry_count": 0}
             await planner_mod.planner_node(state, config)
@@ -133,7 +133,7 @@ class TestFix1NodeCompleteLogsCacheTokens:
 
         config = RunnableConfig(configurable={
             "user_id": "u", "session_id": "s", "query": "hello",
-            "persona_id": "eca_default", "request_id": "r2", "web_search": False,
+            "persona_id": "anne", "request_id": "r2", "web_search": False,
         })
         state = {
             "messages": [], "errors": [], "retry_count": 0, "total_tokens": 0,
@@ -168,7 +168,7 @@ class TestFix1NodeCompleteLogsCacheTokens:
                 "total_tokens": 0,
             }
             config = {"configurable": {
-                "request_id": "r3", "persona_id": "eca_default", "query": "hello",
+                "request_id": "r3", "persona_id": "anne", "query": "hello",
             }}
             await syn_mod.synthesizer_node(state, config)
 
@@ -284,7 +284,7 @@ class TestFix2PlannerFallback:
 
             config = RunnableConfig(configurable={
                 "user_id": "u", "session_id": "s", "query": "bai tap",
-                "persona_id": "eca_default", "request_id": "r4",
+                "persona_id": "anne", "request_id": "r4",
             })
             state = {"messages": [], "errors": [], "total_tokens": 0, "retry_count": 0}
             result = await planner_mod.planner_node(state, config)
@@ -310,7 +310,7 @@ class TestFix2PlannerFallback:
             )
             config = RunnableConfig(configurable={
                 "user_id": "u", "session_id": "s", "query": "hi",
-                "persona_id": "eca_default", "request_id": "r5",
+                "persona_id": "anne", "request_id": "r5",
             })
             state = {"messages": [], "errors": [], "total_tokens": 0, "retry_count": 0}
             result = await planner_mod.planner_node(state, config)
@@ -335,7 +335,7 @@ class TestFix2PlannerFallback:
 
             config = RunnableConfig(configurable={
                 "user_id": "u", "session_id": "s", "query": "hi",
-                "persona_id": "eca_default", "request_id": "r6",
+                "persona_id": "anne", "request_id": "r6",
             })
             state = {"messages": [], "errors": [], "total_tokens": 0, "retry_count": 0}
             result = await planner_mod.planner_node(state, config)
@@ -366,7 +366,7 @@ class TestFix2SynthesizerFallback:
                 "total_tokens": 0,
             }
             config = {"configurable": {
-                "request_id": "r7", "persona_id": "eca_default", "query": "bai tap squat",
+                "request_id": "r7", "persona_id": "anne", "query": "bai tap squat",
             }}
             result = await syn_mod.synthesizer_node(state, config)
 
@@ -390,7 +390,7 @@ class TestFix2SynthesizerFallback:
                 "total_tokens": 0,
             }
             config = {"configurable": {
-                "request_id": "r8", "persona_id": "eca_default", "query": "hello",
+                "request_id": "r8", "persona_id": "anne", "query": "hello",
             }}
             result = await syn_mod.synthesizer_node(state, config)
 
@@ -412,12 +412,26 @@ class TestFix2SynthesizerFallback:
                 "total_tokens": 0,
             }
             config = {"configurable": {
-                "request_id": "r9", "persona_id": "eca_default", "query": "hello",
+                "request_id": "r9", "persona_id": "anne", "query": "hello",
             }}
             result = await syn_mod.synthesizer_node(state, config)
 
         assert result["errors"][0]["severity"] == ErrorSeverity.CRITICAL
-        assert "Xin lỗi" in result["final_answer"]
+
+        # The character's own wording, not a literal hard-coded in the node.
+        #
+        # This used to assert `"Xin lỗi" in ...` against a Vietnamese string
+        # baked into synthesizer.py. That literal is gone: the node now resolves
+        # `error_unavailable` from the persona, the same key and the same helper
+        # api/main.py:582 already uses for the neighbouring "no answer at all"
+        # path. eca_default is Seele, whose copy is English — which is exactly
+        # the point, and why asserting a fixed language here was wrong.
+        from langgraph_agents.nodes._persona_loader import get_ui_string
+
+        assert result["final_answer"] == get_ui_string(
+            "anne", "error_unavailable"
+        )
+        assert result["final_answer"]  # never empty — a blank reply reads as a hang
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -461,7 +475,7 @@ class TestFix3MaxTokens:
         assert not re.search(r"\bunder \d+ words\b", _SYNTHESIZE_TASK)
         assert "Do not pad or repeat safety disclaimers" in _SYNTHESIZE_TASK
 
-        for persona_id in ("eca_default", "anne", "bronya", "hatsune-miku", "miki"):
+        for persona_id in ("anne", "anne", "bronya", "hatsune-miku", "miki"):
             formatting = get_persona(persona_id)["response_formatting"]
             assert re.search(r"\d+\s*(từ|words)", formatting), \
                 f"{persona_id} sets no output length — nothing bounds it now"
@@ -515,7 +529,7 @@ class TestFix4DedupeToolCalls:
 
         config = RunnableConfig(configurable={
             "user_id": "u", "session_id": "s", "query": "bai tap squat",
-            "persona_id": "eca_default", "request_id": "r10", "web_search": False,
+            "persona_id": "anne", "request_id": "r10", "web_search": False,
         })
         state = {
             "messages": [], "errors": [], "retry_count": 0, "total_tokens": 0,
@@ -541,7 +555,7 @@ class TestFix4DedupeToolCalls:
 
         config = RunnableConfig(configurable={
             "user_id": "u", "session_id": "s", "query": "q",
-            "persona_id": "eca_default", "request_id": "r11", "web_search": False,
+            "persona_id": "anne", "request_id": "r11", "web_search": False,
         })
         state = {
             "messages": [], "errors": [], "retry_count": 0, "total_tokens": 0,
@@ -568,7 +582,7 @@ class TestFix4DedupeToolCalls:
 
         config = RunnableConfig(configurable={
             "user_id": "u", "session_id": "s", "query": "q",
-            "persona_id": "eca_default", "request_id": "r12", "web_search": False,
+            "persona_id": "anne", "request_id": "r12", "web_search": False,
         })
         state = {
             "messages": [], "errors": [], "retry_count": 0, "total_tokens": 0,
@@ -703,7 +717,7 @@ class TestPlannerUsesGeminiCacheWhenWarm:
 
         state = {"messages": []}
         config = RunnableConfig(configurable={
-            "request_id": "rcache", "query": "hello", "persona_id": "eca_default",
+            "request_id": "rcache", "query": "hello", "persona_id": "anne",
         })
 
         with patch.object(planner_mod, "get_chat_model") as mock_llm, \

@@ -1,53 +1,78 @@
-"""A0 path traversal tests — persona_id validation defense in depth."""
+"""A0 path traversal tests — persona_id validation defense in depth.
+
+The security property is unchanged: a persona_id from a request body becomes
+part of a filesystem path, and no crafted id may read a file outside
+`personas/`. What changed on 04-09 is the OUTCOME of a rejected id.
+
+Before, a bad id returned a generic "ECA Default" stand-in. That was safe but
+dishonest — a broken or missing character silently became a different one, and
+the user kept looking at Bronya's avatar while reading words written for nobody.
+Now it raises `PersonaError`. The traversal is still refused; it is refused
+loudly. Owner's call: answering as the wrong character is worse than not
+answering.
+"""
 
 import pytest
+
+from langgraph_agents.nodes._persona_loader import (
+    PersonaError,
+    _persona_cache,
+    get_persona,
+)
 
 
 @pytest.mark.unit
 class TestPersonaPathTraversal:
     """A0: persona_id must not allow path traversal."""
 
-    def test_fallback_on_traversal_id(self):
-        """../../../README → fallback persona, not file read."""
-        from langgraph_agents.nodes._persona_loader import get_persona
-        persona = get_persona("../../../README")
-        # Should return fallback (title = "ECA Default"), not crash or read external file
-        assert persona["persona_id"] == "../../../README"
-        assert persona["title"] == "ECA Default"
-
-    def test_fallback_on_path_separator(self):
-        """a/b, a\\b → fallback persona."""
-        from langgraph_agents.nodes._persona_loader import get_persona
-        for bad_id in ["a/b", "a\\b", "..%2F..%2Fx"]:
-            persona = get_persona(bad_id)
-            assert persona["title"] == "ECA Default", f"FAIL for {bad_id}"
+    @pytest.mark.parametrize(
+        "bad_id",
+        [
+            "../../../README",
+            "a/b",
+            "a\\b",
+            "..%2F..%2Fx",
+            "../../etc/passwd",
+        ],
+    )
+    def test_traversal_id_is_refused(self, bad_id):
+        """No file outside personas/ is read, and no stand-in is returned."""
+        with pytest.raises(PersonaError):
+            get_persona(bad_id, "vi")
 
     def test_valid_personas_still_load(self):
-        """Valid persona IDs must still work."""
-        from langgraph_agents.nodes._persona_loader import get_persona
-        for good_id in ["eca_default", "eca_clinical", "eca_friendly"]:
-            persona = get_persona(good_id)
+        """The four real characters. eca_* were deleted on 04-09."""
+        for good_id in ["anne", "bronya", "hatsune-miku", "miki"]:
+            persona = get_persona(good_id, "vi")
             assert persona["persona_id"] == good_id
 
     def test_cache_not_polluted_by_invalid(self):
-        """Invalid persona must not be cached as valid."""
-        from langgraph_agents.nodes._persona_loader import get_persona, _persona_cache
+        """A rejected id must not disturb or grow the cache.
 
-        # Ensure cache is loaded with a valid persona first
-        get_persona("eca_default")
-        cached_default = _persona_cache.get("eca_default")
-        assert cached_default is not None
-        assert cached_default["persona_id"] == "eca_default"
+        The direct `_persona_cache[...]` access is the point of this test, and it
+        is why the loader keys the cache by plain slug and flattens the language
+        on read instead of keying on (slug, lang). See `_load_persona`.
+        """
+        get_persona("anne", "vi")
+        cached = _persona_cache.get("anne")
+        assert cached is not None
+        assert cached["persona_id"] == "anne"
 
-        # Load invalid — should get fallback
-        invalid = get_persona("../../etc/passwd")
-        assert invalid["title"] == "ECA Default"
+        with pytest.raises(PersonaError):
+            get_persona("../../etc/passwd", "vi")
 
         # The valid entry must NOT be corrupted by the invalid lookup
-        assert _persona_cache["eca_default"] is cached_default
+        assert _persona_cache["anne"] is cached
 
-        # Invalid id returns fallback but is NOT cached (no unbounded growth from bad ids)
+        # A bad id is never cached — a flood of distinct ones cannot grow it
         assert "../../etc/passwd" not in _persona_cache
 
-        # Repeated invalid lookup stays a fallback (never reads an external file)
-        assert get_persona("../../etc/passwd")["title"] == "ECA Default"
+        # And it stays refused on a second attempt
+        with pytest.raises(PersonaError):
+            get_persona("../../etc/passwd", "vi")
+
+    def test_language_is_validated_like_the_slug(self):
+        """`lang` also becomes part of a path, so it gets the same treatment."""
+        for bad_lang in ["../vi", "vi/../en", "fr", ""]:
+            with pytest.raises(PersonaError):
+                get_persona("anne", bad_lang)

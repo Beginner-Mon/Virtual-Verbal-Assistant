@@ -46,15 +46,16 @@ async def test_error_handler_recoverable_only():
         "final_answer": "",
     }
     result = await error_handler_node(state)
+
     # Recoverable-only takes the soft branch, not the critical apology.
     #
-    # Asserted against the persona's own copy rather than the Vietnamese
-    # substrings this used to look for ("lỗi nhỏ" / "sự cố"): the wording now
-    # comes from the character's `## UI Strings`, and the default persona
-    # (eca_default / Seele) speaks English. Comparing to get_ui_string keeps the
-    # branch check while staying language-agnostic.
-    assert result["final_answer"] == get_ui_string("eca_default", "error_partial")
-    assert result["final_answer"] != get_ui_string("eca_default", "error_system")
+    # With no config there is no character, and this node deliberately does NOT
+    # reach for a default one: it runs when something has already failed, and a
+    # persona that will not load is among the things it may be reporting. So it
+    # falls back to neutral copy for the locale rather than depending on the
+    # thing that might be broken. `get_ui_string("", ...)` is that same path.
+    assert result["final_answer"] == get_ui_string("", "error_partial")
+    assert result["final_answer"] != get_ui_string("", "error_system")
 
 
 @pytest.mark.unit

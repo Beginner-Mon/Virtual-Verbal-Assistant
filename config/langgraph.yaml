@@ -34,6 +34,6 @@ langgraph:
     pool_max: 10
 
   persona:
-    default: "eca_default"
+    default: "anne"
     personas_dir: "langgraph_agents/personas"
     voices_dir: "voices"

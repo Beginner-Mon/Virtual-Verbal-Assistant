@@ -25,7 +25,7 @@ async def main():
     config = {"configurable": {
         "user_id": "spike", "session_id": "spike-003",
         "query": "Xin chao",
-        "persona_id": "eca_default", "output_mode": "text",
+        "persona_id": "anne", "output_mode": "text",
         "request_id": "spike", "token_limit": None,
     }}
 

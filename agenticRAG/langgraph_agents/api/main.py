@@ -286,6 +286,10 @@ def create_app() -> FastAPI:
             "request_id": request_id,
             "token_limit": req.token_limit,
             "web_search": req.web_search,
+            # The site language the user chose. Selects the character voice
+            # overlay and the safety templates the grader may insert. It does
+            # NOT decide the reply language — that still mirrors the question.
+            "locale": req.locale,
         }}
 
         async def event_generator():
@@ -580,7 +584,7 @@ async def _stream_chat(req, request_id, config, state, background_tasks, request
                 yield encode_event("token", {"content": payload["content"]})
 
     final_answer = final_state.get("final_answer") or get_ui_string(
-        req.persona_id or "eca_default", "error_unavailable"
+        req.persona_id or "anne", "error_unavailable", req.locale
     )
 
     # Eager session write

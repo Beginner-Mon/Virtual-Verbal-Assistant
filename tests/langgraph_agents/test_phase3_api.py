@@ -36,7 +36,8 @@ class TestSchemas:
         from langgraph_agents.api.schemas import ChatRequest
         req = ChatRequest(query="Xin chào")
         assert req.output_mode == "text"
-        assert req.persona_id == "eca_default"
+        assert req.persona_id == "anne"  # eca_default deleted 04-09
+        assert req.locale == "en"  # declared default; drives voice + safety text
         # Identity is not part of the request. It comes from the Bearer token
         # via Depends(current_user_id); a body field would be a client-supplied
         # claim about who is calling.

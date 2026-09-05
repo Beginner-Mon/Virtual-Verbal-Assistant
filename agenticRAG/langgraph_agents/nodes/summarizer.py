@@ -97,10 +97,15 @@ async def _summarize_messages(rows: list, session_id: str) -> str | None:
     conversation = "\n".join(lines)
 
     llm = get_chat_model("planner")
+    # "The same language as the conversation", not a named language. This used to
+    # force Vietnamese, so an English session was summarised into Vietnamese and
+    # then fed back to the model as context on the next turn — pushing it toward
+    # a language the user had not written in.
     prompt = (
-        "Tóm tắt đoạn hội thoại sau thành 2-4 câu tiếng Việt. "
-        "Giữ lại thông tin quan trọng: triệu chứng, bài tập được đề xuất, "
-        "chống chỉ định, tiến triển của người dùng.\n\n"
+        "Summarise the following conversation in 2-4 sentences, written in the "
+        "SAME language as the conversation itself. Keep what matters clinically: "
+        "symptoms, exercises recommended, contraindications, and the user's "
+        "progress.\n\n"
         f"{conversation}"
     )
 

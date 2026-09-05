@@ -7,10 +7,21 @@ class ChatRequest(BaseModel):
     token via Depends(current_user_id), never from the request body."""
     query: str
     session_id: str = "default"
-    persona_id: str = Field(default="eca_default", pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    persona_id: str = Field(default="anne", pattern=r"^[A-Za-z0-9_-]{1,64}$")
     output_mode: Literal["text", "speech", "both"] = "text"
     token_limit: Optional[int] = None
     web_search: bool = False
+
+    # The language of the SITE, as the user chose it — not a guess at the
+    # language of this message. It selects the character's voice overlay and the
+    # safety templates the grader may have to insert, because both are text a
+    # person reads verbatim and a declared choice never mis-detects.
+    #
+    # It deliberately does NOT decide what language the assistant answers in:
+    # that still mirrors the question. So a Vietnamese question on an English
+    # site gets a Vietnamese answer with an English safety warning. That
+    # mismatch is accepted, and preferred over guessing.
+    locale: Literal["en", "vi"] = "en"
 
 
 class ChatResponse(BaseModel):
@@ -34,7 +45,7 @@ class TTSRequest(BaseModel):
     read and chose to hear, so it must never be implicit.
     """
     text: str = Field(min_length=1, max_length=5000)
-    persona_id: str = Field(default="eca_default", pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    persona_id: str = Field(default="anne", pattern=r"^[A-Za-z0-9_-]{1,64}$")
 
 
 class TTSTaskResponse(BaseModel):

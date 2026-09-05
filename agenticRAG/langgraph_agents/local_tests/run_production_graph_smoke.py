@@ -78,7 +78,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--ollama-base-url", default=DEFAULT_OLLAMA_BASE_URL)
     parser.add_argument("--gemini-base-url", default=DEFAULT_GEMINI_BASE_URL)
-    parser.add_argument("--persona-id", default="eca_default")
+    parser.add_argument("--persona-id", default="anne")
     parser.add_argument("--web-search", action="store_true")
     parser.add_argument("--json", action="store_true", help="Print a machine-readable JSON summary.")
     parser.add_argument(
