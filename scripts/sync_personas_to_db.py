@@ -97,7 +97,36 @@ def _public_ui_strings(persona: dict) -> dict:
 def _summarise(value) -> str:
     if isinstance(value, dict):
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    if isinstance(value, (list, tuple)):
+        return " | ".join(" ".join(str(v).split()) for v in value)
     return " ".join(str(value or "").split())
+
+
+def _section_value(persona: dict, section: str):
+    """Read a section named the way `diff_sections` names it.
+
+    Overlay sections are reported as `"en.examples"`, which is a LABEL, not a
+    key — `persona["en.examples"]` is always None. Resolving it back through
+    `locales` is what makes the dry-run show the overlay text; without this the
+    report printed `(empty) -> (empty)` for voice, examples, safety templates
+    and UI strings, which is every section a persona edit actually touches. The
+    dry-run exists so nobody writes blind, so this was the whole point of it
+    failing silently.
+    """
+    lang, sep, name = section.partition(".")
+    if not sep:
+        return persona.get(section)
+
+    locales = persona.get("locales") or {}
+    if not locales:
+        # A row written before the overlay split has no `locales` and its fields
+        # sit at the top level, in Vietnamese. `_normalise_db_persona` reads such
+        # a row as the `vi` overlay, so the report has to agree — otherwise this
+        # very migration prints "vi.examples: (empty) -> ..." over a row that
+        # does have examples, and understates what is being replaced.
+        return persona.get(name) if lang == "vi" else None
+
+    return (locales.get(lang) or {}).get(name)
 
 
 def diff_sections(old: dict, new: dict) -> list[str]:
@@ -179,8 +208,8 @@ async def sync(slugs: list[str], dry_run: bool) -> int:
 
         print(f"  {slug:14} {'would update' if dry_run else 'updating'}: {', '.join(changed)}")
         for section in changed:
-            before = _summarise(existing[slug].get(section))
-            after = _summarise(new.get(section))
+            before = _summarise(_section_value(existing[slug], section))
+            after = _summarise(_section_value(new, section))
             print(f"      {section}")
             print(f"        - {before[:110] or '(empty)'}")
             print(f"        + {after[:110] or '(empty)'}")
