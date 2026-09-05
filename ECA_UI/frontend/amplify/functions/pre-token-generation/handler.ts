@@ -11,6 +11,21 @@ type CognitoEvent = {
   response?: { claimsOverrideDetails?: { claimsToAddOrOverride?: Record<string, string> } }
 }
 
+/**
+ * One attribute, crossing from DynamoDB into a token.
+ *
+ * DynamoDB describes an item as `unknown` per attribute and Cognito accepts
+ * only strings, so the gap is real and every claim has to cross it. Typing the
+ * record as `Record<string, unknown>` was right — it just turned a coercion
+ * that had been happening implicitly under `any` into one the compiler makes
+ * you write down.
+ *
+ * Absent and null both become '' rather than the string "undefined", which is
+ * what a bare `String(value)` would have put into a live token.
+ */
+const claim = (value: unknown): string =>
+  typeof value === 'string' ? value : value == null ? '' : String(value)
+
 export const handler = async (event: CognitoEvent) => {
   const { request } = event;
   const cognitoSub = request.userAttributes.sub;
@@ -64,14 +79,18 @@ export const handler = async (event: CognitoEvent) => {
     event.response = {
       claimsOverrideDetails: {
         claimsToAddOrOverride: {
-          'custom:appUserId': record.appUserId,
-          'custom:emailSub': record.emailSub || '',
-          'custom:googleSub': record.googleSub || '',
+          // Falls back to `cognitoSub` for the same reason the not-found branch
+          // above uses it: a row that exists but carries no appUserId would
+          // otherwise put an EMPTY identity claim into a valid token, which is
+          // worse than the sub that already identifies this person.
+          'custom:appUserId': claim(record.appUserId) || cognitoSub,
+          'custom:emailSub': claim(record.emailSub),
+          'custom:googleSub': claim(record.googleSub),
           // Since PreSignUp started linking instead of creating a second user,
           // `googleSub` is no longer written on every path — this flag is.
           'custom:googleLinked': record.googleLinked || record.googleSub ? 'true' : 'false',
-          'custom:displayName': record.displayName || '',
-          'custom:email': record.email || '',
+          'custom:displayName': claim(record.displayName),
+          'custom:email': claim(record.email),
         },
       },
     };

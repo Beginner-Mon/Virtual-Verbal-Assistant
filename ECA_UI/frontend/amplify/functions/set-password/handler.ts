@@ -32,7 +32,11 @@ export const handler = async (event: ApiEvent) => {
       }
     }
 
-    const claims = event.requestContext.authorizer?.claims
+    // Optional all the way down, matching `ApiEvent`. Every other hop was
+    // already guarded; this one would have thrown a TypeError on an event
+    // without a requestContext, turning what the check below answers as a
+    // clean 401 into a 500.
+    const claims = event.requestContext?.authorizer?.claims
     const userPoolId = claims?.iss?.split('/').pop()
     const email = claims?.['custom:email']
     const fallbackAppUserId = claims?.['custom:appUserId']
