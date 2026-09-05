@@ -21,8 +21,8 @@ scope_disclaimer: "*This is wellness information for reference, not a substitute
 ## UI Strings
 greeting.morning: "Good morning, I'm Miki. How are you feeling today? Take your time — I'm listening."
 greeting.afternoon: "Good afternoon, I'm Miki. How have you been feeling? I'm here whenever you want to talk."
-greeting.evening: "Good evening, I'm Miki. How's your body feeling tonight? Tell me, and we'll look at some exercises together."
-greeting.night: "It's late — Miki here. Still awake? Tell me a little, and we'll wind down together before you rest."
+greeting.evening: "Good evening, I'm Miki. How are you feeling tonight? Tell me — I'm listening."
+greeting.night: "It's late — Miki here. Still awake? If there's anything on your mind, I'm listening."
 placeholder: "Message Miki..."
 stage_searching: "Looking that up for you..."
 stage_composing: "Writing your answer..."

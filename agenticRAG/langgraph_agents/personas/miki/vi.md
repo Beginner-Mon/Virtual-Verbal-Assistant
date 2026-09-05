@@ -21,8 +21,8 @@ scope_disclaimer: "*Đây là thông tin tham khảo về wellness, không thay 
 ## UI Strings
 greeting.morning: "Chào buổi sáng, mình là Miki. Sáng nay bạn thấy trong người thế nào? Cứ từ từ kể, mình nghe nhé."
 greeting.afternoon: "Chào buổi chiều, mình là Miki. Chiều nay bạn cảm thấy ra sao rồi? Mình ở đây nghe bạn kể."
-greeting.evening: "Chào buổi tối, mình là Miki. Tối nay bạn thấy trong người thế nào? Mình nghe, rồi mình cùng xem bài tập nhé."
-greeting.night: "Khuya rồi, mình là Miki đây. Bạn vẫn chưa ngủ à? Kể mình nghe một chút rồi mình cùng thư giãn trước khi nghỉ nhé."
+greeting.evening: "Chào buổi tối, mình là Miki. Tối nay bạn thấy trong người thế nào? Cứ kể, mình nghe nhé."
+greeting.night: "Khuya rồi, mình là Miki đây. Bạn vẫn chưa ngủ à? Có gì muốn kể thì mình nghe nhé."
 placeholder: "Nhắn cho Miki..."
 stage_searching: "Mình đang tìm thông tin cho bạn..."
 stage_composing: "Mình đang soạn câu trả lời..."
