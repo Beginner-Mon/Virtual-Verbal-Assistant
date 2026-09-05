@@ -1,4 +1,5 @@
 ﻿import { MonitorCog } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import { Switch } from './ui/switch'
 import { useGraphics, type GraphicsSettings } from '../hooks/useGraphics'
 
@@ -36,13 +37,14 @@ const SECTIONS: Section[] = [
 ]
 
 export default function GraphicSettingsContent() {
+  const { t } = useTranslation()
   const { settings, setSetting } = useGraphics()
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <div className="flex items-center gap-2 mb-6">
         <MonitorCog className="w-5 h-5 text-muted-foreground" />
-        <h2 className="text-lg font-semibold text-foreground">Graphic Settings</h2>
+        <h2 className="text-lg font-semibold text-foreground">{t('settings.graphics')}</h2>
       </div>
 
       <div className="space-y-6">

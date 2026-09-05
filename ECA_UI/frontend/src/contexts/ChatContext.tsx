@@ -16,7 +16,9 @@ import { pollMotionJob } from '../lib/motionJob'
 import { clearSessionPointer, readSessionPointer, stampSessionPointer } from '../lib/chatSession'
 import { useMotion } from '../hooks/useMotion'
 import { ChatContext, type ChatContextType, type SessionItem } from '../hooks/useChat'
-import { uiStringsFor, FALLBACK_UI_STRINGS, getGreeting, type UiStrings } from '../lib/characterCopy'
+import { uiStringsFor, getGreeting, type UiStrings } from '../lib/characterCopy'
+import { withGreeting } from '../lib/greeting'
+import { useLocale } from '../hooks/useLocale'
 
 export type { SessionItem, ChatContextType } from '../hooks/useChat'
 import { useAudioRecorder } from '../hooks/useAudioRecorder'
@@ -58,17 +60,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const { transitionTo, selectedVrmId, vrmOptions, playMotionFile, registerSessionMotion } =
     useMotion()
 
-  /** Copy for whoever is on screen. Falls back to neutral strings until the
-   *  catalog resolves, so nothing renders "undefined" on a cold load. */
+  /** Copy for whoever is on screen, in the language the site is being read in.
+   *  Falls back to neutral strings until the catalog resolves, so nothing
+   *  renders "undefined" on a cold load. */
+  const { locale } = useLocale()
   const ui = useMemo(
-    () => uiStringsFor(vrmOptions.find((o) => o.id === selectedVrmId)?.character),
-    [vrmOptions, selectedVrmId],
+    () => uiStringsFor(vrmOptions.find((o) => o.id === selectedVrmId)?.character, locale),
+    [vrmOptions, selectedVrmId, locale],
   )
   const uiRef = useRef<UiStrings>(ui)
   uiRef.current = ui
 
+  // Neutral copy, not this character's — the catalog has not resolved on the
+  // first render and a wrong name is worse than no name. The effect below swaps
+  // in the character's own greeting once `selectedVrmId` settles. Passing no
+  // character is what selects that neutral set, now per locale.
   const [messages, setMessages] = useState<Message[]>(() =>
-    buildInitialMessages(FALLBACK_UI_STRINGS),
+    buildInitialMessages(uiStringsFor(null, locale)),
   )
   const [input, setInput] = useState('')
   const [isTyping, setIsTyping] = useState(false)
@@ -155,14 +163,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     if (!hydratedRef.current) {
       hydratedRef.current = true
       if (prevVrmRef.current === '') {
-        setMessages((prev) => {
-          if (prev.length === 1 && prev[0].id === GREETING_ID) {
-            const cur = getGreeting(uiRef.current)
-            if (prev[0].content === cur) return prev
-            return [{ ...prev[0], content: cur }]
-          }
-          return prev
-        })
+        setMessages((prev) => withGreeting(prev, GREETING_ID, getGreeting(uiRef.current)))
         prevVrmRef.current = selectedVrmId
         return
       }
@@ -174,6 +175,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       prevVrmRef.current = selectedVrmId
     }
   }, [selectedVrmId, isRestoring])
+
+  /**
+   * Re-say the opening line when the site language changes.
+   *
+   * The greeting is built in the `useState` initialiser above, which runs once
+   * per mount — so before this, switching language left the assistant's first
+   * message in the old one until a reload. Every other string on the page
+   * changed instantly, which made that one bubble look broken.
+   *
+   * `withGreeting` decides whether it may be rewritten at all: only while it is
+   * the only message. Once a real conversation sits below it, the screen is a
+   * record and the top of it is left alone — the same rule the character switch
+   * above already follows.
+   */
+  useEffect(() => {
+    setMessages((prev) => withGreeting(prev, GREETING_ID, getGreeting(uiRef.current)))
+  }, [locale])
 
   const addImage = useCallback((file: File) => {
     const url = URL.createObjectURL(file)
@@ -451,6 +469,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           // accepts exactly this shape. Picking an avatar changes how the
           // assistant speaks, which until now it did not.
           personaId: selectedVrmId || undefined,
+          // Same locale that renders this page. It selects the character's voice
+          // and any safety warning the backend inserts — both are text a person
+          // reads verbatim, so a declared choice beats a detected one.
+          locale,
         },
         (type, data) => {
           if (type === 'stage') {
@@ -591,7 +613,11 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         endThinking()
       }
     }
-  }, [webSearch, voiceReply, selectedVrmId, transitionTo, endThinking, playMotionFile, ensureSessionId])
+    // `locale` belongs here: switching language mid-session must reach the next
+    // request. Without it the closure keeps whichever locale was active when the
+    // callback was created, and the backend would keep serving the old
+    // character voice and the old safety-warning language.
+  }, [webSearch, voiceReply, selectedVrmId, locale, transitionTo, endThinking, playMotionFile, ensureSessionId])
 
   useEffect(() => {
     return () => {

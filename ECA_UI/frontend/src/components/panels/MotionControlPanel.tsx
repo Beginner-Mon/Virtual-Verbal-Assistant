@@ -1,5 +1,6 @@
 import { Activity, Sliders, Camera, Smile, Lock } from 'lucide-react'
 import { useEffect, useState, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import { ScrollArea } from '../ui/scroll-area'
 import { useMotion } from '../../hooks/useMotion'
 import type { CharState } from '../../lib/AnimationStates'
@@ -18,6 +19,7 @@ const PRESET_TO_CANONICAL: Record<string, CanonicalEmotion> = {
 }
 
 export default function MotionControlPanel() {
+  const { t } = useTranslation()
   const {
     cameraMode,
     setCameraMode,
@@ -96,9 +98,9 @@ export default function MotionControlPanel() {
       <div className="px-4 py-3 border-b border-border/40 shrink-0">
         <h2 className="text-sm font-semibold text-foreground tracking-tight flex items-center gap-2">
           <Sliders className="w-4 h-4 text-primary" />
-          Motion Controls
+          {t('motion.title')}
         </h2>
-        <p className="text-[11px] text-muted-foreground mt-0.5">Animation source & playback</p>
+        <p className="text-[11px] text-muted-foreground mt-0.5">{t('motion.subtitle')}</p>
       </div>
 
       <ScrollArea className="flex-1 min-h-0 p-4">
@@ -107,18 +109,18 @@ export default function MotionControlPanel() {
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
                 <Camera className="w-3 h-3" />
-                Camera config
+                {t('motion.camera_config')}
               </span>
               <button
                 onClick={() => setCameraConfig(DEFAULT_CAMERA_CONFIG)}
                 className="text-[9px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
               >
-                Reset
+                {t('motion.reset')}
               </button>
             </div>
             
             <label className="flex items-center justify-between text-[11px] text-foreground mt-1 cursor-pointer">
-              <span>Follow Target (lookAt)</span>
+              <span>{t('motion.follow_target')}</span>
               <input
                 type="checkbox"
                 checked={cameraConfig.followTarget}
@@ -128,7 +130,7 @@ export default function MotionControlPanel() {
             </label>
             
             <label className="flex items-center justify-between text-[11px] text-foreground cursor-pointer">
-              <span>Enable Pan</span>
+              <span>{t('motion.enable_pan')}</span>
               <input
                 type="checkbox"
                 checked={cameraConfig.enablePan}
@@ -140,7 +142,7 @@ export default function MotionControlPanel() {
             <div className="flex flex-col gap-1.5 mt-2">
               <span className="text-[10px] text-muted-foreground flex items-center gap-1">
                 <Lock className="w-3 h-3" />
-                Lock Axes (right-drag)
+                {t('motion.lock_axes')}
               </span>
               <div className="flex gap-1.5">
                 {(['X', 'Y', 'Z'] as const).map((axis) => {
@@ -170,8 +172,8 @@ export default function MotionControlPanel() {
               onChange={(e) => setCameraMode(e.target.value as 'head' | 'hips')}
               className="w-full bg-transparent text-xs text-foreground font-medium border-none outline-none cursor-pointer mt-1.5 pt-1.5 border-t border-border/10"
             >
-              <option value="head" className="bg-card text-foreground">Target: Head</option>
-              <option value="hips" className="bg-card text-foreground">Target: Hips</option>
+              <option value="head" className="bg-card text-foreground">{t('motion.target_head')}</option>
+              <option value="hips" className="bg-card text-foreground">{t('motion.target_hips')}</option>
             </select>
           </div>
 
@@ -248,8 +250,8 @@ export default function MotionControlPanel() {
               >
                 <option value="" className="bg-card text-muted-foreground">
                   {sessionMotions.length === 0
-                    ? 'Chưa có động tác nào — hãy hỏi để xem một động tác'
-                    : 'Chọn để xem lại —'}
+                    ? t('motion.empty')
+                    : t('motion.replay_hint')}
                 </option>
                 {sessionMotions.map((m) => (
                   <option key={m.jobId} value={m.jobId} className="bg-card text-foreground">
@@ -263,7 +265,7 @@ export default function MotionControlPanel() {
             <div className="flex flex-col gap-2 p-3 rounded-xl bg-secondary/20 border border-border/10">
               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
                 <Smile className="w-3 h-3 text-amber-400" />
-                Expressions (dev)
+                {t('motion.expressions_dev')}
               </span>
 
               <div className="flex flex-wrap gap-1">

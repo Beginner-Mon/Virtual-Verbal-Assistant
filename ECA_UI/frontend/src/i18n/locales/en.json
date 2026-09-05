@@ -1,0 +1,104 @@
+{
+  "common": {
+    "add": "Add",
+    "cancel": "Cancel",
+    "copy": "Copy",
+    "delete": "Delete",
+    "on": "On",
+    "refresh": "Refresh",
+    "send": "Send",
+    "wait": "One moment..."
+  },
+  "chat": {
+    "attachment_preview_alt": "Preview",
+    "audio_discard": "Discard",
+    "audio_failed": "Could not generate speech — click to retry",
+    "audio_generating": "Generating speech... (CPU, this can take 30-45s)",
+    "audio_listen": "Listen",
+    "audio_pause": "Pause",
+    "audio_play": "Read this message",
+    "audio_resume": "Resume",
+    "audio_send": "Send",
+    "audio_stop": "Stop",
+    "chip_voice": "Voice",
+    "chip_web": "Web",
+    "dislike": "Dislike",
+    "like": "Like",
+    "menu_media": "Media",
+    "menu_search_online": "Search online",
+    "menu_voice_reply": "Voice reply",
+    "new_conversation": "New conversation",
+    "record_start": "Record",
+    "record_stop": "Stop recording",
+    "status_online": "Online · Ready to chat",
+    "status_restoring": "Loading your previous conversation...",
+    "title": "Virtual Assistant"
+  },
+  "motion": {
+    "camera_config": "Camera config",
+    "empty": "No movements yet — ask to see one",
+    "enable_pan": "Enable Pan",
+    "expressions_dev": "Expressions (dev)",
+    "follow_target": "Follow Target (lookAt)",
+    "lock_axes": "Lock Axes (right-drag)",
+    "replay_hint": "Pick one to replay —",
+    "reset": "Reset",
+    "subtitle": "Animation source & playback",
+    "target_head": "Target: Head",
+    "target_hips": "Target: Hips",
+    "title": "Motion Controls"
+  },
+  "sessions": {
+    "delete_confirm_title": "Delete session?",
+    "delete_one": "Delete session",
+    "empty": "No sessions yet",
+    "empty_hint": "Start a conversation to see your chat history here.",
+    "recents": "Recents",
+    "subtitle": "Your conversation history",
+    "title": "Chat Sessions",
+    "untitled": "(empty)"
+  },
+  "avatars": {
+    "empty": "No VRM avatars found",
+    "load_failed": "Could not load characters.",
+    "subtitle": "Choose a 3D avatar",
+    "title": "Characters"
+  },
+  "settings": {
+    "about": "About Us",
+    "about_desc": "Learn more about our team and mission",
+    "graphics": "Graphic Settings",
+    "graphics_desc": "Adjust visual quality and performance options",
+    "language": "Language",
+    "language_hint": "The language of this site. The assistant still replies in whichever language you write in.",
+    "official": "Official",
+    "providers": "Select Providers",
+    "providers_desc": "Configure your LLM API providers and keys",
+    "terms": "Terms of Service",
+    "terms_desc": "Read our terms and conditions",
+    "title": "Settings"
+  },
+  "about": {
+    "by": "by Ordinary Studio",
+    "product": "Project ECA",
+    "studio": "Ordinary Studio",
+    "summary": "An interactive multimodal AI assistant combining conversational AI, 3D motion synthesis, and voice I/O. Built for those passionate about real-time 3D character animation and AI-driven motion generation — no pre-recorded animations required.",
+    "who_we_are": "Who We Are",
+    "who_we_are_body": "— a team of final-year students who started this project as a graduation assignment. We are driven by a shared passion for real-time 3D rendering, AI, and human-computer interaction, aiming to push the boundaries of what virtual assistants can be."
+  },
+  "notifications": {
+    "empty": "No updates available yet. Check back later.",
+    "version": "Project ECA v0.0"
+  },
+  "profile": {
+    "account_linked": "Account Linked",
+    "account_linked_desc": "Connect your accounts for seamless sign-in across platforms.",
+    "display_name": "Display Name",
+    "display_name_desc": "This is your public display name. It can be your real name or a pseudonym.",
+    "display_name_label": "Display name",
+    "linked": "Linked",
+    "linking": "Linking…",
+    "security": "Security",
+    "security_desc": "Set a password for email sign-in."
+  }
+}

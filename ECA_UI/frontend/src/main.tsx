@@ -3,6 +3,10 @@ import { createRoot } from 'react-dom/client'
 import { initializeAmplify } from './config/amplify'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { wakeCrudApi } from './lib/api'
+// Before the first render: components read translations during their initial
+// render, and i18next.init is synchronous with bundled resources, so importing
+// it here means there is never a frame rendered against an empty catalogue.
+import './i18n'
 import './index.css'
 import App from './App.tsx'
 

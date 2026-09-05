@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { IdCard, User, KeyRound, Link2, LogOut, Pen } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { fetchAuthSession } from 'aws-amplify/auth'
@@ -13,6 +14,7 @@ interface Props {
 }
 
 export default function ProfileContent({ onClose }: Props) {
+  const { t } = useTranslation()
   const { signOut, user, userAttributes } = useAuth()
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const [activeSection, setActiveSection] = useState<string>('profile')
@@ -181,10 +183,10 @@ export default function ProfileContent({ onClose }: Props) {
         <div className="border-b border-border/40" />
 
         <div ref={setRef('display-name')} className="scroll-mt-6 py-5 space-y-4">
-          <h3 className="text-base font-semibold text-foreground">Display Name</h3>
-          <p className="text-sm text-muted-foreground">This is your public display name. It can be your real name or a pseudonym.</p>
+          <h3 className="text-base font-semibold text-foreground">{t('profile.display_name')}</h3>
+          <p className="text-sm text-muted-foreground">{t('profile.display_name_desc')}</p>
           <div>
-            <label className="text-xs text-muted-foreground mb-1 block">Display name</label>
+            <label className="text-xs text-muted-foreground mb-1 block">{t('profile.display_name_label')}</label>
             <input
               type="text"
               defaultValue={displayName ?? ''}
@@ -201,7 +203,7 @@ export default function ProfileContent({ onClose }: Props) {
 
         <div ref={setRef('security')} className="scroll-mt-6 py-5 space-y-4">
           <h3 className="text-base font-semibold text-foreground">Security</h3>
-          <p className="text-sm text-muted-foreground">Set a password for email sign-in.</p>
+          <p className="text-sm text-muted-foreground">{t('profile.security_desc')}</p>
           <button
             onClick={handleOpenSetPassword}
             disabled={!!emailSub}
@@ -214,8 +216,8 @@ export default function ProfileContent({ onClose }: Props) {
         <div className="border-b border-border/40" />
 
         <div ref={setRef('account-linked')} className="scroll-mt-6 py-5 space-y-4">
-          <h3 className="text-base font-semibold text-foreground">Account Linked</h3>
-          <p className="text-sm text-muted-foreground">Connect your accounts for seamless sign-in across platforms.</p>
+          <h3 className="text-base font-semibold text-foreground">{t('profile.account_linked')}</h3>
+          <p className="text-sm text-muted-foreground">{t('profile.account_linked_desc')}</p>
           <div className="space-y-3">
             <div className="flex items-center justify-between p-3 rounded-xl border border-border/40 bg-card">
               <div className="flex items-center gap-3">
@@ -236,10 +238,10 @@ export default function ProfileContent({ onClose }: Props) {
               </div>
               {googleLinked || linkState === 'linked' ? (
                 <span className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary/10 text-primary">
-                  Linked
+                  {t('profile.linked')}
                 </span>
               ) : linkState === 'working' ? (
-                <span className="px-3 py-1.5 text-xs text-muted-foreground">Linking…</span>
+                <span className="px-3 py-1.5 text-xs text-muted-foreground">{t('profile.linking')}</span>
               ) : (
                 // Google renders its own button in here. Its markup is fixed by
                 // Google and cannot be restyled, so it sits in a plain box

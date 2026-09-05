@@ -1,4 +1,5 @@
 import { useEffect, useState, type CSSProperties } from 'react'
+import { useTranslation } from 'react-i18next'
 import { UserRound, Check, TriangleAlert, Star } from 'lucide-react'
 import { ScrollArea } from '../ui/scroll-area'
 import { useMotion } from '../../hooks/useMotion'
@@ -215,6 +216,7 @@ function AvatarCard({
 }
 
 export default function AvatarsPanel() {
+  const { t } = useTranslation()
   const {
     selectedVrmId,
     setSelectedVrmId,
@@ -245,9 +247,9 @@ export default function AvatarsPanel() {
       <div className="px-4 py-3 border-b border-border/40 shrink-0">
         <h2 className="text-sm font-semibold text-foreground tracking-tight flex items-center gap-2">
           <UserRound className="w-4 h-4 text-primary" />
-          Characters
+          {t('avatars.title')}
         </h2>
-        <p className="text-[11px] text-muted-foreground mt-0.5">Choose a 3D avatar</p>
+        <p className="text-[11px] text-muted-foreground mt-0.5">{t('avatars.subtitle')}</p>
       </div>
 
       <ScrollArea className="flex-1 min-h-0">
@@ -265,14 +267,14 @@ export default function AvatarsPanel() {
               otherwise, and the difference decides whether anyone goes looking. */}
           {vrmOptionsError && (
             <p className="text-xs text-destructive text-center py-4 px-2">
-              Could not load characters.
+              {t('avatars.load_failed')}
               <br />
               <span className="text-muted-foreground">{vrmOptionsError}</span>
             </p>
           )}
 
           {!vrmOptionsLoading && !vrmOptionsError && vrmOptions.length === 0 && (
-            <p className="text-xs text-muted-foreground text-center py-4">No VRM avatars found</p>
+            <p className="text-xs text-muted-foreground text-center py-4">{t('avatars.empty')}</p>
           )}
 
           {!vrmOptionsLoading && vrmOptions.length > 0 && (

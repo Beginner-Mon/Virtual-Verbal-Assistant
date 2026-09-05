@@ -1,6 +1,8 @@
 import { Info } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 export default function AboutUsContent() {
+  const { t } = useTranslation()
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <div className="flex items-center gap-2 mb-6">
@@ -15,13 +17,11 @@ export default function AboutUsContent() {
           </h3>
           <div className="space-y-3">
             <div>
-              <span className="text-sm font-semibold text-foreground">Project ECA</span>
-              <span className="text-xs text-muted-foreground ml-2">by Ordinary Studio</span>
+              <span className="text-sm font-semibold text-foreground">{t('about.product')}</span>
+              <span className="text-xs text-muted-foreground ml-2">{t('about.by')}</span>
             </div>
             <p className="text-sm text-muted-foreground leading-relaxed">
-              An interactive multimodal AI assistant combining conversational AI, 3D motion synthesis,
-              and voice I/O. Built for those passionate about real-time 3D character animation and
-              AI-driven motion generation — no pre-recorded animations required.
+              {t('about.summary')}
             </p>
           </div>
         </section>
@@ -30,13 +30,11 @@ export default function AboutUsContent() {
 
         <section>
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
-            Who We Are
+            {t('about.who_we_are')}
           </h3>
           <p className="text-sm text-muted-foreground leading-relaxed">
-            <span className="font-semibold text-foreground">Ordinary Studio</span> — a team of
-            final-year students who started this project as a graduation assignment. We are
-            driven by a shared passion for real-time 3D rendering, AI, and human-computer
-            interaction, aiming to push the boundaries of what virtual assistants can be.
+            <span className="font-semibold text-foreground">{t('about.studio')}</span>{' '}
+            {t('about.who_we_are_body')}
           </p>
         </section>
 

@@ -1,4 +1,5 @@
 ﻿import { useState, useEffect, useCallback, useRef } from 'react'
+import { useTranslation } from 'react-i18next'
 import { MessageSquare, Trash2, RefreshCw, Loader2 } from 'lucide-react'
 import { ScrollArea } from '../ui/scroll-area'
 import ConfirmDialog from '../ui/confirm-dialog'
@@ -7,6 +8,7 @@ import { useChat, type SessionItem } from '../../hooks/useChat'
 let _cacheLoaded = false
 
 export default function ChatSessionsPanel({ onSessionSelected }: { onSessionSelected?: () => void }) {
+  const { t } = useTranslation()
   const {
     sessionList,
     sessionsDirty,
@@ -66,15 +68,15 @@ export default function ChatSessionsPanel({ onSessionSelected }: { onSessionSele
         <div>
           <h2 className="text-base font-semibold text-foreground tracking-tight flex items-center gap-2">
             <MessageSquare className="w-4 h-4 text-primary" />
-            Chat Sessions
+            {t('sessions.title')}
           </h2>
-          <p className="text-xs text-muted-foreground mt-0.5">Your conversation history</p>
+          <p className="text-xs text-muted-foreground mt-0.5">{t('sessions.subtitle')}</p>
         </div>
         <button
           onClick={handleRefresh}
           disabled={refreshing}
           className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors"
-          title="Refresh"
+          title={t('common.refresh')}
         >
           <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
         </button>
@@ -90,14 +92,14 @@ export default function ChatSessionsPanel({ onSessionSelected }: { onSessionSele
             <div className="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
               <MessageSquare className="w-7 h-7 text-primary/60" />
             </div>
-            <p className="text-sm font-medium text-foreground/80 mb-1">No sessions yet</p>
+            <p className="text-sm font-medium text-foreground/80 mb-1">{t('sessions.empty')}</p>
             <p className="text-xs text-muted-foreground leading-relaxed">
-              Start a conversation to see your chat history here.
+              {t('sessions.empty_hint')}
             </p>
           </div>
         ) : (
           <div className="px-2 py-1">
-            <p className="px-3 py-2 text-xs font-medium text-muted-foreground">Recents</p>
+            <p className="px-3 py-2 text-xs font-medium text-muted-foreground">{t('sessions.recents')}</p>
             {sessionList.map((s) => {
               const isActive = s.session_id === activeSessionId
               return (
@@ -117,9 +119,9 @@ export default function ChatSessionsPanel({ onSessionSelected }: { onSessionSele
                 >
                   <span
                     className="text-sm font-medium text-foreground/80 truncate text-left pr-2"
-                    title={s.first_user_message_preview || '(empty)'}
+                    title={s.first_user_message_preview || t('sessions.untitled')}
                   >
-                    {s.first_user_message_preview || '(empty)'}
+                    {s.first_user_message_preview || t('sessions.untitled')}
                   </span>
                   <span
                     onClick={(e) => {
@@ -127,7 +129,7 @@ export default function ChatSessionsPanel({ onSessionSelected }: { onSessionSele
                       handleDelete(s)
                     }}
                     className="shrink-0 p-1 rounded-md text-muted-foreground/0 group-hover:text-muted-foreground/60 hover:text-destructive hover:bg-destructive/10"
-                    title="Delete session"
+                    title={t('sessions.delete_one')}
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </span>
@@ -140,10 +142,10 @@ export default function ChatSessionsPanel({ onSessionSelected }: { onSessionSele
 
       <ConfirmDialog
         open={deleteTarget !== null}
-        title="Delete session?"
+        title={t('sessions.delete_confirm_title')}
         message={deleteTarget?.first_user_message_preview ?? ''}
-        confirmLabel="Delete"
-        cancelLabel="Cancel"
+        confirmLabel={t('common.delete')}
+        cancelLabel={t('common.cancel')}
         variant="danger"
         onConfirm={confirmDelete}
         onCancel={() => setDeleteTarget(null)}

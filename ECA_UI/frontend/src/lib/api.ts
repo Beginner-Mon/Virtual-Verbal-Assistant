@@ -164,6 +164,11 @@ export interface StreamChatOptions {
   personaId?: string
   outputMode?: 'text' | 'speech' | 'both'
   webSearch?: boolean
+  /** The language of the SITE, as the reader chose it — not a guess at the
+   *  language of this message. The backend uses it to pick the character's
+   *  voice and the safety warnings it may have to insert. It does NOT decide
+   *  what language the assistant answers in: that still mirrors the question. */
+  locale?: string
 }
 
 /**
@@ -181,8 +186,14 @@ export async function streamChat(
   onEvent: SSEEventCallback,
   signal?: AbortSignal,
 ): Promise<void> {
-  const { query, sessionId, personaId = 'eca_default', outputMode = 'text', webSearch = false } =
-    options
+  const {
+    query,
+    sessionId,
+    personaId = 'anne',
+    outputMode = 'text',
+    webSearch = false,
+    locale = 'en',
+  } = options
 
   const extraHeaders = await authHeader()
 
@@ -200,6 +211,7 @@ export async function streamChat(
       session_id: sessionId,
       persona_id: personaId,
       output_mode: outputMode,
+      locale,
       web_search: webSearch,
     }),
     signal,

@@ -1,3 +1,14 @@
+/* eslint-disable i18next/no-literal-string --
+ * Deliberately untranslated: this whole screen is the Stripe SANDBOX surface.
+ * It says "Sandbox only — real transactions disabled" at the top, and most of
+ * its copy is operator instructions naming environment variables
+ * (BILLING_SANDBOX_ENABLED=true) and test card numbers.
+ *
+ * Translating it would spend translator effort on text that has to be rewritten
+ * from scratch the moment real billing ships, and would put Vietnamese around
+ * identifiers that are English by definition. When this screen becomes a real
+ * billing page, delete this line and translate it then.
+ */
 import { useEffect, useState } from 'react'
 import {
   CheckCircle2,

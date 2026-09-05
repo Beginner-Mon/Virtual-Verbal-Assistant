@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, type KeyboardEvent } from 'react'
+import { useTranslation } from 'react-i18next'
 import { ArrowUp, Mic, Sparkles, Square, Plus, Globe, Image, X, Volume2, SquarePen, Loader2 } from 'lucide-react'
 import TextareaAutosize from 'react-textarea-autosize'
 import { ScrollArea } from './ui/scroll-area'
@@ -38,6 +39,7 @@ export default function ChatPanel() {
     sendAudio,
   } = useChat()
 
+  const { t } = useTranslation()
   const [showAddMenu, setShowAddMenu] = useState(false)
 
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -74,18 +76,18 @@ export default function ChatPanel() {
       <header className="hidden md:flex items-center gap-3 px-5 py-4 border-b border-border/40 bg-card/80 backdrop-blur-sm shrink-0">
         <div className="flex-1 min-w-0">
           <h1 className="text-sm font-semibold text-foreground tracking-tight">
-            Virtual Assistant
+            {t('chat.title')}
           </h1>
           <p className="text-xs text-muted-foreground flex items-center gap-1">
             <Sparkles className="w-3 h-3" />
-            {isRestoring ? 'Đang tải hội thoại trước...' : 'Online · Ready to chat'}
+            {isRestoring ? t('chat.status_restoring') : t('chat.status_online')}
           </p>
         </div>
         {/* Without this the conversation restored on load is the only one the
             user can ever be in — there is no other way out of it yet. */}
         <button
           onClick={startNewSession}
-          title="Cuộc trò chuyện mới"
+          title={t('chat.new_conversation')}
           className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors shrink-0"
         >
           <SquarePen className="w-4 h-4" />
@@ -98,7 +100,7 @@ export default function ChatPanel() {
           {isSwitching ? (
             <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground">
               <Loader2 className="w-6 h-6 animate-spin" />
-              <p className="text-xs">Chờ tí...</p>
+              <p className="text-xs">{t('common.wait')}</p>
             </div>
           ) : (
             <>
@@ -138,7 +140,7 @@ export default function ChatPanel() {
                 <div key={url} className="relative group shrink-0">
                   <img
                     src={url}
-                    alt="Preview"
+                    alt={t('chat.attachment_preview_alt')}
                     className="w-20 h-20 rounded-lg object-cover"
                   />
                   <button
@@ -166,7 +168,7 @@ export default function ChatPanel() {
             <div className="relative" ref={addMenuRef}>
               <button
                 onClick={() => setShowAddMenu((prev) => !prev)}
-                title="Add"
+                title={t('common.add')}
                 className="p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary/60 transition-colors"
               >
                 <Plus className="w-5 h-5" />
@@ -179,8 +181,8 @@ export default function ChatPanel() {
                     className="w-full flex items-center gap-3 px-4 py-3 text-sm text-foreground hover:bg-secondary/60 transition-colors"
                   >
                     <Globe className="w-4 h-4 text-muted-foreground" />
-                    Search online
-                    {webSearch && <span className="ml-auto text-xs text-primary">On</span>}
+                    {t('chat.menu_search_online')}
+                    {webSearch && <span className="ml-auto text-xs text-primary">{t('common.on')}</span>}
                   </button>
                   <div className="h-px bg-border/40 mx-3" />
                   <button
@@ -188,8 +190,8 @@ export default function ChatPanel() {
                     className="w-full flex items-center gap-3 px-4 py-3 text-sm text-foreground hover:bg-secondary/60 transition-colors"
                   >
                     <Volume2 className="w-4 h-4 text-muted-foreground" />
-                    Trả lời bằng giọng nói
-                    {voiceReply && <span className="ml-auto text-xs text-primary">On</span>}
+                    {t('chat.menu_voice_reply')}
+                    {voiceReply && <span className="ml-auto text-xs text-primary">{t('common.on')}</span>}
                   </button>
                   <div className="h-px bg-border/40 mx-3" />
                   <button
@@ -198,7 +200,7 @@ export default function ChatPanel() {
                     className="w-full flex items-center gap-3 px-4 py-3 text-sm text-foreground hover:bg-secondary/60 transition-colors disabled:opacity-50"
                   >
                     <Image className="w-4 h-4 text-muted-foreground" />
-                    Media
+                    {t('chat.menu_media')}
                   </button>
                   {/* <div className="h-px bg-border/40 mx-3" />
                   <button
@@ -215,7 +217,7 @@ export default function ChatPanel() {
             {webSearch && (
               <div className="flex items-center gap-1 bg-secondary rounded-lg px-2 py-1 text-xs text-muted-foreground">
                 <Globe className="w-3 h-3" />
-                Web
+                {t('chat.chip_web')}
                 <button
                   onClick={() => setWebSearch(false)}
                   className="hover:text-foreground transition-colors cursor-pointer"
@@ -228,7 +230,7 @@ export default function ChatPanel() {
             {voiceReply && (
               <div className="flex items-center gap-1 bg-secondary rounded-lg px-2 py-1 text-xs text-muted-foreground">
                 <Volume2 className="w-3 h-3" />
-                Giọng nói
+                {t('chat.chip_voice')}
                 <button
                   onClick={() => setVoiceReply(false)}
                   className="hover:text-foreground transition-colors cursor-pointer"
@@ -247,8 +249,8 @@ export default function ChatPanel() {
             {previewAudioUrl && !isRecording && (
               <div className="flex items-center gap-1">
                 <audio controls src={previewAudioUrl} className="h-8 w-32" />
-                <button onClick={sendAudio} className="px-2 py-1 text-xs bg-primary text-primary-foreground rounded-lg">Gửi</button>
-                <button onClick={cancelRecord} className="px-2 py-1 text-xs border rounded-lg">Hủy</button>
+                <button onClick={sendAudio} className="px-2 py-1 text-xs bg-primary text-primary-foreground rounded-lg">{t('chat.audio_send')}</button>
+                <button onClick={cancelRecord} className="px-2 py-1 text-xs border rounded-lg">{t('chat.audio_discard')}</button>
               </div>
             )}
 
@@ -256,7 +258,7 @@ export default function ChatPanel() {
 
             <div className="flex items-center gap-1">
               <button
-                title={isRecording ? 'Dừng ghi' : 'Ghi âm'}
+                title={isRecording ? t('chat.record_stop') : t('chat.record_start')}
                 onClick={() => (isRecording ? stopRecord() : void startRecord())}
                 className={`p-2 rounded-lg transition-colors ${isRecording ? 'bg-destructive text-destructive-foreground animate-pulse' : 'text-muted-foreground hover:text-foreground hover:bg-secondary/60'}`}
                 disabled={isGenerating}

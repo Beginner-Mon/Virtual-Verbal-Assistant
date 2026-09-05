@@ -17,7 +17,7 @@ interface ProfileSettingsModalProps {
 const ROOT_VIEW = 'main' as const
 
 export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileSettingsModalProps) {
-  const [settingsView, setSettingsView] = useState<'main' | 'providers' | 'provider-detail' | 'graphics' | 'about'>(ROOT_VIEW)
+  const [settingsView, setSettingsView] = useState<'main' | 'providers' | 'provider-detail' | 'graphics' | 'about' | 'language'>(ROOT_VIEW)
   const [selectedProvider, setSelectedProvider] = useState<{ id: string; name: string } | undefined>()
 
   useEffect(() => {
@@ -48,7 +48,7 @@ export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileS
       setSelectedProvider(undefined)
     } else if (type === 'settings' && settingsView === 'providers') {
       setSettingsView(ROOT_VIEW)
-    } else if (settingsView === 'graphics' || settingsView === 'about') {
+    } else if (settingsView === 'graphics' || settingsView === 'about' || settingsView === 'language') {
       setSettingsView(ROOT_VIEW)
     } else {
       // `onBack ?? onClose()` read onBack and discarded it: when a parent
@@ -73,15 +73,17 @@ export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileS
           ? 'Billing Sandbox'
         : type === 'graphics'
           ? 'Graphic Settings'
-          : type === 'about'
+        : type === 'about'
             ? 'About Us'
-            : settingsView === 'graphics'
-              ? 'Graphic Settings'
-              : settingsView === 'about'
-                ? 'About Us'
-                : settingsView === 'provider-detail'
-                  ? selectedProvider?.name ?? 'Settings'
-                  : 'Settings'
+            : settingsView === 'language'
+              ? 'Language'
+              : settingsView === 'graphics'
+                ? 'Graphic Settings'
+                : settingsView === 'about'
+                  ? 'About Us'
+                  : settingsView === 'provider-detail'
+                    ? selectedProvider?.name ?? 'Settings'
+                    : 'Settings'
 
   return (
     <div className="fixed inset-0 z-[10000] flex items-end md:items-center justify-center">
@@ -137,11 +139,14 @@ export default function ProfileSettingsModal({ type, onClose, onBack }: ProfileS
               view="provider-detail"
               selectedProvider={selectedProvider}
             />
+          ) : settingsView === 'language' ? (
+            <SettingsContent view="language" />
           ) : (
             <SettingsContent
               onNavigateToProviders={() => setSettingsView('providers')}
               onNavigateToGraphics={() => setSettingsView('graphics')}
               onNavigateToAbout={() => setSettingsView('about')}
+              onNavigateToLanguage={() => setSettingsView('language')}
             />
           )}
         </Suspense>

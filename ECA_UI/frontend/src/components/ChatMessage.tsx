@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Copy, ThumbsUp, ThumbsDown, Volume2, Check, Pause, Square, Loader2 } from 'lucide-react'
@@ -124,6 +125,7 @@ function AssistantActions({
   autoplay?: boolean
   isStreaming?: boolean
 }) {
+  const { t } = useTranslation()
   const { copied, handleCopy } = useCopy(content)
   const [liked, setLiked] = useState(false)
   const [disliked, setDisliked] = useState(false)
@@ -147,13 +149,13 @@ function AssistantActions({
 
   return (
     <div className="flex items-center gap-1 mt-1.5">
-      <button className={btnClass} onClick={handleCopy} title="Copy">
+      <button className={btnClass} onClick={handleCopy} title={t('common.copy')}>
         {copied ? <Check className={iconSize} /> : <Copy className={iconSize} />}
       </button>
-      <button className={btnClass} onClick={handleLike} title="Thích">
+      <button className={btnClass} onClick={handleLike} title={t('chat.like')}>
         <ThumbsUp className={`${iconSize} ${liked ? 'text-green-500' : ''}`} />
       </button>
-      <button className={btnClass} onClick={handleDislike} title="Không thích">
+      <button className={btnClass} onClick={handleDislike} title={t('chat.dislike')}>
         <ThumbsDown className={`${iconSize} ${disliked ? 'text-blue-500' : ''}`} />
       </button>
       <AudioButton
@@ -191,6 +193,7 @@ function AudioButton({
   btnClass: string
   iconSize: string
 }) {
+  const { t } = useTranslation()
   const { avatarRef } = useMotion()
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const barRef = useRef<HTMLDivElement | null>(null)
@@ -373,16 +376,16 @@ function AudioButton({
         disabled={busy}
         title={
           busy
-            ? 'Đang tạo giọng đọc... (CPU, có thể mất 30-45s)'
+            ? t('chat.audio_generating')
             : failed
-              ? 'Không tạo được giọng đọc — bấm để thử lại'
+              ? t('chat.audio_failed')
               : playing
-                ? 'Tạm dừng'
+                ? t('chat.audio_pause')
                 : paused
-                  ? 'Tiếp tục'
+                  ? t('chat.audio_resume')
                   : url
-                    ? 'Nghe'
-                    : 'Đọc tin nhắn này'
+                    ? t('chat.audio_listen')
+                    : t('chat.audio_play')
         }
         onDoubleClick={(e) => e.preventDefault()}
       >
@@ -411,7 +414,7 @@ function AudioButton({
           isActive ? 'opacity-100' : 'w-0 p-0 opacity-0 pointer-events-none'
         }`}
         onClick={handleStop}
-        title="Dừng hẳn"
+        title={t('chat.audio_stop')}
         tabIndex={isActive ? 0 : -1}
         aria-hidden={!isActive}
       >
@@ -422,6 +425,7 @@ function AudioButton({
 }
 
 function UserCopyAction({ content }: { content: string }) {
+  const { t } = useTranslation()
   const { copied, handleCopy } = useCopy(content)
 
   return (
@@ -429,7 +433,7 @@ function UserCopyAction({ content }: { content: string }) {
       <button
         className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-secondary/60"
         onClick={handleCopy}
-        title="Copy"
+        title={t('common.copy')}
       >
         {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
       </button>

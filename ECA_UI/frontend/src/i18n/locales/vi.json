@@ -1,0 +1,104 @@
+{
+  "common": {
+    "add": "Thêm",
+    "cancel": "Hủy",
+    "copy": "Sao chép",
+    "delete": "Xóa",
+    "on": "Bật",
+    "refresh": "Tải lại",
+    "send": "Gửi",
+    "wait": "Chờ tí..."
+  },
+  "chat": {
+    "attachment_preview_alt": "Xem trước",
+    "audio_discard": "Hủy",
+    "audio_failed": "Không tạo được giọng đọc — bấm để thử lại",
+    "audio_generating": "Đang tạo giọng đọc... (CPU, có thể mất 30-45s)",
+    "audio_listen": "Nghe",
+    "audio_pause": "Tạm dừng",
+    "audio_play": "Đọc tin nhắn này",
+    "audio_resume": "Tiếp tục",
+    "audio_send": "Gửi",
+    "audio_stop": "Dừng hẳn",
+    "chip_voice": "Giọng nói",
+    "chip_web": "Web",
+    "dislike": "Không thích",
+    "like": "Thích",
+    "menu_media": "Ảnh / video",
+    "menu_search_online": "Tìm trên web",
+    "menu_voice_reply": "Trả lời bằng giọng nói",
+    "new_conversation": "Cuộc trò chuyện mới",
+    "record_start": "Ghi âm",
+    "record_stop": "Dừng ghi",
+    "status_online": "Trực tuyến · Sẵn sàng trò chuyện",
+    "status_restoring": "Đang tải hội thoại trước...",
+    "title": "Trợ lý ảo"
+  },
+  "motion": {
+    "camera_config": "Cấu hình camera",
+    "empty": "Chưa có động tác nào — hãy hỏi để xem một động tác",
+    "enable_pan": "Bật kéo khung hình",
+    "expressions_dev": "Biểu cảm (dev)",
+    "follow_target": "Bám mục tiêu (lookAt)",
+    "lock_axes": "Khóa trục (kéo chuột phải)",
+    "replay_hint": "Chọn để xem lại —",
+    "reset": "Đặt lại",
+    "subtitle": "Nguồn animation & phát lại",
+    "target_head": "Mục tiêu: Đầu",
+    "target_hips": "Mục tiêu: Hông",
+    "title": "Điều khiển chuyển động"
+  },
+  "sessions": {
+    "delete_confirm_title": "Xóa phiên này?",
+    "delete_one": "Xóa phiên",
+    "empty": "Chưa có phiên nào",
+    "empty_hint": "Bắt đầu một cuộc trò chuyện để thấy lịch sử ở đây.",
+    "recents": "Gần đây",
+    "subtitle": "Lịch sử trò chuyện của bạn",
+    "title": "Phiên trò chuyện",
+    "untitled": "(trống)"
+  },
+  "avatars": {
+    "empty": "Không tìm thấy avatar VRM nào",
+    "load_failed": "Không tải được danh sách nhân vật.",
+    "subtitle": "Chọn một avatar 3D",
+    "title": "Nhân vật"
+  },
+  "settings": {
+    "about": "Về chúng tôi",
+    "about_desc": "Tìm hiểu thêm về đội ngũ và sứ mệnh của chúng tôi",
+    "graphics": "Cài đặt đồ họa",
+    "graphics_desc": "Điều chỉnh chất lượng hình ảnh và hiệu năng",
+    "language": "Ngôn ngữ",
+    "language_hint": "Ngôn ngữ của trang web. Trợ lý vẫn trả lời theo đúng ngôn ngữ bạn viết.",
+    "official": "Chính thức",
+    "providers": "Chọn nhà cung cấp",
+    "providers_desc": "Cấu hình nhà cung cấp LLM và khóa API của bạn",
+    "terms": "Điều khoản dịch vụ",
+    "terms_desc": "Đọc điều khoản và điều kiện của chúng tôi",
+    "title": "Cài đặt"
+  },
+  "about": {
+    "by": "bởi Ordinary Studio",
+    "product": "Project ECA",
+    "studio": "Ordinary Studio",
+    "summary": "Một trợ lý AI đa phương thức tương tác, kết hợp AI hội thoại, tổng hợp chuyển động 3D và giọng nói. Dành cho những ai say mê hoạt ảnh nhân vật 3D thời gian thực và sinh chuyển động bằng AI — không cần animation thu sẵn.",
+    "who_we_are": "Chúng tôi là ai",
+    "who_we_are_body": "— một nhóm sinh viên năm cuối bắt đầu dự án này như một đồ án tốt nghiệp. Chúng tôi cùng chung niềm đam mê với kết xuất 3D thời gian thực, AI và tương tác người–máy, muốn đẩy xa giới hạn của một trợ lý ảo."
+  },
+  "notifications": {
+    "empty": "Chưa có cập nhật nào. Bạn ghé lại sau nhé.",
+    "version": "Project ECA v0.0"
+  },
+  "profile": {
+    "account_linked": "Tài khoản đã liên kết",
+    "account_linked_desc": "Liên kết các tài khoản để đăng nhập liền mạch trên mọi nền tảng.",
+    "display_name": "Tên hiển thị",
+    "display_name_desc": "Đây là tên hiển thị công khai của bạn. Có thể là tên thật hoặc bút danh.",
+    "display_name_label": "Tên hiển thị",
+    "linked": "Đã liên kết",
+    "linking": "Đang liên kết…",
+    "security": "Bảo mật",
+    "security_desc": "Đặt mật khẩu để đăng nhập bằng email."
+  }
+}
